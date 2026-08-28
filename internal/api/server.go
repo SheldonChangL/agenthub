@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
-	return mux
+	return securityBoundary(mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
@@ -59,12 +62,34 @@ func (s *Server) discover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.store.ListSessions(r.Context(), registry.ListOptions{})
+	page, err := positiveQueryInt(r, "page", 1, 1_000_000)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	pageSize, err := positiveQueryInt(r, "pageSize", 50, 200)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	totalItems, err := s.store.CountSessions(r.Context(), false)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+	sessions, err := s.store.ListSessions(r.Context(), registry.ListOptions{Limit: pageSize, Offset: (page - 1) * pageSize})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
+		return
+	}
+	totalPages := 0
+	if totalItems > 0 {
+		totalPages = (totalItems + pageSize - 1) / pageSize
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions":   sessions,
+		"pagination": map[string]int{"page": page, "pageSize": pageSize, "totalItems": totalItems, "totalPages": totalPages},
+	})
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
@@ -145,8 +170,46 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
 }
 
+func positiveQueryInt(r *http.Request, name string, defaultValue, maximum int) (int, error) {
+	value := r.URL.Query().Get(name)
+	if value == "" {
+		return defaultValue, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 || parsed > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", name, maximum)
+	}
+	return parsed, nil
+}
+
+func securityBoundary(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if origin := r.Header.Get("Origin"); origin != "" && !isLoopbackOrigin(origin) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "browser origin is not allowed")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackOrigin(origin string) bool {
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return false
+	}
+	host := parsed.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func decodeJSON(r *http.Request, destination any) error {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
 		return errors.New("Content-Type must be application/json")
 	}
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 64*1024))

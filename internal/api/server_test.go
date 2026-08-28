@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,68 @@ func TestSendAndInboxRoundTrip(t *testing.T) {
 	inbox := perform(t, handler, http.MethodGet, "/v1/inbox/codex:target", nil)
 	if inbox.Code != http.StatusOK || !bytes.Contains(inbox.Body.Bytes(), []byte("check tests")) {
 		t.Fatalf("inbox response = %d %s", inbox.Code, inbox.Body.String())
+	}
+}
+
+func TestForeignBrowserOriginIsRejected(t *testing.T) {
+	_, handler := testServer(t)
+	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	request.Header.Set("Origin", "https://attacker.example")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("response code = %d; want 403", response.Code)
+	}
+}
+
+func TestJSONLikeContentTypeIsRejected(t *testing.T) {
+	_, handler := testServer(t)
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"to":"codex:x","body":"hello"}`))
+	request.Header.Set("Content-Type", "application/jsonp")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Content-Type must") {
+		t.Fatalf("response = %d %s; want Content-Type rejection", response.Code, response.Body.String())
+	}
+}
+
+func TestListSessionsIsPaginated(t *testing.T) {
+	store, handler := testServer(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, id := range []string{"claude:one", "claude:two", "claude:three"} {
+		_, err := store.UpsertSession(ctx, model.Session{
+			ID: id, Provider: model.ProviderClaude, ProviderSessionID: id[len("claude:"):],
+			Management: model.Unmanaged, Status: model.StatusIdle, StatusSource: "test",
+			LastSeenAt: now, UpdatedAt: now,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := perform(t, handler, http.MethodGet, "/v1/sessions?page=2&pageSize=2", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Sessions   []model.Session `json:"sessions"`
+		Pagination struct {
+			Page       int `json:"page"`
+			PageSize   int `json:"pageSize"`
+			TotalItems int `json:"totalItems"`
+			TotalPages int `json:"totalPages"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Sessions) != 1 || body.Pagination.Page != 2 || body.Pagination.TotalItems != 3 || body.Pagination.TotalPages != 2 {
+		t.Fatalf("paginated body = %#v", body)
 	}
 }
 

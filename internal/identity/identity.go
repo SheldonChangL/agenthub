@@ -38,5 +38,5 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry) (model.NodeIden
 	if err := store.SaveNodeIdentity(ctx, identity); err != nil {
 		return model.NodeIdentity{}, err
 	}
-	return identity, nil
+	return store.GetNodeIdentity(ctx)
 }
