@@ -21,7 +21,7 @@ as drafts with their unresolved implementation gaps made explicit.
 
 ## Tech stack
 
-- Go 1.25+, cross-compiled for `windows/amd64`, `windows/arm64`, `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and `linux/arm64`
+- Go 1.27.0+ (a patched toolchain; enforced by the `go` directive), cross-compiled for `windows/amd64`, `windows/arm64`, `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and `linux/arm64`
 - SQLite through a CGo-free `database/sql` driver
 - Go standard library HTTP and JSON
 - Desktop management app (`desktop/`) built with Wails v2, kept in a separate Go module so the node and CLI stay CGo-free and cross-compilable
