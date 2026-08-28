@@ -552,3 +552,39 @@ func TestBuildForRequiresATrustedRecipient(t *testing.T) {
 		}
 	})
 }
+
+// Zero is not a sequence this node can publish: the persisted counter is
+// reserved by incrementing, so the first value a peer can ever see is 1. The
+// schema has to say so, otherwise a document claiming sequence 0 — the value an
+// implementation produces when it forgets the counter entirely — validates.
+func TestSchemaRejectsANonPositiveSequence(t *testing.T) {
+	schema := compileSchema(t)
+	document := func(sequence any) map[string]any {
+		return map[string]any{
+			"protocolVersion": protocol.Version,
+			"messageId":       "msg_1",
+			"type":            protocol.TypeNodeHeartbeat,
+			"sentAt":          "2026-08-28T02:00:00Z",
+			"nodeId":          "node_0123456789abcdef0123",
+			"recipientNodeId": "node_recipient0000000000",
+			"signature":       "c2lnbmF0dXJl",
+			"payload": map[string]any{
+				"sequence":     sequence,
+				"expiresAt":    "2026-08-28T02:00:30Z",
+				"capabilities": []any{"session.list"},
+				"sessions":     []any{},
+			},
+		}
+	}
+
+	if err := schema.Validate(roundTrip(t, document(1))); err != nil {
+		t.Fatalf("the schema rejected the first sequence this node publishes: %v", err)
+	}
+	for name, sequence := range map[string]any{"zero": 0, "negative": -1} {
+		t.Run(name, func(t *testing.T) {
+			if err := schema.Validate(roundTrip(t, document(sequence))); err == nil {
+				t.Errorf("the schema accepted a %s sequence", name)
+			}
+		})
+	}
+}

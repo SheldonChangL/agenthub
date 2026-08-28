@@ -251,8 +251,9 @@
       ],
       "properties": {
         "sequence": {
+          "$comment": "Strictly increasing per sender, and never reused across a restart. The producer reserves each value by incrementing a persisted counter, so the lowest value a peer can ever see is 1; zero means the sender is not counting.",
           "type": "integer",
-          "minimum": 0
+          "minimum": 1
         },
         "expiresAt": {
           "type": "string",
