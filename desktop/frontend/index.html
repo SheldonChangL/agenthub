@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AgentHub</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="titlebar">
+        <div class="brand">
+          <span class="dot" id="conn-dot"></span>
+          <div>
+            <h1>AgentHub</h1>
+            <p id="node-line">連線中…</p>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="btn-heartbeat" class="ghost">預覽 heartbeat</button>
+          <button id="btn-discover" class="ghost">重新掃描</button>
+          <button id="btn-reload" class="ghost">重新整理</button>
+        </div>
+      </header>
+
+      <div id="banner" class="banner hidden"></div>
+
+      <section class="toolbar">
+        <input id="search" type="search" placeholder="搜尋 session ID 或工作目錄…" autocomplete="off" />
+        <div class="chips" id="chips"></div>
+      </section>
+
+      <section class="selectionbar">
+        <label class="checkline">
+          <input type="checkbox" id="select-all" />
+          <span id="select-label">全選目前篩選結果</span>
+        </label>
+        <div class="spacer"></div>
+        <span id="selection-count" class="muted">未選取</span>
+        <button id="btn-publish" class="primary" disabled>公開選取</button>
+        <button id="btn-unpublish" class="danger" disabled>收回選取</button>
+      </section>
+
+      <main class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="col-check"></th>
+              <th>SESSION</th>
+              <th>PROVIDER</th>
+              <th>狀態</th>
+              <th>管理</th>
+              <th>公開</th>
+              <th>工作目錄</th>
+              <th>最後活動</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="empty" class="empty hidden">沒有符合條件的 session。</p>
+      </main>
+
+      <footer class="statusbar">
+        <span id="footer-left">—</span>
+        <span id="footer-right" class="muted"></span>
+      </footer>
+    </div>
+
+    <div id="modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2>Broker heartbeat 預覽</h2>
+          <button id="modal-close" class="ghost">關閉</button>
+        </header>
+        <p class="muted">這是未來 broker 會收到的完整內容。只有標記為公開的 session 會出現在 <code>sessions</code> 陣列裡。</p>
+        <pre id="modal-body"></pre>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
