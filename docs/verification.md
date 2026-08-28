@@ -100,7 +100,7 @@ Publishing now answers "to whom". Verified against a node holding real provider
 data:
 
 - every discovered session upgrades and registers at audience `none`
-- `ah audience <id> selected node_laptop node_build --cwd` publishes to exactly
+- `ah audience <id> selected node_laptop00000000 node_build000000000 --cwd` publishes to exactly
   those nodes; `ah list` shows `2 nodes`, and `all-paired` shows `all paired`
 - the heartbeat carried only the two published sessions out of 1,040, still
   validated against the broker schema by an independent implementation, and
@@ -178,7 +178,12 @@ go test -race ./...
 go vet ./...
 ```
 
-The suite covers provider metadata parsing, Codex App Server JSON-RPC/status parsing, status inference, private-by-default persistence, visibility preservation across rediscovery, public-only heartbeat output, node identity stability, message inbox behavior, HTTP origin rejection, pagination, CLI calls, and loopback-only binding.
+The suite covers provider metadata parsing, Codex App Server JSON-RPC/status
+parsing, status inference, audience-none-by-default persistence, audience and
+export-flag preservation, allowlisted/signed heartbeat output, per-peer export
+filtering, node identity and trust invariants, message inbox policy, HTTP origin
+rejection, pagination, qualified addressing, CLI calls, and loopback-only
+binding.
 
 ## Build matrix
 
@@ -223,7 +228,10 @@ A second macOS run on the same day exercised the desktop app against a live node
 
 Adding the desktop app did not disturb the node or CLI: `go.mod` and `go.sum` of the root module were unchanged, and `CGO_ENABLED=0` cross-compilation of `agenthub-node` and `ah` still passed for all six targets in the matrix above.
 
-The desktop module has its own suite (`go test -race ./...` in `desktop/`) covering batch visibility writes with partial failures, full pagination, unreachable-node handling, and rejection of non-loopback node URLs.
+The desktop module has its own suite (`go test -race ./...` in `desktop/`)
+covering batch audience writes with partial failures, full pagination, trusted
+node management, hostile metadata rendering, unreachable-node handling, and
+rejection of non-loopback node URLs.
 
 Not verified: the app's visual rendering was not captured, because screen recording permission was unavailable to the shell used for this run.
 

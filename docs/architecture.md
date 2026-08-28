@@ -69,7 +69,11 @@ pairing, and export contracts are implemented.
 
 `agenthub-node` owns the local registry and is the only component intended to write it. Adapters translate provider-specific metadata into one `Session` model. The CLI and the desktop app talk to the node rather than reading provider files or SQLite directly.
 
-The desktop app is the owner's visibility management surface: it lists every local session, filters them by provider, status, visibility, and working directory, and applies one publish or unpublish choice to a whole selection. It holds no state of its own and lives in a separate Go module so that Wails' CGo requirement never reaches the node or the CLI.
+The desktop app is the owner's audience management surface: it lists every
+local session, filters them by provider, status, audience, and working
+directory, and applies an audience policy to a selection. It holds no state of
+its own and lives in a separate Go module so that Wails' CGo requirement never
+reaches the node or the CLI.
 
 Codex has two discovery foundations: rollout metadata scanning, which is the enabled MVP path, and a JSON-RPC App Server client for `initialize` plus `thread/list`. The live client requests `useStateDbOnly: true`, decodes only identity/path/status fields, and maps `active`, `idle`, `notLoaded`, and `systemError` into AgentHub status. It is intentionally not wired into the daemon until transport lifecycle and reconnect behavior are specified.
 
@@ -105,17 +109,22 @@ Every status response carries `statusSource` so consumers can distinguish report
 
 ## Privacy boundary
 
-Visibility is stored in AgentHub, not provider files. Discovery uses an upsert that never updates `visibility`, so provider rescans cannot undo the owner's choice.
+Audience and export flags are stored in AgentHub, not provider files. Discovery
+uses an upsert that never updates those owner-controlled fields, so provider
+rescans cannot undo the owner's choice.
 
 There are two views:
 
 - Owner-local view: all local sessions, including private sessions.
-- Current export preview: sessions marked public, projected into `SessionSummary`. Nothing consumes this preview over the network today.
-- Target per-peer export view: sessions authorized for that peer, projected into an allowlisted `SessionSummary`.
+- Owner export preview: the union of sessions published to at least one audience, projected into `SessionSummary`. Nothing consumes this preview over the network today.
+- Per-peer export view: `HeartbeatBuilder.BuildFor(peer)` filters that same projection to sessions authorized for the named peer. It is implemented and tested but has no transport consumer.
 
-`agent_send` is allowed only when the destination is addressable in the caller's authorized view. The MVP local inbox accepts local destinations; remote delivery is deferred.
+The MVP local inbox accepts local destinations and parses both local and
+qualified addresses, but a qualified remote address returns `UNKNOWN_NODE`
+until routing exists. Remote `agent_send` must also require both an authorized
+view and the destination session's `acceptMessages` flag.
 
-The heartbeat builder projects each public session into `protocol.SessionSummary`,
+The heartbeat builder projects each published session into `protocol.SessionSummary`,
 a type separate from the owner-local `model.Session`. The projection copies field
 by field, so a new registry field cannot become remotely visible by being added;
 the schema's `additionalProperties: false` fails the build if one does. Session
@@ -123,9 +132,10 @@ addresses in the export view are qualified as `<node-id>/<provider>:<id>`.
 
 `GET /v1/heartbeat` returns the complete broker envelope rather than a
 differently-shaped preview, and tests validate both the builder output and the
-HTTP response against `broker-protocol.schema.json`. This settles the shape, not
-the transport: authentication, pairing, and per-peer audience filtering are still
-missing, so the node must not be connected to a LAN. The accepted audience and
+HTTP response against `broker-protocol.schema.json`. This settles the shape and
+per-peer filtering, not transport: no receiver authenticates, expires, or
+deduplicates these envelopes yet, so the node must not be connected to a LAN.
+The accepted audience and
 migration behavior is recorded in
 [ADR-001](decisions/001-session-audience-and-export-boundary.md).
 
