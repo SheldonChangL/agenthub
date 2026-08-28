@@ -191,6 +191,7 @@ func TestSchemaRejectsUnsafeShapes(t *testing.T) {
 			"type":            protocol.TypeNodeHeartbeat,
 			"sentAt":          "2026-08-28T02:00:00Z",
 			"nodeId":          "node_0123456789abcdef0123",
+			"recipientNodeId": "node_recipient0000000000",
 			"signature":       "c2lnbmF0dXJl",
 			"payload": map[string]any{
 				"sequence":     1,
@@ -235,6 +236,12 @@ func TestSchemaRejectsUnsafeShapes(t *testing.T) {
 		},
 		"unsigned envelope": func(doc map[string]any) {
 			delete(doc, "signature")
+		},
+		"heartbeat with no recipient": func(doc map[string]any) {
+			delete(doc, "recipientNodeId")
+		},
+		"heartbeat recipient that is not a node id": func(doc map[string]any) {
+			doc["recipientNodeId"] = "node_x"
 		},
 		"hello payload carrying sessions": func(doc map[string]any) {
 			doc["type"] = "node.hello"

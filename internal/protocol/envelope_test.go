@@ -39,8 +39,8 @@ func TestSignedEnvelopeVerifiesAgainstItsNode(t *testing.T) {
 	if envelope.Signature == "" {
 		t.Fatal("NewEnvelope produced an unsigned envelope")
 	}
-	if err := envelope.Verify(key.public, "node_0123456789abcdef0123"); err != nil {
-		t.Errorf("Verify() = %v", err)
+	if err := envelope.VerifySender(key.public, "node_0123456789abcdef0123"); err != nil {
+		t.Errorf("VerifySender() = %v", err)
 	}
 }
 
@@ -96,9 +96,9 @@ func TestVerifyRefusesEveryUnattributableEnvelope(t *testing.T) {
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			envelope, public, expected := mutate(sign())
-			err := envelope.Verify(public, expected)
+			err := envelope.VerifySender(public, expected)
 			if err == nil {
-				t.Fatalf("Verify accepted an unattributable envelope: type=%q nodeId=%q expected=%q signature=%q",
+				t.Fatalf("VerifySender accepted an unattributable envelope: type=%q nodeId=%q expected=%q signature=%q",
 					envelope.Type, envelope.NodeID, expected, envelope.Signature)
 			}
 			if !errors.Is(err, protocol.ErrUnsigned) {
@@ -122,7 +122,7 @@ func TestVerifyIgnoresKeysCarriedInsideThePayload(t *testing.T) {
 	}
 
 	trusted := newTestKeypair(t)
-	if err := envelope.Verify(trusted.public, victim); err == nil {
+	if err := envelope.VerifySender(trusted.public, victim); err == nil {
 		t.Error("an envelope signed by an impostor verified against the node's real key")
 	}
 }
@@ -187,7 +187,7 @@ func TestSignatureSurvivesTheWire(t *testing.T) {
 				received.Payload = reencoded
 			}
 
-			if err := received.Verify(key.public, nodeID); err != nil {
+			if err := received.VerifySender(key.public, nodeID); err != nil {
 				t.Fatalf("a decoded envelope did not verify: %v", err)
 			}
 
@@ -210,7 +210,7 @@ func TestHeartbeatSequenceSurvivesTheWire(t *testing.T) {
 	const nodeID = "node_0123456789abcdef0123"
 	const sequence = uint64(1) << 60
 
-	sent, err := protocol.NewEnvelope(nodeID, protocol.TypeNodeHeartbeat, protocol.At(time.Now()),
+	sent, err := protocol.NewDirectedEnvelope(nodeID, "node_recipient000000", protocol.TypeNodeHeartbeat, protocol.At(time.Now()),
 		protocol.HeartbeatPayload{
 			Sequence: sequence, ExpiresAt: time.Now().UTC(),
 			Capabilities: []string{"session.list"}, Sessions: []protocol.SessionSummary{},
@@ -253,9 +253,9 @@ func TestVerifyRefusesUnusableKeysWithoutPanicking(t *testing.T) {
 		"oversized key": append(append(ed25519.PublicKey{}, key.public...), 0),
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := envelope.Verify(public, nodeID)
+			err := envelope.VerifySender(public, nodeID)
 			if err == nil {
-				t.Fatal("Verify accepted an unusable key")
+				t.Fatal("VerifySender accepted an unusable key")
 			}
 			if !errors.Is(err, protocol.ErrUnsigned) {
 				t.Errorf("error = %v", err)
@@ -269,7 +269,7 @@ func TestVerifyRefusesUnusableKeysWithoutPanicking(t *testing.T) {
 // description must compute exactly these bytes, so the encoding is pinned here
 // rather than left to whatever the current code happens to produce.
 func TestSignableBytesMatchTheDocumentedEncoding(t *testing.T) {
-	envelope := protocol.Envelope{
+	undirected := protocol.Envelope{
 		ProtocolVersion: "agenthub.broker/v1alpha1",
 		MessageID:       "msg_1",
 		Type:            "node.hello",
@@ -277,17 +277,43 @@ func TestSignableBytesMatchTheDocumentedEncoding(t *testing.T) {
 		NodeID:          "node_0123456789abcdef",
 		Payload:         json.RawMessage(`{"a":1}`),
 	}
+	directed := undirected
+	directed.Type = "node.heartbeat"
+	directed.RecipientNodeID = "node_recipient000000"
 
-	want := "agenthub.broker/v1alpha1/envelope\n" +
+	// An undirected envelope writes an empty recipient rather than omitting the
+	// field: a receiver reproducing these bytes must not have to guess whether a
+	// field is absent or empty.
+	wantUndirected := "agenthub.broker/v1alpha1/envelope\n" +
 		"24:agenthub.broker/v1alpha1" +
 		"5:msg_1" +
 		"10:node.hello" +
 		"20:2026-08-28T02:00:00Z" +
 		"21:node_0123456789abcdef" +
+		"0:" +
 		"7:" + `{"a":1}`
 
-	if got := string(protocol.SignableBytes(envelope)); got != want {
-		t.Errorf("signable bytes changed.\n got: %q\nwant: %q", got, want)
+	wantDirected := "agenthub.broker/v1alpha1/envelope\n" +
+		"24:agenthub.broker/v1alpha1" +
+		"5:msg_1" +
+		"14:node.heartbeat" +
+		"20:2026-08-28T02:00:00Z" +
+		"21:node_0123456789abcdef" +
+		"20:node_recipient000000" +
+		"7:" + `{"a":1}`
+
+	for name, testCase := range map[string]struct {
+		envelope protocol.Envelope
+		want     string
+	}{
+		"undirected": {undirected, wantUndirected},
+		"directed":   {directed, wantDirected},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := string(protocol.SignableBytes(testCase.envelope)); got != testCase.want {
+				t.Errorf("signable bytes changed.\n got: %q\nwant: %q", got, testCase.want)
+			}
+		})
 	}
 }
 
