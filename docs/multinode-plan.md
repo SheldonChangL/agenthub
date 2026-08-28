@@ -13,6 +13,9 @@ deliberately deferred; structural design is not.
 Design reference: four artboards covering the local view, the LAN node view,
 pairing, and the audience picker.
 
+Tracked as [#1](https://github.com/SheldonChangL/agenthub/issues/1); each step
+below links its issues.
+
 ## The single decision that drives everything
 
 `visibility` is currently a two-value enum (`internal/model/model.go`), stored
@@ -98,26 +101,28 @@ Both are per-session, per-owner decisions and belong beside audience.
 Each step ends with something verifiable, and no step depends on a broker
 existing until step 4.
 
-1. **Audience model, local only.** Replace the visibility boolean with an
-   audience table plus export flags. No network. The desktop app gets the
-   audience picker; `ah publish` keeps working as "audience = all paired".
-   Verifiable: rediscovery still preserves choices; heartbeat preview reflects
-   audience; existing tests pass unchanged in meaning.
-2. **Qualified addressing.** Accept fully-qualified addresses at every boundary
-   while remaining single-node. Verifiable: `ah send node_x/claude:y` is
-   rejected with a clear "unknown node" error rather than a parse failure.
-3. **Node keypair and fingerprint.** Extend `internal/identity` with a keypair
-   and derive a stable fingerprint. Verifiable: fingerprint is stable across
-   restarts and differs per node.
-4. **Pairing exchange.** New envelope types, signature verification, a trust
-   store. Still no session data crosses the wire. Verifiable: two nodes on one
-   machine can pair and refuse a mismatched fingerprint.
-5. **Presence.** Authenticated heartbeat exchange between paired nodes, export
-   view enforced per peer. Verifiable: a session published to node A only is
-   absent from node B's view.
-6. **Cross-host messaging.** Route `agent.message` to a paired node's inbox.
-   Verifiable: queued on the destination node, still not injected into any
-   provider.
+1. **Audience model, local only** (#2, #3, #4, #5, #6). Replace the visibility
+   boolean with an audience table plus export flags. No network. The desktop
+   app gets the audience picker; `ah publish` keeps working as "audience = all
+   paired". Verifiable: rediscovery still preserves choices; heartbeat preview
+   reflects audience; existing tests pass unchanged in meaning.
+2. **Qualified addressing** (#7, #8, #9). Accept fully-qualified addresses at
+   every boundary while remaining single-node. Verifiable: `ah send
+   node_x/claude:y` is rejected with a clear "unknown node" error rather than a
+   parse failure.
+3. **Node keypair and fingerprint** (#10). Extend `internal/identity` with a
+   keypair and derive a stable fingerprint. Verifiable: fingerprint is stable
+   across restarts and differs per node.
+4. **Pairing exchange** (#11, #12, #13). New envelope types, signature
+   verification, a trust store. Still no session data crosses the wire.
+   Verifiable: two nodes on one machine can pair and refuse a mismatched
+   fingerprint.
+5. **Presence** (#14, #15, #17). Authenticated heartbeat exchange between
+   paired nodes, export view enforced per peer. Verifiable: a session published
+   to node A only is absent from node B's view.
+6. **Cross-host messaging** (#16). Route `agent.message` to a paired node's
+   inbox. Verifiable: queued on the destination node, still not injected into
+   any provider.
 
 ## Boundaries for this increment
 
