@@ -213,3 +213,19 @@ func TestWriteRegistryErrorClassifiesBySentinel(t *testing.T) {
 		})
 	}
 }
+
+// The node endpoint publishes what a peer needs to verify this node, and
+// nothing that would let it impersonate one.
+func TestNodeEndpointNeverExposesPrivateKeyMaterial(t *testing.T) {
+	_, handler := testServer(t)
+	response := perform(t, handler, http.MethodGet, "/v1/node", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, forbidden := range []string{"private", "seed", "secret", "node.key", "BEGIN"} {
+		if strings.Contains(strings.ToLower(body), strings.ToLower(forbidden)) {
+			t.Errorf("node endpoint mentioned %q: %s", forbidden, body)
+		}
+	}
+}

@@ -3,6 +3,8 @@ import {
   Overview,
   Discover,
   SetAudience,
+  TrustNode,
+  RevokeNode,
   Heartbeat,
 } from "../wailsjs/go/main/App";
 
@@ -12,6 +14,9 @@ const state = {
   selected: new Set(),
   search: "",
   filters: { provider: null, status: null, audience: null },
+  view: "local",
+  nodes: [],
+  selectedNode: null,
   busy: false,
 };
 
@@ -163,6 +168,16 @@ function renderRows(rows) {
 }
 
 function render() {
+  const network = state.view === "network";
+  el("network-view").classList.toggle("hidden", !network);
+  el("local-view").classList.toggle("hidden", network);
+  for (const segment of document.querySelectorAll("#view-switch span")) {
+    segment.className = segment.dataset.view === state.view ? "on" : "";
+  }
+  if (network) {
+    renderNodes();
+  }
+
   const rows = visible();
   renderChips();
   renderRows(rows);
@@ -205,7 +220,12 @@ function hideBanner() {
 async function load() {
   const overview = await Overview();
   state.sessions = overview.sessions || [];
+  state.nodes = overview.nodes || [];
   state.counts = overview.counts || {};
+  state.localFingerprint = overview.node?.fingerprint || "";
+  if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
+    state.selectedNode = null;
+  }
 
   el("conn-dot").className = overview.reachable ? "dot ok" : "dot bad";
   el("node-line").textContent = overview.reachable
@@ -252,6 +272,107 @@ async function applyAudience(audience, noun) {
       banner(`已${noun} ${result.changed} 個 session。`, true);
     }
   });
+}
+
+/* ---------------- network view ---------------- */
+
+function renderNodes() {
+  const container = el("node-rows");
+  container.replaceChildren();
+
+  if (state.nodes.length === 0) {
+    container.append(element("div", "empty", "尚未配對任何節點。"));
+    el("node-detail-body").replaceChildren(
+      element("div", "empty", "配對一個節點後，這裡會顯示它的身分與最後聯繫時間。")
+    );
+    return;
+  }
+
+  for (const node of state.nodes) {
+    const row = element("div", state.selectedNode === node.nodeId ? "noderow on" : "noderow");
+    const line = element("div", "line");
+    line.append(element("span", "dot"), element("span", "name", node.displayName));
+    const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)}`);
+    row.append(line, meta);
+    row.onclick = () => {
+      state.selectedNode = node.nodeId;
+      render();
+    };
+    container.append(row);
+  }
+
+  const selected = state.nodes.find((node) => node.nodeId === state.selectedNode);
+  el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
+    element("div", "empty", "選擇左側的節點以檢視詳細資料。"),
+  ]));
+}
+
+function lastSeen(node) {
+  return node.lastSeenAt ? `最後聯繫 ${relative(node.lastSeenAt)}` : "尚未聯繫過";
+}
+
+function nodeDetail(node) {
+  const heading = element("h2", "", node.displayName);
+  const fingerprint = element("div", "fingerprint", node.fingerprint);
+  const note = element(
+    "p",
+    "muted",
+    "在對方機器上執行 ah node，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。"
+  );
+
+  const rows = [
+    ["節點 ID", node.nodeId],
+    ["平台", node.platform],
+    ["配對時間", node.pairedAt ? relative(node.pairedAt) : "—"],
+    ["最後聯繫", node.lastSeenAt ? relative(node.lastSeenAt) : "尚未聯繫過"],
+    ["可見的 session", `${grantedCount(node.nodeId)} 個`],
+  ].map(([label, value]) => {
+    const row = element("div", "detailrow");
+    row.append(element("span", "muted", label), element("span", "mono", value));
+    return row;
+  });
+
+  const revoke = element("button", "btn danger", "撤銷信任");
+  revoke.onclick = () => revokeSelected(node);
+  const revokeNote = element(
+    "p",
+    "muted",
+    "撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。"
+  );
+
+  return [heading, fingerprint, note, ...rows, element("div", "", ""), revoke, revokeNote];
+}
+
+// A node's reach is the owner's real question, so count it rather than making
+// them open every session to work it out.
+function grantedCount(nodeId) {
+  return state.sessions.filter((session) => {
+    const audience = session.audience;
+    if (!audience) return false;
+    if (audience.mode === "all_paired") return true;
+    return audience.mode === "selected" && (audience.nodes ?? []).includes(nodeId);
+  }).length;
+}
+
+async function revokeSelected(node) {
+  await withBusy("撤銷", async () => {
+    await RevokeNode(node.nodeId);
+    state.selectedNode = null;
+    await load();
+    banner(`已撤銷 ${node.displayName}，並移除它持有的所有授權。`, true);
+  });
+}
+
+function openPairModal() {
+  el("local-fingerprint").textContent = state.localFingerprint || "—";
+  el("pair-modal").classList.remove("hidden");
+}
+
+function closePairModal() {
+  el("pair-modal").classList.add("hidden");
+  for (const id of ["pair-node-id", "pair-display-name", "pair-platform", "pair-public-key", "pair-fingerprint"]) {
+    el(id).value = "";
+  }
 }
 
 /* ---------------- audience picker ---------------- */
@@ -305,6 +426,33 @@ el("select-all").onchange = (event) => {
   else rows.forEach((s) => state.selected.delete(s.id));
   render();
 };
+
+for (const segment of document.querySelectorAll("#view-switch span")) {
+  segment.onclick = () => {
+    state.view = segment.dataset.view;
+    render();
+  };
+}
+
+el("btn-pair").onclick = openPairModal;
+el("pair-close").onclick = closePairModal;
+el("pair-modal").onclick = (event) => {
+  if (event.target === el("pair-modal")) closePairModal();
+};
+el("pair-submit").onclick = () =>
+  withBusy("配對", async () => {
+    const node = await TrustNode(
+      el("pair-node-id").value.trim(),
+      el("pair-display-name").value.trim(),
+      el("pair-platform").value.trim(),
+      el("pair-public-key").value.trim(),
+      el("pair-fingerprint").value.trim()
+    );
+    closePairModal();
+    state.selectedNode = node.nodeId;
+    await load();
+    banner(`已信任 ${node.displayName}。配對本身不會公開任何 session。`, true);
+  });
 
 el("btn-audience").onclick = openAudienceModal;
 el("audience-close").onclick = closeAudienceModal;

@@ -1,9 +1,9 @@
 {
   "draft": "agenthub.mcp/v1alpha1",
-  "implementationStatus": "Contract draft only; no MCP server transport is implemented in the current build.",
+  "implementationStatus": "Contract draft only; no MCP server transport is implemented. The addressing and audience rules above are implemented in the local API and enforced by the export projection.",
   "transport": "stdio-first; Streamable HTTP only after authenticated LAN pairing is implemented",
-  "privacy": "Future remote callers can observe only sessions whose audience authorizes that caller. Local owner clients may request the owner-local view.",
-  "addressing": "Current local IDs use <provider>:<id>. The multi-node target accepts <node-id>/<provider>:<id>; tracked in issue #9.",
+  "privacy": "A remote caller sees only sessions whose audience authorizes that caller: audience all_paired, or selected naming that caller's node. Working directories travel only for sessions whose owner opted in. Local owner clients may request the owner-local view.",
+  "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns the qualified form. A well-formed address for an unpaired node is answered as UNKNOWN_NODE, not as a malformed request.",
   "tools": [
     {
       "name": "agent_list",
@@ -12,14 +12,41 @@
       "inputSchema": {
         "type": "object",
         "properties": {
-          "provider": { "enum": ["claude", "codex"] },
-          "status": { "enum": ["active", "idle", "inactive", "unknown"] },
-          "pageSize": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
-          "cursor": { "type": "string" }
+          "provider": {
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "status": {
+            "enum": [
+              "active",
+              "idle",
+              "inactive",
+              "unknown"
+            ]
+          },
+          "pageSize": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Restrict the listing to one node. Omit for every node the caller may see."
+          }
         },
         "additionalProperties": false
       },
-      "annotations": { "readOnlyHint": true, "openWorldHint": false }
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
     },
     {
       "name": "agent_status",
@@ -27,27 +54,60 @@
       "description": "Return normalized lifecycle and evidence for one visible session.",
       "inputSchema": {
         "type": "object",
-        "required": ["agentId"],
-        "properties": { "agentId": { "type": "string", "minLength": 1 } },
+        "required": [
+          "agentId"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
+          }
+        },
         "additionalProperties": false
       },
-      "annotations": { "readOnlyHint": true, "openWorldHint": false }
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
     },
     {
       "name": "agent_send",
       "title": "Send message to agent",
-      "description": "Queue a message for a visible destination. This does not bypass provider approval or wake-up policy.",
+      "description": "Queue a message for a visible destination whose owner accepts messages. This does not bypass provider approval or wake-up policy.",
       "inputSchema": {
         "type": "object",
-        "required": ["agentId", "message"],
+        "required": [
+          "agentId",
+          "message"
+        ],
         "properties": {
-          "agentId": { "type": "string", "minLength": 1 },
-          "message": { "type": "string", "minLength": 1, "maxLength": 32768 },
-          "idempotencyKey": { "type": "string", "minLength": 8, "maxLength": 128 }
+          "agentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
         },
         "additionalProperties": false
       },
-      "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true }
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
     },
     {
       "name": "agent_inbox",
@@ -55,15 +115,32 @@
       "description": "Read queued messages addressed to the caller's managed session.",
       "inputSchema": {
         "type": "object",
-        "required": ["agentId"],
+        "required": [
+          "agentId"
+        ],
         "properties": {
-          "agentId": { "type": "string", "minLength": 1 },
-          "after": { "type": "string" },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+          "agentId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
+          },
+          "after": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200,
+            "default": 50
+          }
         },
         "additionalProperties": false
       },
-      "annotations": { "readOnlyHint": true, "openWorldHint": false }
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
     }
   ]
 }

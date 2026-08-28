@@ -135,6 +135,33 @@ ADR-001's migration rule is covered by a test that builds a database with the
 pre-audience schema, inserts a row marked `public`, opens it with the current
 build, and requires audience `none` and an empty export view.
 
+## Node identity and pairing
+
+The node now has a signing identity. Verified on macOS against a running node:
+
+- the fingerprint is stable across restarts and `node.key` is 32 bytes, mode 0600
+- `GET /v1/node` publishes the public key and fingerprint and nothing else
+
+A review of this work found two defects that tests could not see:
+
+- Signatures were taken over a re-serialization of the Go value. A payload
+  serializes in field order when sent and in key order once decoded, and a
+  `uint64` returns as a `float64`, so every cross-process verification would
+  have failed. The payload now travels as the bytes the sender produced and the
+  signature covers a length-prefixed encoding of the envelope's fields. A test
+  encodes, decodes and verifies, and asserts the payload bytes are unchanged;
+  flipping a switch that re-encodes the payload in transit makes it fail.
+- `ed25519.Verify` panics on a wrong-sized public key, and looking up an unknown
+  node yields a zero value, so a stranger's envelope could have stopped the
+  process. `Verify` checks the length first, covered for nil, empty, truncated
+  and oversized keys.
+
+Also hardened: node identifiers are constrained to printable ASCII of 16 to 128
+characters, so `node_a`, `node_a ` and full-width or Cyrillic lookalikes cannot
+become separate trust entries that read identically; the key file is refused if
+others can read it and is written through a temporary file and a rename; the
+sender label on a message is parsed rather than stored as free text.
+
 Payload schemas exist for `node.heartbeat` only. `node.hello`, `agent.message`
 and `agent.ack` are reserved names whose payloads are unconstrained until issues
 #11, #12 and #16 define them; nothing in the build emits them.

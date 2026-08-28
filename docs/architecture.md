@@ -131,13 +131,48 @@ migration behavior is recorded in
 
 ## Node and broker boundary
 
-The current node identity is a random identifier generated once and persisted
-in SQLite. It is not an authentication credential. A keypair and verifiable
-fingerprint are required before any LAN mode.
+The node identity has two parts. The random identifier persisted in SQLite is a
+label and proves nothing: anyone can claim one. The Ed25519 keypair beside the
+database is what a peer can check, and every envelope carries a signature over
+itself with the signature field cleared.
+
+The private key lives in `node.key` next to the database rather than inside it,
+mode 0600. A database is copied, backed up and inspected far more casually than
+a file named private key, and a copy that carried the key would clone this
+node's identity. A truncated or corrupt key is reported rather than silently
+regenerated, because a new identity would invalidate every pairing.
+
+The displayed fingerprint is the public key's SHA-256 rendered as six groups of
+four hex digits. The grouping is for a human comparing two screens during
+pairing; an unbroken run of hex invites people to check the first characters and
+stop.
+
+`Verify` takes the key the receiver already trusts for that node ID. A key
+travels inside `pair.request`, but holding a key is not identity: that key is
+trusted only after a person compares fingerprints on both machines. The full
+fingerprint must match — the API compares the whole value, because a check of
+the first group or two is cheap to forge.
+
+A signature covers a length-prefixed encoding of the envelope's fields, not a
+re-serialization of the Go value. The payload travels as the exact bytes the
+sender produced and is signed as those bytes. This is what makes a signature
+reproducible by a receiver that only ever saw JSON: a Go struct serializes in
+field order while the map it decodes into serializes in key order, and a uint64
+returns as a float64, so signing a decoded value would fail every verification
+between two processes.
+
+Trust says a node ID belongs to a key. It grants no session access: an audience
+is a separate decision, made per session, so pairing a machine publishes
+nothing. Revoking removes the trust row and every grant that node held in one
+transaction, because a grant left behind would take effect again if the node
+were paired a second time. A node already trusted with a different key is
+refused rather than updated; silently accepting a new key is how a machine gets
+impersonated.
 
 A target broker heartbeat is a replaceable presence snapshot with:
 
 - protocol version
+- a signature over the envelope
 - node ID and display name
 - monotonically increasing sequence number
 - sent/expiry timestamps
@@ -145,8 +180,12 @@ A target broker heartbeat is a replaceable presence snapshot with:
 - session summaries authorized for the receiving peer only
 
 Consumers replace the complete previous snapshot for that node; they never
-merge session arrays. If a session disappears, its publication has been
-revoked. The broker must authenticate nodes, reject replayed or expired
+merge session arrays. **A session absent from a heartbeat has had its
+publication revoked**, and merging would resurrect it: revocation is expressed
+by omission, so a consumer that merges never sees one. A snapshot is also scoped
+to its recipient — a session published to selected nodes appears only in the
+heartbeats built for those nodes — so one peer's snapshot says nothing about
+another's and the two must never be combined. The broker must authenticate nodes, reject replayed or expired
 heartbeats, and route only the export view produced by the owner node. These are
 target requirements, not capabilities of the current build.
 

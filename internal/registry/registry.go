@@ -117,7 +117,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	if _, err := r.db.ExecContext(ctx, indexes); err != nil {
 		return fmt.Errorf("create registry indexes: %w", err)
 	}
-	return nil
+	return r.migrateTrust(ctx)
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
