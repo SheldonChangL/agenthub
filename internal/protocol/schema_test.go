@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -284,11 +285,15 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.TrustNode(ctx, registry.TrustedNode{
-		NodeID: "node_a00000000000000", DisplayName: "peer", Platform: "linux/amd64",
-		PublicKey: "key-a", Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
-	}); err != nil {
-		t.Fatal(err)
+	// Both peers are paired: BuildFor refuses an unpaired recipient outright, so
+	// the audience filter is only reachable for a node this owner trusts.
+	for _, nodeID := range []string{"node_a00000000000000", "node_b00000000000000"} {
+		if err := store.TrustNode(ctx, registry.TrustedNode{
+			NodeID: nodeID, DisplayName: "peer " + nodeID, Platform: "linux/amd64",
+			PublicKey: "key-" + nodeID, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.SetAudience(ctx, forA.ID, model.Audience{
 		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000"},
@@ -366,6 +371,13 @@ func TestRevocationIsExpressedByOmission(t *testing.T) {
 	if err := store.SetAudience(ctx, published.ID, model.Audience{Mode: model.AudienceAllPaired}); err != nil {
 		t.Fatal(err)
 	}
+	const peer = "node_peer0000000000000"
+	if err := store.TrustNode(ctx, registry.TrustedNode{
+		NodeID: peer, DisplayName: "peer", Platform: "linux/amd64",
+		PublicKey: "key-peer", Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
 	builder := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t))
@@ -378,7 +390,7 @@ func TestRevocationIsExpressedByOmission(t *testing.T) {
 		return len(payload.Sessions)
 	}
 
-	before, err := builder.BuildFor(ctx, time.Now(), "node_peer")
+	before, err := builder.BuildFor(ctx, time.Now(), peer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +401,7 @@ func TestRevocationIsExpressedByOmission(t *testing.T) {
 	if err := store.SetAudience(ctx, published.ID, model.Audience{Mode: model.AudienceNone}); err != nil {
 		t.Fatal(err)
 	}
-	after, err := builder.BuildFor(ctx, time.Now(), "node_peer")
+	after, err := builder.BuildFor(ctx, time.Now(), peer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,4 +423,125 @@ func TestRevocationIsExpressedByOmission(t *testing.T) {
 	if afterSeq <= beforeSeq {
 		t.Errorf("sequence went from %d to %d; a consumer cannot order these", beforeSeq, afterSeq)
 	}
+}
+
+// "All paired" has to mean paired.
+//
+// The audience filter alone cannot enforce that: Audience.PublishesTo returns
+// true for an all_paired session and any non-empty string, so a builder that
+// accepted an arbitrary recipient would publish every all_paired session to
+// anyone who supplied a node id. BuildFor therefore refuses a recipient that is
+// not currently in trusted_nodes, and revoking a node takes effect immediately
+// without the owner revisiting each session's audience.
+func TestBuildForRequiresATrustedRecipient(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	const (
+		trusted  = "node_trusted00000000"
+		selected = "node_selected0000000"
+		stranger = "node_stranger0000000"
+	)
+
+	shared := session("shared-with-all-paired", model.ProviderClaude)
+	targeted := session("shared-with-one", model.ProviderCodex)
+	for _, s := range []model.Session{shared, targeted} {
+		if _, err := store.UpsertSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, nodeID := range []string{trusted, selected} {
+		if err := store.TrustNode(ctx, registry.TrustedNode{
+			NodeID: nodeID, DisplayName: "peer " + nodeID, Platform: "linux/amd64",
+			PublicKey: "key-" + nodeID, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetAudience(ctx, shared.ID, model.Audience{Mode: model.AudienceAllPaired}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, targeted.ID, model.Audience{
+		Mode: model.AudienceSelected, Nodes: []string{selected},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
+	builder := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t))
+
+	count := func(t *testing.T, envelope protocol.Envelope) int {
+		t.Helper()
+		payload, err := protocol.DecodePayload[protocol.HeartbeatPayload](envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(payload.Sessions)
+	}
+
+	t.Run("unknown node is refused", func(t *testing.T) {
+		_, err := builder.BuildFor(ctx, time.Now(), stranger)
+		if err == nil {
+			t.Fatal("built a heartbeat for a node this owner never paired with")
+		}
+		if !errors.Is(err, protocol.ErrPeerNotTrusted) {
+			t.Errorf("error = %v; want ErrPeerNotTrusted so a caller can tell this from a store failure", err)
+		}
+	})
+
+	t.Run("empty node is refused", func(t *testing.T) {
+		if _, err := builder.BuildFor(ctx, time.Now(), ""); err == nil {
+			t.Error("BuildFor accepted an empty recipient")
+		}
+	})
+
+	t.Run("trusted node receives all_paired only", func(t *testing.T) {
+		envelope, err := builder.BuildFor(ctx, time.Now(), trusted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, envelope); got != 1 {
+			t.Errorf("a trusted node received %d sessions, want only the all_paired one", got)
+		}
+	})
+
+	t.Run("selected node also receives the session naming it", func(t *testing.T) {
+		envelope, err := builder.BuildFor(ctx, time.Now(), selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, envelope); got != 2 {
+			t.Errorf("the selected node received %d sessions, want both", got)
+		}
+	})
+
+	t.Run("revoked node is refused", func(t *testing.T) {
+		if err := store.RevokeNode(ctx, trusted); err != nil {
+			t.Fatal(err)
+		}
+		_, err := builder.BuildFor(ctx, time.Now(), trusted)
+		if err == nil {
+			t.Fatal("a revoked node still received a heartbeat")
+		}
+		if !errors.Is(err, protocol.ErrPeerNotTrusted) {
+			t.Errorf("error = %v; want ErrPeerNotTrusted", err)
+		}
+		// The other peer is unaffected: revoking one node must not silence the
+		// rest.
+		if _, err := builder.BuildFor(ctx, time.Now(), selected); err != nil {
+			t.Errorf("revoking one node broke another peer's heartbeat: %v", err)
+		}
+	})
+
+	// The owner preview is not a recipient view. It is a union and stays one, so
+	// the owner can still see everything that leaves this host at all.
+	t.Run("owner preview remains a union", func(t *testing.T) {
+		preview, err := builder.Build(ctx, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, preview); got != 2 {
+			t.Errorf("the owner preview showed %d sessions, want everything that leaves the host", got)
+		}
+	})
 }

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -72,14 +73,31 @@ func (b *HeartbeatBuilder) Build(ctx context.Context, now time.Time) (Envelope, 
 	return b.build(ctx, now, "")
 }
 
+// ErrPeerNotTrusted marks a recipient this owner has not paired with. A caller
+// that gets it must send nothing, not fall back to the owner preview.
+var ErrPeerNotTrusted = errors.New("peer node is not trusted")
+
 // BuildFor renders the envelope one peer may receive.
 //
 // Passing the recipient in is what makes "selected" mean anything: without it
 // every peer would get the same envelope and a session published to one node
 // would reach all of them.
+//
+// The recipient must be a node currently in trusted_nodes. An audience of
+// all_paired means "every node this owner paired with", and the audience filter
+// alone cannot enforce that — it admits any non-empty string. Checking trust
+// here is what keeps all_paired from meaning "anyone who supplies a node id".
+// Revoking a node therefore stops its heartbeats immediately, without the
+// owner having to revisit every session's audience.
 func (b *HeartbeatBuilder) BuildFor(ctx context.Context, now time.Time, peerNodeID string) (Envelope, error) {
 	if peerNodeID == "" {
 		return Envelope{}, fmt.Errorf("a peer node id is required to build a heartbeat for a recipient")
+	}
+	if _, err := b.store.TrustedNode(ctx, peerNodeID); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			return Envelope{}, fmt.Errorf("%w: %q is not paired with this node", ErrPeerNotTrusted, peerNodeID)
+		}
+		return Envelope{}, fmt.Errorf("check trust for peer %q: %w", peerNodeID, err)
 	}
 	return b.build(ctx, now, peerNodeID)
 }

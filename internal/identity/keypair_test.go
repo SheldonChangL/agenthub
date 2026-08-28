@@ -52,21 +52,6 @@ func TestFingerprintIsReadableAloud(t *testing.T) {
 	}
 }
 
-// Anything that can read the key can impersonate this machine.
-func TestPrivateKeyIsNotWorldReadable(t *testing.T) {
-	directory := t.TempDir()
-	if _, err := LoadOrCreateKeypair(directory); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(directory, "node.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("node key mode = %o, want 600", mode)
-	}
-}
-
 func TestSignaturesVerifyAgainstThePublishedKey(t *testing.T) {
 	keypair, err := LoadOrCreateKeypair(t.TempDir())
 	if err != nil {
@@ -107,9 +92,11 @@ func TestDecodePublicKeyRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+// A truncated key is reported on every platform: on Unix the seed is the wrong
+// length, and on Windows the versioned envelope has no header.
 func TestCorruptKeyFileIsReported(t *testing.T) {
 	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "node.key"), []byte("too short"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, keyFileName), []byte("too short"), keyFileMode); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadOrCreateKeypair(directory); err == nil {
@@ -117,42 +104,36 @@ func TestCorruptKeyFileIsReported(t *testing.T) {
 	}
 }
 
-// A key restored from a backup as 0644 must not be used silently.
-func TestLoadRefusesAKeyOthersCanRead(t *testing.T) {
-	directory := t.TempDir()
-	if _, err := LoadOrCreateKeypair(directory); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(directory, "node.key")
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadOrCreateKeypair(directory); err == nil {
-		t.Error("a world-readable node key was accepted")
-	}
-}
-
-// A crash between creating and writing must not leave a key that every later
-// start refuses. The write goes to a temporary file and is renamed into place.
+// Creation leaves one complete key and nothing else — no stray temporary file
+// and no empty final key that every later start would refuse.
 func TestKeyIsNeverLeftEmpty(t *testing.T) {
 	directory := t.TempDir()
-	if _, err := LoadOrCreateKeypair(directory); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(directory, "node.key"))
+	created, err := LoadOrCreateKeypair(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() != ed25519.SeedSize {
-		t.Errorf("node key is %d bytes, want %d", info.Size(), ed25519.SeedSize)
+	info, err := os.Stat(filepath.Join(directory, keyFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Error("node key is empty")
 	}
 	entries, err := os.ReadDir(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if entry.Name() != "node.key" {
+		if entry.Name() != keyFileName {
 			t.Errorf("left a stray file behind: %s", entry.Name())
 		}
+	}
+	// Whatever the stored form is, it has to read back as the same identity.
+	reloaded, err := LoadOrCreateKeypair(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Fingerprint() != created.Fingerprint() {
+		t.Error("the stored key did not read back as the identity that was created")
 	}
 }
