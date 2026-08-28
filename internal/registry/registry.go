@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
 
 	_ "modernc.org/sqlite"
@@ -69,11 +71,113 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_visibility_updated
     ON sessions(visibility, updated_at_ms DESC, id);
+CREATE TABLE IF NOT EXISTS node_identity (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    id TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS messages (
+    id TEXT PRIMARY KEY,
+    sender_id TEXT NOT NULL DEFAULT '',
+    recipient_id TEXT NOT NULL REFERENCES sessions(id),
+    body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 32768),
+    created_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
+    ON messages(recipient_id, created_at_ms ASC, id ASC);
 `
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate registry: %w", err)
 	}
 	return nil
+}
+
+func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, error) {
+	var identity model.NodeIdentity
+	var createdMS int64
+	err := r.db.QueryRowContext(ctx, `SELECT id, display_name, platform, created_at_ms FROM node_identity WHERE singleton = 1`).Scan(
+		&identity.ID, &identity.DisplayName, &identity.Platform, &createdMS,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.NodeIdentity{}, ErrNotFound
+	}
+	if err != nil {
+		return model.NodeIdentity{}, fmt.Errorf("get node identity: %w", err)
+	}
+	identity.CreatedAt = time.UnixMilli(createdMS).UTC()
+	return identity, nil
+}
+
+func (r *Registry) SaveNodeIdentity(ctx context.Context, identity model.NodeIdentity) error {
+	if identity.ID == "" || identity.DisplayName == "" || identity.Platform == "" || identity.CreatedAt.IsZero() {
+		return errors.New("complete node identity is required")
+	}
+	_, err := r.db.ExecContext(ctx, `
+INSERT INTO node_identity (singleton, id, display_name, platform, created_at_ms)
+VALUES (1, ?, ?, ?, ?)
+ON CONFLICT(singleton) DO NOTHING`,
+		identity.ID, identity.DisplayName, identity.Platform, identity.CreatedAt.UTC().UnixMilli(),
+	)
+	if err != nil {
+		return fmt.Errorf("save node identity: %w", err)
+	}
+	return nil
+}
+
+func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (model.Message, error) {
+	if strings.TrimSpace(message.To) == "" {
+		return model.Message{}, errors.New("message recipient is required")
+	}
+	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
+		return model.Message{}, errors.New("message body must contain 1 to 32768 bytes")
+	}
+	if message.ID == "" {
+		var err error
+		message.ID, err = id.New("msg_")
+		if err != nil {
+			return model.Message{}, err
+		}
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+	_, err := r.db.ExecContext(ctx, `
+INSERT INTO messages (id, sender_id, recipient_id, body, created_at_ms)
+VALUES (?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Body, message.CreatedAt.UTC().UnixMilli())
+	if err != nil {
+		return model.Message{}, fmt.Errorf("create message: %w", err)
+	}
+	return message, nil
+}
+
+func (r *Registry) Inbox(ctx context.Context, recipientID string, limit int) ([]model.Message, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx, `
+SELECT id, sender_id, recipient_id, body, created_at_ms
+FROM messages WHERE recipient_id = ?
+ORDER BY created_at_ms ASC, id ASC LIMIT ?`, recipientID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read inbox: %w", err)
+	}
+	defer rows.Close()
+	messages := make([]model.Message, 0)
+	for rows.Next() {
+		var message model.Message
+		var createdMS int64
+		if err := rows.Scan(&message.ID, &message.From, &message.To, &message.Body, &createdMS); err != nil {
+			return nil, fmt.Errorf("scan inbox message: %w", err)
+		}
+		message.CreatedAt = time.UnixMilli(createdMS).UTC()
+		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read inbox rows: %w", err)
+	}
+	return messages, nil
 }
 
 func (r *Registry) UpsertSession(ctx context.Context, session model.Session) (model.Session, error) {
@@ -139,7 +243,7 @@ FROM sessions`
 	}
 	defer rows.Close()
 
-	var sessions []model.Session
+	sessions := make([]model.Session, 0)
 	for rows.Next() {
 		session, err := scanSession(rows)
 		if err != nil {

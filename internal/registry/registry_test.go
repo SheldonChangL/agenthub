@@ -75,6 +75,31 @@ func TestListSessionsPublicOnlyDoesNotLeakPrivateSessions(t *testing.T) {
 	}
 }
 
+func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := testSession("claude:inbox")
+	if _, err := store.UpsertSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := store.CreateMessage(ctx, model.Message{To: session.ID, From: "codex:sender", Body: "review schema"})
+	if err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+	if created.ID == "" || created.Body != "review schema" {
+		t.Fatalf("created message = %#v", created)
+	}
+
+	messages, err := store.Inbox(ctx, session.ID, 50)
+	if err != nil {
+		t.Fatalf("Inbox() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].ID != created.ID {
+		t.Fatalf("Inbox() = %#v; want created message", messages)
+	}
+}
+
 func openTestRegistry(t *testing.T) *Registry {
 	t.Helper()
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "agenthub.db"))
