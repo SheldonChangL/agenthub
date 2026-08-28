@@ -1,10 +1,10 @@
 # AgentHub
 
-AgentHub is a local-first session registry and message bridge for coding agents. The MVP discovers Claude Code and Codex CLI/App sessions, normalizes their status, and exposes them through an `agenthub-node` daemon and the `ah` CLI.
+AgentHub is a privacy-first, local control plane for coding-agent sessions. The MVP discovers Claude Code and Codex CLI/App sessions, normalizes their status, and exposes an owner-local view through an `agenthub-node` daemon, the `ah` CLI, and a desktop app.
 
 AgentHub targets Windows, macOS, and Ubuntu. The shared core is pure Go; provider process discovery is platform-specific. Cross-compilation is part of verification, while each provider must still be installed and supported on the target host.
 
-Privacy is the default: discovered sessions are local and private. A session is never included in LAN heartbeat data or exposed to a remote peer until its owner explicitly publishes it.
+Privacy is the default: discovered sessions are local and private. The current build has no LAN transport, so no session data leaves the host. Publishing a session only adds it to a local export preview; a future multi-node release will require a new, explicit audience choice before sending it to an authenticated peer.
 
 ## MVP status
 
@@ -13,17 +13,30 @@ Privacy is the default: discovered sessions are local and private. A session is 
 - Codex App Server JSON-RPC initialize/thread-list client boundary
 - Managed and unmanaged session model
 - Conservative `active`, `idle`, `inactive`, and `unknown` status inference
-- Persistent node identity and LAN-ready heartbeat payload
+- Persistent local node identity and a public-only heartbeat preview
 - Local HTTP API and `ah` CLI
 - Local message inbox for the future broker path
 - Desktop app for browsing and batch-publishing sessions
-- Broker protocol and MCP tool schemas
+- Draft broker protocol and MCP tool schemas
+- Architecture and issue plan for authenticated multi-node operation
 - No complete LAN broker, remote wake-up, or provider message injection yet
+- No runnable MCP server transport yet; the four tools are contract drafts
 
-The next increment turns the single public flag into a per-node audience model
-and adds authenticated LAN pairing. It is planned in
+The next increment first separates owner-local session data from the remote
+export contract, then turns the single public flag into a per-node audience
+model and adds authenticated LAN pairing. It is planned in
 [multinode-plan.md](docs/multinode-plan.md) and tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
+
+## Roadmap and release gates
+
+| Track | State | Source of truth |
+|---|---|---|
+| Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
+| Remote export contract | Required before network transport | [issue #18](https://github.com/SheldonChangL/agenthub/issues/18) |
+| Per-node privacy, pairing, presence, messaging | Planned in ordered increments | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
+| Desktop metadata rendering hardening | Required before desktop distribution | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
+| MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
 
 ## Build and test
 
@@ -74,15 +87,30 @@ The app requires a running node and talks to it over the same local HTTP API as 
 
 ## Privacy model
 
-`ah list` is an owner-local view and can show private sessions. Network-facing output is filtered separately:
+`ah list` is an owner-local view and can show private sessions. In the current
+single-node build, publishing controls a local export preview only:
 
 ```text
 discovered session -> PRIVATE -> absent from heartbeat/broker/MCP remote view
                                 |
-                                +-- ah publish -> PUBLIC
+                                +-- ah publish -> PUBLIC preview
 ```
 
-Publishing exposes only normalized metadata: AgentHub ID, provider, status, host identity, optional working directory, and last-seen time. Transcript or prompt contents are never stored by AgentHub.
+The current preview is public-only, but it still serializes the owner-local
+`Session` shape and therefore is not yet the broker wire contract. Before any
+LAN transport is enabled, [issue #18](https://github.com/SheldonChangL/agenthub/issues/18)
+will replace it with an allowlisted `SessionSummary`. The intended remote fields
+are the qualified AgentHub address, provider, status, management mode,
+`statusSource`, and last-seen time; `cwd` requires a separate opt-in. Provider
+source, internal update time, metadata paths, transcript bodies, and prompt
+contents are excluded.
+
+The accepted target model is documented in
+[ADR-001](docs/decisions/001-session-audience-and-export-boundary.md): every
+session starts with audience `none`; the owner may later choose all paired nodes
+or selected nodes. Existing `public` preview choices are reset to `none` when
+the first network-capable migration lands, because they were never consent to
+share with a real remote peer.
 
 Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued—not delivered or read.
 
@@ -98,7 +126,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/sessions?page=1&pageSize=50` | List owner-local sessions |
 | `GET` | `/v1/sessions/{id}` | Read one session |
 | `PUT` | `/v1/sessions/{id}/visibility` | Set `private` or `public` |
-| `GET` | `/v1/heartbeat` | Preview broker heartbeat; public sessions only |
+| `GET` | `/v1/heartbeat` | Preview the current public-only export payload; not yet the broker envelope |
 | `POST` | `/v1/messages` | Queue a local message |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
 

@@ -1,7 +1,9 @@
 {
   "draft": "agenthub.mcp/v1alpha1",
+  "implementationStatus": "Contract draft only; no MCP server transport is implemented in the current build.",
   "transport": "stdio-first; Streamable HTTP only after authenticated LAN pairing is implemented",
-  "privacy": "Remote callers can observe public sessions only. Local owner clients may request the owner-local view.",
+  "privacy": "Future remote callers can observe only sessions whose audience authorizes that caller. Local owner clients may request the owner-local view.",
+  "addressing": "Current local IDs use <provider>:<id>. The multi-node target accepts <node-id>/<provider>:<id>; tracked in issue #9.",
   "tools": [
     {
       "name": "agent_list",

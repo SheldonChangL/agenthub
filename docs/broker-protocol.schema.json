@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agenthub.local/schema/broker-protocol-v1.json",
   "title": "AgentHub Broker Envelope v1",
+  "$comment": "Target wire-contract draft. GET /v1/heartbeat is currently a local payload preview and does not conform to this envelope; see GitHub issue #18.",
   "type": "object",
   "required": ["protocolVersion", "messageId", "type", "sentAt", "nodeId", "payload"],
   "properties": {
@@ -44,4 +45,3 @@
     }
   }
 }
-
