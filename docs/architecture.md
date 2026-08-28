@@ -63,7 +63,7 @@ pairing, and export contracts are implemented.
 |---|---|
 | Provider session -> client node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
 | Owner -> client node | `ah`, desktop app, and loopback HTTP API are implemented |
-| Client node -> broker server | Not implemented; non-loopback bind is rejected |
+| Client node -> broker server | Not implemented; non-loopback bind is rejected. Node identity, signed envelopes, the trust store and the pairing schema exist; no transport carries them |
 | MCP client -> client node | Tool contracts are drafted; no MCP transport is running |
 | Node -> AI agent message delivery | Local messages are queued only; no provider injection or wake-up |
 

@@ -284,8 +284,14 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := store.TrustNode(ctx, registry.TrustedNode{
+		NodeID: "node_a00000000000000", DisplayName: "peer", Platform: "linux/amd64",
+		PublicKey: "key-a", Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SetAudience(ctx, forA.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +317,7 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 		return out
 	}
 
-	forNodeA, err := builder.BuildFor(ctx, time.Now(), "node_a")
+	forNodeA, err := builder.BuildFor(ctx, time.Now(), "node_a00000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +328,7 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 		t.Errorf("per-peer envelope does not satisfy the schema: %v", err)
 	}
 
-	forNodeB, err := builder.BuildFor(ctx, time.Now(), "node_b")
+	forNodeB, err := builder.BuildFor(ctx, time.Now(), "node_b00000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}

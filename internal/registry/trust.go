@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/model"
@@ -23,13 +22,13 @@ type TrustedNode struct {
 	PublicKey   string    `json:"publicKey"`
 	Fingerprint string    `json:"fingerprint"`
 	PairedAt    time.Time `json:"pairedAt"`
-	LastSeenAt  time.Time `json:"lastSeenAt,omitempty"`
+	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
 }
 
 func (r *Registry) migrateTrust(ctx context.Context) error {
 	const schema = `
 CREATE TABLE IF NOT EXISTS trusted_nodes (
-    node_id TEXT PRIMARY KEY CHECK (length(node_id) BETWEEN 16 AND 128 AND node_id NOT GLOB '*[^ -~]*'),
+    node_id TEXT PRIMARY KEY CHECK (length(node_id) BETWEEN 16 AND 128 AND node_id NOT GLOB '*[^!-~]*'),
     display_name TEXT NOT NULL,
     platform TEXT NOT NULL,
     public_key TEXT NOT NULL,
@@ -54,23 +53,35 @@ func (r *Registry) TrustNode(ctx context.Context, node TrustedNode) error {
 		return err
 	}
 
-	existing, err := r.TrustedNode(ctx, node.NodeID)
+	if node.PairedAt.IsZero() {
+		node.PairedAt = time.Now().UTC()
+	}
+
+	// The check and the write share a transaction. Reading first and writing
+	// after lets two concurrent pairings both report success, and the loser
+	// would be told its key was accepted when the stored key is the winner's.
+	transaction, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin trust update: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	var storedKey string
+	err = transaction.QueryRowContext(ctx,
+		`SELECT public_key FROM trusted_nodes WHERE node_id = ?`, node.NodeID).Scan(&storedKey)
 	switch {
 	case err == nil:
-		if existing.PublicKey != node.PublicKey {
+		if storedKey != node.PublicKey {
 			return fmt.Errorf(
 				"%w: node %q is already trusted with a different key; revoke it first",
 				ErrInvalidSession, node.NodeID)
 		}
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, sql.ErrNoRows):
 	default:
-		return err
+		return fmt.Errorf("read trusted node %q: %w", node.NodeID, err)
 	}
 
-	if node.PairedAt.IsZero() {
-		node.PairedAt = time.Now().UTC()
-	}
-	_, err = r.db.ExecContext(ctx, `
+	_, err = transaction.ExecContext(ctx, `
 INSERT INTO trusted_nodes (node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms)
 VALUES (?, ?, ?, ?, ?, ?, 0)
 ON CONFLICT(node_id) DO UPDATE SET
@@ -80,6 +91,9 @@ ON CONFLICT(node_id) DO UPDATE SET
 		node.PairedAt.UTC().UnixMilli())
 	if err != nil {
 		return fmt.Errorf("trust node %q: %w", node.NodeID, err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit trust update: %w", err)
 	}
 	return nil
 }
@@ -95,6 +109,12 @@ func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 	}
 	defer func() { _ = transaction.Rollback() }()
 
+	// Grants go first, and go whether or not a trust row exists. Returning
+	// early on a missing row would leave a grant nobody can reach: revoking
+	// says "not found" while the grant waits for the node to be paired.
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM session_audience WHERE node_id = ?`, nodeID); err != nil {
+		return fmt.Errorf("drop grants for %q: %w", nodeID, err)
+	}
 	result, err := transaction.ExecContext(ctx, `DELETE FROM trusted_nodes WHERE node_id = ?`, nodeID)
 	if err != nil {
 		return fmt.Errorf("revoke node %q: %w", nodeID, err)
@@ -104,10 +124,12 @@ func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 		return fmt.Errorf("read revoke result: %w", err)
 	}
 	if count == 0 {
+		// Still commit: the grants above are gone, which is the part that
+		// controls access.
+		if err := transaction.Commit(); err != nil {
+			return fmt.Errorf("commit revoke: %w", err)
+		}
 		return fmt.Errorf("node %q: %w", nodeID, ErrNotFound)
-	}
-	if _, err := transaction.ExecContext(ctx, `DELETE FROM session_audience WHERE node_id = ?`, nodeID); err != nil {
-		return fmt.Errorf("drop grants for %q: %w", nodeID, err)
 	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit revoke: %w", err)
@@ -184,11 +206,11 @@ func (r *Registry) MarkNodeSeen(ctx context.Context, nodeID string, at time.Time
 }
 
 func validateTrustedNode(node TrustedNode) error {
-	if len(node.NodeID) < 16 || len(node.NodeID) > 128 {
-		return fmt.Errorf("%w: node id %q must be 16 to 128 characters", ErrInvalidSession, node.NodeID)
-	}
-	if strings.Contains(node.NodeID, model.SessionIDSeparator) {
-		return fmt.Errorf("%w: node id %q contains an address separator", ErrInvalidSession, node.NodeID)
+	// One rule for node identifiers, shared with address parsing. Two rules
+	// that disagree is how " node_x" gets trusted while "node_x" is the name
+	// every other surface shows.
+	if err := model.ValidateNodeID(node.NodeID); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSession, err)
 	}
 	if node.PublicKey == "" || node.Fingerprint == "" {
 		return fmt.Errorf("%w: node %q has no key material", ErrInvalidSession, node.NodeID)

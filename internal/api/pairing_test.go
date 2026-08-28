@@ -59,7 +59,6 @@ func TestPairingRequiresTheFingerprintToBelongToTheKey(t *testing.T) {
 // Spacing and case are presentation. A person reading a fingerprint aloud must
 // not fail a pairing over whitespace.
 func TestPairingAcceptsAnyPresentationOfTheSameFingerprint(t *testing.T) {
-	_, handler := testServer(t)
 	key, fingerprint := peerKey(t)
 
 	for name, confirmed := range map[string]string{
@@ -78,7 +77,6 @@ func TestPairingAcceptsAnyPresentationOfTheSameFingerprint(t *testing.T) {
 			}
 		})
 	}
-	_ = handler
 }
 
 func TestPairingRefusesSelfAndMalformedKeys(t *testing.T) {
@@ -140,3 +138,45 @@ func TestRevokeEndpointRemovesTrustAndGrants(t *testing.T) {
 func toLower(value string) string     { return strings.ToLower(value) }
 func stripSpaces(value string) string { return strings.ReplaceAll(value, " ", "") }
 func testContext() context.Context    { return context.Background() }
+
+// A malformed node identifier is the caller's mistake, not a server failure.
+// It used to reach the database and come back as a 500 with the constraint text.
+func TestPairingRejectsMalformedNodeIDsAsBadRequests(t *testing.T) {
+	_, handler := testServer(t)
+	key, fingerprint := peerKey(t)
+
+	for name, nodeID := range map[string]string{
+		"too short":      "node_short",
+		"trailing space": "node_peer0000000000000 ",
+		"inner space":    "node peer 00000000000",
+		"full width":     "node_ｆａｋｅ0123456789",
+		"separator":      "node_a/node_b00000000",
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
+				"nodeId": nodeID, "displayName": "peer", "platform": "linux/amd64",
+				"publicKey": key, "confirmedFingerprint": fingerprint,
+			})
+			if response.Code != http.StatusBadRequest {
+				t.Errorf("response = %d %s, want 400", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "CHECK") {
+				t.Errorf("the response leaked a database constraint: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+// Granting access to a node nobody paired with stores an authorization that
+// takes effect the moment that node is ever trusted.
+func TestAudienceRejectsUnpairedNodes(t *testing.T) {
+	store, handler := testServer(t)
+	id := seedSession(t, store, "unpaired-grant")
+
+	response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience", map[string]any{
+		"mode": "selected", "nodes": []string{"node_never_paired0000"},
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s, want 400", response.Code, response.Body.String())
+	}
+}

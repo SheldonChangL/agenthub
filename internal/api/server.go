@@ -123,20 +123,19 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 // It writes the response and returns false when the address is malformed or
 // names another node, so every session-addressed handler answers the same way.
 func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) {
-	address, err := protocol.ParseAddress(raw, s.node.ID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-		return "", false
-	}
-	if !address.Local() {
+	sessionID, err := protocol.ResolveLocal(raw, s.node.ID)
+	switch {
+	case err == nil:
+		return sessionID, true
+	case errors.Is(err, protocol.ErrUnknownNode):
 		// The address is well formed; this node simply cannot reach it. Saying
 		// so is more useful than reporting a bad request, and remote routing
 		// does not exist yet.
-		writeError(w, http.StatusNotFound, "UNKNOWN_NODE",
-			fmt.Sprintf("node %q is not known to this installation", address.NodeID))
-		return "", false
+		writeError(w, http.StatusNotFound, "UNKNOWN_NODE", err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 	}
-	return address.SessionID, true
+	return "", false
 }
 
 func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
@@ -313,17 +312,11 @@ func (s *Server) setAudienceBatch(w http.ResponseWriter, r *http.Request) {
 	results := make([]outcome, 0, len(input.IDs))
 	changed := 0
 	for _, raw := range input.IDs {
-		address, err := protocol.ParseAddress(raw, s.node.ID)
+		id, err := protocol.ResolveLocal(raw, s.node.ID)
 		if err != nil {
 			results = append(results, outcome{ID: raw, Error: err.Error()})
 			continue
 		}
-		if !address.Local() {
-			results = append(results, outcome{ID: raw,
-				Error: fmt.Sprintf("node %q is not known to this installation", address.NodeID)})
-			continue
-		}
-		id := address.SessionID
 		if err := s.store.SetAudience(r.Context(), id, audience); err != nil {
 			if errors.Is(err, registry.ErrInvalidSession) || errors.Is(err, registry.ErrNotFound) {
 				results = append(results, outcome{ID: id, Error: err.Error()})

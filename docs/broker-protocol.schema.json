@@ -45,11 +45,11 @@
       "pattern": "^[!-~]{16,128}$"
     },
     "payload": {
-      "$comment": "Bound to a definition per type below. An unbound type carries no payload schema yet.",
+      "$comment": "Carried and signed as the exact bytes the sender produced. Do not re-encode a decoded payload before verifying. Bound to a definition per type below; an unbound type carries no payload schema yet.",
       "type": "object"
     },
     "signature": {
-      "$comment": "Ed25519 signature over the canonical encoding of this envelope with the signature field removed, base64. A receiver verifies it against the sender's known public key; for pair.request the key travels in the payload and is trusted only after a human compares fingerprints.",
+      "$comment": "Base64 Ed25519 signature. The signed bytes are NOT a re-serialization of this document: an implementation that re-encodes a decoded payload will compute different bytes and every verification will fail. Build them as the literal ASCII prefix \"agenthub.broker/v1alpha1/envelope\\n\" followed by six length-prefixed fields in this exact order: protocolVersion, messageId, type, sentAt (RFC 3339 with nanoseconds, UTC), nodeId, and the payload's raw JSON bytes exactly as transmitted. Each field is written as its byte length in decimal, then ':', then the bytes. A receiver verifies against the public key it already trusts for the node named in nodeId, never against a key carried in the payload.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128

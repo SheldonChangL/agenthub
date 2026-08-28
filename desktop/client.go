@@ -45,7 +45,7 @@ type TrustedNode struct {
 	PublicKey   string    `json:"publicKey"`
 	Fingerprint string    `json:"fingerprint"`
 	PairedAt    time.Time `json:"pairedAt"`
-	LastSeenAt  time.Time `json:"lastSeenAt,omitempty"`
+	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
 }
 
 type NodeIdentity struct {
