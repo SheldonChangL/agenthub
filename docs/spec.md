@@ -20,7 +20,7 @@ Success means a user can start one node, discover local sessions without transcr
 - Go 1.25+, cross-compiled for `windows/amd64`, `windows/arm64`, `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and `linux/arm64`
 - SQLite through a CGo-free `database/sql` driver
 - Go standard library HTTP and JSON
-- No web UI
+- Desktop management app (`desktop/`) built with Wails v2, kept in a separate Go module so the node and CLI stay CGo-free and cross-compilable
 
 ## Commands
 
@@ -40,6 +40,7 @@ go run ./cmd/ah list
 ```text
 cmd/agenthub-node/   node daemon entrypoint
 cmd/ah/              user CLI entrypoint
+desktop/             Wails desktop management app (separate Go module)
 internal/adapter/    provider discovery adapters
 internal/api/        local HTTP API
 internal/identity/   persistent node identity
