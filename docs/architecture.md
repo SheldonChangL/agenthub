@@ -119,6 +119,14 @@ There are two views:
 - Owner export preview: the union of sessions published to at least one audience, projected into `SessionSummary`. Nothing consumes this preview over the network today.
 - Per-peer export view: `HeartbeatBuilder.BuildFor(peer)` filters that same projection to sessions authorized for the named peer. It is implemented and tested but has no transport consumer.
 
+`BuildFor` refuses a recipient that is not currently in `trusted_nodes`. The
+audience filter alone cannot enforce `all_paired`: `Audience.PublishesTo`
+returns true for an `all_paired` session and any non-empty string, so accepting
+an arbitrary identifier would make `all_paired` mean "anyone who supplies a node
+id". Checking trust in the builder also makes revocation immediate — a revoked
+node stops receiving heartbeats without the owner revisiting each session's
+audience. `Build` stays a union because it is the owner's own preview.
+
 The MVP local inbox accepts local destinations and parses both local and
 qualified addresses, but a qualified remote address returns `UNKNOWN_NODE`
 until routing exists. Remote `agent_send` must also require both an authorized
@@ -146,11 +154,42 @@ label and proves nothing: anyone can claim one. The Ed25519 keypair beside the
 database is what a peer can check, and every envelope carries a signature over
 itself with the signature field cleared.
 
-The private key lives in `node.key` next to the database rather than inside it,
-mode 0600. A database is copied, backed up and inspected far more casually than
-a file named private key, and a copy that carried the key would clone this
-node's identity. A truncated or corrupt key is reported rather than silently
+The private key lives in `node.key` next to the database rather than inside it.
+A database is copied, backed up and inspected far more casually than a file
+named private key, and a copy that carried the key would clone this node's
+identity. A truncated or corrupt key is reported rather than silently
 regenerated, because a new identity would invalidate every pairing.
+
+How the file protects the seed is platform-specific, because a single mechanism
+would be a false claim on one of the two:
+
+- **Unix**: the raw 32-byte Ed25519 seed at mode 0600. The kernel enforces that
+  on every open, and the mode is re-checked on every load — a key restored from
+  a backup as 0644 is refused rather than used silently.
+- **Windows**: the seed encrypted with DPAPI for the current user, wrapped in a
+  versioned envelope (`AHNK` magic, scheme byte, payload length). Go documents
+  that `Chmod` on Windows only drives the read-only attribute and does not
+  produce an owner-only ACL, so a `node.key` at "0600" there would be readable
+  by anything that can reach the path. Because the blob is bound to the Windows
+  user account, copying `node.key` to another machine or another user's profile
+  yields a file that cannot be decrypted. No mode claim is made on Windows;
+  DPAPI is the access control. The header exists so a file written by a future
+  scheme is reported as such rather than mistaken for a damaged key.
+
+The loader fails closed in both cases. It refuses anything under `node.key` that
+is not a plain regular file — a symlink or a Windows reparse point there means
+something else chose where the identity is read from — refuses a file too large
+to be a key, and refuses a blob it cannot decrypt or that decrypts to the wrong
+length. It never replaces a key it could not read.
+
+Creation writes the fully formed bytes to a temporary file, flushes them, and
+only then links that content to `node.key`. Linking is atomic and fails if the
+name already exists, so a concurrent start loses the race and reads the winner's
+key rather than overwriting it, and an ordinary failure leaves `node.key` either
+absent or holding a complete key — never the empty file that every later start
+would refuse. On a filesystem without hard links the final name is created
+directly with `O_EXCL` and removed again if the write fails; that path gives up
+only crash atomicity.
 
 The displayed fingerprint is the public key's SHA-256 rendered as six groups of
 four hex digits. The grouping is for a human comparing two screens during

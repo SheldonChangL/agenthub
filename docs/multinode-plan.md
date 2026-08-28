@@ -41,8 +41,9 @@ the runtime tests:
 - `SessionSummary` is separate from the owner-local `Session`, uses a qualified
   `<node-id>/<provider>:<session-id>` address, and is allowlisted by schema.
 - `GET /v1/heartbeat` returns the same signed envelope shape validated by the
-  broker schema. The owner preview is a union; `BuildFor(peer)` applies the
-  actual per-peer audience.
+  broker schema. The owner preview is a union; `BuildFor(peer)` requires the
+  recipient to be a currently trusted node and then applies the actual per-peer
+  audience.
 - Every session-addressed API accepts a bare local or qualified address. Remote
   routing and a destination-node column in the message store remain in #7.
 - Audience, `export_cwd`, and `accept_messages` are persisted with safe defaults

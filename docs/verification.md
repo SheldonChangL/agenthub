@@ -139,7 +139,8 @@ build, and requires audience `none` and an empty export view.
 
 The node now has a signing identity. Verified on macOS against a running node:
 
-- the fingerprint is stable across restarts and `node.key` is 32 bytes, mode 0600
+- the fingerprint is stable across restarts and `node.key` is the 32-byte seed at
+  mode 0600, which is the Unix storage form
 - `GET /v1/node` publishes the public key and fingerprint and nothing else
 
 A review of this work found two defects that tests could not see:
@@ -159,8 +160,8 @@ A review of this work found two defects that tests could not see:
 Also hardened: node identifiers are constrained to printable ASCII of 16 to 128
 characters, so `node_a`, `node_a ` and full-width or Cyrillic lookalikes cannot
 become separate trust entries that read identically; the key file is refused if
-others can read it and is written through a temporary file and a rename; the
-sender label on a message is parsed rather than stored as free text.
+others can read it and is written through a temporary file; the sender label on
+a message is parsed rather than stored as free text.
 
 Payload schemas exist for `node.heartbeat`, `node.hello` and the four `pair.*`
 types. `agent.message` and `agent.ack` remain reserved names whose payloads are
@@ -169,6 +170,46 @@ unconstrained until #16 defines them.
 Only `node.heartbeat` has a producer. The pairing types are defined and
 schema-tested ahead of the transport that will carry them, so nothing in the
 build emits one.
+
+### Review of the identity work: three further findings
+
+**Key storage assumed Unix permission semantics.** Owner-only protection rested
+on 0600 and `Chmod`, which Go documents as not producing an owner-only ACL on
+Windows: the mode was a claim the platform did not keep. Storage is now
+platform-specific — the raw seed at 0600 on Unix, a DPAPI blob bound to the
+current Windows user inside a versioned envelope on Windows — and the loader
+fails closed on a corrupt file, an undecryptable blob, a blob that decrypts to
+the wrong length, a symlink or reparse point, anything that is not a regular
+file, and a file too large to be a key. It never replaces a key it could not
+read. DPAPI comes from `golang.org/x/sys/windows`, already in this module's
+dependency graph for other platform calls, so the change adds no new module.
+
+Verified on macOS: the whole suite passes, `-race` is clean, and both binaries
+cross-compile for darwin, linux and windows on amd64 and arm64. The versioned
+envelope's framing is tested on every platform, including a case per malformed
+shape. **The DPAPI calls themselves are unverified: cross-compilation proves
+they compile, not that they behave. They need a run on real Windows.**
+
+**Key creation could strand an empty `node.key`.** The old write claimed the
+final name with `O_EXCL` and only then wrote the seed to a temporary file, so any
+failure in between left a 0-byte `node.key` that every later start refuses, and
+only a human deleting the file could recover the node. The content is now formed
+in full, written to a temporary file and flushed before the final name exists at
+all, then linked into place; linking is atomic and fails if the name exists, so
+a losing concurrent start reads the winner's key instead of overwriting it. A
+watcher test stats `node.key` throughout creation and fails if it is ever
+observed empty — restoring the old ordering makes it fail, which is how the test
+was checked. Sixteen concurrent starts on one directory agree on one
+fingerprint and leave no temporary file behind.
+
+**`BuildFor(peer)` accepted any non-empty identifier.** `Audience.PublishesTo`
+returns true for an `all_paired` session and any non-empty string, so
+`all_paired` meant "anyone who supplies a node id" rather than "every node this
+owner paired with". `BuildFor` now refuses a recipient absent from
+`trusted_nodes` with `ErrPeerNotTrusted`, covered for unknown, empty, trusted,
+selected and revoked peers; revoking a node stops its heartbeats immediately
+without the owner revisiting each session's audience. `Build` remains a union
+because it is the owner's own preview, and a test pins that.
 
 ## Automated checks
 
