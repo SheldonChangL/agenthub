@@ -305,6 +305,34 @@ rejection of non-loopback node URLs.
 
 Not verified: the app's visual rendering was not captured, because screen recording permission was unavailable to the shell used for this run.
 
+## Toolchain security baseline
+
+Every check in this document is run with a toolchain at or above the floor both
+modules declare, currently **go 1.27.0**. That floor is a prerequisite, not a
+formality: the node, CLI and desktop binaries link the toolchain's standard
+library, so a green suite built by an unpatched toolchain still ships that
+toolchain's `crypto/tls`, `crypto/x509` and `net/http` defects. A `go` directive
+is enforced by the go command, so an older toolchain fails the build instead of
+producing an artifact nobody re-scans.
+
+Measured on 2026-08-28 while raising the floor from `go 1.25.0`:
+
+- `govulncheck ./...` on the old floor with `go1.25.0 darwin/arm64`: exit 3,
+  26 reachable standard-library vulnerabilities, highest reported fix 1.25.13
+- `govulncheck ./...` on `go1.27.0 darwin/arm64`: exit 0, no vulnerabilities
+- `go test ./...`, `go test -race ./...` and `go vet ./...` pass in both modules
+- `go build ./...` and a compile-and-link pass over every test binary succeed
+  for `linux/amd64` and `windows/amd64`
+- `go mod tidy` under 1.27.0 leaves `go.mod` and `go.sum` byte-identical in both
+  modules, so the floor moved without dependency churn
+
+`internal/buildpolicy` holds no production code; its one test reads both
+`go.mod` files and fails if either floor drops below 1.27.0.
+
+CI does not yet pin the toolchain. That is tracked in
+[issue #22](https://github.com/SheldonChangL/agenthub/issues/22); until it
+lands, the floor is enforced by the go command on each contributor's machine.
+
 ## Required real-host acceptance
 
 On one Windows and one Ubuntu host with the target providers installed:
