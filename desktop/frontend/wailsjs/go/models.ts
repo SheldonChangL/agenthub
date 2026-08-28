@@ -40,7 +40,7 @@ export namespace main {
 	        this.publicKey = source["publicKey"];
 	        this.fingerprint = source["fingerprint"];
 	    }
-	
+
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -69,11 +69,11 @@ export namespace main {
 	    pairedAt: any;
 	    // Go type: time
 	    lastSeenAt?: any;
-	
+
 	    static createFrom(source: any = {}) {
 	        return new TrustedNode(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.nodeId = source["nodeId"];
@@ -199,8 +199,8 @@ export namespace main {
 		    return a;
 		}
 	}
-	
-	
+
+
 	export class VisibilityResult {
 	    changed: number;
 	    failed: number;

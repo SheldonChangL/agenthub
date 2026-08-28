@@ -211,6 +211,35 @@ selected and revoked peers; revoking a node stops its heartbeats immediately
 without the owner revisiting each session's audience. `Build` remains a union
 because it is the owner's own preview, and a test pins that.
 
+### Re-review of the same work: three further items
+
+**The no-hard-link fallback still had the original window.** The first fix kept a
+fallback that created the final name with `O_EXCL` and then wrote into it, so on a
+filesystem without hard links a crash could still leave an empty or truncated
+`node.key` — the invariant held only on the primary path. The fallback is gone.
+Linking is now the only install route, and when it fails the install fails with
+`ErrKeyStorageUnsupported` naming the fix: move the data directory off a
+FAT/exFAT volume or network share. That is recoverable by an operator; a
+half-written identity is not. A test injects a failing link and asserts the error
+is `ErrKeyStorageUnsupported`, that `node.key` does not exist afterwards, and
+that the directory is left with no entries at all — not even the temporary file.
+A second test shows a later start on a working filesystem still creates a key.
+
+**`readKeyFile` claimed more than it checked.** Its comment said the handle
+re-check closed the `Lstat`/open race, but confirming that both observations are
+regular files does not show they are the same file. It now compares them with
+`os.SameFile` and refuses the read if the path changed. The comparison is
+unit-tested against two files that differ only in identity — same directory, same
+mode, same size — because forcing the interleaving inside `readKeyFile` would
+need brittle timing. The comment now also states the real limit: the window is
+small and reaching it needs write access to a directory that is mode 0700 and
+owned by the same user the key protects, so this is defence in depth.
+
+**Trailing whitespace in the PR diff.** `git diff --check origin/main...HEAD`
+flagged four blank-but-tabbed lines in the generated
+`desktop/frontend/wailsjs/go/models.ts`. They are now empty lines; the file is
+TypeScript, so nothing about the generated output changes. The check passes.
+
 ## Automated checks
 
 ```sh
