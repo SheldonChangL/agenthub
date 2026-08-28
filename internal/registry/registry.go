@@ -24,6 +24,8 @@ type Registry struct {
 
 type ListOptions struct {
 	PublicOnly bool
+	Limit      int
+	Offset     int
 }
 
 func Open(ctx context.Context, path string) (*Registry, error) {
@@ -133,6 +135,9 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
 		return model.Message{}, errors.New("message body must contain 1 to 32768 bytes")
 	}
+	if _, err := r.GetSession(ctx, message.To); err != nil {
+		return model.Message{}, err
+	}
 	if message.ID == "" {
 		var err error
 		message.ID, err = id.New("msg_")
@@ -236,8 +241,13 @@ FROM sessions`
 		query += ` WHERE visibility = 'public'`
 	}
 	query += ` ORDER BY updated_at_ms DESC, id ASC`
+	var args []any
+	if options.Limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, options.Limit, max(options.Offset, 0))
+	}
 
-	rows, err := r.db.QueryContext(ctx, query)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -255,6 +265,18 @@ FROM sessions`
 		return nil, fmt.Errorf("list sessions rows: %w", err)
 	}
 	return sessions, nil
+}
+
+func (r *Registry) CountSessions(ctx context.Context, publicOnly bool) (int, error) {
+	query := `SELECT COUNT(*) FROM sessions`
+	if publicOnly {
+		query += ` WHERE visibility = 'public'`
+	}
+	var count int
+	if err := r.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count sessions: %w", err)
+	}
+	return count, nil
 }
 
 func (r *Registry) SetVisibility(ctx context.Context, id string, visibility model.Visibility) error {

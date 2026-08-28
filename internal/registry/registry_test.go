@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -97,6 +98,15 @@ func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
 	}
 	if len(messages) != 1 || messages[0].ID != created.ID {
 		t.Fatalf("Inbox() = %#v; want created message", messages)
+	}
+}
+
+func TestCreateMessageRejectsUnknownRecipientWithoutDatabaseDetails(t *testing.T) {
+	store := openTestRegistry(t)
+
+	_, err := store.CreateMessage(context.Background(), model.Message{To: "codex:missing", Body: "hello"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateMessage() error = %v; want ErrNotFound", err)
 	}
 }
 
