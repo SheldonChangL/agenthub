@@ -257,9 +257,17 @@ signed `recipientNodeId`, included in the length-prefixed signable bytes between
   substitution case is what proves the signature covers the field, and removing
   the recipient from the signable bytes makes exactly that case pass again —
   measured, not assumed
-- `VerifySender` refuses to answer for a directed envelope at all, so a receiver
-  cannot accept a heartbeat through a call that only checks the signature; an
-  undirected envelope still verifies that way
+- `VerifySender` refuses a directed envelope, so a receiver cannot accept a
+  heartbeat through a call that only checks the signature; an undirected
+  envelope still verifies that way
+- authenticity is decided before the address, so only a cryptographically
+  authentic envelope can be reported as built for another node. Checked at a
+  node that is not the recipient: an intact heartbeat answers `ErrNotAddressed`,
+  while a rewritten recipient, a removed or malformed signature, another node's
+  key, an unusable key and a rewritten payload all answer `ErrUnsigned` first
+- the local node ID is validated with the shared node-ID rule before it is
+  accepted as a destination, so an unusable identity cannot match a deserialized
+  envelope carrying the same unusable value
 - `NewEnvelope` refuses `node.heartbeat`, and a directed envelope requires a
   recipient that passes the shared node-ID rule, so an undirected or
   unaddressable heartbeat cannot be constructed
@@ -281,9 +289,44 @@ one SQLite-backed counter owned by the registry, reserved by a single atomic
 - 128 concurrent allocations produce 128 distinct non-zero values, and mixed
   owner-preview and per-peer builds never repeat one
 - a database with no counter table upgrades, starts at 1, and publishes nothing
+- opening a database that has the counter table but no counter row fails with
+  `ErrSequenceUnavailable` and creates nothing: the regression test advances the
+  counter, deletes the row, closes, reopens, and asserts both the error and that
+  no row was re-created. Before this fix `Open` recreated the row at zero and
+  the next heartbeat republished sequence 1 — a replay carrying this node's own
+  signature. A counter table holding two rows, a non-numeric value, a negative
+  value, or none of this store's columns is refused the same way, and an
+  existing valid row is left exactly as found (41 stays 41, so the next
+  allocation is 42)
+- dropping the **whole** counter table while the node is stopped also fails
+  closed. Table existence was the only evidence that the migration had ever run,
+  so a deleted table read as "written before this build" and the upgrade path
+  recreated it at zero — republishing sequence 1 under this node's identity and
+  signature. The upgrade now writes a marker row in `schema_markers` in the same
+  transaction as the counter, and the marker is the evidence. The regression
+  test allocates three sequences, closes, drops the table, reopens, and asserts
+  `ErrSequenceUnavailable`, that the table was not recreated, and that the
+  marker survived; reverting to the table-existence check makes exactly that
+  test pass again, which is how it was checked
+- every disagreement between the two is refused rather than guessed: counter
+  without marker table, marker table without this migration's row, a marker
+  value from another version, a marker table whose columns this store did not
+  write, and a valid marker whose counter table is gone. A genuine pre-counter
+  database — neither marker nor table — still upgrades, starts at 1, and
+  publishes nothing, and a new database gets both objects and exactly one marker
+  row
 - at `MaxInt64` allocation fails with `ErrSequenceExhausted`, repeatedly, and
   the stored value does not move: no wrap, no zero, no reuse
-- an exhausted counter produces no envelope at all from either build path
+- a missing counter row answers `ErrSequenceUnavailable` and not
+  `ErrSequenceExhausted`: they are different damage. Neither is repaired by
+  writing a fresh counter, because that restarts at zero under the same node
+  identity and republishes sequences a receiver may already hold; the safe
+  recoveries are a backup whose high-water mark cannot roll back, or a new node
+  identity with explicit re-pairing
+- neither an exhausted nor a missing counter produces an envelope, from either
+  build path
+- the published schema requires `sequence` to be at least 1 — the lowest value
+  the persisted allocator can hand out — and rejects 0 and negative values
 
 Checked against a running node on macOS arm64, with an isolated database and
 empty provider roots so no real session data was involved:
@@ -293,6 +336,31 @@ empty provider roots so no real session data was involved:
 - two calls returned sequences 1 and 2; the node was stopped, restarted on the
   same database, and the next call returned 3 — the case an in-memory counter
   answers with 1
+- with the node stopped, the counter row was deleted from that database and the
+  node was started again: it refused to start with `outbound heartbeat sequence
+  is unavailable: the counter row is missing, so the last published sequence is
+  unknown`, and the counter table still held zero rows afterwards
+- on a second database, two heartbeats were served (sequences 1 and 2), the node
+  was stopped, and the entire `heartbeat_sequence` table was dropped with the
+  `sqlite3` CLI. The node refused to start with `outbound heartbeat sequence is
+  unavailable: the migration marker records a counter this database no longer
+  has`, exited non-zero, left the table absent, and left the marker row
+  `heartbeat_sequence|v1` in place
+
+**What the marker cannot do.** It detects inconsistent loss — one half of the
+evidence gone while the other contradicts it. It cannot detect the loss of all
+of it. A database rolled back to a backup taken before any heartbeat, or deleted
+and recreated together with `node.key`, presents nothing to contradict and is
+indistinguishable from a first start, as it would be to any scheme that keeps
+its high-water mark in the file it is protecting. Local storage authenticity is
+not something this build can infer; ruling out a full rollback needs a monotonic
+store outside the database or a node identity that rotates with it, and neither
+is implemented or claimed here.
+
+One consequence worth stating: a database created by an earlier commit of this
+branch has the counter table and no marker, so this build refuses to open it.
+Nothing has been released with the unmarked layout, so this affects only a
+working copy taken mid-review, and the fix is to delete that scratch database.
 
 Not verified: no Windows or Linux host ran this build; no second implementation
 has reproduced the new signable bytes; and no receiver exists, so
