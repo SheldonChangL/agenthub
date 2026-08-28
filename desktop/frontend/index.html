@@ -139,7 +139,7 @@
           </label>
           <div id="audience-nodes" class="nodes hidden">
             <input id="audience-node-input" type="text" placeholder="輸入節點 ID，以空白或逗號分隔" autocomplete="off" />
-            <p class="muted">節點配對尚未實作，因此這裡先手動輸入節點 ID。</p>
+            <p class="muted">只能授權給已配對節點；可從「區網」頁複製節點 ID。</p>
           </div>
         </div>
 
@@ -161,7 +161,7 @@
           <h2>Broker heartbeat 預覽</h2>
           <button id="modal-close" class="ghost">關閉</button>
         </header>
-        <p class="muted">這是未來 broker 會收到的完整內容。只有標記為公開的 session 會出現在 <code>sessions</code> 陣列裡。</p>
+        <p class="muted">這是本機產生的已簽章 envelope 聯集預覽。實際 transport 會再依接收節點套用 audience。</p>
         <pre id="modal-body"></pre>
       </div>
     </div>
