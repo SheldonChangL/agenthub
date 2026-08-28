@@ -10,6 +10,7 @@ Privacy is the default: discovered sessions are local and private. A session is 
 
 - Local SQLite session registry
 - Claude Code and Codex filesystem discovery
+- Codex App Server JSON-RPC initialize/thread-list client boundary
 - Managed and unmanaged session model
 - Conservative `active`, `idle`, `inactive`, and `unknown` status inference
 - Persistent node identity and LAN-ready heartbeat payload
@@ -22,7 +23,9 @@ Privacy is the default: discovered sessions are local and private. A session is 
 
 ```sh
 go test ./...
-go build ./cmd/agenthub-node ./cmd/ah
+mkdir -p bin
+go build -o bin/agenthub-node ./cmd/agenthub-node
+go build -o bin/ah ./cmd/ah
 ```
 
 ## Run locally
@@ -40,9 +43,13 @@ go run ./cmd/ah list
 go run ./cmd/ah status <session-id>
 go run ./cmd/ah publish <session-id>
 go run ./cmd/ah unpublish <session-id>
+go run ./cmd/ah send <session-id> "please review the schema"
+go run ./cmd/ah inbox <session-id>
 ```
 
 The node listens on `127.0.0.1:7462` by default. Set `AGENTHUB_URL` for the CLI or pass `--url`.
+
+The local API is deliberately loopback-only until authenticated LAN pairing exists. Session list responses are paginated; `ah list` follows every page automatically.
 
 ## Privacy model
 
@@ -56,4 +63,22 @@ discovered session -> PRIVATE -> absent from heartbeat/broker/MCP remote view
 
 Publishing exposes only normalized metadata: AgentHub ID, provider, status, host identity, optional working directory, and last-seen time. Transcript or prompt contents are never stored by AgentHub.
 
+Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued—not delivered or read.
+
 See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool draft](docs/mcp-tools.json).
+
+The Codex App Server client boundary is implemented and schema-tested, but is not enabled in the node's default scan path yet. See [Codex App Server notes](docs/codex-app-server.md).
+
+## Local API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/discover` | Rescan provider metadata |
+| `GET` | `/v1/sessions?page=1&pageSize=50` | List owner-local sessions |
+| `GET` | `/v1/sessions/{id}` | Read one session |
+| `PUT` | `/v1/sessions/{id}/visibility` | Set `private` or `public` |
+| `GET` | `/v1/heartbeat` | Preview broker heartbeat; public sessions only |
+| `POST` | `/v1/messages` | Queue a local message |
+| `GET` | `/v1/inbox/{id}` | Read a local inbox |
+
+See [verification notes](docs/verification.md) for the tested platform matrix and remaining runtime checks.
