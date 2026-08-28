@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenthub.local/schema/broker-protocol-v1.json",
+  "title": "AgentHub Broker Envelope v1",
+  "type": "object",
+  "required": ["protocolVersion", "messageId", "type", "sentAt", "nodeId", "payload"],
+  "properties": {
+    "protocolVersion": { "const": "agenthub.broker/v1alpha1" },
+    "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "type": { "enum": ["node.hello", "node.heartbeat", "agent.message", "agent.ack"] },
+    "sentAt": { "type": "string", "format": "date-time" },
+    "nodeId": { "type": "string", "minLength": 16, "maxLength": 128 },
+    "payload": { "type": "object" }
+  },
+  "$defs": {
+    "sessionSummary": {
+      "type": "object",
+      "required": ["id", "provider", "status", "management", "visibility", "lastSeenAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "provider": { "enum": ["claude", "codex"] },
+        "status": { "enum": ["active", "idle", "inactive", "unknown"] },
+        "management": { "enum": ["managed", "unmanaged"] },
+        "visibility": { "const": "public" },
+        "cwd": { "type": "string" },
+        "lastSeenAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "heartbeat": {
+      "type": "object",
+      "required": ["sequence", "expiresAt", "capabilities", "sessions"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 0 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "capabilities": {
+          "type": "array",
+          "items": { "enum": ["session.list", "session.status", "message.send", "message.inbox"] },
+          "uniqueItems": true
+        },
+        "sessions": { "type": "array", "items": { "$ref": "#/$defs/sessionSummary" } }
+      },
+      "additionalProperties": false
+    }
+  }
+}
+
