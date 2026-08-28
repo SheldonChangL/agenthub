@@ -40,7 +40,24 @@ An isolated AgentHub database scanned the installed providers without modifying 
 - Go vulnerability scanning reported no known reachable vulnerabilities
 
 
-Process enumeration is restricted inside the Codex execution sandbox, so the smoke run conservatively reported `unknown` for affected unmanaged sessions. The program treats missing process evidence as unknown by design.
+Process enumeration is restricted inside the Codex execution sandbox, so that smoke run conservatively reported `unknown` for affected unmanaged sessions. The program treats missing process evidence as unknown by design.
+
+## macOS desktop app run
+
+A second macOS run on the same day exercised the desktop app against a live node, outside the Codex sandbox, so process evidence was available:
+
+- 1,040 sessions discovered (256 Claude, 784 Codex)
+- status inference produced 2 `active`, 3 `idle`, 1,035 `inactive`
+- the `active` rows correlated with the provider sessions actually running at that moment, each reporting `statusSource: metadata_process_heuristic`
+- heartbeat exported zero sessions until an explicit publish, exported exactly one after it, and returned to zero after unpublish
+- `ah send` queued a message and `ah inbox` read it back
+- `wails build` produced `agenthub-desktop.app` for darwin/arm64 and the app launched against the running node
+
+Adding the desktop app did not disturb the node or CLI: `go.mod` and `go.sum` of the root module were unchanged, and `CGO_ENABLED=0` cross-compilation of `agenthub-node` and `ah` still passed for all six targets in the matrix above.
+
+The desktop module has its own suite (`go test -race ./...` in `desktop/`) covering batch visibility writes with partial failures, full pagination, unreachable-node handling, and rejection of non-loopback node URLs.
+
+Not verified: the app's visual rendering was not captured, because screen recording permission was unavailable to the shell used for this run.
 
 ## Required real-host acceptance
 

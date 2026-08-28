@@ -92,6 +92,9 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 
 ## Deferred work
 
+The multi-node items below are planned in [multinode-plan.md](multinode-plan.md)
+and tracked from issue #1.
+
 - Authenticated LAN pairing and broker persistence
 - Remote presence subscriptions and retries
 - Provider-specific live APIs and message injection

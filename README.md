@@ -20,6 +20,11 @@ Privacy is the default: discovered sessions are local and private. A session is 
 - Broker protocol and MCP tool schemas
 - No complete LAN broker, remote wake-up, or provider message injection yet
 
+The next increment turns the single public flag into a per-node audience model
+and adds authenticated LAN pairing. It is planned in
+[multinode-plan.md](docs/multinode-plan.md) and tracked from
+[issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
+
 ## Build and test
 
 ```sh
