@@ -226,12 +226,24 @@ the first group or two is cheap to forge.
 There are two verification calls, and the split is deliberate:
 
 - `VerifySender(key, senderNodeID)` answers only "is this authentically from
-  that node". It refuses a directed envelope outright rather than reporting it
-  authentic, so no future receiver can reach an accept decision on a heartbeat
-  without also checking who the envelope was addressed to.
+  that node". It refuses a directed envelope rather than reporting it verified,
+  so no future receiver can reach an accept decision on a heartbeat without also
+  checking who the envelope was addressed to.
 - `VerifyDirected(key, senderNodeID, localNodeID)` answers that question and
   "was this built for me". A signature says who wrote an envelope, never who may
   act on it.
+
+Both check the signature first, and the order is part of the contract. The two
+failures mean different things: `ErrUnsigned` is a stranger, `ErrNotAddressed`
+is a known peer's envelope meant for somebody else — something a receiver may
+reasonably count or log as traffic from a node it trusts. If a forgery could
+produce the second, that reading would promote an unauthenticated sender to a
+known one, so authenticity is decided before anything is said about the address.
+Rewriting the recipient does not reach the address comparison at all: the
+recipient is a signed field, so a redirected envelope fails as unsigned. The
+local node ID is validated against the shared node-ID rule before it is accepted
+as a destination, so a receiver that does not yet know its own identity cannot
+match an envelope that carries the same unusable value.
 
 A signature covers a length-prefixed encoding of the envelope's fields, not a
 re-serialization of the Go value. The fields, in order, are `protocolVersion`,
@@ -275,7 +287,49 @@ are allowed — a build that fails after reserving a number does not give it bac
 indistinguishable from a replayed one. SQLite's INTEGER is signed, so the
 counter stops at `MaxInt64` and refuses to allocate rather than wrapping,
 returning zero, or reusing the last value; a build that cannot reserve a number
-produces no envelope.
+produces no envelope. Reaching that limit and finding the counter damaged or
+missing are reported apart — `ErrSequenceExhausted` against
+`ErrSequenceUnavailable` — because they describe different damage, not because
+one is milder. Both fail closed.
+
+Opening the database is not a repair. The upgrade that creates the counter also
+records a marker row in `schema_markers`, written in the same transaction, and
+that marker — not the presence of the table — is what says the migration ever
+ran. Table existence cannot carry that meaning: dropping the table would then
+make a node that has been publishing for months look like a database from before
+the counter existed, and the upgrade path for those starts at zero. So `Open`
+reads both and acts on the pair:
+
+| Marker | Counter table | Result |
+|---|---|---|
+| absent | absent | genuine pre-counter database: marker, table and row created in one transaction; first allocation is 1 |
+| present and valid | present and valid | preserved and opened, exactly as found |
+| present and valid | absent | `ErrSequenceUnavailable`; nothing is recreated |
+| absent | present | `ErrSequenceUnavailable`; the two are written together, so one alone is lost evidence |
+| present but malformed, missing its row, or from another version | any | `ErrSequenceUnavailable` |
+
+The counter row is checked the same way: missing, duplicated, or holding a value
+this store could not have written all fail with `ErrSequenceUnavailable` and
+write nothing.
+
+Re-creating either is not a recovery. It restarts at zero under the same node
+identity and republishes sequences a receiver may already hold, signed by this
+node's own key — the replay the persisted counter exists to prevent — and the
+previous high-water mark is exactly what has been lost. The safe answers are a
+backup whose high-water mark cannot roll back, or rotating to a new node
+identity with explicit re-pairing.
+
+### What this does not protect against
+
+The marker detects *inconsistent* loss: one piece of the evidence gone while
+another contradicts it. It cannot detect the loss of all of it at once. A
+database rolled back to a backup taken before any heartbeat, or deleted and
+recreated together with `node.key`, presents no contradiction and is
+indistinguishable from a first start — as it would be to any scheme that keeps
+its high-water mark in the same file it is protecting. Local storage
+authenticity is not something this build can infer. Ruling out a full rollback
+needs a monotonic store outside the database, or a node identity that rotates
+whenever the database does; AgentHub implements neither and claims neither.
 
 Consumers replace the complete previous snapshot for that node; they never
 merge session arrays. **A session absent from a heartbeat has had its
