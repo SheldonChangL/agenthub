@@ -3,8 +3,10 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,27 +24,64 @@ type ProcessState struct {
 	Running bool
 }
 
-func walkJSONL(root string, visit func(string, fs.FileInfo) (model.Session, bool, error)) ([]model.Session, error) {
-	if _, err := os.Stat(root); errors.Is(err, os.ErrNotExist) {
+// walkJSONL visits every regular .jsonl file under root through a rooted
+// handle. os.Root refuses names that leave the root through "..", an absolute
+// path, or a symlink, and it resolves the name at open time, so a directory
+// entry swapped for a link between the walk and the read cannot redirect the
+// read either. Symlinked entries are skipped outright: a provider writes its
+// metadata as plain files, and following a link is how a writer who only
+// controls the root turns AgentHub into a reader of somebody else's file.
+//
+// Only entries the walk itself rules out are skipped silently. Once an entry
+// looks like provider metadata, a refused open or a failed Stat aborts the
+// whole discovery run: an escape the root rejected, a permission denial, an
+// I/O error or an exhausted descriptor table all mean the registry this run
+// would return is not the registry on disk, and reporting that as a smaller
+// but successful result is how an attack or an operational fault stays
+// invisible.
+func walkJSONL(root string, visit func(string, *os.File, fs.FileInfo) (model.Session, bool, error)) ([]model.Session, error) {
+	rooted, err := os.OpenRoot(root)
+	if errors.Is(err, fs.ErrNotExist) {
 		return []model.Session{}, nil
 	} else if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rooted.Close() }()
 
 	byID := make(map[string]model.Session)
-	err := fs.WalkDir(os.DirFS(root), ".", func(relativePath string, entry fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(rooted.FS(), ".", func(relativePath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".jsonl") {
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
+		if !strings.HasSuffix(strings.ToLower(entry.Name()), ".jsonl") {
+			return nil
 		}
-		path := root + string(os.PathSeparator) + relativePath
-		session, ok, err := visit(path, info)
+		path := filepath.Join(root, filepath.FromSlash(relativePath))
+		if !entry.Type().IsRegular() {
+			// The directory already told us this is a FIFO, a device or a
+			// socket. None of those is provider metadata, and opening one
+			// can block the run forever, so it is dropped before the open.
+			return nil
+		}
+		file, err := rooted.Open(relativePath)
+		if err != nil {
+			return fmt.Errorf("open session metadata %q: %w", path, err)
+		}
+		defer func() { _ = file.Close() }()
+		info, err := file.Stat()
+		if err != nil {
+			return fmt.Errorf("stat session metadata %q: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			// The entry changed type between the walk and the open. Nothing
+			// is read from it, but the run still stops: a metadata path that
+			// turned into a pipe under us is not a benign scan result.
+			return fmt.Errorf("session metadata %q is not a regular file: %v", path, info.Mode().Type())
+		}
+		session, ok, err := visit(path, file, info)
 		if err != nil {
 			return err
 		}
