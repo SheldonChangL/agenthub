@@ -36,6 +36,33 @@ function visible() {
 
 /* ---------------- rendering ---------------- */
 
+/* ---------------- DOM helpers ---------------- */
+
+// Provider metadata is untrusted input (docs/architecture.md). Every value that
+// originates from a provider reaches the DOM as text, never as markup, so a
+// working directory or session ID containing HTML cannot execute in the app.
+function element(tag, className = "", text = "") {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== "") node.textContent = text;
+  return node;
+}
+
+function cell(td, ...children) {
+  td.append(...children);
+  return td;
+}
+
+// Only a fixed set of statuses earns a color class, so an unexpected status
+// string can never inject a class name.
+function statusPillClass(status) {
+  return status === "active" || status === "idle" ? status : "";
+}
+
+function pill(text, extraClass) {
+  return element("span", extraClass ? `pill ${extraClass}` : "pill", text);
+}
+
 const CHIPS = [
   { key: "provider", value: "claude", label: "Claude" },
   { key: "provider", value: "codex", label: "Codex" },
@@ -53,7 +80,7 @@ function renderChips() {
     const button = document.createElement("button");
     const on = state.filters[chip.key] === chip.value;
     button.className = on ? "chip on" : "chip";
-    button.innerHTML = `${chip.label}<span class="n">${state.counts[chip.value] ?? 0}</span>`;
+    button.append(chip.label, element("span", "n", String(state.counts[chip.value] ?? 0)));
     button.onclick = () => {
       state.filters[chip.key] = on ? null : chip.value;
       render();
@@ -87,25 +114,35 @@ function renderRows(rows) {
     if (picked) tr.className = "sel";
 
     const { rest } = shortId(session.id);
-    const statusClass = ["active", "idle"].includes(session.status) ? session.status : "";
     const isPublic = session.visibility === "public";
 
-    tr.innerHTML = `
-      <td class="col-check"><input type="checkbox" ${picked ? "checked" : ""} /></td>
-      <td class="mono sid"><b>${rest}</b></td>
-      <td>${session.provider}</td>
-      <td><span class="pill ${statusClass}">${session.status}</span></td>
-      <td class="muted">${session.management}</td>
-      <td><span class="pill ${isPublic ? "public" : ""}">${isPublic ? "公開" : "私密"}</span></td>
-      <td class="mono muted" title="${session.cwd || ""}">${session.cwd || "—"}</td>
-      <td class="muted">${relative(session.lastSeenAt)}</td>
-    `;
-
-    tr.querySelector("input").onchange = (event) => {
+    const checkCell = element("td", "col-check");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = picked;
+    checkbox.onchange = (event) => {
       if (event.target.checked) state.selected.add(session.id);
       else state.selected.delete(session.id);
       render();
     };
+    checkCell.append(checkbox);
+
+    const idCell = element("td", "mono sid");
+    idCell.append(element("b", "", rest));
+
+    const cwdCell = element("td", "mono muted", session.cwd || "—");
+    if (session.cwd) cwdCell.title = session.cwd;
+
+    tr.append(
+      checkCell,
+      idCell,
+      element("td", "", session.provider),
+      cell(element("td"), pill(session.status, statusPillClass(session.status))),
+      element("td", "muted", session.management),
+      cell(element("td"), pill(isPublic ? "公開" : "私密", isPublic ? "public" : "")),
+      cwdCell,
+      element("td", "muted", relative(session.lastSeenAt))
+    );
     fragment.append(tr);
   }
 
