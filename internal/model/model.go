@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -37,19 +38,85 @@ const (
 	VisibilityPublic  Visibility = "public"
 )
 
+// AudienceMode answers "published to whom".
+//
+// A boolean cannot: "public" has to distinguish between every node this owner
+// has paired with, including ones paired later, and a chosen few. The two are
+// different decisions and diverge the moment a new node appears, so they are
+// separate modes rather than a list that happens to hold everything.
+type AudienceMode string
+
+const (
+	// AudienceNone is the default for every discovered session and the value
+	// every existing row takes on upgrade. A choice made when publishing only
+	// affected a local preview was never consent to reach a remote machine.
+	AudienceNone AudienceMode = "none"
+	// AudienceAllPaired includes nodes paired after the choice was made.
+	AudienceAllPaired AudienceMode = "all_paired"
+	// AudienceSelected includes only the nodes named in the grant table.
+	AudienceSelected AudienceMode = "selected"
+)
+
+func ValidAudienceMode(mode AudienceMode) bool {
+	switch mode {
+	case AudienceNone, AudienceAllPaired, AudienceSelected:
+		return true
+	}
+	return false
+}
+
+// Audience is a session's export policy: the mode plus, for AudienceSelected,
+// the nodes it names.
+type Audience struct {
+	Mode  AudienceMode `json:"mode"`
+	Nodes []string     `json:"nodes,omitempty"`
+	// ExportCWD and AcceptMessages default to false. An export view says as
+	// little as it can until the owner says otherwise.
+	ExportCWD      bool `json:"exportCwd"`
+	AcceptMessages bool `json:"acceptMessages"`
+}
+
+// PublishesTo reports whether a peer may see the session.
+func (a Audience) PublishesTo(nodeID string) bool {
+	switch a.Mode {
+	case AudienceAllPaired:
+		return nodeID != ""
+	case AudienceSelected:
+		return slices.Contains(a.Nodes, nodeID)
+	default:
+		return false
+	}
+}
+
+// PublishesToAnyone reports whether the session leaves this host at all. It is
+// the owner-local view's summary, not an authorization decision.
+func (a Audience) PublishesToAnyone() bool {
+	switch a.Mode {
+	case AudienceAllPaired:
+		return true
+	case AudienceSelected:
+		return len(a.Nodes) > 0
+	default:
+		return false
+	}
+}
+
 type Session struct {
-	ID                string          `json:"id"`
-	Provider          Provider        `json:"provider"`
-	ProviderSessionID string          `json:"providerSessionId"`
-	Management        Management      `json:"management"`
-	Visibility        Visibility      `json:"visibility"`
-	Status            LifecycleStatus `json:"status"`
-	StatusSource      string          `json:"statusSource"`
-	CWD               string          `json:"cwd,omitempty"`
-	Source            string          `json:"source,omitempty"`
-	MetadataPath      string          `json:"-"`
-	LastSeenAt        time.Time       `json:"lastSeenAt"`
-	UpdatedAt         time.Time       `json:"updatedAt"`
+	ID                string     `json:"id"`
+	Provider          Provider   `json:"provider"`
+	ProviderSessionID string     `json:"providerSessionId"`
+	Management        Management `json:"management"`
+	Visibility        Visibility `json:"visibility"`
+	// Audience is the export policy. Visibility above is derived from it for
+	// owner-local views and stays only until every caller reads Audience.
+	Audience     Audience        `json:"audience"`
+	Status       LifecycleStatus `json:"status"`
+	StatusSource string          `json:"statusSource"`
+	CWD          string          `json:"cwd,omitempty"`
+	Source       string          `json:"source,omitempty"`
+	MetadataPath string          `json:"-"`
+	LastSeenAt   time.Time       `json:"lastSeenAt"`
+	UpdatedAt    time.Time       `json:"updatedAt"`
 }
 
 func SessionID(provider Provider, providerSessionID string) string {

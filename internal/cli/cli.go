@@ -84,6 +84,8 @@ func (r runner) command(ctx context.Context, args []string) error {
 			visibility = model.VisibilityPrivate
 		}
 		return r.simple(ctx, http.MethodPut, "/v1/sessions/"+url.PathEscape(args[1])+"/visibility", map[string]any{"visibility": visibility})
+	case "audience":
+		return r.audience(ctx, args)
 	case "send":
 		if len(args) < 3 {
 			return errors.New("usage: ah send <session-id> <message>")
@@ -101,6 +103,62 @@ func (r runner) command(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// audience reads or replaces one session's export policy.
+//
+//	ah audience <session-id>
+//	ah audience <session-id> none
+//	ah audience <session-id> all-paired [--cwd] [--messages]
+//	ah audience <session-id> selected <node-id>... [--cwd] [--messages]
+func (r runner) audience(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
+	}
+	path := "/v1/sessions/" + url.PathEscape(args[1]) + "/audience"
+	if len(args) == 2 {
+		return r.simple(ctx, http.MethodGet, path, nil)
+	}
+
+	modes := map[string]model.AudienceMode{
+		"none":       model.AudienceNone,
+		"all-paired": model.AudienceAllPaired,
+		"selected":   model.AudienceSelected,
+	}
+	mode, ok := modes[args[2]]
+	if !ok {
+		return fmt.Errorf("unknown audience mode %q; want none, all-paired or selected", args[2])
+	}
+
+	nodes := make([]string, 0)
+	exportCWD := false
+	acceptMessages := false
+	for _, argument := range args[3:] {
+		switch argument {
+		case "--cwd":
+			exportCWD = true
+		case "--messages":
+			acceptMessages = true
+		default:
+			if strings.HasPrefix(argument, "-") {
+				return fmt.Errorf("unknown flag %q; want --cwd or --messages", argument)
+			}
+			nodes = append(nodes, argument)
+		}
+	}
+	if mode == model.AudienceSelected && len(nodes) == 0 {
+		return errors.New("selected requires at least one node id; use none to publish to nobody")
+	}
+	if mode != model.AudienceSelected && len(nodes) > 0 {
+		return fmt.Errorf("%s does not take node ids", args[2])
+	}
+
+	return r.simple(ctx, http.MethodPut, path, map[string]any{
+		"mode":           mode,
+		"nodes":          nodes,
+		"exportCwd":      exportCWD,
+		"acceptMessages": acceptMessages,
+	})
 }
 
 func (r runner) list(ctx context.Context) error {
@@ -140,11 +198,29 @@ func (r runner) list(ctx context.Context) error {
 		return writePrettyJSON(r.stdout, data)
 	}
 	w := tabwriter.NewWriter(r.stdout, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(w, "ID\tPROVIDER\tSTATUS\tMODE\tVISIBILITY\tCWD")
+	_, _ = fmt.Fprintln(w, "ID\tPROVIDER\tSTATUS\tMODE\tAUDIENCE\tCWD")
 	for _, session := range allSessions {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", session.ID, session.Provider, session.Status, session.Management, session.Visibility, session.CWD)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			session.ID, session.Provider, session.Status, session.Management,
+			describeAudience(session.Audience), session.CWD)
 	}
 	return w.Flush()
+}
+
+// describeAudience answers "published to whom" in one column. A count rather
+// than a list keeps the table readable; ah audience <id> shows the nodes.
+func describeAudience(audience model.Audience) string {
+	switch audience.Mode {
+	case model.AudienceAllPaired:
+		return "all paired"
+	case model.AudienceSelected:
+		if len(audience.Nodes) == 1 {
+			return "1 node"
+		}
+		return fmt.Sprintf("%d nodes", len(audience.Nodes))
+	default:
+		return "private"
+	}
 }
 
 func (r runner) simple(ctx context.Context, method, path string, input any) error {
@@ -207,5 +283,6 @@ func writePrettyJSON(output io.Writer, data []byte) error {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
-	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, send, inbox, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience, send, inbox, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
 }

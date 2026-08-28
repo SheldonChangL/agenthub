@@ -7,19 +7,27 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 )
 
 // Session mirrors the node's public JSON contract. The desktop app is an HTTP
 // client of agenthub-node and never reads provider files or SQLite directly.
+// Audience is a session's export policy: published to whom, and how much.
+type Audience struct {
+	Mode           string   `json:"mode"`
+	Nodes          []string `json:"nodes,omitempty"`
+	ExportCWD      bool     `json:"exportCwd"`
+	AcceptMessages bool     `json:"acceptMessages"`
+}
+
 type Session struct {
 	ID                string    `json:"id"`
 	Provider          string    `json:"provider"`
 	ProviderSessionID string    `json:"providerSessionId"`
 	Management        string    `json:"management"`
 	Visibility        string    `json:"visibility"`
+	Audience          Audience  `json:"audience"`
 	Status            string    `json:"status"`
 	StatusSource      string    `json:"statusSource"`
 	CWD               string    `json:"cwd,omitempty"`
@@ -72,10 +80,35 @@ func (c *client) listSessions(ctx context.Context) ([]Session, error) {
 	return all, nil
 }
 
-func (c *client) setVisibility(ctx context.Context, id, visibility string) error {
-	path := "/v1/sessions/" + url.PathEscape(id) + "/visibility"
-	_, err := c.request(ctx, http.MethodPut, path, map[string]string{"visibility": visibility})
-	return err
+// setAudienceBatch applies one policy to many sessions in a single request.
+//
+// The node reports per-session outcomes, so a partial failure stays partial
+// rather than being retried as a whole.
+func (c *client) setAudienceBatch(ctx context.Context, ids []string, audience Audience) (BatchResult, error) {
+	if audience.Nodes == nil {
+		audience.Nodes = []string{}
+	}
+	body, err := c.request(ctx, http.MethodPost, "/v1/sessions/audience", map[string]any{
+		"ids":      ids,
+		"audience": audience,
+	})
+	if err != nil {
+		return BatchResult{}, err
+	}
+	var result BatchResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return BatchResult{}, fmt.Errorf("decode batch result: %w", err)
+	}
+	return result, nil
+}
+
+type BatchResult struct {
+	Changed int `json:"changed"`
+	Failed  int `json:"failed"`
+	Results []struct {
+		ID    string `json:"id"`
+		Error string `json:"error,omitempty"`
+	} `json:"results"`
 }
 
 func (c *client) discover(ctx context.Context) (map[string]int, error) {

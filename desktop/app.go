@@ -114,11 +114,15 @@ func summarize(sessions []Session) map[string]int {
 		"total": len(sessions), "public": 0, "private": 0,
 		"active": 0, "idle": 0, "inactive": 0, "unknown": 0,
 		"claude": 0, "codex": 0,
+		"none": 0, "all_paired": 0, "selected": 0,
 	}
 	for _, session := range sessions {
 		counts[session.Visibility]++
 		counts[session.Status]++
 		counts[session.Provider]++
+		if session.Audience.Mode != "" {
+			counts[string(session.Audience.Mode)]++
+		}
 	}
 	return counts
 }
@@ -139,32 +143,55 @@ type VisibilityResult struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-// SetVisibility applies one visibility choice to many sessions. This is the
-// operation the CLI could only do one session at a time.
-func (a *App) SetVisibility(ids []string, visibility string) (VisibilityResult, error) {
-	if visibility != "public" && visibility != "private" {
-		return VisibilityResult{}, fmt.Errorf("visibility must be public or private, got %q", visibility)
-	}
+// SetAudience applies one export policy to many sessions.
+//
+// This is the operation the CLI could only do one session at a time, and the
+// reason the desktop app exists: choosing who may see a session is a decision
+// about a list, not about one row.
+func (a *App) SetAudience(ids []string, audience Audience) (VisibilityResult, error) {
 	if len(ids) == 0 {
 		return VisibilityResult{}, fmt.Errorf("select at least one session")
 	}
-	activeClient, _ := a.current()
+	switch audience.Mode {
+	case "none", "all_paired", "selected":
+	default:
+		return VisibilityResult{}, fmt.Errorf("audience mode must be none, all_paired or selected, got %q", audience.Mode)
+	}
+	if audience.Mode == "selected" && len(audience.Nodes) == 0 {
+		return VisibilityResult{}, fmt.Errorf("selected requires at least one node; use none to publish to nobody")
+	}
+	if audience.Mode != "selected" {
+		audience.Nodes = nil
+	}
 
-	result := VisibilityResult{}
+	activeClient, _ := a.current()
+	batch, err := activeClient.setAudienceBatch(a.ctx, ids, audience)
+	if err != nil {
+		return VisibilityResult{}, err
+	}
+
 	failures := make([]string, 0)
-	for _, id := range ids {
-		if err := activeClient.setVisibility(a.ctx, id, visibility); err != nil {
-			result.Failed++
-			if len(failures) < 10 {
-				failures = append(failures, fmt.Sprintf("%s: %v", id, err))
-			}
-			continue
+	for _, item := range batch.Results {
+		if item.Error != "" && len(failures) < 10 {
+			failures = append(failures, fmt.Sprintf("%s: %s", item.ID, item.Error))
 		}
-		result.Changed++
 	}
 	sort.Strings(failures)
-	result.Errors = failures
-	return result, nil
+	return VisibilityResult{Changed: batch.Changed, Failed: batch.Failed, Errors: failures}, nil
+}
+
+// SetVisibility keeps the simple publish and unpublish path working. Publishing
+// means the explicit "all paired nodes" choice.
+func (a *App) SetVisibility(ids []string, visibility string) (VisibilityResult, error) {
+	switch visibility {
+	case "public":
+		// Export flags stay closed; the picker is where they are turned on.
+		return a.SetAudience(ids, Audience{Mode: "all_paired"})
+	case "private":
+		return a.SetAudience(ids, Audience{Mode: "none"})
+	default:
+		return VisibilityResult{}, fmt.Errorf("visibility must be public or private, got %q", visibility)
+	}
 }
 
 // Heartbeat returns the exact payload a future broker would receive. It is the

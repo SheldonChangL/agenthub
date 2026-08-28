@@ -10,6 +10,8 @@ export function NodeURL():Promise<string>;
 
 export function Overview():Promise<main.Overview>;
 
+export function SetAudience(arg1:Array<string>,arg2:main.Audience):Promise<main.VisibilityResult>;
+
 export function SetNodeURL(arg1:string):Promise<void>;
 
 export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.VisibilityResult>;

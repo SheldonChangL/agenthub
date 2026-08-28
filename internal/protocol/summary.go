@@ -57,7 +57,18 @@ func SplitQualifiedID(qualified string) (nodeID, sessionID string, ok bool) {
 // here would make the projection fail open: a caller that passed a private
 // session would get a summary stamped "public" that satisfies every schema and
 // test we have.
+func exportedCWD(session model.Session) string {
+	if !session.Audience.ExportCWD {
+		return ""
+	}
+	return session.CWD
+}
+
 func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
+	if !session.Audience.PublishesToAnyone() {
+		return SessionSummary{}, fmt.Errorf(
+			"refusing to export session %q with audience %q", session.ID, session.Audience.Mode)
+	}
 	if session.Visibility != model.VisibilityPublic {
 		return SessionSummary{}, fmt.Errorf(
 			"refusing to export session %q with visibility %q", session.ID, session.Visibility)
@@ -85,7 +96,9 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		StatusSource: session.StatusSource,
 		Management:   string(session.Management),
 		Visibility:   string(session.Visibility),
-		CWD:          session.CWD,
-		LastSeenAt:   session.LastSeenAt.UTC(),
+		// The working directory names the account and the project, so it
+		// travels only when the owner asked for it.
+		CWD:        exportedCWD(session),
+		LastSeenAt: session.LastSeenAt.UTC(),
 	}, nil
 }

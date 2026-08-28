@@ -16,6 +16,7 @@ func exportable() model.Session {
 		ProviderSessionID: "abc",
 		Management:        model.Unmanaged,
 		Visibility:        model.VisibilityPublic,
+		Audience:          model.Audience{Mode: model.AudienceAllPaired, ExportCWD: true},
 		Status:            model.StatusIdle,
 		StatusSource:      "metadata_process_heuristic",
 		LastSeenAt:        time.Now().UTC(),
@@ -112,5 +113,48 @@ func TestSummarizeRejectsSeparatorsFromLegacyRows(t *testing.T) {
 	}
 	if summary, err := protocol.Summarize("node_a/node_b", exportable()); err == nil {
 		t.Errorf("Summarize() accepted a node id with a separator: %+v", summary)
+	}
+}
+
+// The working directory names the account and the project, so it travels only
+// when the owner asked for it.
+func TestSummarizeOmitsWorkingDirectoryUnlessExported(t *testing.T) {
+	session := exportable()
+	session.CWD = "/Users/someone/Projects/secret-product"
+
+	session.Audience.ExportCWD = false
+	withheld, err := protocol.Summarize("node_0123456789abcdef0123", session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withheld.CWD != "" {
+		t.Errorf("CWD = %q; the owner did not opt in", withheld.CWD)
+	}
+
+	session.Audience.ExportCWD = true
+	shared, err := protocol.Summarize("node_0123456789abcdef0123", session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.CWD != session.CWD {
+		t.Errorf("CWD = %q, want the session's directory", shared.CWD)
+	}
+}
+
+// An audience that reaches nobody must not produce an export summary, whatever
+// the derived visibility says.
+func TestSummarizeRefusesAudiencesThatReachNobody(t *testing.T) {
+	for name, audience := range map[string]model.Audience{
+		"none":            {Mode: model.AudienceNone},
+		"empty selection": {Mode: model.AudienceSelected},
+		"unset":           {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := exportable()
+			session.Audience = audience
+			if summary, err := protocol.Summarize("node_0123456789abcdef0123", session); err == nil {
+				t.Errorf("Summarize() produced %+v", summary)
+			}
+		})
 	}
 }

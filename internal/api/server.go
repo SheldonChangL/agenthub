@@ -20,6 +20,10 @@ import (
 	"agenthub.local/agenthub/internal/registry"
 )
 
+// maxBatchSessions bounds one batch so a single request cannot hold a write
+// transaction open across an unbounded list.
+const maxBatchSessions = 500
+
 type Server struct {
 	store      *registry.Registry
 	hub        *hub.Hub
@@ -38,6 +42,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/sessions", s.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{id}", s.getSession)
 	mux.HandleFunc("PUT /v1/sessions/{id}/visibility", s.setVisibility)
+	mux.HandleFunc("GET /v1/sessions/{id}/audience", s.getAudience)
+	mux.HandleFunc("PUT /v1/sessions/{id}/audience", s.setAudience)
+	mux.HandleFunc("POST /v1/sessions/audience", s.setAudienceBatch)
 	mux.HandleFunc("GET /v1/node", s.getNode)
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
@@ -100,6 +107,112 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, session)
+}
+
+func (s *Server) getAudience(w http.ResponseWriter, r *http.Request) {
+	audience, err := s.store.GetAudience(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, audience)
+}
+
+// audienceInput is decoded with DisallowUnknownFields, so a caller that means
+// to grant nodes but misspells the field is refused rather than silently
+// publishing to nobody — or, worse, to everyone.
+type audienceInput struct {
+	Mode           model.AudienceMode `json:"mode"`
+	Nodes          []string           `json:"nodes"`
+	ExportCWD      bool               `json:"exportCwd"`
+	AcceptMessages bool               `json:"acceptMessages"`
+}
+
+func (i audienceInput) audience() model.Audience {
+	return model.Audience{
+		Mode:           i.Mode,
+		Nodes:          i.Nodes,
+		ExportCWD:      i.ExportCWD,
+		AcceptMessages: i.AcceptMessages,
+	}
+}
+
+func (s *Server) setAudience(w http.ResponseWriter, r *http.Request) {
+	var input audienceInput
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.store.SetAudience(r.Context(), id, input.audience()); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	session, err := s.store.GetSession(r.Context(), id)
+	if err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, session)
+}
+
+// setAudienceBatch applies one policy to many sessions.
+//
+// It reports per-session outcomes instead of stopping at the first failure: a
+// caller that asked to unpublish twenty sessions needs to know which nineteen
+// succeeded, and a partial result reported as a total failure invites a retry
+// that changes nothing.
+func (s *Server) setAudienceBatch(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		IDs      []string      `json:"ids"`
+		Audience audienceInput `json:"audience"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if len(input.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "ids must contain at least one session")
+		return
+	}
+	if len(input.IDs) > maxBatchSessions {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			fmt.Sprintf("ids must contain at most %d sessions", maxBatchSessions))
+		return
+	}
+	// Validate once before touching anything: an invalid policy should change
+	// no session at all rather than the first few.
+	if !model.ValidAudienceMode(input.Audience.Mode) {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "mode must be none, all_paired or selected")
+		return
+	}
+
+	audience := input.Audience.audience()
+	type outcome struct {
+		ID    string `json:"id"`
+		Error string `json:"error,omitempty"`
+	}
+	results := make([]outcome, 0, len(input.IDs))
+	changed := 0
+	for _, id := range input.IDs {
+		if err := s.store.SetAudience(r.Context(), id, audience); err != nil {
+			if errors.Is(err, registry.ErrInvalidSession) || errors.Is(err, registry.ErrNotFound) {
+				results = append(results, outcome{ID: id, Error: err.Error()})
+				continue
+			}
+			// The store is unavailable rather than the request being wrong;
+			// continuing would report every remaining session as rejected.
+			writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+			return
+		}
+		changed++
+		results = append(results, outcome{ID: id})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"changed": changed,
+		"failed":  len(results) - changed,
+		"results": results,
+	})
 }
 
 func (s *Server) setVisibility(w http.ResponseWriter, r *http.Request) {

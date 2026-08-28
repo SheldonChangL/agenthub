@@ -2,7 +2,7 @@ import "./style.css";
 import {
   Overview,
   Discover,
-  SetVisibility,
+  SetAudience,
   Heartbeat,
 } from "../wailsjs/go/main/App";
 
@@ -11,7 +11,7 @@ const state = {
   counts: {},
   selected: new Set(),
   search: "",
-  filters: { provider: null, status: null, visibility: null },
+  filters: { provider: null, status: null, audience: null },
   busy: false,
 };
 
@@ -21,11 +21,11 @@ const el = (id) => document.getElementById(id);
 
 function visible() {
   const term = state.search.trim().toLowerCase();
-  const { provider, status, visibility } = state.filters;
+  const { provider, status, audience } = state.filters;
   return state.sessions.filter((s) => {
     if (provider && s.provider !== provider) return false;
     if (status && s.status !== status) return false;
-    if (visibility && s.visibility !== visibility) return false;
+    if (audience && (s.audience?.mode ?? "none") !== audience) return false;
     if (term) {
       const haystack = `${s.id} ${s.cwd || ""}`.toLowerCase();
       if (!haystack.includes(term)) return false;
@@ -69,8 +69,9 @@ const CHIPS = [
   { key: "status", value: "active", label: "active" },
   { key: "status", value: "idle", label: "idle" },
   { key: "status", value: "inactive", label: "inactive" },
-  { key: "visibility", value: "public", label: "已公開" },
-  { key: "visibility", value: "private", label: "私密" },
+  { key: "audience", value: "all_paired", label: "所有已配對" },
+  { key: "audience", value: "selected", label: "指定節點" },
+  { key: "audience", value: "none", label: "不公開" },
 ];
 
 function renderChips() {
@@ -87,6 +88,17 @@ function renderChips() {
     };
     container.append(button);
   }
+}
+
+// describeAudience answers "published to whom" in one cell.
+function describeAudience(audience) {
+  const mode = audience?.mode ?? "none";
+  if (mode === "all_paired") return { text: "所有已配對", published: true };
+  if (mode === "selected") {
+    const count = audience?.nodes?.length ?? 0;
+    return { text: count === 0 ? "指定節點（無）" : `${count} 個節點`, published: count > 0 };
+  }
+  return { text: "不公開", published: false };
 }
 
 function shortId(id) {
@@ -114,7 +126,7 @@ function renderRows(rows) {
     if (picked) tr.className = "sel";
 
     const { rest } = shortId(session.id);
-    const isPublic = session.visibility === "public";
+    const audience = describeAudience(session.audience);
 
     const checkCell = element("td", "col-check");
     const checkbox = document.createElement("input");
@@ -139,7 +151,7 @@ function renderRows(rows) {
       element("td", "", session.provider),
       cell(element("td"), pill(session.status, statusPillClass(session.status))),
       element("td", "muted", session.management),
-      cell(element("td"), pill(isPublic ? "公開" : "私密", isPublic ? "public" : "")),
+      cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
       cwdCell,
       element("td", "muted", relative(session.lastSeenAt))
     );
@@ -157,7 +169,7 @@ function render() {
 
   const count = state.selected.size;
   el("selection-count").textContent = count ? `已選取 ${count} 個` : "未選取";
-  el("btn-publish").disabled = count === 0 || state.busy;
+  el("btn-audience").disabled = count === 0 || state.busy;
   el("btn-unpublish").disabled = count === 0 || state.busy;
 
   const allPicked = rows.length > 0 && rows.every((s) => state.selected.has(s.id));
@@ -168,7 +180,9 @@ function render() {
 
   el("footer-left").textContent =
     `顯示 ${rows.length} / ${state.counts.total ?? 0} 個 session` +
-    ` · 公開 ${state.counts.public ?? 0} · 私密 ${state.counts.private ?? 0}`;
+    ` · 所有已配對 ${state.counts.all_paired ?? 0}` +
+    ` · 指定節點 ${state.counts.selected ?? 0}` +
+    ` · 不公開 ${state.counts.none ?? 0}`;
 }
 
 /* ---------------- banner ---------------- */
@@ -225,19 +239,57 @@ async function withBusy(label, fn) {
   }
 }
 
-async function applyVisibility(visibility) {
+async function applyAudience(audience, noun) {
   const ids = [...state.selected];
-  const noun = visibility === "public" ? "公開" : "收回";
   await withBusy(noun, async () => {
-    const result = await SetVisibility(ids, visibility);
+    const result = await SetAudience(ids, audience);
     await load();
     if (result.failed > 0) {
-      banner(`${noun} ${result.changed} 個成功、${result.failed} 個失敗：${(result.errors || [])[0] || ""}`);
+      banner(`${noun}：${result.changed} 個成功、${result.failed} 個失敗 — ${(result.errors || [])[0] || ""}`);
     } else {
       state.selected.clear();
+      closeAudienceModal();
       banner(`已${noun} ${result.changed} 個 session。`, true);
     }
   });
+}
+
+/* ---------------- audience picker ---------------- */
+
+function selectedMode() {
+  const checked = document.querySelector('input[name="audience-mode"]:checked');
+  return checked ? checked.value : "none";
+}
+
+function syncAudienceForm() {
+  el("audience-nodes").classList.toggle("hidden", selectedMode() !== "selected");
+}
+
+function openAudienceModal() {
+  el("audience-count").textContent = String(state.selected.size);
+  el("audience-modal").classList.remove("hidden");
+  syncAudienceForm();
+}
+
+function closeAudienceModal() {
+  el("audience-modal").classList.add("hidden");
+}
+
+function readAudienceForm() {
+  const mode = selectedMode();
+  const nodes =
+    mode === "selected"
+      ? el("audience-node-input")
+          .value.split(/[\s,]+/)
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [];
+  return {
+    mode,
+    nodes,
+    exportCwd: el("audience-cwd").checked,
+    acceptMessages: el("audience-messages").checked,
+  };
 }
 
 /* ---------------- wiring ---------------- */
@@ -254,8 +306,26 @@ el("select-all").onchange = (event) => {
   render();
 };
 
-el("btn-publish").onclick = () => applyVisibility("public");
-el("btn-unpublish").onclick = () => applyVisibility("private");
+el("btn-audience").onclick = openAudienceModal;
+el("audience-close").onclick = closeAudienceModal;
+el("audience-modal").onclick = (event) => {
+  if (event.target === el("audience-modal")) closeAudienceModal();
+};
+for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
+  radio.onchange = syncAudienceForm;
+}
+el("audience-apply").onclick = () => {
+  const audience = readAudienceForm();
+  if (audience.mode === "selected" && audience.nodes.length === 0) {
+    banner("指定節點需要至少一個節點 ID；要不公開請選「不公開」。");
+    return;
+  }
+  const noun =
+    audience.mode === "none" ? "收回" : audience.mode === "all_paired" ? "公開給所有已配對節點" : "公開給指定節點";
+  applyAudience(audience, noun);
+};
+
+el("btn-unpublish").onclick = () => applyAudience({ mode: "none", nodes: [], exportCwd: false, acceptMessages: false }, "收回");
 
 el("btn-reload").onclick = () => withBusy("重新整理", load);
 

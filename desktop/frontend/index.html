@@ -49,7 +49,7 @@
               <th>PROVIDER</th>
               <th>狀態</th>
               <th>管理</th>
-              <th>公開</th>
+              <th>公開對象</th>
               <th>工作目錄</th>
               <th>最後活動</th>
             </tr>
@@ -63,6 +63,54 @@
         <span id="footer-left">—</span>
         <span id="footer-right" class="muted"></span>
       </footer>
+    </div>
+
+    <div id="audience-modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2>設定公開對象</h2>
+          <button id="audience-close" class="ghost">取消</button>
+        </header>
+        <p class="muted">套用到已選取的 <b id="audience-count">0</b> 個 session。公開只會送出中繼資料，不含任何對話內容。</p>
+
+        <div class="options">
+          <label class="option">
+            <input type="radio" name="audience-mode" value="none" checked />
+            <span>
+              <b>不公開</b>
+              <em>僅本機可見，不會出現在任何 heartbeat。</em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-mode" value="all_paired" />
+            <span>
+              <b>所有已配對節點</b>
+              <em>日後新配對的節點會自動看得到。</em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-mode" value="selected" />
+            <span>
+              <b>指定節點</b>
+              <em>只有列出的節點看得到；新節點預設看不到。</em>
+            </span>
+          </label>
+          <div id="audience-nodes" class="nodes hidden">
+            <input id="audience-node-input" type="text" placeholder="輸入節點 ID，以空白或逗號分隔" autocomplete="off" />
+            <p class="muted">節點配對尚未實作，因此這裡先手動輸入節點 ID。</p>
+          </div>
+        </div>
+
+        <div class="flags">
+          <label><input type="checkbox" id="audience-cwd" /> 包含工作目錄路徑</label>
+          <label><input type="checkbox" id="audience-messages" /> 允許對方排入訊息</label>
+        </div>
+
+        <div class="modal-actions">
+          <span id="audience-note" class="muted">重新掃描不會改變這裡的設定。</span>
+          <button id="audience-apply" class="primary">套用</button>
+        </div>
+      </div>
     </div>
 
     <div id="modal" class="modal hidden">

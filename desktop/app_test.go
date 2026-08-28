@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -55,49 +54,21 @@ func TestSetVisibilityRejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestSetVisibilityBatch is the behavior the CLI could not offer: one choice
-// applied to many sessions, with partial failures reported rather than hidden.
-func TestSetVisibilityBatch(t *testing.T) {
-	var mu sync.Mutex
-	published := make([]string, 0)
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/visibility") || r.Method != http.MethodPut {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		var payload struct {
-			Visibility string `json:"visibility"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&payload)
-		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/sessions/"), "/visibility")
-		if strings.Contains(id, "broken") {
-			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]string{"code": "REGISTRY_ERROR", "message": "boom"},
-			})
-			return
-		}
-		mu.Lock()
-		published = append(published, id+"="+payload.Visibility)
-		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "visibility": payload.Visibility})
+// A store failure must surface as an error rather than as a silent no-op.
+func TestSetAudienceSurfacesTransportFailures(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{"code": "REGISTRY_ERROR", "message": "registry unavailable"},
+		})
 	}))
 	defer server.Close()
 
 	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
-	result, err := app.SetVisibility([]string{"claude:one", "codex:broken", "codex:two"}, "public")
-	if err != nil {
-		t.Fatalf("SetVisibility() = %v", err)
-	}
-	if result.Changed != 2 || result.Failed != 1 {
-		t.Errorf("changed=%d failed=%d, want 2 and 1", result.Changed, result.Failed)
-	}
-	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "REGISTRY_ERROR") {
-		t.Errorf("errors = %v, want one REGISTRY_ERROR entry", result.Errors)
-	}
-	if len(published) != 2 {
-		t.Errorf("node received %d writes, want 2", len(published))
+	if _, err := app.SetAudience([]string{"claude:a"}, Audience{Mode: "none"}); err == nil {
+		t.Error("SetAudience reported success against a failing node")
+	} else if !strings.Contains(err.Error(), "REGISTRY_ERROR") {
+		t.Errorf("error = %v; want the node's error code", err)
 	}
 }
 
@@ -148,5 +119,104 @@ func TestOverviewLoadsAllPages(t *testing.T) {
 	}
 	if overview.Counts["total"] != 3 || overview.Counts["private"] != 3 {
 		t.Errorf("counts = %v, want total and private of 3", overview.Counts)
+	}
+}
+
+func TestSetAudienceRejectsIncoherentPolicies(t *testing.T) {
+	app := &App{client: newClient(defaultNodeURL), url: defaultNodeURL, ctx: context.Background()}
+	cases := map[string]struct {
+		ids      []string
+		audience Audience
+	}{
+		"no sessions":            {nil, Audience{Mode: "none"}},
+		"unknown mode":           {[]string{"claude:a"}, Audience{Mode: "everyone"}},
+		"selected without nodes": {[]string{"claude:a"}, Audience{Mode: "selected"}},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := app.SetAudience(testCase.ids, testCase.audience); err == nil {
+				t.Errorf("SetAudience accepted %+v", testCase.audience)
+			}
+		})
+	}
+}
+
+// A batch must reach the node as one request and report per-session outcomes.
+func TestSetAudienceBatchesAndReportsFailures(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sessions/audience" || r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		requests++
+		var payload struct {
+			IDs      []string `json:"ids"`
+			Audience Audience `json:"audience"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		if payload.Audience.Mode != "selected" || len(payload.Audience.Nodes) != 1 {
+			t.Errorf("audience reached the node as %+v", payload.Audience)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"changed": 2, "failed": 1,
+			"results": []map[string]string{
+				{"id": "claude:one"},
+				{"id": "codex:broken", "error": "invalid session: boom"},
+				{"id": "codex:two"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	result, err := app.SetAudience(
+		[]string{"claude:one", "codex:broken", "codex:two"},
+		Audience{Mode: "selected", Nodes: []string{"node_a"}, ExportCWD: true},
+	)
+	if err != nil {
+		t.Fatalf("SetAudience() = %v", err)
+	}
+	if requests != 1 {
+		t.Errorf("made %d requests, want one batch", requests)
+	}
+	if result.Changed != 2 || result.Failed != 1 {
+		t.Errorf("changed/failed = %d/%d", result.Changed, result.Failed)
+	}
+	if len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "codex:broken") {
+		t.Errorf("errors = %v", result.Errors)
+	}
+}
+
+// Publishing through the simple path means the explicit all-paired choice and
+// nothing more: it says who may see the session, not how much of it. The export
+// flags are turned on in the picker, never as a side effect.
+func TestSetVisibilityMapsOntoAudience(t *testing.T) {
+	var seen Audience
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Audience Audience `json:"audience"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		seen = payload.Audience
+		_ = json.NewEncoder(w).Encode(map[string]any{"changed": 1, "failed": 0})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if _, err := app.SetVisibility([]string{"claude:a"}, "public"); err != nil {
+		t.Fatal(err)
+	}
+	if seen.Mode != "all_paired" {
+		t.Errorf("publish sent mode %q, want all_paired", seen.Mode)
+	}
+	if seen.ExportCWD || seen.AcceptMessages {
+		t.Errorf("publish opened an export flag without being asked: %+v", seen)
+	}
+	if _, err := app.SetVisibility([]string{"claude:a"}, "private"); err != nil {
+		t.Fatal(err)
+	}
+	if seen.Mode != "none" {
+		t.Errorf("unpublish sent %+v", seen)
 	}
 }

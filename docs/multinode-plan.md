@@ -139,7 +139,7 @@ are complete.
    allowlisted remote summary and validate generated payloads against the draft
    schema. Verifiable: a public synthetic session exports only the documented
    fields and a private session exports nothing.
-1. **Audience model, local only** (#2, #3, #4, #5, #6). Replace the visibility
+1. **Audience model, local only** (#2, #3, #4, #5, #6) — done. Replace the visibility
    boolean with an audience table plus export flags. No network. The desktop
    app gets the audience picker; `ah publish` keeps working as "audience = all
    paired". Verifiable: rediscovery still preserves choices; heartbeat preview

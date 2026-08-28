@@ -34,7 +34,7 @@ authenticated LAN pairing. It is planned in
 |---|---|---|
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
-| Per-node privacy, pairing, presence, messaging | Planned in ordered increments | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
+| Per-node privacy | Implemented; pairing, presence and messaging planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
 | Desktop metadata rendering hardening | Required before desktop distribution | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
 
@@ -62,6 +62,9 @@ go run ./cmd/ah list
 go run ./cmd/ah status <session-id>
 go run ./cmd/ah publish <session-id>
 go run ./cmd/ah unpublish <session-id>
+go run ./cmd/ah audience <session-id>
+go run ./cmd/ah audience <session-id> all-paired --cwd
+go run ./cmd/ah audience <session-id> selected node_laptop node_build --cwd --messages
 go run ./cmd/ah send <session-id> "please review the schema"
 go run ./cmd/ah inbox <session-id>
 ```
@@ -91,10 +94,19 @@ The app requires a running node and talks to it over the same local HTTP API as 
 single-node build, publishing controls a local export preview only:
 
 ```text
-discovered session -> PRIVATE -> absent from heartbeat/broker/MCP remote view
-                                |
-                                +-- ah publish -> PUBLIC preview
+discovered session -> audience: none -> absent from every export view
+                                       |
+                                       +-- all_paired -> every paired node, including future ones
+                                       +-- selected   -> only the nodes the owner named
 ```
+
+Publishing answers *to whom*, not merely *whether*. `all_paired` and `selected`
+differ the moment a new node is paired, so they are separate choices rather than
+a list that happens to hold everything.
+
+Two per-session flags default closed: the working directory travels only when
+the owner opts in, and a session accepts queued messages only when the owner
+opts in.
 
 The preview is public-only and is projected into an allowlisted
 `SessionSummary`: the qualified AgentHub address, provider, status, management
@@ -103,12 +115,12 @@ provider session ID as a separate field, internal update time, metadata paths,
 transcript bodies, and prompt contents are excluded, and the published schema
 rejects them. A per-session opt-in for the working directory is still to come.
 
-The accepted target model is documented in
-[ADR-001](docs/decisions/001-session-audience-and-export-boundary.md): every
-session starts with audience `none`; the owner may later choose all paired nodes
-or selected nodes. Existing `public` preview choices are reset to `none` when
-the first network-capable migration lands, because they were never consent to
-share with a real remote peer.
+The model is documented in
+[ADR-001](docs/decisions/001-session-audience-and-export-boundary.md) and is now
+implemented. A database written by an earlier build upgrades with every session
+at audience `none`, including rows previously marked public: that flag controlled
+a local preview at a time when no remote peer existed, so it was never consent to
+share with one.
 
 Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued—not delivered or read.
 
@@ -123,7 +135,10 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `POST` | `/v1/discover` | Rescan provider metadata; reports per-provider counts and `skipped` |
 | `GET` | `/v1/sessions?page=1&pageSize=50` | List owner-local sessions |
 | `GET` | `/v1/sessions/{id}` | Read one session |
-| `PUT` | `/v1/sessions/{id}/visibility` | Set `private` or `public` |
+| `PUT` | `/v1/sessions/{id}/visibility` | Compatibility: `public` means the explicit all-paired choice |
+| `GET` | `/v1/sessions/{id}/audience` | Read one session's export policy |
+| `PUT` | `/v1/sessions/{id}/audience` | Replace one session's export policy |
+| `POST` | `/v1/sessions/audience` | Apply one policy to many sessions |
 | `GET` | `/v1/heartbeat` | Preview the broker envelope this node would send; public sessions only |
 | `POST` | `/v1/messages` | Queue a local message |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |

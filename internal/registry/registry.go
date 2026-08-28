@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
@@ -61,7 +62,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     provider TEXT NOT NULL CHECK (provider IN ('claude', 'codex')),
     provider_session_id TEXT NOT NULL CHECK (instr(provider_session_id, '/') = 0),
     management TEXT NOT NULL CHECK (management IN ('managed', 'unmanaged')),
-    visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+    audience_mode TEXT NOT NULL DEFAULT 'none' CHECK (audience_mode IN ('none', 'all_paired', 'selected')),
+    export_cwd INTEGER NOT NULL DEFAULT 0 CHECK (export_cwd IN (0, 1)),
+    accept_messages INTEGER NOT NULL DEFAULT 0 CHECK (accept_messages IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'inactive', 'unknown')),
     status_source TEXT NOT NULL,
     cwd TEXT NOT NULL DEFAULT '',
@@ -71,8 +74,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     updated_at_ms INTEGER NOT NULL,
     UNIQUE(provider, provider_session_id)
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_visibility_updated
-    ON sessions(visibility, updated_at_ms DESC, id);
+CREATE TABLE IF NOT EXISTS session_audience (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL CHECK (
+        length(node_id) BETWEEN 1 AND 128
+        AND node_id NOT GLOB '*[^ -~]*'
+    ),
+    granted_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_audience_node
+    ON session_audience(node_id, session_id);
 CREATE TABLE IF NOT EXISTS node_identity (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     id TEXT NOT NULL UNIQUE,
@@ -92,6 +104,61 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
 `
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate registry: %w", err)
+	}
+	if err := r.addSessionPolicyColumns(ctx); err != nil {
+		return err
+	}
+	// Indexes come last: a database created by an earlier build only gains the
+	// audience columns in the step above.
+	const indexes = `
+CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
+    ON sessions(audience_mode, updated_at_ms DESC, id);
+`
+	if _, err := r.db.ExecContext(ctx, indexes); err != nil {
+		return fmt.Errorf("create registry indexes: %w", err)
+	}
+	return nil
+}
+
+// addSessionPolicyColumns brings a database created by an earlier build up to
+// the audience model.
+//
+// Every column defaults to the closed value, which is also the decision in
+// ADR-001: a session marked public before any peer could exist was never
+// consent to reach one, so an upgraded database publishes nothing until the
+// owner chooses again.
+func (r *Registry) addSessionPolicyColumns(ctx context.Context) error {
+	columns := []struct{ name, definition string }{
+		{"audience_mode", "TEXT NOT NULL DEFAULT 'none' CHECK (audience_mode IN ('none', 'all_paired', 'selected'))"},
+		{"export_cwd", "INTEGER NOT NULL DEFAULT 0 CHECK (export_cwd IN (0, 1))"},
+		{"accept_messages", "INTEGER NOT NULL DEFAULT 0 CHECK (accept_messages IN (0, 1))"},
+	}
+
+	existing := map[string]bool{}
+	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('sessions')`)
+	if err != nil {
+		return fmt.Errorf("read sessions columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan sessions column: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read sessions columns: %w", err)
+	}
+
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE sessions ADD COLUMN %s %s", column.name, column.definition)
+		if _, err := r.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("add sessions column %q: %w", column.name, err)
+		}
 	}
 	return nil
 }
@@ -135,8 +202,16 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
 		return model.Message{}, fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
 	}
-	if _, err := r.GetSession(ctx, message.To); err != nil {
+	destination, err := r.GetSession(ctx, message.To)
+	if err != nil {
 		return model.Message{}, err
+	}
+	// A session accepts messages only when its owner said so. Refusing here
+	// keeps an unwanted queue from building up for a session nobody intends to
+	// deliver to.
+	if !destination.Audience.AcceptMessages {
+		return model.Message{}, fmt.Errorf(
+			"%w: session %q does not accept messages", ErrInvalidSession, message.To)
 	}
 	if message.ID == "" {
 		var err error
@@ -148,10 +223,9 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if message.CreatedAt.IsZero() {
 		message.CreatedAt = time.Now().UTC()
 	}
-	_, err := r.db.ExecContext(ctx, `
+	if _, err := r.db.ExecContext(ctx, `
 INSERT INTO messages (id, sender_id, recipient_id, body, created_at_ms)
-VALUES (?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Body, message.CreatedAt.UTC().UnixMilli())
-	if err != nil {
+VALUES (?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Body, message.CreatedAt.UTC().UnixMilli()); err != nil {
 		return model.Message{}, fmt.Errorf("create message: %w", err)
 	}
 	return message, nil
@@ -191,9 +265,9 @@ func (r *Registry) UpsertSession(ctx context.Context, session model.Session) (mo
 	}
 	const query = `
 INSERT INTO sessions (
-    id, provider, provider_session_id, management, visibility, status,
+    id, provider, provider_session_id, management, status,
     status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms
-) VALUES (?, ?, ?, ?, 'private', ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     provider = excluded.provider,
     provider_session_id = excluded.provider_session_id,
@@ -219,8 +293,14 @@ ON CONFLICT(id) DO UPDATE SET
 
 func (r *Registry) GetSession(ctx context.Context, id string) (model.Session, error) {
 	const query = `
-SELECT id, provider, provider_session_id, management, visibility, status,
-       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms
+SELECT id, provider, provider_session_id, management, status,
+       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
+       audience_mode, export_cwd, accept_messages,
+       (audience_mode = 'all_paired'
+        OR (audience_mode = 'selected'
+            AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
+       COALESCE((SELECT group_concat(node_id, char(31)) FROM session_audience
+                 WHERE session_id = sessions.id), '') AS grants
 FROM sessions WHERE id = ?`
 	session, err := scanSession(r.db.QueryRowContext(ctx, query, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -234,11 +314,17 @@ FROM sessions WHERE id = ?`
 
 func (r *Registry) ListSessions(ctx context.Context, options ListOptions) ([]model.Session, error) {
 	query := `
-SELECT id, provider, provider_session_id, management, visibility, status,
-       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms
+SELECT id, provider, provider_session_id, management, status,
+       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
+       audience_mode, export_cwd, accept_messages,
+       (audience_mode = 'all_paired'
+        OR (audience_mode = 'selected'
+            AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
+       COALESCE((SELECT group_concat(node_id, char(31)) FROM session_audience
+                 WHERE session_id = sessions.id), '') AS grants
 FROM sessions`
 	if options.PublicOnly {
-		query += ` WHERE visibility = 'public'`
+		query += ` ` + publishedPredicate
 	}
 	query += ` ORDER BY updated_at_ms DESC, id ASC`
 	var args []any
@@ -270,7 +356,7 @@ FROM sessions`
 func (r *Registry) CountSessions(ctx context.Context, publicOnly bool) (int, error) {
 	query := `SELECT COUNT(*) FROM sessions`
 	if publicOnly {
-		query += ` WHERE visibility = 'public'`
+		query += ` ` + publishedPredicate
 	}
 	var count int
 	if err := r.db.QueryRowContext(ctx, query).Scan(&count); err != nil {
@@ -279,41 +365,182 @@ func (r *Registry) CountSessions(ctx context.Context, publicOnly bool) (int, err
 	return count, nil
 }
 
+// SetVisibility keeps the pre-audience call working: publishing means the
+// explicit "all paired nodes" choice, and unpublishing means nobody.
+//
+// It is a convenience over SetAudience, not a second way to store the decision.
 func (r *Registry) SetVisibility(ctx context.Context, id string, visibility model.Visibility) error {
-	if visibility != model.VisibilityPrivate && visibility != model.VisibilityPublic {
+	switch visibility {
+	case model.VisibilityPublic:
+		// The export flags stay closed. Publishing through the old call says
+		// who may see the session, not how much of it; the working directory
+		// names the account and the project and needs its own opt-in.
+		return r.SetAudience(ctx, id, model.Audience{Mode: model.AudienceAllPaired})
+	case model.VisibilityPrivate:
+		return r.SetAudience(ctx, id, model.Audience{Mode: model.AudienceNone})
+	default:
 		return fmt.Errorf("%w: visibility %q is not private or public", ErrInvalidSession, visibility)
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE sessions SET visibility = ?, updated_at_ms = ? WHERE id = ?`, visibility, time.Now().UTC().UnixMilli(), id)
+}
+
+// SetAudience replaces a session's export policy.
+//
+// The whole policy is written at once, inside a transaction: a mode and its
+// grants that disagree would be a policy nobody chose, and the window where
+// they disagree is exactly when a heartbeat could read it.
+func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Audience) error {
+	if !model.ValidAudienceMode(audience.Mode) {
+		return fmt.Errorf("%w: audience mode %q is not none, all_paired or selected", ErrInvalidSession, audience.Mode)
+	}
+	nodes := make([]string, 0, len(audience.Nodes))
+	seen := map[string]bool{}
+	for _, node := range audience.Nodes {
+		if node == "" || len(node) > 128 {
+			return fmt.Errorf("%w: node id %q is empty or too long", ErrInvalidSession, node)
+		}
+		if strings.ContainsFunc(node, unicode.IsControl) {
+			return fmt.Errorf("%w: node id %q contains a control character", ErrInvalidSession, node)
+		}
+		if seen[node] {
+			continue
+		}
+		seen[node] = true
+		nodes = append(nodes, node)
+	}
+	if audience.Mode != model.AudienceSelected && len(nodes) > 0 {
+		return fmt.Errorf("%w: audience mode %q does not take a node list", ErrInvalidSession, audience.Mode)
+	}
+
+	transaction, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("set visibility for %q: %w", id, err)
+		return fmt.Errorf("begin audience update: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	result, err := transaction.ExecContext(ctx,
+		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, updated_at_ms = ? WHERE id = ?`,
+		audience.Mode, boolToInt(audience.ExportCWD), boolToInt(audience.AcceptMessages),
+		time.Now().UTC().UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("set audience for %q: %w", id, err)
 	}
 	count, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read visibility update result: %w", err)
+		return fmt.Errorf("read audience update result: %w", err)
 	}
 	if count == 0 {
 		return fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
+
+	// Grants are replaced rather than merged. Leaving a stale row would keep a
+	// node authorized after the owner removed it.
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM session_audience WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("clear audience grants for %q: %w", id, err)
+	}
+	now := time.Now().UTC().UnixMilli()
+	for _, node := range nodes {
+		if _, err := transaction.ExecContext(ctx,
+			`INSERT INTO session_audience (session_id, node_id, granted_at_ms) VALUES (?, ?, ?)`,
+			id, node, now); err != nil {
+			return fmt.Errorf("grant %q access to %q: %w", node, id, err)
+		}
+	}
+
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit audience update: %w", err)
+	}
 	return nil
+}
+
+// GetAudience reads a session's export policy including its grants.
+func (r *Registry) GetAudience(ctx context.Context, id string) (model.Audience, error) {
+	var audience model.Audience
+	var exportCWD, acceptMessages int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT audience_mode, export_cwd, accept_messages FROM sessions WHERE id = ?`, id).
+		Scan(&audience.Mode, &exportCWD, &acceptMessages)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Audience{}, fmt.Errorf("session %q: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return model.Audience{}, fmt.Errorf("get audience for %q: %w", id, err)
+	}
+	audience.ExportCWD = exportCWD == 1
+	audience.AcceptMessages = acceptMessages == 1
+
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT node_id FROM session_audience WHERE session_id = ? ORDER BY node_id`, id)
+	if err != nil {
+		return model.Audience{}, fmt.Errorf("list audience grants for %q: %w", id, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var node string
+		if err := rows.Scan(&node); err != nil {
+			return model.Audience{}, fmt.Errorf("scan audience grant: %w", err)
+		}
+		audience.Nodes = append(audience.Nodes, node)
+	}
+	if err := rows.Err(); err != nil {
+		return model.Audience{}, fmt.Errorf("read audience grants for %q: %w", id, err)
+	}
+	return audience, nil
+}
+
+// grantSeparator joins node IDs inside one SQL value. Node IDs reject control
+// characters, so it cannot appear inside one.
+const grantSeparator = "\x1f"
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
+// publishedPredicate selects sessions that leave this host at all. "selected"
+// with no grants publishes to nobody, so it must not count as published.
+const publishedPredicate = `WHERE (
+    audience_mode = 'all_paired'
+    OR (audience_mode = 'selected'
+        AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))
+)`
+
 func scanSession(row rowScanner) (model.Session, error) {
 	var session model.Session
 	var lastSeenMS, updatedMS int64
+	var exportCWD, acceptMessages, published int
+	var grants string
 	err := row.Scan(
 		&session.ID, &session.Provider, &session.ProviderSessionID, &session.Management,
-		&session.Visibility, &session.Status, &session.StatusSource, &session.CWD,
+		&session.Status, &session.StatusSource, &session.CWD,
 		&session.Source, &session.MetadataPath, &lastSeenMS, &updatedMS,
+		&session.Audience.Mode, &exportCWD, &acceptMessages, &published, &grants,
 	)
 	if err != nil {
 		return model.Session{}, err
 	}
+	session.Audience.ExportCWD = exportCWD == 1
+	session.Audience.AcceptMessages = acceptMessages == 1
 	session.LastSeenAt = time.UnixMilli(lastSeenMS).UTC()
 	session.UpdatedAt = time.UnixMilli(updatedMS).UTC()
+	// Visibility is derived, never stored: one source of truth for "who may
+	// see this" avoids the two disagreeing.
+	// Grants come back with the row. Loading them separately would leave
+	// Audience.PublishesTo answering "no" for a selected session read from a
+	// listing, so the same policy would mean different things depending on how
+	// it was fetched.
+	if grants != "" {
+		session.Audience.Nodes = strings.Split(grants, grantSeparator)
+	}
+	session.Visibility = model.VisibilityPrivate
+	if published == 1 {
+		session.Visibility = model.VisibilityPublic
+	}
 	return session, nil
 }
 
