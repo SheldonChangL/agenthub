@@ -133,9 +133,10 @@ func LoadOrCreateKeypair(directory string) (Keypair, error) {
 // under node.key means something else chose where the identity is read from,
 // and a directory or device there means the path is not what this node wrote.
 func readKeyFile(path string) ([]byte, error) {
-	// Lstat before opening so a link is refused rather than followed. The open
-	// below re-checks through the handle, which is what closes the gap between
-	// the two calls.
+	// Lstat before opening so a link is refused rather than followed, then check
+	// through the handle that the bytes actually read came from the file that was
+	// inspected. Two observations that are each "a regular file" are not
+	// necessarily the same regular file.
 	linkInfo, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -165,6 +166,9 @@ func readKeyFile(path string) ([]byte, error) {
 		return nil, fmt.Errorf(
 			"node key %s is not a regular file (mode %s); refusing to read it", path, info.Mode())
 	}
+	if err := sameFileOrRefuse(linkInfo, info, path); err != nil {
+		return nil, err
+	}
 	// Checked on every load, not only at creation: a key restored from a backup
 	// as 0644 would otherwise be used silently.
 	if err := checkKeyFileAccess(info, path); err != nil {
@@ -189,22 +193,62 @@ func readKeyFile(path string) ([]byte, error) {
 // over a 32-byte seed is well under a kilobyte.
 const maxKeyFileSize = 64 * 1024
 
+// sameFileOrRefuse checks that an Lstat observation and an opened handle
+// describe one file, comparing filesystem identity rather than shape.
+//
+// Without this the shape checks could both pass while the path was replaced in
+// between — Lstat sees the real key, the name is swapped for another regular
+// file, and the open reads that one. In practice the window is small and reaching
+// it needs write access to the data directory, which is mode 0700 and owned by
+// the same user the key protects; someone with that access has easier routes.
+// The check is here because the cost is one comparison and the alternative is a
+// comment claiming a guarantee the code did not make.
+func sameFileOrRefuse(linkInfo, handleInfo fs.FileInfo, path string) error {
+	if !os.SameFile(linkInfo, handleInfo) {
+		return fmt.Errorf(
+			"node key %s changed between being inspected and being opened; refusing to read it", path)
+	}
+	return nil
+}
+
+// ErrKeyStorageUnsupported marks a data directory whose filesystem cannot
+// install the key safely. It is a configuration problem with one fix — put the
+// data directory somewhere else — so it is a distinct condition rather than a
+// generic I/O error.
+var ErrKeyStorageUnsupported = errors.New("filesystem cannot store the node key safely")
+
 // installKeyFile writes protected to path, creating it only if absent.
 //
-// The content is written and synced to a temporary file first and only then
-// linked to the final name, because linking is atomic and fails if the name
-// exists. That ordering is what makes a failed install harmless: an ordinary
-// failure — full disk, write error, lost race — leaves the final name either
-// absent or holding a complete key, never a truncated or empty one that every
-// later start would refuse.
+// The content is written and flushed to a temporary file and only then linked to
+// the final name. Hard linking is the create-if-absent primitive here: it is
+// atomic and it fails if the name already exists. Together those give the
+// invariant the loader depends on — node.key is either absent or a complete key,
+// never the empty or truncated file that every later start would refuse.
+//
+// There is deliberately no second route. Writing the final name directly, even
+// with O_EXCL, publishes the name before the content and so reopens exactly the
+// window this ordering exists to close; a crash inside that window strands a key
+// only a human can clear. When linking is unavailable the install fails closed
+// with ErrKeyStorageUnsupported instead, because an operator can move the data
+// directory but cannot recover an identity that was never written whole.
 func installKeyFile(directory, path string, protected []byte) error {
+	return installKeyFileLinkedBy(directory, path, protected, os.Link)
+}
+
+// installKeyFileLinkedBy is installKeyFile with the link step passed in, so a
+// test can observe what a failing filesystem leaves behind. Production always
+// passes os.Link.
+func installKeyFileLinkedBy(
+	directory, path string, protected []byte, link func(oldname, newname string) error,
+) error {
 	temporary, err := os.CreateTemp(directory, ".node.key-*")
 	if err != nil {
 		return fmt.Errorf("create temporary node key: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	// Removed on every path, including success: after linking, the final name
-	// is a second name for the same content and the temporary one is litter.
+	// Removed on every path, including success: after linking, the final name is
+	// a second name for the same content and the temporary one is litter. On a
+	// failed install this is also what leaves the directory as it was found.
 	defer func() { _ = os.Remove(temporaryPath) }()
 
 	if err := writeAndSync(temporary, protected); err != nil {
@@ -215,49 +259,25 @@ func installKeyFile(directory, path string, protected []byte) error {
 		return fmt.Errorf("close temporary node key: %w", err)
 	}
 
-	switch linkErr := os.Link(temporaryPath, path); {
+	switch linkErr := link(temporaryPath, path); {
 	case linkErr == nil:
 	case errors.Is(linkErr, fs.ErrExist):
 		// Report the bare sentinel: the caller reads the winner's key, and a
 		// wrapped *LinkError here would make that check depend on formatting.
 		return fs.ErrExist
 	default:
-		// Not every filesystem supports hard links, and the errno for that
-		// varies. Rather than enumerate them, fall back whenever linking failed
-		// for a reason other than the name already existing: creating the final
-		// name directly still writes complete content before the name appears
-		// and still refuses to overwrite an existing identity. What it gives up
-		// is only crash atomicity — a power loss inside one write can leave a
-		// short file, which the load path reports instead of replacing.
-		return createKeyFileExclusively(path, protected, linkErr)
+		// The final name was never created, so there is nothing to clean up and
+		// nothing for a later start to trip over.
+		return fmt.Errorf(
+			"%w: installing %s needs a filesystem that can create a file atomically only if"+
+				" it is absent, which is done here with a hard link; that failed. Move the data"+
+				" directory to a local disk (APFS, ext4, NTFS) rather than a FAT/exFAT volume or a"+
+				" network share: %w",
+			ErrKeyStorageUnsupported, path, linkErr)
 	}
 
 	if err := syncDirectory(directory); err != nil {
 		return err
-	}
-	return nil
-}
-
-func createKeyFileExclusively(path string, protected []byte, linkErr error) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, keyFileMode)
-	if err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return fs.ErrExist
-		}
-		// Both routes failed; report both, because the link error is usually the
-		// one that says what is wrong with the directory.
-		return fmt.Errorf("install node key: %w (linking first failed: %v)", err, linkErr)
-	}
-	if err := writeAndSync(file, protected); err != nil {
-		_ = file.Close()
-		// This process created the name a moment ago, so removing it cannot
-		// destroy anyone else's key — and leaving it would strand a partial one.
-		_ = os.Remove(path)
-		return err
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("close node key: %w", err)
 	}
 	return nil
 }

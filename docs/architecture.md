@@ -180,16 +180,27 @@ The loader fails closed in both cases. It refuses anything under `node.key` that
 is not a plain regular file — a symlink or a Windows reparse point there means
 something else chose where the identity is read from — refuses a file too large
 to be a key, and refuses a blob it cannot decrypt or that decrypts to the wrong
-length. It never replaces a key it could not read.
+length. It never replaces a key it could not read. It also compares the `Lstat`
+observation with the opened handle using `os.SameFile`: two checks that each say
+"a regular file" do not prove they saw the same file, and the bytes that get used
+must come from the file that was inspected. That window is small and reaching it
+needs write access to a directory that is mode 0700 and owned by the same user
+the key protects, so the check is defence in depth rather than the main barrier.
 
 Creation writes the fully formed bytes to a temporary file, flushes them, and
-only then links that content to `node.key`. Linking is atomic and fails if the
-name already exists, so a concurrent start loses the race and reads the winner's
-key rather than overwriting it, and an ordinary failure leaves `node.key` either
-absent or holding a complete key — never the empty file that every later start
-would refuse. On a filesystem without hard links the final name is created
-directly with `O_EXCL` and removed again if the write fails; that path gives up
-only crash atomicity.
+only then links that content to `node.key`. The hard link is the
+create-if-absent primitive: it is atomic and it fails if the name already exists.
+So a concurrent start loses the race and reads the winner's key rather than
+overwriting it, and any failure leaves `node.key` either absent or holding a
+complete key — never the empty or truncated file that every later start would
+refuse.
+
+There is deliberately no second route. Creating the final name directly, even
+with `O_EXCL`, publishes the name before the content and reopens the window this
+ordering exists to close. When linking is unavailable the install fails with
+`ErrKeyStorageUnsupported` and names the fix — move the data directory off a
+FAT/exFAT volume or network share — because an operator can move a directory but
+cannot recover an identity that was never written whole.
 
 The displayed fingerprint is the public key's SHA-256 rendered as six groups of
 four hex digits. The grouping is for a human comparing two screens during

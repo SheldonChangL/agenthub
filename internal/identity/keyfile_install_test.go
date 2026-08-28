@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"io/fs"
 	"os"
@@ -119,48 +120,108 @@ func TestCreationNeverPublishesAnEmptyKey(t *testing.T) {
 	}
 }
 
-// The fallback used when a filesystem has no hard links must produce the same
-// key file, and must still refuse to overwrite an identity that already exists.
-func TestExclusiveCreateFallbackInstallsACompleteKey(t *testing.T) {
+// A filesystem that cannot link must stop the install, not fall back to a route
+// that creates the final name before the content.
+//
+// The earlier version did fall back, which reopened the very window the
+// temporary-file ordering exists to close. Failing here is recoverable — an
+// operator moves the data directory — whereas a half-written node.key is not.
+func TestLinkFailureLeavesNoKeyBehind(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, keyFileName)
 
-	seed := bytes.Repeat([]byte{0x5A}, 32)
+	seed := bytes.Repeat([]byte{0x5A}, ed25519.SeedSize)
 	protected, err := protectSeed(seed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := createKeyFileExclusively(path, protected, errors.New("pretend links are unsupported")); err != nil {
-		t.Fatal(err)
+
+	refuse := func(string, string) error {
+		return &os.LinkError{Op: "link", Err: errors.ErrUnsupported}
+	}
+	err = installKeyFileLinkedBy(directory, path, protected, refuse)
+	if err == nil {
+		t.Fatal("a failed link reported a successful install")
+	}
+	if !errors.Is(err, ErrKeyStorageUnsupported) {
+		t.Errorf("error = %v; want ErrKeyStorageUnsupported so the message names the fix", err)
 	}
 
-	stored, err := os.ReadFile(path)
+	if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("node.key exists after a failed install (stat error = %v); it must never be published partly", statErr)
+	}
+	entries, err := os.ReadDir(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(stored, protected) {
-		t.Error("the fallback wrote something other than the protected key")
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Errorf("a failed install left %v behind, want an untouched directory", names)
+	}
+}
+
+// The same failure has to surface through the public entry point, and it must
+// not leave a key that a later start would read as this node's identity.
+func TestLoadOrCreateReportsAnUnsupportedFilesystem(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, keyFileName)
+
+	protected, err := protectSeed(bytes.Repeat([]byte{0x11}, ed25519.SeedSize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	refuse := func(string, string) error {
+		return &os.LinkError{Op: "link", Err: errors.ErrUnsupported}
+	}
+	if err := installKeyFileLinkedBy(directory, path, protected, refuse); !errors.Is(err, ErrKeyStorageUnsupported) {
+		t.Fatalf("error = %v; want ErrKeyStorageUnsupported", err)
+	}
+
+	// Nothing was installed, so the next start is a first start rather than a
+	// start that inherits a broken identity.
+	if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stat after failed install = %v, want not-exist", err)
 	}
 	keypair, err := LoadOrCreateKeypair(directory)
 	if err != nil {
-		t.Fatalf("the fallback wrote a key the loader rejects: %v", err)
+		t.Fatalf("a working filesystem could not create a key after an earlier failure: %v", err)
 	}
 	if keypair.Fingerprint() == "" {
 		t.Error("no fingerprint")
 	}
+}
 
-	// A second attempt is a lost race, reported as ErrExist so the caller reads
-	// the winner rather than replacing it.
-	err = createKeyFileExclusively(path, protected, errors.New("pretend links are unsupported"))
-	if !errors.Is(err, fs.ErrExist) {
-		t.Errorf("second create returned %v, want fs.ErrExist", err)
+// Shape alone does not prove identity: two observations can each be "a regular
+// file" and still be different files. The comparison is unit-tested directly
+// because forcing the interleaving in readKeyFile would need brittle timing.
+func TestSameFileOrRefuseComparesIdentityNotShape(t *testing.T) {
+	directory := t.TempDir()
+	first := filepath.Join(directory, "first")
+	second := filepath.Join(directory, "second")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("same length"), keyFileMode); err != nil {
+			t.Fatal(err)
+		}
 	}
-	again, err := os.ReadFile(path)
+
+	firstInfo, err := os.Lstat(first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(stored, again) {
-		t.Error("a losing create modified the installed key")
+	secondInfo, err := os.Lstat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := sameFileOrRefuse(firstInfo, firstInfo, first); err != nil {
+		t.Errorf("refused one file compared with itself: %v", err)
+	}
+	// Same mode, same size, same directory — only identity separates them.
+	if err := sameFileOrRefuse(firstInfo, secondInfo, first); err == nil {
+		t.Error("accepted two different files as one; the shape checks cannot tell them apart")
 	}
 }
 
