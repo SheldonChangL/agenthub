@@ -78,19 +78,24 @@ func (a *App) SetNodeURL(raw string) error {
 }
 
 type Overview struct {
-	Node      NodeIdentity   `json:"node"`
-	Sessions  []Session      `json:"sessions"`
-	Counts    map[string]int `json:"counts"`
-	NodeURL   string         `json:"nodeUrl"`
-	Reachable bool           `json:"reachable"`
-	Error     string         `json:"error,omitempty"`
+	Node     NodeIdentity   `json:"node"`
+	Sessions []Session      `json:"sessions"`
+	Nodes    []TrustedNode  `json:"nodes"`
+	Counts   map[string]int `json:"counts"`
+	// NodeCount is separate from Counts, which is keyed by session attribute
+	// values; a provider or status could otherwise collide with it.
+	NodeCount int    `json:"nodeCount"`
+	NodeURL   string `json:"nodeUrl"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Overview loads everything the management view needs in one round trip so the
 // UI never renders a half-populated table.
 func (a *App) Overview() Overview {
 	activeClient, nodeURL := a.current()
-	result := Overview{NodeURL: nodeURL, Counts: map[string]int{}, Sessions: []Session{}}
+	result := Overview{NodeURL: nodeURL, Counts: map[string]int{},
+		Sessions: []Session{}, Nodes: []TrustedNode{}}
 
 	identity, err := activeClient.node(a.ctx)
 	if err != nil {
@@ -102,10 +107,20 @@ func (a *App) Overview() Overview {
 		result.Error = err.Error()
 		return result
 	}
+	// A pairing list that fails to load must not blank the session view: the
+	// two answer different questions and the owner still needs the sessions.
+	nodes, err := activeClient.trustedNodes(a.ctx)
+	if err != nil {
+		result.Error = err.Error()
+		nodes = []TrustedNode{}
+	}
+
 	result.Reachable = true
 	result.Node = identity
 	result.Sessions = sessions
+	result.Nodes = nodes
 	result.Counts = summarize(sessions)
+	result.NodeCount = len(nodes)
 	return result
 }
 
@@ -192,6 +207,26 @@ func (a *App) SetVisibility(ids []string, visibility string) (VisibilityResult, 
 	default:
 		return VisibilityResult{}, fmt.Errorf("visibility must be public or private, got %q", visibility)
 	}
+}
+
+// TrustNode records a peer whose fingerprint the owner compared on both
+// machines. The node refuses the pairing if the fingerprint does not belong to
+// the key, so a mistyped or substituted key cannot be trusted by accident.
+func (a *App) TrustNode(nodeID, displayName, platform, publicKey, confirmedFingerprint string) (TrustedNode, error) {
+	activeClient, _ := a.current()
+	return activeClient.trustNode(a.ctx, map[string]string{
+		"nodeId":               nodeID,
+		"displayName":          displayName,
+		"platform":             platform,
+		"publicKey":            publicKey,
+		"confirmedFingerprint": confirmedFingerprint,
+	})
+}
+
+// RevokeNode withdraws trust and every session grant the node held.
+func (a *App) RevokeNode(nodeID string) error {
+	activeClient, _ := a.current()
+	return activeClient.revokeNode(a.ctx, nodeID)
 }
 
 // Heartbeat returns the exact payload a future broker would receive. It is the

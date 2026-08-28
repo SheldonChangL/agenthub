@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,8 @@ func TestListSessionsIsPaginated(t *testing.T) {
 	}
 }
 
+const testNodeID = "node_1234567890123456"
+
 func testServer(t *testing.T) (*registry.Registry, http.Handler) {
 	t.Helper()
 	ctx := context.Background()
@@ -144,8 +147,8 @@ func testServer(t *testing.T) (*registry.Registry, http.Handler) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	heartbeats := protocol.NewHeartbeatBuilder(store, model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"})
-	return store, NewServer(store, nil, heartbeats, model.NodeIdentity{ID: "node_1234567890123456"}).Handler()
+	heartbeats := protocol.NewHeartbeatBuilder(store, model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}, apiTestSigner{})
+	return store, NewServer(store, nil, heartbeats, model.NodeIdentity{ID: testNodeID}).Handler()
 }
 
 func perform(t *testing.T, handler http.Handler, method, path string, body any) *httptest.ResponseRecorder {
@@ -163,4 +166,15 @@ func perform(t *testing.T, handler http.Handler, method, path string, body any) 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)
 	return response
+}
+
+// apiTestSigner signs heartbeats in tests with a throwaway key.
+type apiTestSigner struct{}
+
+func (apiTestSigner) Sign(message []byte) []byte {
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	return ed25519.Sign(private, message)
 }

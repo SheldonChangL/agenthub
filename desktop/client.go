@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -36,11 +37,24 @@ type Session struct {
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
+// TrustedNode is a peer this owner has paired with.
+type TrustedNode struct {
+	NodeID      string    `json:"nodeId"`
+	DisplayName string    `json:"displayName"`
+	Platform    string    `json:"platform"`
+	PublicKey   string    `json:"publicKey"`
+	Fingerprint string    `json:"fingerprint"`
+	PairedAt    time.Time `json:"pairedAt"`
+	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
+}
+
 type NodeIdentity struct {
 	ID          string    `json:"id"`
 	DisplayName string    `json:"displayName"`
 	Platform    string    `json:"platform"`
 	CreatedAt   time.Time `json:"createdAt"`
+	PublicKey   string    `json:"publicKey,omitempty"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
 }
 
 type client struct {
@@ -121,6 +135,37 @@ func (c *client) discover(ctx context.Context) (map[string]int, error) {
 		return nil, fmt.Errorf("decode discover result: %w", err)
 	}
 	return counts, nil
+}
+
+func (c *client) trustedNodes(ctx context.Context) ([]TrustedNode, error) {
+	body, err := c.request(ctx, http.MethodGet, "/v1/nodes", nil)
+	if err != nil {
+		return nil, err
+	}
+	var response struct {
+		Nodes []TrustedNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("decode trusted nodes: %w", err)
+	}
+	return response.Nodes, nil
+}
+
+func (c *client) trustNode(ctx context.Context, input map[string]string) (TrustedNode, error) {
+	body, err := c.request(ctx, http.MethodPost, "/v1/nodes", input)
+	if err != nil {
+		return TrustedNode{}, err
+	}
+	var node TrustedNode
+	if err := json.Unmarshal(body, &node); err != nil {
+		return TrustedNode{}, fmt.Errorf("decode trusted node: %w", err)
+	}
+	return node, nil
+}
+
+func (c *client) revokeNode(ctx context.Context, nodeID string) error {
+	_, err := c.request(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(nodeID), nil)
+	return err
 }
 
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {

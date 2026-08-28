@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -31,12 +33,32 @@ func seedSession(t *testing.T, store *registry.Registry, providerSessionID strin
 	return session.ID
 }
 
+// pairPeer trusts a node so it can be granted access. A grant only means
+// something for a node the owner has paired with.
+func pairPeer(t *testing.T, handler http.Handler, nodeID string) {
+	t.Helper()
+	public, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
+		"nodeId": nodeID, "displayName": "peer", "platform": "linux/amd64",
+		"publicKey":            identity.EncodePublicKey(public),
+		"confirmedFingerprint": identity.Fingerprint(public),
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("pair %s = %d %s", nodeID, response.Code, response.Body.String())
+	}
+}
+
 func TestAudienceEndpointRoundTrip(t *testing.T) {
 	store, handler := testServer(t)
 	id := seedSession(t, store, "round-trip")
+	pairPeer(t, handler, "node_a00000000000000")
+	pairPeer(t, handler, "node_b00000000000000")
 
 	set := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience", map[string]any{
-		"mode": "selected", "nodes": []string{"node_b", "node_a"},
+		"mode": "selected", "nodes": []string{"node_b00000000000000", "node_a00000000000000"},
 		"exportCwd": true, "acceptMessages": false,
 	})
 	if set.Code != http.StatusOK {
@@ -66,7 +88,7 @@ func TestAudienceEndpointRejectsUnknownFields(t *testing.T) {
 	id := seedSession(t, store, "unknown-field")
 
 	response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience", map[string]any{
-		"mode": "selected", "node": []string{"node_a"},
+		"mode": "selected", "node": []string{"node_a00000000000000"},
 	})
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("response = %d %s; a misspelled field must be refused", response.Code, response.Body.String())

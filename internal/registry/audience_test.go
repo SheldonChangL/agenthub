@@ -10,6 +10,22 @@ import (
 	"agenthub.local/agenthub/internal/model"
 )
 
+// pairNode makes a node grantable. A grant only means something for a node the
+// owner has paired with, so every audience test that names one pairs it first.
+func pairNode(t *testing.T, store *Registry, nodeID string) string {
+	t.Helper()
+	if err := store.TrustNode(context.Background(), TrustedNode{
+		NodeID:      nodeID,
+		DisplayName: "peer",
+		Platform:    "linux/amd64",
+		PublicKey:   "key-" + nodeID,
+		Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return nodeID
+}
+
 func sessionFixture(providerSessionID string) model.Session {
 	now := time.Now().UTC()
 	return model.Session{
@@ -56,6 +72,7 @@ func TestSelectedWithoutGrantsIsNotPublished(t *testing.T) {
 	if err := store.SetAudience(ctx, session.ID, model.Audience{Mode: model.AudienceSelected}); err != nil {
 		t.Fatal(err)
 	}
+	pairNode(t, store, "node_peer000000000000")
 
 	published, err := store.ListSessions(ctx, ListOptions{PublicOnly: true})
 	if err != nil {
@@ -66,7 +83,7 @@ func TestSelectedWithoutGrantsIsNotPublished(t *testing.T) {
 	}
 
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_peer"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_peer000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +94,7 @@ func TestSelectedWithoutGrantsIsNotPublished(t *testing.T) {
 	if len(published) != 1 {
 		t.Fatalf("granting a node did not publish the session: %+v", published)
 	}
-	if !published[0].Audience.PublishesTo("node_peer") {
+	if !published[0].Audience.PublishesTo("node_peer000000000000") {
 		t.Error("PublishesTo(granted node) = false")
 	}
 }
@@ -91,13 +108,15 @@ func TestSetAudienceReplacesGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	pairNode(t, store, "node_a00000000000000")
+	pairNode(t, store, "node_b00000000000000")
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a", "node_b", "node_a"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000", "node_b00000000000000", "node_a00000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_b"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_b00000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +125,10 @@ func TestSetAudienceReplacesGrants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(audience.Nodes) != 1 || audience.Nodes[0] != "node_b" {
+	if len(audience.Nodes) != 1 || audience.Nodes[0] != "node_b00000000000000" {
 		t.Fatalf("grants = %v, want only node_b", audience.Nodes)
 	}
-	if audience.PublishesTo("node_a") {
+	if audience.PublishesTo("node_a00000000000000") {
 		t.Error("a revoked node still has access")
 	}
 }
@@ -124,8 +143,9 @@ func TestSetAudienceRejectsIncoherentPolicies(t *testing.T) {
 
 	cases := map[string]model.Audience{
 		"unknown mode":            {Mode: "everyone"},
-		"node list without mode":  {Mode: model.AudienceNone, Nodes: []string{"node_a"}},
-		"node list on all paired": {Mode: model.AudienceAllPaired, Nodes: []string{"node_a"}},
+		"node list without mode":  {Mode: model.AudienceNone, Nodes: []string{"node_a00000000000000"}},
+		"node list on all paired": {Mode: model.AudienceAllPaired, Nodes: []string{"node_a00000000000000"}},
+		"unpaired node":           {Mode: model.AudienceSelected, Nodes: []string{"node_never_paired0000"}},
 		"empty node id":           {Mode: model.AudienceSelected, Nodes: []string{""}},
 	}
 	for name, audience := range cases {
@@ -146,8 +166,9 @@ func TestRediscoveryPreservesAudience(t *testing.T) {
 	if _, err := store.UpsertSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
+	pairNode(t, store, "node_a00000000000000")
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a"}, ExportCWD: true, AcceptMessages: true,
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000"}, ExportCWD: true, AcceptMessages: true,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +184,7 @@ func TestRediscoveryPreservesAudience(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if audience.Mode != model.AudienceSelected || len(audience.Nodes) != 1 || audience.Nodes[0] != "node_a" {
+	if audience.Mode != model.AudienceSelected || len(audience.Nodes) != 1 || audience.Nodes[0] != "node_a00000000000000" {
 		t.Errorf("rediscovery changed the audience: %+v", audience)
 	}
 	if !audience.ExportCWD || !audience.AcceptMessages {
@@ -240,8 +261,10 @@ func TestListedSessionsCarryTheirGrants(t *testing.T) {
 	if _, err := store.UpsertSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
+	pairNode(t, store, "node_a00000000000000")
+	pairNode(t, store, "node_b00000000000000")
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a", "node_b"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000", "node_b00000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -259,10 +282,10 @@ func TestListedSessionsCarryTheirGrants(t *testing.T) {
 	}
 
 	for name, got := range map[string]model.Session{"listed": listed[0], "fetched": fetched} {
-		if !got.Audience.PublishesTo("node_a") {
+		if !got.Audience.PublishesTo("node_a00000000000000") {
 			t.Errorf("%s: PublishesTo(node_a) = false", name)
 		}
-		if got.Audience.PublishesTo("node_c") {
+		if got.Audience.PublishesTo("node_c00000000000000") {
 			t.Errorf("%s: PublishesTo(node_c) = true", name)
 		}
 		if len(got.Audience.Nodes) != 2 {
@@ -279,7 +302,7 @@ func TestSetAudienceRejectsControlCharactersInNodeIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a\x1fnode_b"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000\x1fnode_b"},
 	}); err == nil {
 		t.Error("SetAudience accepted a node id containing the grant separator")
 	}

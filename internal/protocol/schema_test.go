@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -105,7 +106,7 @@ func TestHeartbeatEnvelopeMatchesPublishedSchema(t *testing.T) {
 	}
 
 	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
-	envelope, err := protocol.NewHeartbeatBuilder(store, node).Build(ctx, time.Now())
+	envelope, err := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t)).Build(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("build heartbeat: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestHeartbeatOmitsOwnerLocalFields(t *testing.T) {
 	}
 
 	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
-	envelope, err := protocol.NewHeartbeatBuilder(store, node).Build(ctx, time.Now())
+	envelope, err := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t)).Build(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -163,13 +164,13 @@ func TestHeartbeatExcludesPrivateSessions(t *testing.T) {
 	}
 
 	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "linux/amd64"}
-	envelope, err := protocol.NewHeartbeatBuilder(store, node).Build(ctx, time.Now())
+	envelope, err := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t)).Build(ctx, time.Now())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	payload, ok := envelope.Payload.(protocol.HeartbeatPayload)
-	if !ok {
-		t.Fatalf("payload is %T, want HeartbeatPayload", envelope.Payload)
+	payload, err := protocol.DecodePayload[protocol.HeartbeatPayload](envelope)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if len(payload.Sessions) != 0 {
 		t.Errorf("private session leaked into heartbeat: %+v", payload.Sessions)
@@ -190,6 +191,7 @@ func TestSchemaRejectsUnsafeShapes(t *testing.T) {
 			"type":            protocol.TypeNodeHeartbeat,
 			"sentAt":          "2026-08-28T02:00:00Z",
 			"nodeId":          "node_0123456789abcdef0123",
+			"signature":       "c2lnbmF0dXJl",
 			"payload": map[string]any{
 				"sequence":     1,
 				"expiresAt":    "2026-08-28T02:00:30Z",
@@ -231,6 +233,30 @@ func TestSchemaRejectsUnsafeShapes(t *testing.T) {
 		"unknown envelope field": func(doc map[string]any) {
 			doc["extra"] = "value"
 		},
+		"unsigned envelope": func(doc map[string]any) {
+			delete(doc, "signature")
+		},
+		"hello payload carrying sessions": func(doc map[string]any) {
+			doc["type"] = "node.hello"
+			doc["payload"] = map[string]any{
+				"node": map[string]any{
+					"nodeId": "node_0123456789abcdef0123", "displayName": "peer",
+					"platform": "linux/amd64", "publicKey": "AAAA",
+					"fingerprint": "2DCF 9604 DBA9 778A 6DDD 035B",
+				},
+				"sessions": []any{},
+			}
+		},
+		"malformed fingerprint": func(doc map[string]any) {
+			doc["type"] = "pair.request"
+			doc["payload"] = map[string]any{
+				"node": map[string]any{
+					"nodeId": "node_0123456789abcdef0123", "displayName": "peer",
+					"platform": "linux/amd64", "publicKey": "AAAA",
+					"fingerprint": "not-a-fingerprint",
+				},
+			}
+		},
 	}
 
 	for name, mutate := range cases {
@@ -259,8 +285,18 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Both peers are paired: BuildFor refuses an unpaired recipient outright, so
+	// the audience filter is only reachable for a node this owner trusts.
+	for _, nodeID := range []string{"node_a00000000000000", "node_b00000000000000"} {
+		if err := store.TrustNode(ctx, registry.TrustedNode{
+			NodeID: nodeID, DisplayName: "peer " + nodeID, Platform: "linux/amd64",
+			PublicKey: "key-" + nodeID, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := store.SetAudience(ctx, forA.ID, model.Audience{
-		Mode: model.AudienceSelected, Nodes: []string{"node_a"},
+		Mode: model.AudienceSelected, Nodes: []string{"node_a00000000000000"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -271,13 +307,13 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 	}
 
 	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
-	builder := protocol.NewHeartbeatBuilder(store, node)
+	builder := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t))
 	schema := compileSchema(t)
 
 	ids := func(envelope protocol.Envelope) []string {
-		payload, ok := envelope.Payload.(protocol.HeartbeatPayload)
-		if !ok {
-			t.Fatalf("payload is %T", envelope.Payload)
+		payload, err := protocol.DecodePayload[protocol.HeartbeatPayload](envelope)
+		if err != nil {
+			t.Fatal(err)
 		}
 		out := make([]string, 0, len(payload.Sessions))
 		for _, summary := range payload.Sessions {
@@ -286,7 +322,7 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 		return out
 	}
 
-	forNodeA, err := builder.BuildFor(ctx, time.Now(), "node_a")
+	forNodeA, err := builder.BuildFor(ctx, time.Now(), "node_a00000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +333,7 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 		t.Errorf("per-peer envelope does not satisfy the schema: %v", err)
 	}
 
-	forNodeB, err := builder.BuildFor(ctx, time.Now(), "node_b")
+	forNodeB, err := builder.BuildFor(ctx, time.Now(), "node_b00000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,4 +356,192 @@ func TestBuildForFiltersBySelectedAudience(t *testing.T) {
 	if len(ids(preview)) != 2 {
 		t.Errorf("the owner preview showed %v, want everything that leaves the host", ids(preview))
 	}
+}
+
+// Revocation is expressed by omission, so a consumer that merges snapshots
+// never sees one. The test pins the behaviour the documentation relies on.
+func TestRevocationIsExpressedByOmission(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	published := session("revocable", model.ProviderClaude)
+	if _, err := store.UpsertSession(ctx, published); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, published.ID, model.Audience{Mode: model.AudienceAllPaired}); err != nil {
+		t.Fatal(err)
+	}
+	const peer = "node_peer0000000000000"
+	if err := store.TrustNode(ctx, registry.TrustedNode{
+		NodeID: peer, DisplayName: "peer", Platform: "linux/amd64",
+		PublicKey: "key-peer", Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
+	builder := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t))
+
+	count := func(envelope protocol.Envelope) int {
+		payload, err := protocol.DecodePayload[protocol.HeartbeatPayload](envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(payload.Sessions)
+	}
+
+	before, err := builder.BuildFor(ctx, time.Now(), peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count(before) != 1 {
+		t.Fatalf("published session absent from the snapshot")
+	}
+
+	if err := store.SetAudience(ctx, published.ID, model.Audience{Mode: model.AudienceNone}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := builder.BuildFor(ctx, time.Now(), peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count(after) != 0 {
+		t.Errorf("a revoked session is still present; revocation must be an omission")
+	}
+
+	// The sequence must advance so a consumer can tell a newer empty snapshot
+	// from a stale one it should keep.
+	beforePayload, err := protocol.DecodePayload[protocol.HeartbeatPayload](before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterPayload, err := protocol.DecodePayload[protocol.HeartbeatPayload](after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSeq, afterSeq := beforePayload.Sequence, afterPayload.Sequence
+	if afterSeq <= beforeSeq {
+		t.Errorf("sequence went from %d to %d; a consumer cannot order these", beforeSeq, afterSeq)
+	}
+}
+
+// "All paired" has to mean paired.
+//
+// The audience filter alone cannot enforce that: Audience.PublishesTo returns
+// true for an all_paired session and any non-empty string, so a builder that
+// accepted an arbitrary recipient would publish every all_paired session to
+// anyone who supplied a node id. BuildFor therefore refuses a recipient that is
+// not currently in trusted_nodes, and revoking a node takes effect immediately
+// without the owner revisiting each session's audience.
+func TestBuildForRequiresATrustedRecipient(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	const (
+		trusted  = "node_trusted00000000"
+		selected = "node_selected0000000"
+		stranger = "node_stranger0000000"
+	)
+
+	shared := session("shared-with-all-paired", model.ProviderClaude)
+	targeted := session("shared-with-one", model.ProviderCodex)
+	for _, s := range []model.Session{shared, targeted} {
+		if _, err := store.UpsertSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, nodeID := range []string{trusted, selected} {
+		if err := store.TrustNode(ctx, registry.TrustedNode{
+			NodeID: nodeID, DisplayName: "peer " + nodeID, Platform: "linux/amd64",
+			PublicKey: "key-" + nodeID, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetAudience(ctx, shared.ID, model.Audience{Mode: model.AudienceAllPaired}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, targeted.ID, model.Audience{
+		Mode: model.AudienceSelected, Nodes: []string{selected},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
+	builder := protocol.NewHeartbeatBuilder(store, node, newTestKeypair(t))
+
+	count := func(t *testing.T, envelope protocol.Envelope) int {
+		t.Helper()
+		payload, err := protocol.DecodePayload[protocol.HeartbeatPayload](envelope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(payload.Sessions)
+	}
+
+	t.Run("unknown node is refused", func(t *testing.T) {
+		_, err := builder.BuildFor(ctx, time.Now(), stranger)
+		if err == nil {
+			t.Fatal("built a heartbeat for a node this owner never paired with")
+		}
+		if !errors.Is(err, protocol.ErrPeerNotTrusted) {
+			t.Errorf("error = %v; want ErrPeerNotTrusted so a caller can tell this from a store failure", err)
+		}
+	})
+
+	t.Run("empty node is refused", func(t *testing.T) {
+		if _, err := builder.BuildFor(ctx, time.Now(), ""); err == nil {
+			t.Error("BuildFor accepted an empty recipient")
+		}
+	})
+
+	t.Run("trusted node receives all_paired only", func(t *testing.T) {
+		envelope, err := builder.BuildFor(ctx, time.Now(), trusted)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, envelope); got != 1 {
+			t.Errorf("a trusted node received %d sessions, want only the all_paired one", got)
+		}
+	})
+
+	t.Run("selected node also receives the session naming it", func(t *testing.T) {
+		envelope, err := builder.BuildFor(ctx, time.Now(), selected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, envelope); got != 2 {
+			t.Errorf("the selected node received %d sessions, want both", got)
+		}
+	})
+
+	t.Run("revoked node is refused", func(t *testing.T) {
+		if err := store.RevokeNode(ctx, trusted); err != nil {
+			t.Fatal(err)
+		}
+		_, err := builder.BuildFor(ctx, time.Now(), trusted)
+		if err == nil {
+			t.Fatal("a revoked node still received a heartbeat")
+		}
+		if !errors.Is(err, protocol.ErrPeerNotTrusted) {
+			t.Errorf("error = %v; want ErrPeerNotTrusted", err)
+		}
+		// The other peer is unaffected: revoking one node must not silence the
+		// rest.
+		if _, err := builder.BuildFor(ctx, time.Now(), selected); err != nil {
+			t.Errorf("revoking one node broke another peer's heartbeat: %v", err)
+		}
+	})
+
+	// The owner preview is not a recipient view. It is a union and stays one, so
+	// the owner can still see everything that leaves this host at all.
+	t.Run("owner preview remains a union", func(t *testing.T) {
+		preview, err := builder.Build(ctx, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := count(t, preview); got != 2 {
+			t.Errorf("the owner preview showed %d sessions, want everything that leaves the host", got)
+		}
+	})
 }

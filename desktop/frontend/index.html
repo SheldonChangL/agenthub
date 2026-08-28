@@ -16,6 +16,10 @@
           </div>
         </div>
         <div class="actions">
+          <div class="seg" id="view-switch">
+            <span data-view="local" class="on">本機</span>
+            <span data-view="network">區網</span>
+          </div>
           <button id="btn-heartbeat" class="ghost">預覽 heartbeat</button>
           <button id="btn-discover" class="ghost">重新掃描</button>
           <button id="btn-reload" class="ghost">重新整理</button>
@@ -40,7 +44,21 @@
         <button id="btn-unpublish" class="danger" disabled>收回選取</button>
       </section>
 
-      <main class="tablewrap">
+      <section id="network-view" class="networkwrap hidden">
+        <aside class="nodelist">
+          <div class="nodelist-head">已配對節點</div>
+          <div id="node-rows"></div>
+          <div class="nodelist-foot">
+            <button id="btn-pair" class="btn primary">配對新節點…</button>
+            <p class="muted">配對只確認身分。要讓對方看到 session，仍須在本機視圖逐一設定公開對象。</p>
+          </div>
+        </aside>
+        <div class="nodedetail">
+          <div id="node-detail-body" class="empty">選擇左側的節點以檢視詳細資料。</div>
+        </div>
+      </section>
+
+      <main id="local-view" class="tablewrap">
         <table>
           <thead>
             <tr>
@@ -63,6 +81,30 @@
         <span id="footer-left">—</span>
         <span id="footer-right" class="muted"></span>
       </footer>
+    </div>
+
+    <div id="pair-modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2>配對新節點</h2>
+          <button id="pair-close" class="ghost">取消</button>
+        </header>
+        <p class="muted">
+          請在對方機器上執行 <code>ah node</code>，把顯示的欄位填進來。
+          <b>指紋必須逐組完全相符</b>——只核對開頭幾組是可以被偽造的。
+        </p>
+        <div class="pairform">
+          <label>節點 ID<input id="pair-node-id" type="text" autocomplete="off" /></label>
+          <label>顯示名稱<input id="pair-display-name" type="text" autocomplete="off" /></label>
+          <label>平台<input id="pair-platform" type="text" placeholder="linux/amd64" autocomplete="off" /></label>
+          <label>公鑰<input id="pair-public-key" type="text" autocomplete="off" /></label>
+          <label>對方顯示的指紋<input id="pair-fingerprint" type="text" placeholder="2DCF 9604 DBA9 778A 6DDD 035B" autocomplete="off" /></label>
+        </div>
+        <div class="modal-actions">
+          <span class="muted">本機指紋：<code id="local-fingerprint">—</code></span>
+          <button id="pair-submit" class="primary">指紋一致，信任此節點</button>
+        </div>
+      </div>
     </div>
 
     <div id="audience-modal" class="modal hidden">
@@ -97,7 +139,7 @@
           </label>
           <div id="audience-nodes" class="nodes hidden">
             <input id="audience-node-input" type="text" placeholder="輸入節點 ID，以空白或逗號分隔" autocomplete="off" />
-            <p class="muted">節點配對尚未實作，因此這裡先手動輸入節點 ID。</p>
+            <p class="muted">只能授權給已配對節點；可從「區網」頁複製節點 ID。</p>
           </div>
         </div>
 
@@ -119,7 +161,7 @@
           <h2>Broker heartbeat 預覽</h2>
           <button id="modal-close" class="ghost">關閉</button>
         </header>
-        <p class="muted">這是未來 broker 會收到的完整內容。只有標記為公開的 session 會出現在 <code>sessions</code> 陣列裡。</p>
+        <p class="muted">這是本機產生的已簽章 envelope 聯集預覽。實際 transport 會再依接收節點套用 audience。</p>
         <pre id="modal-body"></pre>
       </div>
     </div>

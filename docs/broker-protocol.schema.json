@@ -10,7 +10,8 @@
     "type",
     "sentAt",
     "nodeId",
-    "payload"
+    "payload",
+    "signature"
   ],
   "properties": {
     "protocolVersion": {
@@ -26,7 +27,11 @@
         "node.hello",
         "node.heartbeat",
         "agent.message",
-        "agent.ack"
+        "agent.ack",
+        "pair.request",
+        "pair.approve",
+        "pair.reject",
+        "pair.revoke"
       ]
     },
     "sentAt": {
@@ -36,11 +41,18 @@
     "nodeId": {
       "type": "string",
       "minLength": 16,
-      "maxLength": 128
+      "maxLength": 128,
+      "pattern": "^[!-~]{16,128}$"
     },
     "payload": {
-      "$comment": "Only node.heartbeat has a payload schema today; node.hello, agent.message and agent.ack are reserved names whose payloads are defined by issues #11, #12 and #16. Until then this schema does not constrain their contents, and nothing in the build emits them.",
+      "$comment": "Carried and signed as the exact bytes the sender produced. Do not re-encode a decoded payload before verifying. Bound to a definition per type below; an unbound type carries no payload schema yet.",
       "type": "object"
+    },
+    "signature": {
+      "$comment": "Base64 Ed25519 signature. The signed bytes are NOT a re-serialization of this document: an implementation that re-encodes a decoded payload will compute different bytes and every verification will fail. Build them as the literal ASCII prefix \"agenthub.broker/v1alpha1/envelope\\n\" followed by six length-prefixed fields in this exact order: protocolVersion, messageId, type, sentAt (RFC 3339 with nanoseconds, UTC), nodeId, and the payload's raw JSON bytes exactly as transmitted. Each field is written as its byte length in decimal, then ':', then the bytes. A receiver verifies against the public key it already trusts for the node named in nodeId, never against a key carried in the payload.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
     }
   },
   "additionalProperties": false,
@@ -60,6 +72,101 @@
         "properties": {
           "payload": {
             "$ref": "#/$defs/heartbeat"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "node.hello"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/hello"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pair.request"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/pairRequest"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pair.approve"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/pairApprove"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pair.reject"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/pairReject"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "pair.revoke"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/pairRevoke"
           }
         }
       }
@@ -157,6 +264,128 @@
           "items": {
             "$ref": "#/$defs/sessionSummary"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "nodeDescriptor": {
+      "$comment": "What a node advertises about itself before it is trusted. It carries no session data: a node that has not been paired learns nothing about what runs here.",
+      "type": "object",
+      "required": [
+        "nodeId",
+        "displayName",
+        "platform",
+        "publicKey",
+        "fingerprint"
+      ],
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[!-~]{16,128}$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "publicKey": {
+          "$comment": "Base64 Ed25519 public key: exactly 32 bytes, so exactly 44 base64 characters.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{43}=$"
+        },
+        "fingerprint": {
+          "$comment": "Six groups of four hex digits, for a human to compare across two machines.",
+          "type": "string",
+          "pattern": "^([0-9A-F]{4} ){5}[0-9A-F]{4}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "hello": {
+      "$comment": "Sent before trust exists. Deliberately session-free.",
+      "type": "object",
+      "required": [
+        "node"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/nodeDescriptor"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pairRequest": {
+      "$comment": "Asks a node to trust this one. The requester's key travels here; it becomes trusted only after a human compares the fingerprint on both machines.",
+      "type": "object",
+      "required": [
+        "node"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/nodeDescriptor"
+        }
+      },
+      "additionalProperties": false
+    },
+    "pairApprove": {
+      "$comment": "Confirms trust. Approving grants no session access: an audience is a separate, per-session decision.",
+      "type": "object",
+      "required": [
+        "node",
+        "requestId"
+      ],
+      "properties": {
+        "node": {
+          "$ref": "#/$defs/nodeDescriptor"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false
+    },
+    "pairReject": {
+      "type": "object",
+      "required": [
+        "requestId"
+      ],
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reason": {
+          "enum": [
+            "fingerprint_mismatch",
+            "declined",
+            "expired"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "pairRevoke": {
+      "$comment": "Withdraws trust. A revoked node loses every session grant it held; grants are not restored by pairing again.",
+      "type": "object",
+      "required": [
+        "nodeId"
+      ],
+      "properties": {
+        "nodeId": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[!-~]{16,128}$"
         }
       },
       "additionalProperties": false

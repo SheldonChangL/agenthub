@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/hub"
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
@@ -46,6 +47,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/sessions/{id}/audience", s.setAudience)
 	mux.HandleFunc("POST /v1/sessions/audience", s.setAudienceBatch)
 	mux.HandleFunc("GET /v1/node", s.getNode)
+	mux.HandleFunc("GET /v1/nodes", s.listNodes)
+	mux.HandleFunc("POST /v1/nodes", s.trustNode)
+	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
@@ -101,7 +105,11 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
-	session, err := s.store.GetSession(r.Context(), r.PathValue("id"))
+	id, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	session, err := s.store.GetSession(r.Context(), id)
 	if err != nil {
 		writeRegistryError(w, err)
 		return
@@ -109,8 +117,114 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
+// localSession resolves an address a caller wrote, in either form, to a session
+// on this node.
+//
+// It writes the response and returns false when the address is malformed or
+// names another node, so every session-addressed handler answers the same way.
+func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) {
+	sessionID, err := protocol.ResolveLocal(raw, s.node.ID)
+	switch {
+	case err == nil:
+		return sessionID, true
+	case errors.Is(err, protocol.ErrUnknownNode):
+		// The address is well formed; this node simply cannot reach it. Saying
+		// so is more useful than reporting a bad request, and remote routing
+		// does not exist yet.
+		writeError(w, http.StatusNotFound, "UNKNOWN_NODE", err.Error())
+	default:
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+	}
+	return "", false
+}
+
+func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
+	nodes, err := s.store.TrustedNodes(r.Context())
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+}
+
+// trustNode records a peer whose fingerprint the owner has already compared.
+//
+// The comparison happens outside this call, on two screens. The API cannot do
+// it and must not pretend to: it takes the fingerprint the caller saw and
+// refuses if it does not match the key being trusted, so a mistyped or
+// substituted key cannot slip through as verified.
+func (s *Server) trustNode(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		NodeID               string `json:"nodeId"`
+		DisplayName          string `json:"displayName"`
+		Platform             string `json:"platform"`
+		PublicKey            string `json:"publicKey"`
+		ConfirmedFingerprint string `json:"confirmedFingerprint"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if input.NodeID == s.node.ID {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "a node cannot pair with itself")
+		return
+	}
+
+	public, err := identity.DecodePublicKey(input.PublicKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "public key is not a valid Ed25519 key")
+		return
+	}
+	derived := identity.Fingerprint(public)
+	if !fingerprintsMatch(derived, input.ConfirmedFingerprint) {
+		// The caller believes it verified a different key than it sent.
+		writeError(w, http.StatusBadRequest, "FINGERPRINT_MISMATCH",
+			"the confirmed fingerprint does not belong to the supplied key")
+		return
+	}
+
+	node := registry.TrustedNode{
+		NodeID:      input.NodeID,
+		DisplayName: input.DisplayName,
+		Platform:    input.Platform,
+		PublicKey:   identity.EncodePublicKey(public),
+		Fingerprint: derived,
+	}
+	if err := s.store.TrustNode(r.Context(), node); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	stored, err := s.store.TrustedNode(r.Context(), input.NodeID)
+	if err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, stored)
+}
+
+// fingerprintsMatch compares what a person read off two screens. Spacing and
+// case are presentation, so they must not decide whether a pairing succeeds.
+func fingerprintsMatch(derived, confirmed string) bool {
+	normalize := func(value string) string {
+		return strings.ToUpper(strings.Join(strings.Fields(value), ""))
+	}
+	return normalize(derived) == normalize(confirmed)
+}
+
+func (s *Server) revokeNode(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.RevokeNode(r.Context(), r.PathValue("id")); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) getAudience(w http.ResponseWriter, r *http.Request) {
-	audience, err := s.store.GetAudience(r.Context(), r.PathValue("id"))
+	id, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	audience, err := s.store.GetAudience(r.Context(), id)
 	if err != nil {
 		writeRegistryError(w, err)
 		return
@@ -143,7 +257,10 @@ func (s *Server) setAudience(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	id := r.PathValue("id")
+	id, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
 	if err := s.store.SetAudience(r.Context(), id, input.audience()); err != nil {
 		writeRegistryError(w, err)
 		return
@@ -194,7 +311,12 @@ func (s *Server) setAudienceBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	results := make([]outcome, 0, len(input.IDs))
 	changed := 0
-	for _, id := range input.IDs {
+	for _, raw := range input.IDs {
+		id, err := protocol.ResolveLocal(raw, s.node.ID)
+		if err != nil {
+			results = append(results, outcome{ID: raw, Error: err.Error()})
+			continue
+		}
 		if err := s.store.SetAudience(r.Context(), id, audience); err != nil {
 			if errors.Is(err, registry.ErrInvalidSession) || errors.Is(err, registry.ErrNotFound) {
 				results = append(results, outcome{ID: id, Error: err.Error()})
@@ -206,7 +328,7 @@ func (s *Server) setAudienceBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		changed++
-		results = append(results, outcome{ID: id})
+		results = append(results, outcome{ID: raw})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"changed": changed,
@@ -223,11 +345,15 @@ func (s *Server) setVisibility(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	if err := s.store.SetVisibility(r.Context(), r.PathValue("id"), input.Visibility); err != nil {
+	id, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if err := s.store.SetVisibility(r.Context(), id, input.Visibility); err != nil {
 		writeRegistryError(w, err)
 		return
 	}
-	session, err := s.store.GetSession(r.Context(), r.PathValue("id"))
+	session, err := s.store.GetSession(r.Context(), id)
 	if err != nil {
 		writeRegistryError(w, err)
 		return
@@ -262,7 +388,25 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	message, err := s.store.CreateMessage(r.Context(), model.Message{To: input.To, From: input.From, Body: input.Body})
+	to, ok := s.localSession(w, input.To)
+	if !ok {
+		return
+	}
+	// The sender label is stored and shown. Validating it now means it cannot
+	// later be a free-text field that a remote sender fills in with anything.
+	from := ""
+	if input.From != "" {
+		address, err := protocol.ParseAddress(input.From, s.node.ID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "from: "+err.Error())
+			return
+		}
+		from = input.From
+		if address.Local() {
+			from = address.SessionID
+		}
+	}
+	message, err := s.store.CreateMessage(r.Context(), model.Message{To: to, From: from, Body: input.Body})
 	if err != nil {
 		// CreateMessage resolves the destination session, so a store failure
 		// reaches here as readily as a bad request. Classifying by sentinel
@@ -284,7 +428,11 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	messages, err := s.store.Inbox(r.Context(), r.PathValue("id"), limit)
+	recipient, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	messages, err := s.store.Inbox(r.Context(), recipient, limit)
 	if err != nil {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return

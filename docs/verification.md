@@ -100,7 +100,7 @@ Publishing now answers "to whom". Verified against a node holding real provider
 data:
 
 - every discovered session upgrades and registers at audience `none`
-- `ah audience <id> selected node_laptop node_build --cwd` publishes to exactly
+- `ah audience <id> selected node_laptop00000000 node_build000000000 --cwd` publishes to exactly
   those nodes; `ah list` shows `2 nodes`, and `all-paired` shows `all paired`
 - the heartbeat carried only the two published sessions out of 1,040, still
   validated against the broker schema by an independent implementation, and
@@ -135,9 +135,110 @@ ADR-001's migration rule is covered by a test that builds a database with the
 pre-audience schema, inserts a row marked `public`, opens it with the current
 build, and requires audience `none` and an empty export view.
 
-Payload schemas exist for `node.heartbeat` only. `node.hello`, `agent.message`
-and `agent.ack` are reserved names whose payloads are unconstrained until issues
-#11, #12 and #16 define them; nothing in the build emits them.
+## Node identity and pairing
+
+The node now has a signing identity. Verified on macOS against a running node:
+
+- the fingerprint is stable across restarts and `node.key` is the 32-byte seed at
+  mode 0600, which is the Unix storage form
+- `GET /v1/node` publishes the public key and fingerprint and nothing else
+
+A review of this work found two defects that tests could not see:
+
+- Signatures were taken over a re-serialization of the Go value. A payload
+  serializes in field order when sent and in key order once decoded, and a
+  `uint64` returns as a `float64`, so every cross-process verification would
+  have failed. The payload now travels as the bytes the sender produced and the
+  signature covers a length-prefixed encoding of the envelope's fields. A test
+  encodes, decodes and verifies, and asserts the payload bytes are unchanged;
+  flipping a switch that re-encodes the payload in transit makes it fail.
+- `ed25519.Verify` panics on a wrong-sized public key, and looking up an unknown
+  node yields a zero value, so a stranger's envelope could have stopped the
+  process. `Verify` checks the length first, covered for nil, empty, truncated
+  and oversized keys.
+
+Also hardened: node identifiers are constrained to printable ASCII of 16 to 128
+characters, so `node_a`, `node_a ` and full-width or Cyrillic lookalikes cannot
+become separate trust entries that read identically; the key file is refused if
+others can read it and is written through a temporary file; the sender label on
+a message is parsed rather than stored as free text.
+
+Payload schemas exist for `node.heartbeat`, `node.hello` and the four `pair.*`
+types. `agent.message` and `agent.ack` remain reserved names whose payloads are
+unconstrained until #16 defines them.
+
+Only `node.heartbeat` has a producer. The pairing types are defined and
+schema-tested ahead of the transport that will carry them, so nothing in the
+build emits one.
+
+### Review of the identity work: three further findings
+
+**Key storage assumed Unix permission semantics.** Owner-only protection rested
+on 0600 and `Chmod`, which Go documents as not producing an owner-only ACL on
+Windows: the mode was a claim the platform did not keep. Storage is now
+platform-specific — the raw seed at 0600 on Unix, a DPAPI blob bound to the
+current Windows user inside a versioned envelope on Windows — and the loader
+fails closed on a corrupt file, an undecryptable blob, a blob that decrypts to
+the wrong length, a symlink or reparse point, anything that is not a regular
+file, and a file too large to be a key. It never replaces a key it could not
+read. DPAPI comes from `golang.org/x/sys/windows`, already in this module's
+dependency graph for other platform calls, so the change adds no new module.
+
+Verified on macOS: the whole suite passes, `-race` is clean, and both binaries
+cross-compile for darwin, linux and windows on amd64 and arm64. The versioned
+envelope's framing is tested on every platform, including a case per malformed
+shape. **The DPAPI calls themselves are unverified: cross-compilation proves
+they compile, not that they behave. They need a run on real Windows.**
+
+**Key creation could strand an empty `node.key`.** The old write claimed the
+final name with `O_EXCL` and only then wrote the seed to a temporary file, so any
+failure in between left a 0-byte `node.key` that every later start refuses, and
+only a human deleting the file could recover the node. The content is now formed
+in full, written to a temporary file and flushed before the final name exists at
+all, then linked into place; linking is atomic and fails if the name exists, so
+a losing concurrent start reads the winner's key instead of overwriting it. A
+watcher test stats `node.key` throughout creation and fails if it is ever
+observed empty — restoring the old ordering makes it fail, which is how the test
+was checked. Sixteen concurrent starts on one directory agree on one
+fingerprint and leave no temporary file behind.
+
+**`BuildFor(peer)` accepted any non-empty identifier.** `Audience.PublishesTo`
+returns true for an `all_paired` session and any non-empty string, so
+`all_paired` meant "anyone who supplies a node id" rather than "every node this
+owner paired with". `BuildFor` now refuses a recipient absent from
+`trusted_nodes` with `ErrPeerNotTrusted`, covered for unknown, empty, trusted,
+selected and revoked peers; revoking a node stops its heartbeats immediately
+without the owner revisiting each session's audience. `Build` remains a union
+because it is the owner's own preview, and a test pins that.
+
+### Re-review of the same work: three further items
+
+**The no-hard-link fallback still had the original window.** The first fix kept a
+fallback that created the final name with `O_EXCL` and then wrote into it, so on a
+filesystem without hard links a crash could still leave an empty or truncated
+`node.key` — the invariant held only on the primary path. The fallback is gone.
+Linking is now the only install route, and when it fails the install fails with
+`ErrKeyStorageUnsupported` naming the fix: move the data directory off a
+FAT/exFAT volume or network share. That is recoverable by an operator; a
+half-written identity is not. A test injects a failing link and asserts the error
+is `ErrKeyStorageUnsupported`, that `node.key` does not exist afterwards, and
+that the directory is left with no entries at all — not even the temporary file.
+A second test shows a later start on a working filesystem still creates a key.
+
+**`readKeyFile` claimed more than it checked.** Its comment said the handle
+re-check closed the `Lstat`/open race, but confirming that both observations are
+regular files does not show they are the same file. It now compares them with
+`os.SameFile` and refuses the read if the path changed. The comparison is
+unit-tested against two files that differ only in identity — same directory, same
+mode, same size — because forcing the interleaving inside `readKeyFile` would
+need brittle timing. The comment now also states the real limit: the window is
+small and reaching it needs write access to a directory that is mode 0700 and
+owned by the same user the key protects, so this is defence in depth.
+
+**Trailing whitespace in the PR diff.** `git diff --check origin/main...HEAD`
+flagged four blank-but-tabbed lines in the generated
+`desktop/frontend/wailsjs/go/models.ts`. They are now empty lines; the file is
+TypeScript, so nothing about the generated output changes. The check passes.
 
 ## Automated checks
 
@@ -147,7 +248,12 @@ go test -race ./...
 go vet ./...
 ```
 
-The suite covers provider metadata parsing, Codex App Server JSON-RPC/status parsing, status inference, private-by-default persistence, visibility preservation across rediscovery, public-only heartbeat output, node identity stability, message inbox behavior, HTTP origin rejection, pagination, CLI calls, and loopback-only binding.
+The suite covers provider metadata parsing, Codex App Server JSON-RPC/status
+parsing, status inference, audience-none-by-default persistence, audience and
+export-flag preservation, allowlisted/signed heartbeat output, per-peer export
+filtering, node identity and trust invariants, message inbox policy, HTTP origin
+rejection, pagination, qualified addressing, CLI calls, and loopback-only
+binding.
 
 ## Build matrix
 
@@ -192,7 +298,10 @@ A second macOS run on the same day exercised the desktop app against a live node
 
 Adding the desktop app did not disturb the node or CLI: `go.mod` and `go.sum` of the root module were unchanged, and `CGO_ENABLED=0` cross-compilation of `agenthub-node` and `ah` still passed for all six targets in the matrix above.
 
-The desktop module has its own suite (`go test -race ./...` in `desktop/`) covering batch visibility writes with partial failures, full pagination, unreachable-node handling, and rejection of non-loopback node URLs.
+The desktop module has its own suite (`go test -race ./...` in `desktop/`)
+covering batch audience writes with partial failures, full pagination, trusted
+node management, hostile metadata rendering, unreachable-node handling, and
+rejection of non-loopback node URLs.
 
 Not verified: the app's visual rendering was not captured, because screen recording permission was unavailable to the shell used for this run.
 
