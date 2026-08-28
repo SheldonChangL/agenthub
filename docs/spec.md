@@ -89,10 +89,10 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 2. Discovery registers synthetic and local Claude/Codex sessions while decoding and persisting metadata fields only; message-body fields are ignored.
 3. A Codex App Server client boundary can initialize and parse live `thread/list` status without being enabled by default.
 4. Every newly discovered session is private; rediscovery preserves an explicit public setting.
-5. The local heartbeat preview contains public sessions only; it is not represented as a deployed broker envelope.
+5. The heartbeat contains public sessions only, projected into the remote `SessionSummary`, and validates against the published broker schema.
 6. Managed and unmanaged status behavior is covered by deterministic tests.
 7. `ah list`, `status`, `publish`, `unpublish`, `send`, and `inbox` work against the node.
-8. Draft broker and MCP contracts are documented as JSON Schema-compatible JSON, and known mismatches with runtime output are tracked rather than presented as complete.
+8. Draft broker and MCP contracts are documented as JSON Schema-compatible JSON; the broker envelope is validated against runtime output, and remaining MCP gaps are tracked rather than presented as complete.
 9. Windows, macOS, and Linux builds compile; macOS runs locally, while Windows and Ubuntu runtime acceptance is documented for real-host verification.
 
 ## Deferred work
@@ -100,7 +100,6 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 The multi-node items below are planned in [multinode-plan.md](multinode-plan.md)
 and tracked from issue #1.
 
-- Separate owner-local and remote session DTOs ([issue #18](https://github.com/SheldonChangL/agenthub/issues/18))
 - Authenticated LAN pairing and broker presence state
 - Remote presence subscriptions and retries
 - Provider-specific live APIs and message injection

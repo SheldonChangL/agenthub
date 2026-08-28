@@ -2,44 +2,162 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agenthub.local/schema/broker-protocol-v1.json",
   "title": "AgentHub Broker Envelope v1",
-  "$comment": "Target wire-contract draft. GET /v1/heartbeat is currently a local payload preview and does not conform to this envelope; see GitHub issue #18.",
+  "$comment": "GET /v1/heartbeat returns this envelope so the local preview and the future wire payload cannot drift. Transport, authentication, and per-peer audience filtering are not implemented yet.",
   "type": "object",
-  "required": ["protocolVersion", "messageId", "type", "sentAt", "nodeId", "payload"],
+  "required": [
+    "protocolVersion",
+    "messageId",
+    "type",
+    "sentAt",
+    "nodeId",
+    "payload"
+  ],
   "properties": {
-    "protocolVersion": { "const": "agenthub.broker/v1alpha1" },
-    "messageId": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "type": { "enum": ["node.hello", "node.heartbeat", "agent.message", "agent.ack"] },
-    "sentAt": { "type": "string", "format": "date-time" },
-    "nodeId": { "type": "string", "minLength": 16, "maxLength": 128 },
-    "payload": { "type": "object" }
+    "protocolVersion": {
+      "const": "agenthub.broker/v1alpha1"
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "type": {
+      "enum": [
+        "node.hello",
+        "node.heartbeat",
+        "agent.message",
+        "agent.ack"
+      ]
+    },
+    "sentAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nodeId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128
+    },
+    "payload": {
+      "$comment": "Only node.heartbeat has a payload schema today; node.hello, agent.message and agent.ack are reserved names whose payloads are defined by issues #11, #12 and #16. Until then this schema does not constrain their contents, and nothing in the build emits them.",
+      "type": "object"
+    }
   },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "node.heartbeat"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/heartbeat"
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sessionSummary": {
+      "$comment": "The complete set of fields that may leave the owner's host. additionalProperties is false so a new owner-local field can never become remotely visible by accident.",
       "type": "object",
-      "required": ["id", "provider", "status", "management", "visibility", "lastSeenAt"],
+      "required": [
+        "id",
+        "provider",
+        "status",
+        "statusSource",
+        "management",
+        "visibility",
+        "lastSeenAt"
+      ],
       "properties": {
-        "id": { "type": "string" },
-        "provider": { "enum": ["claude", "codex"] },
-        "status": { "enum": ["active", "idle", "inactive", "unknown"] },
-        "management": { "enum": ["managed", "unmanaged"] },
-        "visibility": { "const": "public" },
-        "cwd": { "type": "string" },
-        "lastSeenAt": { "type": "string", "format": "date-time" }
+        "id": {
+          "$comment": "Qualified address: <node-id>/<provider>:<provider-session-id>.",
+          "type": "string",
+          "pattern": "^[^/]+/(claude|codex):[^/]+$"
+        },
+        "provider": {
+          "enum": [
+            "claude",
+            "codex"
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "idle",
+            "inactive",
+            "unknown"
+          ]
+        },
+        "statusSource": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "management": {
+          "enum": [
+            "managed",
+            "unmanaged"
+          ]
+        },
+        "visibility": {
+          "const": "public"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "lastSeenAt": {
+          "type": "string",
+          "format": "date-time"
+        }
       },
       "additionalProperties": false
     },
     "heartbeat": {
+      "$comment": "A replaceable presence snapshot. Consumers replace a node's previous snapshot wholesale; a session absent from sessions has had its publication revoked.",
       "type": "object",
-      "required": ["sequence", "expiresAt", "capabilities", "sessions"],
+      "required": [
+        "sequence",
+        "expiresAt",
+        "capabilities",
+        "sessions"
+      ],
       "properties": {
-        "sequence": { "type": "integer", "minimum": 0 },
-        "expiresAt": { "type": "string", "format": "date-time" },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
         "capabilities": {
           "type": "array",
-          "items": { "enum": ["session.list", "session.status", "message.send", "message.inbox"] },
+          "items": {
+            "enum": [
+              "session.list",
+              "session.status",
+              "message.send",
+              "message.inbox"
+            ]
+          },
           "uniqueItems": true
         },
-        "sessions": { "type": "array", "items": { "$ref": "#/$defs/sessionSummary" } }
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sessionSummary"
+          }
+        }
       },
       "additionalProperties": false
     }

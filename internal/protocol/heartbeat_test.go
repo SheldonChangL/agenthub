@@ -39,13 +39,22 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	builder := NewHeartbeatBuilder(store, model.NodeIdentity{ID: "node-1234567890123456", DisplayName: "test", Platform: "test"})
-	got, err := builder.Build(ctx, now)
+	node := model.NodeIdentity{ID: "node-1234567890123456", DisplayName: "test", Platform: "test"}
+	builder := NewHeartbeatBuilder(store, node)
+	envelope, err := builder.Build(ctx, now)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if len(got.Sessions) != 1 || got.Sessions[0].ID != "codex:public" {
-		t.Fatalf("heartbeat sessions = %#v; want public session only", got.Sessions)
+	if envelope.Type != TypeNodeHeartbeat || envelope.NodeID != node.ID {
+		t.Fatalf("envelope type/nodeId = %q/%q", envelope.Type, envelope.NodeID)
+	}
+	got, ok := envelope.Payload.(HeartbeatPayload)
+	if !ok {
+		t.Fatalf("payload is %T, want HeartbeatPayload", envelope.Payload)
+	}
+	want := QualifiedID(node.ID, "codex:public")
+	if len(got.Sessions) != 1 || got.Sessions[0].ID != want {
+		t.Fatalf("heartbeat sessions = %#v; want only %q", got.Sessions, want)
 	}
 	if got.Sequence != 1 || !got.ExpiresAt.Equal(now.Add(30*time.Second)) {
 		t.Fatalf("heartbeat sequence/expiresAt = %d/%v", got.Sequence, got.ExpiresAt)

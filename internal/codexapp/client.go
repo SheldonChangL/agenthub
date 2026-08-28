@@ -195,6 +195,11 @@ func NormalizeThreads(threads []Thread, observedAt time.Time) []model.Session {
 	return sessions
 }
 
+// validID matches what the registry will accept, so this client rejects a
+// thread the store would reject later rather than surfacing it as usable.
 func validID(id string) bool {
-	return id != "" && len(id) <= 256 && !strings.ContainsFunc(id, unicode.IsControl)
+	if id == "" || len(id) > 256 || strings.ContainsFunc(id, unicode.IsControl) {
+		return false
+	}
+	return model.ValidateProviderSessionID(id) == nil
 }

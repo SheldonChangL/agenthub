@@ -83,7 +83,9 @@ Cross-compilation proves source portability, not provider runtime behavior. Rele
 
 The stable local key is `<provider>:<provider-session-id>`. A separate random node ID identifies the host installation. A future broker address is therefore `<node-id>/<provider>:<provider-session-id>`.
 
-Provider metadata is untrusted input. Adapters validate identifiers, timestamps, and paths and ignore message content.
+Provider metadata is untrusted input. Adapters validate identifiers, timestamps, and paths and ignore message content. Provider session IDs come from a metadata field rather than a filename, so `model.ValidateProviderSessionID` is the single rule every ingest path applies: an ID containing the address separator would move the boundary between node and session in a qualified address.
+
+Validation failure is per record. Discovery skips an unusable session and reports the count rather than abandoning the scan, because anything able to write a file under a provider directory could otherwise disable discovery entirely. The boundary that fails closed is the export projection, not ingest.
 
 ## Lifecycle model
 
@@ -108,15 +110,22 @@ Visibility is stored in AgentHub, not provider files. Discovery uses an upsert t
 There are two views:
 
 - Owner-local view: all local sessions, including private sessions.
-- Current export preview: sessions marked public. Nothing consumes this preview over the network today.
+- Current export preview: sessions marked public, projected into `SessionSummary`. Nothing consumes this preview over the network today.
 - Target per-peer export view: sessions authorized for that peer, projected into an allowlisted `SessionSummary`.
 
 `agent_send` is allowed only when the destination is addressable in the caller's authorized view. The MVP local inbox accepts local destinations; remote delivery is deferred.
 
-The current heartbeat builder returns `model.Session` values and therefore does
-not yet match the smaller broker schema. It must not be connected to a LAN
-transport. [Issue #18](https://github.com/SheldonChangL/agenthub/issues/18)
-tracks the separate remote DTO and schema validation. The accepted audience and
+The heartbeat builder projects each public session into `protocol.SessionSummary`,
+a type separate from the owner-local `model.Session`. The projection copies field
+by field, so a new registry field cannot become remotely visible by being added;
+the schema's `additionalProperties: false` fails the build if one does. Session
+addresses in the export view are qualified as `<node-id>/<provider>:<id>`.
+
+`GET /v1/heartbeat` returns the complete broker envelope rather than a
+differently-shaped preview, and tests validate both the builder output and the
+HTTP response against `broker-protocol.schema.json`. This settles the shape, not
+the transport: authentication, pairing, and per-peer audience filtering are still
+missing, so the node must not be connected to a LAN. The accepted audience and
 migration behavior is recorded in
 [ADR-001](decisions/001-session-audience-and-export-boundary.md).
 

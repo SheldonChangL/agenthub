@@ -263,7 +263,9 @@ el("btn-discover").onclick = () =>
   withBusy("掃描", async () => {
     const counts = await Discover();
     await load();
-    banner(`掃描完成：Claude ${counts.claude}、Codex ${counts.codex}，共 ${counts.total} 個。`, true);
+    const skipped = counts.skipped ?? 0;
+    const detail = skipped > 0 ? `，另有 ${skipped} 筆無法解析已略過` : "";
+    banner(`掃描完成：Claude ${counts.claude}、Codex ${counts.codex}，共 ${counts.total} 個${detail}。`, skipped === 0);
   });
 
 el("btn-heartbeat").onclick = () =>

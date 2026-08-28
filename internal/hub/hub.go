@@ -2,7 +2,9 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"agenthub.local/agenthub/internal/adapter"
@@ -22,14 +24,27 @@ type DiscoveryResult struct {
 	Claude int `json:"claude"`
 	Codex  int `json:"codex"`
 	Total  int `json:"total"`
+	// Skipped counts sessions whose metadata failed validation. They are
+	// reported rather than hidden: a rising count means a provider directory
+	// holds records this build cannot represent.
+	Skipped int `json:"skipped"`
+}
+
+// SessionStore is the only registry behaviour discovery needs. It is an
+// interface so the error handling around it can be tested: the difference
+// between skipping an unusable record and abandoning the scan is not otherwise
+// reachable from a fixture, because the metadata parsers reject the same
+// records the store does.
+type SessionStore interface {
+	UpsertSession(ctx context.Context, session model.Session) (model.Session, error)
 }
 
 type Hub struct {
-	store  *registry.Registry
+	store  SessionStore
 	config Config
 }
 
-func New(store *registry.Registry, config Config) *Hub {
+func New(store SessionStore, config Config) *Hub {
 	if config.Now == nil {
 		config.Now = func() time.Time { return time.Now().UTC() }
 	}
@@ -65,16 +80,36 @@ func (h *Hub) Discover(ctx context.Context) (DiscoveryResult, error) {
 		if err != nil {
 			return DiscoveryResult{}, fmt.Errorf("discover %s sessions: %w", item.provider, err)
 		}
+
+		registered := 0
 		for _, session := range sessions {
-			if _, err := h.store.UpsertSession(ctx, session); err != nil {
-				return DiscoveryResult{}, fmt.Errorf("register discovered session: %w", err)
+			_, err := h.store.UpsertSession(ctx, session)
+			switch {
+			case err == nil:
+				registered++
+			case errors.Is(err, registry.ErrInvalidSession):
+				// One unusable record must not cost the user every other one.
+				// Provider metadata is untrusted, so anything able to write a
+				// file under a provider directory could otherwise disable
+				// discovery entirely. Skipping is safe here because refusing on
+				// ingest only ever means fewer rows; the boundary that must
+				// fail closed is the export projection, not this one.
+				log.Printf("discovery skipped an unusable %s session: %v", item.provider, err)
+				result.Skipped++
+			default:
+				// A cancelled context, a busy or full database, a corrupt file:
+				// nothing about the next record will go better, and reporting
+				// an empty but successful scan would read as "you have no
+				// sessions" rather than "the scan failed".
+				return DiscoveryResult{}, fmt.Errorf("register discovered %s session: %w", item.provider, err)
 			}
 		}
+
 		switch item.provider {
 		case model.ProviderClaude:
-			result.Claude = len(sessions)
+			result.Claude = registered
 		case model.ProviderCodex:
-			result.Codex = len(sessions)
+			result.Codex = registered
 		}
 	}
 	result.Total = result.Claude + result.Codex

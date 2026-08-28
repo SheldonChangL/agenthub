@@ -120,6 +120,15 @@ Both are per-session, per-owner decisions and belong beside audience.
   established by the per-recipient export view, and a global `public` label
   would misrepresent the audience model.
 
+## Step 0: done
+
+The export contract landed first, before any audience work, because a deployed
+broker would have frozen the wrong shape. `protocol.SessionSummary` is now a
+separate type from `model.Session`, session addresses in the export view are
+qualified, and both the builder output and the HTTP response are validated
+against `broker-protocol.schema.json` with negative cases. This closed #18 and
+the schema half of #8 in one change rather than two breaking ones.
+
 ## Increment order
 
 Each step ends with something verifiable. The broker is a logical server role;
@@ -135,8 +144,8 @@ are complete.
    app gets the audience picker; `ah publish` keeps working as "audience = all
    paired". Verifiable: rediscovery still preserves choices; heartbeat preview
    reflects audience; existing tests pass unchanged in meaning.
-2. **Qualified addressing** (#7, #8, #9). Accept fully-qualified addresses at
-   every boundary while remaining single-node. Verifiable: `ah send
+2. **Qualified addressing** (#7, #9; #8 done in step 0). Accept fully-qualified
+   addresses at every boundary while remaining single-node. Verifiable: `ah send
    node_x/claude:y` is rejected with a clear "unknown node" error rather than a
    parse failure.
 3. **Node keypair and fingerprint** (#10). Extend `internal/identity` with a
