@@ -65,9 +65,9 @@ func TestInferUnmanagedUsesRecencyOnlyWhenProviderRuns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, source := Infer(Evidence{
-				Management:   model.Unmanaged,
-				MetadataAt:   tt.modified,
-				ProcessKnown: true,
+				Management:     model.Unmanaged,
+				MetadataAt:     tt.modified,
+				ProcessKnown:   true,
 				ProcessRunning: true,
 			}, policy)
 			if got != tt.want || source != "metadata_process_heuristic" {
@@ -76,4 +76,3 @@ func TestInferUnmanagedUsesRecencyOnlyWhenProviderRuns(t *testing.T) {
 		})
 	}
 }
-

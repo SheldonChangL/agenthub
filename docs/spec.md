@@ -17,7 +17,7 @@ Success means a user can start one node, discover local sessions without transcr
 
 ## Tech stack
 
-- Go 1.24+, cross-compiled for `windows/amd64`, `windows/arm64`, `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and `linux/arm64`
+- Go 1.25+, cross-compiled for `windows/amd64`, `windows/arm64`, `darwin/amd64`, `darwin/arm64`, `linux/amd64`, and `linux/arm64`
 - SQLite through a CGo-free `database/sql` driver
 - Go standard library HTTP and JSON
 - No web UI

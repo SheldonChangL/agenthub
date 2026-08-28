@@ -65,4 +65,3 @@ type Message struct {
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
 }
-
