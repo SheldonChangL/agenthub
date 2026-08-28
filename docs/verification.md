@@ -240,6 +240,64 @@ flagged four blank-but-tabbed lines in the generated
 `desktop/frontend/wailsjs/go/models.ts`. They are now empty lines; the file is
 TypeScript, so nothing about the generated output changes. The check passes.
 
+## Heartbeat delivery contract
+
+Two properties a future receiver would have had to work around are now producer
+invariants. Neither adds a receiver or a transport: nothing in this build sends
+or accepts a heartbeat.
+
+**A heartbeat is bound to the node it was built for.** The envelope carries a
+signed `recipientNodeId`, included in the length-prefixed signable bytes between
+`nodeId` and the payload. Verified by test:
+
+- a heartbeat built for node A fails verification at node B even though both
+  trust the sender, and the error is `ErrNotAddressed` rather than a signature
+  failure, because the sender really is who it claims to be
+- substituting, removing, or expecting no recipient after signing all fail; the
+  substitution case is what proves the signature covers the field, and removing
+  the recipient from the signable bytes makes exactly that case pass again —
+  measured, not assumed
+- `VerifySender` refuses to answer for a directed envelope at all, so a receiver
+  cannot accept a heartbeat through a call that only checks the signature; an
+  undirected envelope still verifies that way
+- `NewEnvelope` refuses `node.heartbeat`, and a directed envelope requires a
+  recipient that passes the shared node-ID rule, so an undirected or
+  unaddressable heartbeat cannot be constructed
+- the owner preview is addressed to the local node: it remains the union of
+  everything published anywhere, and `GET /v1/heartbeat` is asserted to name the
+  local node, so a peer that obtained a copy would have to reject it
+- the published schema requires `recipientNodeId` for `node.heartbeat` and
+  constrains it to the node-ID pattern; the runtime envelope validates against
+  it, and dropping the field or shortening the value fails validation
+- the exact signable bytes are pinned for a directed and an undirected envelope,
+  including the `0:` an absent recipient contributes
+
+**The outbound sequence is persisted.** The in-memory counter was replaced by
+one SQLite-backed counter owned by the registry, reserved by a single atomic
+`UPDATE ... RETURNING` guarded at `MaxInt64`. Verified by test:
+
+- a new builder over the same store, and a reopened registry, both continue
+  upward; the pre-fix code returns 1 twice and the test names that
+- 128 concurrent allocations produce 128 distinct non-zero values, and mixed
+  owner-preview and per-peer builds never repeat one
+- a database with no counter table upgrades, starts at 1, and publishes nothing
+- at `MaxInt64` allocation fails with `ErrSequenceExhausted`, repeatedly, and
+  the stored value does not move: no wrap, no zero, no reuse
+- an exhausted counter produces no envelope at all from either build path
+
+Checked against a running node on macOS arm64, with an isolated database and
+empty provider roots so no real session data was involved:
+
+- `GET /v1/heartbeat` named the local node in `recipientNodeId`, equal to
+  `nodeId`, and exported zero sessions
+- two calls returned sequences 1 and 2; the node was stopped, restarted on the
+  same database, and the next call returned 3 — the case an in-memory counter
+  answers with 1
+
+Not verified: no Windows or Linux host ran this build; no second implementation
+has reproduced the new signable bytes; and no receiver exists, so
+`VerifyDirected` is exercised only by tests.
+
 ## Automated checks
 
 ```sh
@@ -251,9 +309,10 @@ go vet ./...
 The suite covers provider metadata parsing, Codex App Server JSON-RPC/status
 parsing, status inference, audience-none-by-default persistence, audience and
 export-flag preservation, allowlisted/signed heartbeat output, per-peer export
-filtering, node identity and trust invariants, message inbox policy, HTTP origin
-rejection, pagination, qualified addressing, CLI calls, and loopback-only
-binding.
+filtering, recipient-bound heartbeats and their signable bytes, persisted
+outbound sequence monotonicity and exhaustion, node identity and trust
+invariants, message inbox policy, HTTP origin rejection, pagination, qualified
+addressing, CLI calls, and loopback-only binding.
 
 ## Build matrix
 
