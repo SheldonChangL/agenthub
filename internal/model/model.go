@@ -128,6 +128,11 @@ type NodeIdentity struct {
 	DisplayName string    `json:"displayName"`
 	Platform    string    `json:"platform"`
 	CreatedAt   time.Time `json:"createdAt"`
+	// PublicKey and Fingerprint are what a peer checks before trusting this
+	// node. Both are safe to publish; the private half never leaves the host
+	// and is not part of this struct at all.
+	PublicKey   string `json:"publicKey,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 type Message struct {
@@ -141,6 +146,27 @@ type Message struct {
 // SessionIDSeparator is the character that joins a node ID to a session ID in
 // the qualified export address <node-id>/<provider>:<provider-session-id>.
 const SessionIDSeparator = "/"
+
+// ValidateNodeID constrains a node identifier to what this project generates
+// and a person can compare.
+//
+// Without it "node_a" and "node_a " and "NODE_A" become three separate trust
+// entries that look identical in a list, and a lookalike built from non-ASCII
+// characters looks identical too.
+func ValidateNodeID(nodeID string) error {
+	if len(nodeID) < 16 || len(nodeID) > 128 {
+		return fmt.Errorf("node id %q must be 16 to 128 characters", nodeID)
+	}
+	if strings.Contains(nodeID, SessionIDSeparator) {
+		return fmt.Errorf("node id %q contains %q", nodeID, SessionIDSeparator)
+	}
+	for _, r := range nodeID {
+		if r < '!' || r > '~' {
+			return fmt.Errorf("node id %q contains a character outside printable ASCII", nodeID)
+		}
+	}
+	return nil
+}
 
 // ValidateProviderSessionID rejects provider session IDs that would corrupt a
 // qualified address.

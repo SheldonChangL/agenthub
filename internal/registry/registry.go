@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
@@ -77,8 +76,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS session_audience (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     node_id TEXT NOT NULL CHECK (
-        length(node_id) BETWEEN 1 AND 128
-        AND node_id NOT GLOB '*[^ -~]*'
+        length(node_id) BETWEEN 16 AND 128
+        AND node_id NOT GLOB '*[^!-~]*'
     ),
     granted_at_ms INTEGER NOT NULL,
     PRIMARY KEY (session_id, node_id)
@@ -117,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	if _, err := r.db.ExecContext(ctx, indexes); err != nil {
 		return fmt.Errorf("create registry indexes: %w", err)
 	}
-	return nil
+	return r.migrateTrust(ctx)
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
@@ -395,11 +394,8 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 	nodes := make([]string, 0, len(audience.Nodes))
 	seen := map[string]bool{}
 	for _, node := range audience.Nodes {
-		if node == "" || len(node) > 128 {
-			return fmt.Errorf("%w: node id %q is empty or too long", ErrInvalidSession, node)
-		}
-		if strings.ContainsFunc(node, unicode.IsControl) {
-			return fmt.Errorf("%w: node id %q contains a control character", ErrInvalidSession, node)
+		if err := model.ValidateNodeID(node); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidSession, err)
 		}
 		if seen[node] {
 			continue
@@ -416,6 +412,21 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 		return fmt.Errorf("begin audience update: %w", err)
 	}
 	defer func() { _ = transaction.Rollback() }()
+
+	// A grant only means something for a node this owner has paired with.
+	// Accepting one for an unknown node stores an authorization that nobody
+	// decided on and that takes effect the moment that node is ever paired.
+	for _, node := range nodes {
+		var exists int
+		err := transaction.QueryRowContext(ctx,
+			`SELECT 1 FROM trusted_nodes WHERE node_id = ?`, node).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: node %q is not paired with this installation", ErrInvalidSession, node)
+		}
+		if err != nil {
+			return fmt.Errorf("check node %q: %w", node, err)
+		}
+	}
 
 	result, err := transaction.ExecContext(ctx,
 		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, updated_at_ms = ? WHERE id = ?`,

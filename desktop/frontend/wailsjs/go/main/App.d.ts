@@ -10,8 +10,12 @@ export function NodeURL():Promise<string>;
 
 export function Overview():Promise<main.Overview>;
 
+export function RevokeNode(arg1:string):Promise<void>;
+
 export function SetAudience(arg1:Array<string>,arg2:main.Audience):Promise<main.VisibilityResult>;
 
 export function SetNodeURL(arg1:string):Promise<void>;
 
 export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.VisibilityResult>;
+
+export function TrustNode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.TrustedNode>;

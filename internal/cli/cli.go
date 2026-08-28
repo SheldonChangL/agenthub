@@ -86,6 +86,15 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodPut, "/v1/sessions/"+url.PathEscape(args[1])+"/visibility", map[string]any{"visibility": visibility})
 	case "audience":
 		return r.audience(ctx, args)
+	case "nodes":
+		return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
+	case "pair":
+		return r.pair(ctx, args)
+	case "revoke":
+		if len(args) != 2 {
+			return errors.New("usage: ah revoke <node-id>")
+		}
+		return r.simple(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(args[1]), nil)
 	case "send":
 		if len(args) < 3 {
 			return errors.New("usage: ah send <session-id> <message>")
@@ -103,6 +112,27 @@ func (r runner) command(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// pair records a peer whose fingerprint the owner has already compared on both
+// machines.
+//
+//	ah pair <node-id> <display-name> <platform> <public-key> <fingerprint...>
+//
+// The fingerprint is passed in deliberately: this command cannot verify
+// anything by itself, and taking the value the person actually read means a
+// substituted key is refused rather than trusted.
+func (r runner) pair(ctx context.Context, args []string) error {
+	if len(args) < 6 {
+		return errors.New("usage: ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
+	}
+	return r.simple(ctx, http.MethodPost, "/v1/nodes", map[string]string{
+		"nodeId":               args[1],
+		"displayName":          args[2],
+		"platform":             args[3],
+		"publicKey":            args[4],
+		"confirmedFingerprint": strings.Join(args[5:], " "),
+	})
 }
 
 // audience reads or replaces one session's export policy.
@@ -283,6 +313,8 @@ func writePrettyJSON(output io.Writer, data []byte) error {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
-	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience, send, inbox, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
+	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, node, heartbeat")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
+	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 }

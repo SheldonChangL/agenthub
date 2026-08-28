@@ -4,7 +4,7 @@ AgentHub is a privacy-first, local control plane for coding-agent sessions. The 
 
 AgentHub targets Windows, macOS, and Ubuntu. The shared core is pure Go; provider process discovery is platform-specific. Cross-compilation is part of verification, while each provider must still be installed and supported on the target host.
 
-Privacy is the default: discovered sessions are local and private. The current build has no LAN transport, so no session data leaves the host. Publishing a session only adds it to a local export preview; a future multi-node release will require a new, explicit audience choice before sending it to an authenticated peer.
+Privacy is the default: discovered sessions start with audience `none`. The current build has no LAN transport, so no session data leaves the host. Owners can already prepare an explicit `all_paired` or `selected` audience, but that policy is only exercised by local, signed heartbeat previews until authenticated transport exists.
 
 ## MVP status
 
@@ -13,18 +13,19 @@ Privacy is the default: discovered sessions are local and private. The current b
 - Codex App Server JSON-RPC initialize/thread-list client boundary
 - Managed and unmanaged session model
 - Conservative `active`, `idle`, `inactive`, and `unknown` status inference
-- Persistent local node identity and a public-only heartbeat preview
+- Persistent Ed25519 node identity, signed envelopes, and a schema-validated heartbeat preview
 - Local HTTP API and `ah` CLI
 - Local message inbox for the future broker path
-- Desktop app for browsing and batch-publishing sessions
+- Per-session audience, working-directory export, and inbound-message policy
+- Manual fingerprint pairing, trust storage, revocation, and desktop management
 - Draft broker protocol and MCP tool schemas
 - Architecture and issue plan for authenticated multi-node operation
 - No complete LAN broker, remote wake-up, or provider message injection yet
 - No runnable MCP server transport yet; the four tools are contract drafts
 
-The remote export contract is now separate from the owner-local model. The next
-increment turns the single public flag into a per-node audience model and adds
-authenticated LAN pairing. It is planned in
+The remote export contract, per-node audience model, signing identity, and
+manual trust workflow are implemented. The next increment is authenticated
+heartbeat transport and presence consumption between nodes. It is planned in
 [multinode-plan.md](docs/multinode-plan.md) and tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
@@ -34,8 +35,8 @@ authenticated LAN pairing. It is planned in
 |---|---|---|
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
-| Per-node privacy | Implemented; pairing, presence and messaging planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
-| Desktop metadata rendering hardening | Required before desktop distribution | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
+| Per-node privacy and manual pairing | Implemented; network exchange still planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
+| Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
 
 ## Build and test
@@ -64,18 +65,28 @@ go run ./cmd/ah publish <session-id>
 go run ./cmd/ah unpublish <session-id>
 go run ./cmd/ah audience <session-id>
 go run ./cmd/ah audience <session-id> all-paired --cwd
-go run ./cmd/ah audience <session-id> selected node_laptop node_build --cwd --messages
+go run ./cmd/ah audience <session-id> selected node_laptop00000000 node_build000000000 --cwd --messages
+go run ./cmd/ah nodes
+go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
+go run ./cmd/ah revoke <node-id>
 go run ./cmd/ah send <session-id> "please review the schema"
 go run ./cmd/ah inbox <session-id>
 ```
 
+`selected` accepts only node IDs that already appear in `ah nodes`; pairing an
+unknown node is a separate, explicit owner action.
+
 The node listens on `127.0.0.1:7462` by default. Set `AGENTHUB_URL` for the CLI or pass `--url`.
 
-The local API is deliberately loopback-only until authenticated LAN pairing exists. Session list responses are paginated; `ah list` follows every page automatically.
+The local API remains loopback-only. Manual trust records and signed envelopes
+exist, but no network receiver yet authenticates them. Session list responses
+are paginated; `ah list` follows every page automatically.
 
 ## Desktop app
 
-The desktop app is the owner's management surface for the privacy model: it lists every local session, filters by provider, status, visibility, and working directory, and publishes or unpublishes a whole selection at once.
+The desktop app is the owner's management surface for the privacy model. It
+lists local sessions, filters by provider/status/audience/working directory,
+applies an audience policy to a selection, and manages manually paired nodes.
 
 It lives in `desktop/` as a separate Go module so that Wails' CGo requirement never reaches `agenthub-node` or `ah`, which stay CGo-free and cross-compilable.
 
@@ -108,12 +119,18 @@ Two per-session flags default closed: the working directory travels only when
 the owner opts in, and a session accepts queued messages only when the owner
 opts in.
 
-The preview is public-only and is projected into an allowlisted
-`SessionSummary`: the qualified AgentHub address, provider, status, management
+Pairing a node establishes identity only. It publishes nothing: the audience is
+a separate, per-session decision. Revoking a node withdraws trust and every
+grant it held, in one step, so re-pairing later does not restore access.
+
+The preview includes only sessions published to at least one audience and is
+projected into an allowlisted `SessionSummary`: the qualified AgentHub address,
+provider, status, management
 mode, `statusSource`, last-seen time, and working directory. Provider source,
 provider session ID as a separate field, internal update time, metadata paths,
 transcript bodies, and prompt contents are excluded, and the published schema
-rejects them. A per-session opt-in for the working directory is still to come.
+rejects them. The working directory is omitted unless that session's
+`exportCwd` flag is enabled.
 
 The model is documented in
 [ADR-001](docs/decisions/001-session-audience-and-export-boundary.md) and is now
@@ -139,7 +156,10 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/sessions/{id}/audience` | Read one session's export policy |
 | `PUT` | `/v1/sessions/{id}/audience` | Replace one session's export policy |
 | `POST` | `/v1/sessions/audience` | Apply one policy to many sessions |
-| `GET` | `/v1/heartbeat` | Preview the broker envelope this node would send; public sessions only |
+| `GET` | `/v1/heartbeat` | Owner preview of a signed heartbeat; union of sessions published to any audience |
+| `GET` | `/v1/nodes` | List paired nodes |
+| `POST` | `/v1/nodes` | Manually trust a node whose full fingerprint the owner compared |
+| `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `POST` | `/v1/messages` | Queue a local message |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
 
