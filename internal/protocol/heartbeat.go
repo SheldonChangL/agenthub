@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"agenthub.local/agenthub/internal/model"
@@ -59,11 +58,16 @@ type HeartbeatPayload struct {
 	Sessions     []SessionSummary `json:"sessions"`
 }
 
+// HeartbeatBuilder produces this node's heartbeats.
+//
+// It holds no sequence of its own. The counter lives in the registry, because a
+// builder is recreated whenever the process is, and an in-memory counter would
+// restart at one: a receiver that rejects a sequence it has already seen would
+// then have to reject the restarted sender forever, or stop checking.
 type HeartbeatBuilder struct {
-	store    *registry.Registry
-	node     model.NodeIdentity
-	signer   Signer
-	sequence atomic.Uint64
+	store  *registry.Registry
+	node   model.NodeIdentity
+	signer Signer
 }
 
 func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, signer Signer) *HeartbeatBuilder {
@@ -147,8 +151,17 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, recipientNo
 		summaries = append(summaries, summary)
 	}
 
+	// The sequence is reserved last, and a failure here produces no envelope at
+	// all. Reserving it may leave a gap, which costs a receiver nothing; sending
+	// a snapshot without a fresh number would leave it unable to order the
+	// snapshots it already holds.
+	sequence, err := b.store.NextHeartbeatSequence(ctx)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("reserve heartbeat sequence: %w", err)
+	}
+
 	payload := HeartbeatPayload{
-		Sequence:     b.sequence.Add(1),
+		Sequence:     sequence,
 		ExpiresAt:    now.UTC().Add(heartbeatTTL),
 		Capabilities: []string{"session.list", "session.status", "message.send", "message.inbox"},
 		Sessions:     summaries,
