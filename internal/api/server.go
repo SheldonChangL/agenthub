@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -55,7 +56,7 @@ func (s *Server) discover(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.hub.Discover(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "DISCOVERY_FAILED", err.Error())
+		writeInternalError(w, "DISCOVERY_FAILED", "discovery failed", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -74,12 +75,12 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	totalItems, err := s.store.CountSessions(r.Context(), false)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
 	sessions, err := s.store.ListSessions(r.Context(), registry.ListOptions{Limit: pageSize, Offset: (page - 1) * pageSize})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
 	totalPages := 0
@@ -128,7 +129,11 @@ func (s *Server) getNode(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	heartbeat, err := s.heartbeats.Build(r.Context(), time.Now().UTC())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", err.Error())
+		// The builder refuses to export anything unpublished, and says which
+		// session and why. That detail identifies a private session, so it
+		// belongs in the operator's log, not in a response body on the one
+		// endpoint intended to face a network.
+		writeInternalError(w, "HEARTBEAT_FAILED", "could not build heartbeat", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, heartbeat)
@@ -146,7 +151,11 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	message, err := s.store.CreateMessage(r.Context(), model.Message{To: input.To, From: input.From, Body: input.Body})
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "MESSAGE_REJECTED", err.Error())
+		// CreateMessage resolves the destination session, so a store failure
+		// reaches here as readily as a bad request. Classifying by sentinel
+		// keeps a database error from being reported as the caller's fault and
+		// from carrying store detail into the response.
+		writeRegistryError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, message)
@@ -164,7 +173,7 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	}
 	messages, err := s.store.Inbox(r.Context(), r.PathValue("id"), limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
@@ -215,7 +224,9 @@ func decodeJSON(r *http.Request, destination any) error {
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 64*1024))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
-		return fmt.Errorf("decode JSON: %w", err)
+		// encoding/json names the destination Go type and field, which tells a
+		// caller about this program rather than about their request.
+		return errors.New("request body is not valid JSON for this endpoint")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return errors.New("request body must contain one JSON object")
@@ -225,14 +236,29 @@ func decodeJSON(r *http.Request, destination any) error {
 
 func writeRegistryError(w http.ResponseWriter, err error) {
 	if errors.Is(err, registry.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "session not found")
 		return
 	}
-	if strings.Contains(err.Error(), "invalid") {
+	if errors.Is(err, registry.ErrInvalidSession) {
+		// Validation messages describe the caller's own input, so they are safe
+		// to return and useful to have. Matching on a sentinel rather than on
+		// the word "invalid" matters: a driver error such as "invalid syntax"
+		// would otherwise be echoed back with the column and stored value.
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	writeError(w, http.StatusInternalServerError, "REGISTRY_ERROR", err.Error())
+	writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+}
+
+// writeInternalError keeps server-side detail on the server.
+//
+// Internal errors here name absolute provider paths, the account's home
+// directory, and private session IDs. The local API is loopback-only today, but
+// it is the same listener a LAN mode would expose, and an error body is a poor
+// place to learn what a machine is working on.
+func writeInternalError(w http.ResponseWriter, code, message string, err error) {
+	log.Printf("%s: %v", code, err)
+	writeError(w, http.StatusInternalServerError, code, message)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

@@ -59,7 +59,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     provider TEXT NOT NULL CHECK (provider IN ('claude', 'codex')),
-    provider_session_id TEXT NOT NULL,
+    provider_session_id TEXT NOT NULL CHECK (instr(provider_session_id, '/') = 0),
     management TEXT NOT NULL CHECK (management IN ('managed', 'unmanaged')),
     visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'inactive', 'unknown')),
@@ -130,10 +130,10 @@ ON CONFLICT(singleton) DO NOTHING`,
 
 func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (model.Message, error) {
 	if strings.TrimSpace(message.To) == "" {
-		return model.Message{}, errors.New("message recipient is required")
+		return model.Message{}, fmt.Errorf("%w: message recipient is required", ErrInvalidSession)
 	}
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
-		return model.Message{}, errors.New("message body must contain 1 to 32768 bytes")
+		return model.Message{}, fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
 	}
 	if _, err := r.GetSession(ctx, message.To); err != nil {
 		return model.Message{}, err
@@ -281,7 +281,7 @@ func (r *Registry) CountSessions(ctx context.Context, publicOnly bool) (int, err
 
 func (r *Registry) SetVisibility(ctx context.Context, id string, visibility model.Visibility) error {
 	if visibility != model.VisibilityPrivate && visibility != model.VisibilityPublic {
-		return fmt.Errorf("invalid visibility %q", visibility)
+		return fmt.Errorf("%w: visibility %q is not private or public", ErrInvalidSession, visibility)
 	}
 	result, err := r.db.ExecContext(ctx, `UPDATE sessions SET visibility = ?, updated_at_ms = ? WHERE id = ?`, visibility, time.Now().UTC().UnixMilli(), id)
 	if err != nil {
@@ -317,12 +317,27 @@ func scanSession(row rowScanner) (model.Session, error) {
 	return session, nil
 }
 
+// ErrInvalidSession marks a session the store will never accept, whatever the
+// caller does. Callers use it to tell "this record is unusable" apart from
+// "the database is unavailable", which need opposite responses.
+var ErrInvalidSession = errors.New("invalid session")
+
 func validateSession(session model.Session) error {
+	if err := validateSessionFields(session); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSession, err)
+	}
+	return nil
+}
+
+func validateSessionFields(session model.Session) error {
 	if session.ID == "" || session.ProviderSessionID == "" {
 		return errors.New("session id and provider session id are required")
 	}
 	if session.ID != model.SessionID(session.Provider, session.ProviderSessionID) {
 		return fmt.Errorf("session id %q does not match provider identity", session.ID)
+	}
+	if err := model.ValidateProviderSessionID(session.ProviderSessionID); err != nil {
+		return err
 	}
 	if session.Provider != model.ProviderClaude && session.Provider != model.ProviderCodex {
 		return fmt.Errorf("invalid provider %q", session.Provider)

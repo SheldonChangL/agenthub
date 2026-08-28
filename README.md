@@ -22,9 +22,9 @@ Privacy is the default: discovered sessions are local and private. The current b
 - No complete LAN broker, remote wake-up, or provider message injection yet
 - No runnable MCP server transport yet; the four tools are contract drafts
 
-The next increment first separates owner-local session data from the remote
-export contract, then turns the single public flag into a per-node audience
-model and adds authenticated LAN pairing. It is planned in
+The remote export contract is now separate from the owner-local model. The next
+increment turns the single public flag into a per-node audience model and adds
+authenticated LAN pairing. It is planned in
 [multinode-plan.md](docs/multinode-plan.md) and tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
@@ -33,7 +33,7 @@ model and adds authenticated LAN pairing. It is planned in
 | Track | State | Source of truth |
 |---|---|---|
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
-| Remote export contract | Required before network transport | [issue #18](https://github.com/SheldonChangL/agenthub/issues/18) |
+| Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
 | Per-node privacy, pairing, presence, messaging | Planned in ordered increments | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
 | Desktop metadata rendering hardening | Required before desktop distribution | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
@@ -96,14 +96,12 @@ discovered session -> PRIVATE -> absent from heartbeat/broker/MCP remote view
                                 +-- ah publish -> PUBLIC preview
 ```
 
-The current preview is public-only, but it still serializes the owner-local
-`Session` shape and therefore is not yet the broker wire contract. Before any
-LAN transport is enabled, [issue #18](https://github.com/SheldonChangL/agenthub/issues/18)
-will replace it with an allowlisted `SessionSummary`. The intended remote fields
-are the qualified AgentHub address, provider, status, management mode,
-`statusSource`, and last-seen time; `cwd` requires a separate opt-in. Provider
-source, internal update time, metadata paths, transcript bodies, and prompt
-contents are excluded.
+The preview is public-only and is projected into an allowlisted
+`SessionSummary`: the qualified AgentHub address, provider, status, management
+mode, `statusSource`, last-seen time, and working directory. Provider source,
+provider session ID as a separate field, internal update time, metadata paths,
+transcript bodies, and prompt contents are excluded, and the published schema
+rejects them. A per-session opt-in for the working directory is still to come.
 
 The accepted target model is documented in
 [ADR-001](docs/decisions/001-session-audience-and-export-boundary.md): every
@@ -122,11 +120,11 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/v1/discover` | Rescan provider metadata |
+| `POST` | `/v1/discover` | Rescan provider metadata; reports per-provider counts and `skipped` |
 | `GET` | `/v1/sessions?page=1&pageSize=50` | List owner-local sessions |
 | `GET` | `/v1/sessions/{id}` | Read one session |
 | `PUT` | `/v1/sessions/{id}/visibility` | Set `private` or `public` |
-| `GET` | `/v1/heartbeat` | Preview the current public-only export payload; not yet the broker envelope |
+| `GET` | `/v1/heartbeat` | Preview the broker envelope this node would send; public sessions only |
 | `POST` | `/v1/messages` | Queue a local message |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
 

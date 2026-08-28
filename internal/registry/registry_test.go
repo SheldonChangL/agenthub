@@ -142,3 +142,49 @@ func testSession(id string) model.Session {
 		UpdatedAt:         now,
 	}
 }
+
+// A provider session ID comes from untrusted metadata, not a filename. A path
+// separator in it would split the qualified export address
+// <node-id>/<provider>:<id> somewhere this node did not intend.
+func TestUpsertRejectsPathSeparatorInProviderSessionID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+
+	now := time.Now().UTC()
+	hostile := model.Session{
+		ID:                "claude:evil/node_b",
+		Provider:          model.ProviderClaude,
+		ProviderSessionID: "evil/node_b",
+		Management:        model.Unmanaged,
+		Status:            model.StatusIdle,
+		StatusSource:      "test",
+		LastSeenAt:        now,
+		UpdatedAt:         now,
+	}
+	if _, err := store.UpsertSession(ctx, hostile); err == nil {
+		t.Fatal("UpsertSession accepted a provider session id containing a path separator")
+	}
+}
+
+// The Go-layer check is the only defence for a database created by an older
+// build, which carries no CHECK constraint. Test it directly so the SQL
+// constraint cannot mask its removal.
+func TestValidateSessionRejectsSeparatorIndependentlyOfSQL(t *testing.T) {
+	now := time.Now().UTC()
+	err := validateSession(model.Session{
+		ID:                "claude:evil/node_b",
+		Provider:          model.ProviderClaude,
+		ProviderSessionID: "evil/node_b",
+		Management:        model.Unmanaged,
+		Status:            model.StatusIdle,
+		StatusSource:      "test",
+		LastSeenAt:        now,
+		UpdatedAt:         now,
+	})
+	if err == nil {
+		t.Fatal("validateSession accepted a provider session id containing a separator")
+	}
+	if !errors.Is(err, ErrInvalidSession) {
+		t.Errorf("error = %v; callers rely on ErrInvalidSession to tell a bad record from a broken store", err)
+	}
+}

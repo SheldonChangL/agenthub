@@ -9,17 +9,94 @@ The same-day architecture/docs/issue audit re-ran `go test ./...`, `go vet
 types with the checked-in protocol drafts and recorded two gaps rather than
 overstating current readiness:
 
-- [#18](https://github.com/SheldonChangL/agenthub/issues/18): the current local
-  heartbeat preview serializes full `Session` values and does not yet match the
-  broker `SessionSummary` schema.
+- [#18](https://github.com/SheldonChangL/agenthub/issues/18): the local heartbeat
+  preview serialized full `Session` values and did not match the broker
+  `SessionSummary` schema. Resolved; see below.
 - [#19](https://github.com/SheldonChangL/agenthub/issues/19): the desktop table
-  must render untrusted provider metadata with DOM text APIs before a desktop
-  distribution or LAN release.
+  rendered untrusted provider metadata through `innerHTML`. Resolved; the
+  renderer now uses DOM text APIs and a headless render check feeds hostile
+  metadata through it.
 
-Neither finding changes the verified local privacy behavior: private sessions
-are absent from the current preview, and the node still rejects non-loopback
-bind addresses. They are release gates for connecting that preview to a broker
-or distributing the desktop app.
+## Export contract conformance
+
+The heartbeat now emits the broker envelope defined in
+`broker-protocol.schema.json`, with each public session projected into
+`protocol.SessionSummary`.
+
+Checked with a running node against real provider data:
+
+- the served envelope validates against the checked-in schema using an
+  independent JSON Schema implementation, not only the Go test's validator
+- the previous flat shape fails that same schema on five counts, so the check
+  is not vacuous
+- session addresses are qualified as `<node-id>/<provider>:<id>`
+- `providerSessionId`, `source`, `updatedAt`, and `metadataPath` are absent from
+  the served bytes, and `additionalProperties: false` rejects them if reintroduced
+
+Go tests cover the builder output, the HTTP response, and five negative schema
+cases: an owner-local field on a summary, a private session in the export view,
+an unqualified address, a heartbeat payload under the wrong envelope type, and
+an unknown envelope field.
+
+### Findings from the export boundary audit
+
+A separate review of that change found the projection was **fail-open** and one
+test was a false positive. Both are fixed, and the fixes are what the tests now
+assert:
+
+- `protocol.Summarize` wrote `visibility` as the constant `"public"` rather than
+  copying the owner's decision. A private session passed to it produced a
+  summary stamped public that satisfied the schema and every test in the
+  package, leaving the SQL filter in a single caller as the only real defence.
+  It now copies the value and refuses any session that is not published, and
+  `TestSummarizeRefusesUnpublishedSessions` fails against the old behavior.
+- The schema cases that mutate hand-built documents test the schema, not the
+  projection, and could never have caught the above. They are labelled as such,
+  and the projection has its own direct tests.
+- A provider session ID is untrusted metadata, not a filename, so one
+  containing `/` would split the qualified address `<node-id>/<provider>:<id>`
+  in an unintended place. `validateSession` now rejects it. Node impersonation
+  was never possible — `SplitQualifiedID` cuts at the first separator — and a
+  test pins that behavior.
+- `govulncheck` reports no vulnerabilities, including the `x/text` version the
+  new schema validator pulls in. The validator is test-only and absent from
+  `go list -deps ./cmd/agenthub-node`.
+
+A second review of those fixes found three regressions they introduced, all now
+resolved and covered by tests:
+
+- Rejecting a bad provider session ID aborted the whole scan, so a single file
+  under `~/.claude/projects` could disable discovery. Discovery now skips the
+  record, counts it in `skipped`, and completes. Measured both ways: with the
+  parser check relaxed the hostile record reaches the registry, is refused, and
+  the other sessions still register.
+- The heartbeat error naming a session and its visibility was returned in the
+  HTTP body. The endpoint now returns a generic message and logs the detail.
+- The registry rejects a separator on write, but a database written by an older
+  build would not have been checked. The export projection now refuses such a
+  row itself, and the new-database schema carries a `CHECK` constraint.
+
+Two further reviews of those fixes found more, all resolved:
+
+- Discovery skipped every error alike, so a cancelled context or an unavailable
+  database reported a successful scan of zero sessions. Only `ErrInvalidSession`
+  is skipped now; anything else fails the scan.
+- Two tests asserted on paths they never reached. The discovery test's hostile
+  record was rejected by the metadata parser before the store saw it, and the
+  error-hygiene test hit a 501 rather than the error path. Both are rewritten
+  against injected failures, and each was mutation-tested: reverting the fix
+  makes them fail.
+- `POST /v1/messages` returned raw store errors as 400, including
+  `sql: database is closed` and the destination session ID. It classifies by
+  sentinel now, as the other endpoints do.
+- `writeRegistryError` treated any error containing "invalid" as the caller's
+  fault, which matched driver errors and echoed the column and stored value.
+  Classification is by sentinel only, and a test fails if the substring check
+  returns.
+
+Payload schemas exist for `node.heartbeat` only. `node.hello`, `agent.message`
+and `agent.ack` are reserved names whose payloads are unconstrained until issues
+#11, #12 and #16 define them; nothing in the build emits them.
 
 ## Automated checks
 

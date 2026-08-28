@@ -98,9 +98,12 @@ func stringifySource(value any) string {
 	return "codex"
 }
 
+// validProviderID matches what the registry will accept. Keeping the rule in
+// one place stops a second ingest path from admitting an ID the export layer
+// then has to refuse.
 func validProviderID(id string) bool {
-	if id == "" || len(id) > 256 {
+	if id == "" || len(id) > 256 || strings.ContainsFunc(id, unicode.IsControl) {
 		return false
 	}
-	return !strings.ContainsFunc(id, unicode.IsControl)
+	return model.ValidateProviderSessionID(id) == nil
 }

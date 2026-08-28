@@ -65,6 +65,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func (r runner) command(ctx context.Context, args []string) error {
 	switch args[0] {
 	case "discover":
+		// The JSON carries a skipped count; printing it is how an unusable
+		// provider record becomes visible to the owner.
 		return r.simple(ctx, http.MethodPost, "/v1/discover", nil)
 	case "list", "ls", "ps":
 		return r.list(ctx)

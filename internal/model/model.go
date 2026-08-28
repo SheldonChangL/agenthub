@@ -1,6 +1,11 @@
 package model
 
-import "time"
+import (
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+)
 
 type Provider string
 
@@ -64,4 +69,25 @@ type Message struct {
 	To        string    `json:"to"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+// SessionIDSeparator is the character that joins a node ID to a session ID in
+// the qualified export address <node-id>/<provider>:<provider-session-id>.
+const SessionIDSeparator = "/"
+
+// ValidateProviderSessionID rejects provider session IDs that would corrupt a
+// qualified address.
+//
+// The value comes from a metadata JSON field, not a filename, so a provider —
+// or anything that can write a file under a provider's directory — chooses it.
+// Every write path must agree on this rule, which is why it lives here rather
+// than in one store.
+func ValidateProviderSessionID(providerSessionID string) error {
+	if providerSessionID == "" {
+		return errors.New("provider session id is required")
+	}
+	if strings.Contains(providerSessionID, SessionIDSeparator) {
+		return fmt.Errorf("provider session id %q contains %q", providerSessionID, SessionIDSeparator)
+	}
+	return nil
 }
