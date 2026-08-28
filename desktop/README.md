@@ -1,19 +1,44 @@
-# README
+# AgentHub Desktop
 
-## About
+AgentHub Desktop is the owner-facing privacy console for a local
+`agenthub-node`. It lists every owner-local Claude and Codex session, supports
+search and status/provider/visibility filters, applies publish or unpublish to
+multiple selected sessions, triggers discovery, and shows the current export
+preview.
 
-This is the official Wails Vanilla template.
+The app is an HTTP client only. It does not read provider files or SQLite and
+does not write a second copy of session state. It accepts loopback node URLs
+only because the local API has no authentication yet.
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+## Prerequisites
 
-## Live Development
+1. Start `agenthub-node` on its default `127.0.0.1:7462` address, or set a
+   loopback `AGENTHUB_URL` before launching the desktop app.
+2. Install Wails v2 for development builds.
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+## Develop and build
 
-## Building
+```sh
+go test ./...
+wails dev
+wails build
+```
 
-To build a redistributable, production mode package, use `wails build`.
+The desktop app is a separate Go module so Wails and CGo do not affect the
+cross-platform node or CLI builds.
+
+## Current boundaries
+
+- Publishing changes the current local `private | public` export preview. The
+  per-node audience picker is planned in
+  [issue #5](https://github.com/SheldonChangL/agenthub/issues/5) and
+  [ADR-001](../docs/decisions/001-session-audience-and-export-boundary.md).
+- The heartbeat dialog shows the current runtime payload. It is not yet a
+  validated broker envelope;
+  [issue #18](https://github.com/SheldonChangL/agenthub/issues/18) tracks that
+  alignment.
+- LAN nodes, pairing, remote delivery, and provider wake-up are not implemented.
+- Provider metadata is untrusted.
+  [Issue #19](https://github.com/SheldonChangL/agenthub/issues/19) tracks
+  replacing dynamic `innerHTML` rendering with safe DOM text insertion before
+  distribution.

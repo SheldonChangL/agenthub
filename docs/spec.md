@@ -2,16 +2,20 @@
 
 ## Objective
 
-Build an executable, local-first foundation that inventories Claude Code and Codex sessions and can later route messages across providers and LAN hosts.
+Build an executable, privacy-first local foundation that inventories Claude Code and Codex sessions and can later route authorized metadata and messages across providers and LAN hosts.
 
-Success means a user can start one node, discover local sessions without transcript ingestion, inspect normalized status, explicitly publish or unpublish individual sessions, and exchange queued messages through the local API. Protocol schemas must be stable enough for a future broker and MCP server.
+Success means a user can start one node, discover local sessions while decoding
+and persisting metadata fields only, inspect normalized status, explicitly add
+or remove individual sessions from a local export preview, and exchange queued
+messages through the local API. Future broker and MCP contracts are documented
+as drafts with their unresolved implementation gaps made explicit.
 
 ## Assumptions
 
 1. The first supported AgentHub hosts are Windows, macOS, and Ubuntu. Provider support may differ: Claude Code documents Windows 10+ through WSL or Git for Windows; native provider runtime acceptance remains separate from AgentHub compatibility.
 2. Existing provider sessions are unmanaged. Their activity is inferred conservatively from metadata recency and provider process presence.
 3. Managed sessions will report lifecycle state directly to the registry; launching and supervising providers is outside this increment.
-4. All discovered sessions default to private. Re-discovery must never reset a user's visibility choice.
+4. All discovered sessions default to private. Re-discovery must never reset a user's visibility choice. Before LAN transport exists, `public` means inclusion in a local preview—not consent to any remote peer.
 5. Transcript and prompt bodies are out of scope and must not be persisted.
 6. The MVP node binds to loopback. LAN transport schemas are included, but a network broker and authentication handshake are not implemented yet.
 
@@ -75,19 +79,20 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 ## Boundaries
 
 - Always: default sessions to private, preserve visibility on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
-- Ask first: add remote authentication, bind to non-loopback, inject prompts into provider sessions, or change the visibility model.
+- Planned but gated: replace visibility with the accepted audience model in [ADR-001](decisions/001-session-audience-and-export-boundary.md), add remote authentication, and only then consider non-loopback transport.
+- Ask first: inject prompts into provider sessions, weaken an export default, or expand the remote metadata allowlist.
 - Never: store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
 
 ## Success criteria
 
 1. `agenthub-node` and `ah` build and run.
-2. Discovery registers synthetic and local Claude/Codex sessions without reading message bodies.
+2. Discovery registers synthetic and local Claude/Codex sessions while decoding and persisting metadata fields only; message-body fields are ignored.
 3. A Codex App Server client boundary can initialize and parse live `thread/list` status without being enabled by default.
 4. Every newly discovered session is private; rediscovery preserves an explicit public setting.
-5. Public heartbeat output contains public sessions only.
+5. The local heartbeat preview contains public sessions only; it is not represented as a deployed broker envelope.
 6. Managed and unmanaged status behavior is covered by deterministic tests.
 7. `ah list`, `status`, `publish`, `unpublish`, `send`, and `inbox` work against the node.
-8. Broker heartbeat and MCP tool contracts are documented as JSON Schema-compatible JSON.
+8. Draft broker and MCP contracts are documented as JSON Schema-compatible JSON, and known mismatches with runtime output are tracked rather than presented as complete.
 9. Windows, macOS, and Linux builds compile; macOS runs locally, while Windows and Ubuntu runtime acceptance is documented for real-host verification.
 
 ## Deferred work
@@ -95,10 +100,11 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 The multi-node items below are planned in [multinode-plan.md](multinode-plan.md)
 and tracked from issue #1.
 
-- Authenticated LAN pairing and broker persistence
+- Separate owner-local and remote session DTOs ([issue #18](https://github.com/SheldonChangL/agenthub/issues/18))
+- Authenticated LAN pairing and broker presence state
 - Remote presence subscriptions and retries
 - Provider-specific live APIs and message injection
 - Session launch/supervision and wake-up
 - Full MCP server transport implementation
-- Policy groups, aliases, and directory redaction controls
+- Policy groups and aliases
 - Windows and Ubuntu real-host acceptance runs (cross-compilation is complete)

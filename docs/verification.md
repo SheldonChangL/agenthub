@@ -2,6 +2,25 @@
 
 Verified on 2026-08-28.
 
+## Planning and contract audit
+
+The same-day architecture/docs/issue audit re-ran `go test ./...`, `go vet
+./...`, and the desktop module tests successfully. It also compared runtime
+types with the checked-in protocol drafts and recorded two gaps rather than
+overstating current readiness:
+
+- [#18](https://github.com/SheldonChangL/agenthub/issues/18): the current local
+  heartbeat preview serializes full `Session` values and does not yet match the
+  broker `SessionSummary` schema.
+- [#19](https://github.com/SheldonChangL/agenthub/issues/19): the desktop table
+  must render untrusted provider metadata with DOM text APIs before a desktop
+  distribution or LAN release.
+
+Neither finding changes the verified local privacy behavior: private sessions
+are absent from the current preview, and the node still rejects non-loopback
+bind addresses. They are release gates for connecting that preview to a broker
+or distributing the desktop app.
+
 ## Automated checks
 
 ```sh

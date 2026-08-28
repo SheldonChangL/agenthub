@@ -2,7 +2,7 @@
 
 ## Why this plan exists
 
-The MVP shipped a stable local registry and a stable protocol *shape*, then a
+The MVP implemented a stable local registry and a draft protocol shape, then a
 desktop app. The desktop app immediately surfaced a requirement the headless
 increments had no way to reveal: an owner does not want one global public flag,
 they want to choose **who** sees a session.
@@ -23,16 +23,38 @@ per session and exported by `HeartbeatBuilder`. In a multi-node world that is
 the wrong shape: "public" has to answer *public to whom*.
 
 ```text
-now:    session.visibility  = private | public
-target: session_audience(session_id, node_id)  + session export flags
+now:    session.visibility = private | public-preview
+target: sessions.audience_mode = none | all_paired | selected
+        session_audience(session_id, node_id)
+        export_cwd = false
+        accept_messages = false
 ```
 
 Everything else in this plan is downstream of that change. It must land before
 a broker exists, because a deployed broker freezes the export view.
 
+Existing `public` rows migrate to `none`, not `all_paired`. The old action only
+enabled a local preview when no authenticated remote recipient existed, so it
+cannot be treated as consent to share after an upgrade. See
+[ADR-001](decisions/001-session-audience-and-export-boundary.md).
+
 ## Schema gaps
 
 Checked against `docs/broker-protocol.schema.json` and `docs/mcp-tools.json`.
+
+### 0. Runtime heartbeat and broker schema disagree
+
+`GET /v1/heartbeat` currently returns a direct `protocol.Heartbeat` whose
+sessions are full `model.Session` values. The broker schema instead defines an
+envelope with a generic payload and a smaller `sessionSummary`, but does not
+actually bind `node.heartbeat` to that definition.
+
+- Introduce a remote `SessionSummary` allowlist before any network transport.
+- Treat `/v1/heartbeat` as a payload preview and make its generated JSON pass
+  the same schema used by the broker payload.
+- Never export `source`, `providerSessionId` as a second field, `updatedAt`,
+  `metadataPath`, transcript content, or prompt content.
+- Tracked in [#18](https://github.com/SheldonChangL/agenthub/issues/18).
 
 ### 1. `sessionSummary` has no node dimension
 
@@ -89,18 +111,25 @@ Both are per-session, per-owner decisions and belong beside audience.
 
 - Liveness needs no new field. `sequence` plus `expiresAt` already distinguish
   online, stale, and offline.
-- The full-snapshot heartbeat already handles revocation: a session that drops
-  out of the array is no longer published, provided consumers treat each
-  heartbeat as a replacement rather than a merge. Document that explicitly.
-- `sessionSummary` keeps `additionalProperties: false` and
-  `visibility: {"const": "public"}`. Both should survive the change — they are
-  what makes the export view auditable.
+- The builder already emits full snapshots. After the runtime and schema are
+  aligned in #18, revocation needs no delta message: a session that drops out
+  of the array is no longer published. Consumers must replace rather than
+  merge the previous array; #17 records this wire rule.
+- `sessionSummary` keeps `additionalProperties: false`. The global
+  `visibility: {"const": "public"}` field does not survive: authorization is
+  established by the per-recipient export view, and a global `public` label
+  would misrepresent the audience model.
 
 ## Increment order
 
-Each step ends with something verifiable, and no step depends on a broker
-existing until step 4.
+Each step ends with something verifiable. The broker is a logical server role;
+no client-to-server LAN traffic is allowed until the identity and pairing gates
+are complete.
 
+0. **Export contract alignment** (#18). Separate the owner-local model from the
+   allowlisted remote summary and validate generated payloads against the draft
+   schema. Verifiable: a public synthetic session exports only the documented
+   fields and a private session exports nothing.
 1. **Audience model, local only** (#2, #3, #4, #5, #6). Replace the visibility
    boolean with an audience table plus export flags. No network. The desktop
    app gets the audience picker; `ah publish` keeps working as "audience = all
@@ -130,10 +159,15 @@ existing until step 4.
   `nodeconfig.ValidateLoopback` stays as the guard.
 - Never let a rescan alter audience, exactly as it must not alter visibility
   today.
+- Never migrate an old local `public` preview into remote sharing; require new
+  consent after the audience migration.
 - Never publish a session to a node the owner did not choose; "all paired
   nodes" is an explicit choice and must stay distinguishable from a per-node
   grant, because the two differ for nodes paired later.
 - Transcript and prompt bodies remain out of scope.
+- The broker may see metadata already authorized for routing, but never private
+  registry rows. Message bodies may transit the router in step 6 but are not
+  persisted there. End-to-end encryption is not claimed by this increment.
 
 ## Deliberately deferred
 
