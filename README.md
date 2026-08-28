@@ -42,7 +42,15 @@ heartbeat transport and presence consumption between nodes. It is planned in
 
 ## Build and test
 
+Both modules require **Go 1.27.0 or newer**, declared in `go.mod` and
+`desktop/go.mod`. The floor is a security requirement, not a language-feature
+one: these binaries link the toolchain's standard library, so an unpatched
+toolchain ships its `crypto/tls`, `crypto/x509` and `net/http` vulnerabilities
+into the built artifact regardless of how the tests do. The `go` directive makes
+the go command refuse an older toolchain rather than build quietly against it.
+
 ```sh
+go version   # must report go1.27.0 or newer
 go test ./...
 mkdir -p bin
 go build -o bin/agenthub-node ./cmd/agenthub-node
