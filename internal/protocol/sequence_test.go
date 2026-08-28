@@ -136,36 +136,62 @@ func TestHeartbeatIsNotBuiltWithoutASequence(t *testing.T) {
 	defer store.Close()
 	trustPeers(t, store, peerA)
 
-	// Exhaust the counter the way only time could: through a second connection
-	// to the same file, because the store deliberately exposes no way to move it.
-	exhaust(t, path)
-
-	builder := heartbeatBuilder(t, store, newTestKeypair(t))
-	for name, build := range map[string]func() (protocol.Envelope, error){
-		"owner preview": func() (protocol.Envelope, error) { return builder.Build(ctx, time.Now()) },
-		"per-peer":      func() (protocol.Envelope, error) { return builder.BuildFor(ctx, time.Now(), peerA) },
+	// Break the counter the way only time or damage could: through a second
+	// connection to the same file, because the store deliberately exposes no way
+	// to move it. Both breakages must stop the heartbeat, however the caller
+	// classifies them.
+	for name, breakCounter := range map[string]func(*testing.T, string){
+		"counter exhausted":   exhaustCounter,
+		"counter row missing": removeCounterRow,
 	} {
 		t.Run(name, func(t *testing.T) {
-			envelope, err := build()
-			if err == nil {
-				t.Fatal("a heartbeat was built without a usable sequence")
-			}
-			if envelope.Signature != "" || envelope.Payload != nil {
-				t.Errorf("a failed build produced an envelope: %+v", envelope)
+			breakCounter(t, path)
+			defer restoreCounter(t, path)
+
+			builder := heartbeatBuilder(t, store, newTestKeypair(t))
+			for build, run := range map[string]func() (protocol.Envelope, error){
+				"owner preview": func() (protocol.Envelope, error) { return builder.Build(ctx, time.Now()) },
+				"per-peer":      func() (protocol.Envelope, error) { return builder.BuildFor(ctx, time.Now(), peerA) },
+			} {
+				t.Run(build, func(t *testing.T) {
+					envelope, err := run()
+					if err == nil {
+						t.Fatal("a heartbeat was built without a usable sequence")
+					}
+					if envelope.Signature != "" || envelope.Payload != nil {
+						t.Errorf("a failed build produced an envelope: %+v", envelope)
+					}
+				})
 			}
 		})
 	}
 }
 
-func exhaust(t *testing.T, path string) {
+func writeDirectly(t *testing.T, path, statement string, args ...any) {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open the database directly: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(
-		`UPDATE heartbeat_sequence SET last_value = ? WHERE singleton = 1`, int64(math.MaxInt64)); err != nil {
-		t.Fatalf("exhaust the counter: %v", err)
+	if _, err := db.Exec(statement, args...); err != nil {
+		t.Fatalf("run %q: %v", statement, err)
 	}
+}
+
+func exhaustCounter(t *testing.T, path string) {
+	t.Helper()
+	writeDirectly(t, path,
+		`UPDATE heartbeat_sequence SET last_value = ? WHERE singleton = 1`, int64(math.MaxInt64))
+}
+
+func removeCounterRow(t *testing.T, path string) {
+	t.Helper()
+	writeDirectly(t, path, `DELETE FROM heartbeat_sequence`)
+}
+
+func restoreCounter(t *testing.T, path string) {
+	t.Helper()
+	writeDirectly(t, path,
+		`INSERT OR REPLACE INTO heartbeat_sequence (singleton, last_value) VALUES (1, 0)`)
 }
