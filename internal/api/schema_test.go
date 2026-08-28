@@ -84,6 +84,19 @@ func TestHeartbeatEndpointServesSchemaConformantJSON(t *testing.T) {
 			t.Errorf("heartbeat endpoint exported owner-local field %q\n%s", forbidden, body)
 		}
 	}
+
+	// The endpoint serves the owner's preview, which is a union of everything
+	// published anywhere. It is addressed to this node, so a peer that obtained
+	// a copy would have to reject it: the recipient it names is not that peer.
+	var served struct {
+		RecipientNodeID string `json:"recipientNodeId"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &served); err != nil {
+		t.Fatalf("decode heartbeat envelope: %v", err)
+	}
+	if served.RecipientNodeID != testNodeID {
+		t.Errorf("served heartbeat recipient = %q, want the local node %q", served.RecipientNodeID, testNodeID)
+	}
 }
 
 // Internal failures must not describe the machine to the caller. This is the
