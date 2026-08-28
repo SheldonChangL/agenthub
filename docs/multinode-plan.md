@@ -144,14 +144,14 @@ are complete.
    app gets the audience picker; `ah publish` keeps working as "audience = all
    paired". Verifiable: rediscovery still preserves choices; heartbeat preview
    reflects audience; existing tests pass unchanged in meaning.
-2. **Qualified addressing** (#7, #9; #8 done in step 0). Accept fully-qualified
+2. **Qualified addressing** (#7, #9; #8 done in step 0) — done. Accept fully-qualified
    addresses at every boundary while remaining single-node. Verifiable: `ah send
    node_x/claude:y` is rejected with a clear "unknown node" error rather than a
    parse failure.
-3. **Node keypair and fingerprint** (#10). Extend `internal/identity` with a
+3. **Node keypair and fingerprint** (#10) — done. Extend `internal/identity` with a
    keypair and derive a stable fingerprint. Verifiable: fingerprint is stable
    across restarts and differs per node.
-4. **Pairing exchange** (#11, #12, #13). New envelope types, signature
+4. **Pairing exchange** (#11, #12, #13) — done. New envelope types, signature
    verification, a trust store. Still no session data crosses the wire.
    Verifiable: two nodes on one machine can pair and refuse a mismatched
    fingerprint.

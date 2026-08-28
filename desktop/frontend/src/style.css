@@ -263,3 +263,72 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
   gap: 12px;
 }
 .modal-actions .muted { flex: 1; font-size: 11.5px; }
+
+/* ---------- network view ---------- */
+
+.networkwrap { flex: 1; display: flex; overflow: hidden; }
+
+.nodelist {
+  width: 328px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: #131620;
+  display: flex;
+  flex-direction: column;
+}
+.nodelist-head {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.nodelist-foot {
+  margin-top: auto;
+  padding: 12px 14px;
+  border-top: 1px solid var(--line);
+}
+.nodelist-foot p { margin: 9px 0 0; font-size: 11.5px; }
+
+.noderow {
+  padding: 11px 14px;
+  border-bottom: 1px solid rgba(39, 44, 56, 0.6);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.noderow:hover { background: rgba(255, 255, 255, 0.025); }
+.noderow.on { background: rgba(79, 140, 255, 0.09); border-left-color: var(--accent); }
+.noderow .line { display: flex; align-items: center; gap: 8px; }
+.noderow .name { font-weight: 500; }
+.noderow .meta { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
+
+.nodedetail { flex: 1; overflow: auto; padding: 20px 22px; }
+.nodedetail h2 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+.nodedetail .fingerprint {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  margin: 14px 0;
+}
+.detailrow {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(39, 44, 56, 0.6);
+  font-size: 12px;
+}
+
+.pairform { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.pairform label { display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); }
+.pairform input {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+.pairform input:focus { outline: none; border-color: var(--accent); }

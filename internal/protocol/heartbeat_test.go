@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"crypto/ed25519"
 	"path/filepath"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 	}
 
 	node := model.NodeIdentity{ID: "node-1234567890123456", DisplayName: "test", Platform: "test"}
-	builder := NewHeartbeatBuilder(store, node)
+	builder := NewHeartbeatBuilder(store, node, internalTestSigner{})
 	envelope, err := builder.Build(ctx, now)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
@@ -48,9 +49,9 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 	if envelope.Type != TypeNodeHeartbeat || envelope.NodeID != node.ID {
 		t.Fatalf("envelope type/nodeId = %q/%q", envelope.Type, envelope.NodeID)
 	}
-	got, ok := envelope.Payload.(HeartbeatPayload)
-	if !ok {
-		t.Fatalf("payload is %T, want HeartbeatPayload", envelope.Payload)
+	got, err := DecodePayload[HeartbeatPayload](envelope)
+	if err != nil {
+		t.Fatal(err)
 	}
 	want := QualifiedID(node.ID, "codex:public")
 	if len(got.Sessions) != 1 || got.Sessions[0].ID != want {
@@ -59,4 +60,16 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 	if got.Sequence != 1 || !got.ExpiresAt.Equal(now.Add(30*time.Second)) {
 		t.Fatalf("heartbeat sequence/expiresAt = %d/%v", got.Sequence, got.ExpiresAt)
 	}
+}
+
+// internalTestSigner keeps the in-package test independent of the external
+// test helper while still producing a real signature.
+type internalTestSigner struct{}
+
+func (internalTestSigner) Sign(message []byte) []byte {
+	_, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		panic(err)
+	}
+	return ed25519.Sign(private, message)
 }

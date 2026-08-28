@@ -34,7 +34,7 @@ authenticated LAN pairing. It is planned in
 |---|---|---|
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
-| Per-node privacy | Implemented; pairing, presence and messaging planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
+| Per-node privacy and pairing | Implemented; presence and messaging planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
 | Desktop metadata rendering hardening | Required before desktop distribution | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
 
@@ -65,6 +65,9 @@ go run ./cmd/ah unpublish <session-id>
 go run ./cmd/ah audience <session-id>
 go run ./cmd/ah audience <session-id> all-paired --cwd
 go run ./cmd/ah audience <session-id> selected node_laptop node_build --cwd --messages
+go run ./cmd/ah nodes
+go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
+go run ./cmd/ah revoke <node-id>
 go run ./cmd/ah send <session-id> "please review the schema"
 go run ./cmd/ah inbox <session-id>
 ```
@@ -108,6 +111,10 @@ Two per-session flags default closed: the working directory travels only when
 the owner opts in, and a session accepts queued messages only when the owner
 opts in.
 
+Pairing a node establishes identity only. It publishes nothing: the audience is
+a separate, per-session decision. Revoking a node withdraws trust and every
+grant it held, in one step, so re-pairing later does not restore access.
+
 The preview is public-only and is projected into an allowlisted
 `SessionSummary`: the qualified AgentHub address, provider, status, management
 mode, `statusSource`, last-seen time, and working directory. Provider source,
@@ -139,7 +146,10 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/sessions/{id}/audience` | Read one session's export policy |
 | `PUT` | `/v1/sessions/{id}/audience` | Replace one session's export policy |
 | `POST` | `/v1/sessions/audience` | Apply one policy to many sessions |
-| `GET` | `/v1/heartbeat` | Preview the broker envelope this node would send; public sessions only |
+| `GET` | `/v1/heartbeat` | Preview the broker envelope this node would send; published sessions only |
+| `GET` | `/v1/nodes` | List paired nodes |
+| `POST` | `/v1/nodes` | Trust a node whose fingerprint the owner compared |
+| `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `POST` | `/v1/messages` | Queue a local message |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
 

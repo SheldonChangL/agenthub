@@ -18,6 +18,10 @@ export function Overview() {
   return window['go']['main']['App']['Overview']();
 }
 
+export function RevokeNode(arg1) {
+  return window['go']['main']['App']['RevokeNode'](arg1);
+}
+
 export function SetAudience(arg1, arg2) {
   return window['go']['main']['App']['SetAudience'](arg1, arg2);
 }
@@ -28,4 +32,8 @@ export function SetNodeURL(arg1) {
 
 export function SetVisibility(arg1, arg2) {
   return window['go']['main']['App']['SetVisibility'](arg1, arg2);
+}
+
+export function TrustNode(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['TrustNode'](arg1, arg2, arg3, arg4, arg5);
 }

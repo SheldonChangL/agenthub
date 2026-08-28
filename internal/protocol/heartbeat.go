@@ -2,11 +2,11 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"time"
 
-	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -27,8 +27,21 @@ type Envelope struct {
 	Type            string    `json:"type"`
 	SentAt          time.Time `json:"sentAt"`
 	NodeID          string    `json:"nodeId"`
-	Payload         any       `json:"payload"`
+	// Payload travels and is signed as the exact bytes the sender produced.
+	// Re-encoding a decoded payload would not reproduce them.
+	Payload json.RawMessage `json:"payload"`
+	// Signature is empty only while an envelope is being signed; a receiver
+	// treats a missing one as unauthenticated.
+	Signature string `json:"signature,omitempty"`
 }
+
+// SentAt wraps the timestamp so callers cannot accidentally pass a local clock
+// where a UTC instant is required.
+type SentAt struct{ instant time.Time }
+
+func At(instant time.Time) SentAt { return SentAt{instant: instant.UTC()} }
+
+func (s SentAt) Time() time.Time { return s.instant }
 
 // HeartbeatPayload is a replaceable presence snapshot. Consumers replace a
 // node's previous snapshot wholesale; a session missing from Sessions has had
@@ -43,11 +56,12 @@ type HeartbeatPayload struct {
 type HeartbeatBuilder struct {
 	store    *registry.Registry
 	node     model.NodeIdentity
+	signer   Signer
 	sequence atomic.Uint64
 }
 
-func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity) *HeartbeatBuilder {
-	return &HeartbeatBuilder{store: store, node: node}
+func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, signer Signer) *HeartbeatBuilder {
+	return &HeartbeatBuilder{store: store, node: node, signer: signer}
 }
 
 // Build renders the owner's preview: everything that leaves this host at all.
@@ -95,22 +109,11 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, peerNodeID 
 		summaries = append(summaries, summary)
 	}
 
-	messageID, err := id.New("msg_")
-	if err != nil {
-		return Envelope{}, fmt.Errorf("generate message id: %w", err)
+	payload := HeartbeatPayload{
+		Sequence:     b.sequence.Add(1),
+		ExpiresAt:    now.UTC().Add(heartbeatTTL),
+		Capabilities: []string{"session.list", "session.status", "message.send", "message.inbox"},
+		Sessions:     summaries,
 	}
-
-	return Envelope{
-		ProtocolVersion: Version,
-		MessageID:       messageID,
-		Type:            TypeNodeHeartbeat,
-		SentAt:          now.UTC(),
-		NodeID:          b.node.ID,
-		Payload: HeartbeatPayload{
-			Sequence:     b.sequence.Add(1),
-			ExpiresAt:    now.UTC().Add(heartbeatTTL),
-			Capabilities: []string{"session.list", "session.status", "message.send", "message.inbox"},
-			Sessions:     summaries,
-		},
-	}, nil
+	return NewEnvelope(b.node.ID, TypeNodeHeartbeat, At(now), payload, b.signer)
 }

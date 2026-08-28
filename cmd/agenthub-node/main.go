@@ -56,14 +56,24 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load node identity: %w", err)
 	}
+	// The signing key lives beside the database rather than in it: a database
+	// gets copied and inspected far more casually than a file named node.key,
+	// and a copy that carried the key would clone this node's identity.
+	keypair, err := identity.LoadOrCreateKeypair(filepath.Dir(*dbPath))
+	if err != nil {
+		return fmt.Errorf("load node key: %w", err)
+	}
+	node.PublicKey = identity.EncodePublicKey(keypair.Public)
+	node.Fingerprint = keypair.Fingerprint()
 	service := hub.New(store, hub.Config{ClaudeRoot: *claudeRoot, CodexRoot: *codexRoot})
 	result, err := service.Discover(ctx)
 	if err != nil {
 		return err
 	}
 	log.Printf("node %s discovered %d sessions (%d Claude, %d Codex)", node.ID, result.Total, result.Claude, result.Codex)
+	log.Printf("node fingerprint %s", node.Fingerprint)
 
-	heartbeats := protocol.NewHeartbeatBuilder(store, node)
+	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
 	server := &http.Server{
 		Addr:              *listenAddress,
 		Handler:           api.NewServer(store, service, heartbeats, node).Handler(),
