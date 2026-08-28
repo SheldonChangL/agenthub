@@ -30,6 +30,11 @@ var ErrUnsigned = errors.New("envelope is not authentically signed")
 // ErrNotAddressed marks an envelope that is authentic but was built for another
 // node. It is deliberately distinct from ErrUnsigned: the sender is who it
 // claims to be, and the envelope is still not this node's to accept.
+//
+// Only an envelope whose signature has already been verified can produce it. A
+// caller may therefore read it as "a node I trust sent this to somebody else"
+// rather than merely "the identifiers did not match", which is what makes it
+// safe to count or log as traffic from a known peer.
 var ErrNotAddressed = errors.New("envelope is not addressed to this node")
 
 // ErrUndirected marks an envelope that must name a recipient and does not.
@@ -133,19 +138,23 @@ func newEnvelope(nodeID, recipientNodeID, envelopeType string, sentAt SentAt, pa
 //
 // It answers one question — is this authentically from that node — and nothing
 // about whether the receiver may act on it. A directed envelope is refused
-// outright rather than reported as authentic, so no receiver can reach an accept
-// decision on a heartbeat without also checking who it was addressed to; that is
-// VerifyDirected's job.
+// rather than reported as verified, so no receiver can reach an accept decision
+// on a heartbeat without also checking who it was addressed to; that is
+// VerifyDirected's job. The signature is checked first, so that refusal is only
+// ever reported for an envelope that is genuinely from the node it names.
 //
 // The caller supplies the key it already trusts for that node ID. Reading the
 // key out of the envelope would let any sender claim any identity.
 func (e Envelope) VerifySender(publicKey ed25519.PublicKey, expectedNodeID string) error {
+	if err := e.verifySignature(publicKey, expectedNodeID); err != nil {
+		return err
+	}
 	if e.RecipientNodeID != "" {
 		return fmt.Errorf(
 			"%w: envelope is addressed to %q; verify it with VerifyDirected, which checks the recipient",
 			ErrNotAddressed, e.RecipientNodeID)
 	}
-	return e.verifySignature(publicKey, expectedNodeID)
+	return nil
 }
 
 // VerifyDirected checks that this envelope is authentically from expectedNodeID
@@ -154,17 +163,33 @@ func (e Envelope) VerifySender(publicKey ed25519.PublicKey, expectedNodeID strin
 // Both halves are required. A signature proves who wrote the envelope, not who
 // it was for: without the recipient check, a snapshot a sender built for one
 // peer is a valid snapshot for every peer that trusts that sender.
+//
+// Authenticity is decided first, and the order is part of the contract. The two
+// answers mean different things — ErrUnsigned is a stranger, ErrNotAddressed is
+// a known peer's envelope meant for somebody else — and a receiver may
+// reasonably treat the second as traffic from a node it knows. If a forgery
+// could produce it, that reading would promote an unauthenticated sender to a
+// known one. So every failure of authenticity is reported before anything is
+// said about the address, including a mutated recipient: the recipient is a
+// signed field, so rewriting it fails the signature rather than the comparison.
 func (e Envelope) VerifyDirected(publicKey ed25519.PublicKey, expectedNodeID, localNodeID string) error {
-	// An empty expectation would match an envelope that names nobody, which is
-	// how "we do not know who we are yet" turns into "anything is for us".
-	if localNodeID == "" {
-		return fmt.Errorf("%w: no local node id to match against", ErrNotAddressed)
+	if err := e.verifySignature(publicKey, expectedNodeID); err != nil {
+		return err
+	}
+	// The destination is an identity, not a string to compare. A receiver that
+	// does not yet know its own ID, or holds an unusable one, must not be able to
+	// match a deserialized envelope that happens to carry the same unusable
+	// value — that is how "we do not know who we are yet" turns into "anything
+	// is for us". The rule is the shared one, so a value no node could ever have
+	// is refused on both sides.
+	if err := model.ValidateNodeID(localNodeID); err != nil {
+		return fmt.Errorf("%w: no usable local node id to match against: %w", ErrNotAddressed, err)
 	}
 	if e.RecipientNodeID != localNodeID {
 		return fmt.Errorf("%w: envelope is addressed to %q, not %q",
 			ErrNotAddressed, e.RecipientNodeID, localNodeID)
 	}
-	return e.verifySignature(publicKey, expectedNodeID)
+	return nil
 }
 
 func (e Envelope) verifySignature(publicKey ed25519.PublicKey, expectedNodeID string) error {
