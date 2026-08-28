@@ -80,16 +80,7 @@ func TestHeartbeatSequenceIsSharedByEveryBuild(t *testing.T) {
 
 	const rounds = 6
 	var mutex sync.Mutex
-	seen := map[uint64]bool{}
-	record := func(envelope protocol.Envelope) {
-		mutex.Lock()
-		defer mutex.Unlock()
-		sequence := sequenceOf(t, envelope)
-		if seen[sequence] {
-			t.Errorf("sequence %d was published twice", sequence)
-		}
-		seen[sequence] = true
-	}
+	built := make([]protocol.Envelope, 0, rounds)
 
 	var group sync.WaitGroup
 	for round := range rounds {
@@ -110,10 +101,23 @@ func TestHeartbeatSequenceIsSharedByEveryBuild(t *testing.T) {
 				t.Errorf("build: %v", err)
 				return
 			}
-			record(envelope)
+			mutex.Lock()
+			defer mutex.Unlock()
+			built = append(built, envelope)
 		}()
 	}
 	group.Wait()
+
+	// Decoding happens here rather than in the goroutines: a helper that calls
+	// t.Fatalf must run on the test's own goroutine.
+	seen := map[uint64]bool{}
+	for _, envelope := range built {
+		sequence := sequenceOf(t, envelope)
+		if seen[sequence] {
+			t.Errorf("sequence %d was published twice", sequence)
+		}
+		seen[sequence] = true
+	}
 	if len(seen) != rounds {
 		t.Errorf("got %d distinct sequences from %d builds", len(seen), rounds)
 	}
