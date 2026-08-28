@@ -204,3 +204,62 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
 }
 
 .hidden { display: none !important; }
+
+/* ---------- audience picker ---------- */
+
+.options {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.option {
+  display: flex;
+  gap: 10px;
+  padding: 11px 13px;
+  border-bottom: 1px solid rgba(39, 44, 56, 0.6);
+  cursor: pointer;
+}
+.option:last-of-type { border-bottom: none; }
+.option:hover { background: rgba(255, 255, 255, 0.02); }
+.option input { margin-top: 3px; flex: none; }
+.option b { font-weight: 500; display: block; }
+.option em {
+  font-style: normal;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.nodes {
+  padding: 0 13px 12px 36px;
+  border-top: 1px solid rgba(39, 44, 56, 0.6);
+}
+.nodes input {
+  width: 100%;
+  margin-top: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+.nodes input:focus { outline: none; border-color: var(--accent); }
+.nodes p { margin: 7px 0 0; font-size: 11.5px; }
+
+.flags {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 16px;
+  font-size: 12px;
+}
+.flags label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.modal-actions .muted { flex: 1; font-size: 11.5px; }

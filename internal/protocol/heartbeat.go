@@ -50,11 +50,27 @@ func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity) *Hea
 	return &HeartbeatBuilder{store: store, node: node}
 }
 
-// Build reads the export view and renders one heartbeat envelope.
+// Build renders the owner's preview: everything that leaves this host at all.
 //
-// The registry query is the privacy boundary: only sessions the owner marked
-// public are read at all, so a projection mistake cannot leak a private one.
+// It is not what any peer receives. A "selected" session reaches only the nodes
+// its owner named, so the envelope a peer gets comes from BuildFor.
 func (b *HeartbeatBuilder) Build(ctx context.Context, now time.Time) (Envelope, error) {
+	return b.build(ctx, now, "")
+}
+
+// BuildFor renders the envelope one peer may receive.
+//
+// Passing the recipient in is what makes "selected" mean anything: without it
+// every peer would get the same envelope and a session published to one node
+// would reach all of them.
+func (b *HeartbeatBuilder) BuildFor(ctx context.Context, now time.Time, peerNodeID string) (Envelope, error) {
+	if peerNodeID == "" {
+		return Envelope{}, fmt.Errorf("a peer node id is required to build a heartbeat for a recipient")
+	}
+	return b.build(ctx, now, peerNodeID)
+}
+
+func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, peerNodeID string) (Envelope, error) {
 	sessions, err := b.store.ListSessions(ctx, registry.ListOptions{PublicOnly: true})
 	if err != nil {
 		return Envelope{}, fmt.Errorf("list public sessions: %w", err)
@@ -62,6 +78,12 @@ func (b *HeartbeatBuilder) Build(ctx context.Context, now time.Time) (Envelope, 
 
 	summaries := make([]SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
+		// The registry filter answers "does this leave the host at all". Only
+		// the recipient answers "may this peer see it", so a per-peer build
+		// applies the grant list here.
+		if peerNodeID != "" && !session.Audience.PublishesTo(peerNodeID) {
+			continue
+		}
 		// A refusal here means the registry returned something the export view
 		// must not carry. Fail the whole heartbeat rather than send a partial
 		// one: the query already filters on visibility, so reaching this is a

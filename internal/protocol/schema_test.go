@@ -243,3 +243,81 @@ func TestSchemaRejectsUnsafeShapes(t *testing.T) {
 		})
 	}
 }
+
+// A "selected" session must reach only the nodes its owner named.
+//
+// Without a recipient every peer would receive the same envelope, and
+// "selected" would quietly mean "all paired".
+func TestBuildForFiltersBySelectedAudience(t *testing.T) {
+	ctx := context.Background()
+	store := newStore(t)
+
+	forA := session("only-node-a", model.ProviderClaude)
+	forEveryone := session("all-paired", model.ProviderCodex)
+	for _, s := range []model.Session{forA, forEveryone} {
+		if _, err := store.UpsertSession(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetAudience(ctx, forA.ID, model.Audience{
+		Mode: model.AudienceSelected, Nodes: []string{"node_a"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, forEveryone.ID, model.Audience{
+		Mode: model.AudienceAllPaired,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	node := model.NodeIdentity{ID: "node_0123456789abcdef0123", DisplayName: "test", Platform: "darwin/arm64"}
+	builder := protocol.NewHeartbeatBuilder(store, node)
+	schema := compileSchema(t)
+
+	ids := func(envelope protocol.Envelope) []string {
+		payload, ok := envelope.Payload.(protocol.HeartbeatPayload)
+		if !ok {
+			t.Fatalf("payload is %T", envelope.Payload)
+		}
+		out := make([]string, 0, len(payload.Sessions))
+		for _, summary := range payload.Sessions {
+			out = append(out, summary.ID)
+		}
+		return out
+	}
+
+	forNodeA, err := builder.BuildFor(ctx, time.Now(), "node_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ids(forNodeA); len(got) != 2 {
+		t.Errorf("node_a received %v, want both sessions", got)
+	}
+	if err := schema.Validate(roundTrip(t, forNodeA)); err != nil {
+		t.Errorf("per-peer envelope does not satisfy the schema: %v", err)
+	}
+
+	forNodeB, err := builder.BuildFor(ctx, time.Now(), "node_b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ids(forNodeB)
+	if len(got) != 1 {
+		t.Fatalf("node_b received %v, want only the all-paired session", got)
+	}
+	if !strings.Contains(got[0], "all-paired") {
+		t.Errorf("node_b received %v; the selected session leaked", got)
+	}
+
+	// The owner preview is not a recipient view and must say so.
+	if _, err := builder.BuildFor(ctx, time.Now(), ""); err == nil {
+		t.Error("BuildFor accepted an empty recipient")
+	}
+	preview, err := builder.Build(ctx, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids(preview)) != 2 {
+		t.Errorf("the owner preview showed %v, want everything that leaves the host", ids(preview))
+	}
+}

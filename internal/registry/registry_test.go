@@ -83,6 +83,12 @@ func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
 	if _, err := store.UpsertSession(ctx, session); err != nil {
 		t.Fatal(err)
 	}
+	// A session accepts messages only when its owner said so.
+	if err := store.SetAudience(ctx, session.ID, model.Audience{
+		Mode: model.AudienceNone, AcceptMessages: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	created, err := store.CreateMessage(ctx, model.Message{To: session.ID, From: "codex:sender", Body: "review schema"})
 	if err != nil {

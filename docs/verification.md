@@ -94,6 +94,47 @@ Two further reviews of those fixes found more, all resolved:
   Classification is by sentinel only, and a test fails if the substring check
   returns.
 
+## Audience model
+
+Publishing now answers "to whom". Verified against a node holding real provider
+data:
+
+- every discovered session upgrades and registers at audience `none`
+- `ah audience <id> selected node_laptop node_build --cwd` publishes to exactly
+  those nodes; `ah list` shows `2 nodes`, and `all-paired` shows `all paired`
+- the heartbeat carried only the two published sessions out of 1,040, still
+  validated against the broker schema by an independent implementation, and
+  dropped to one after `ah audience <id> none`
+- a `selected` policy with no nodes publishes to nobody: the SQL predicate and
+  `Audience.PublishesToAnyone` agree that an empty selection is not published
+
+Both per-session flags default closed and are enforced where they matter rather
+than only stored:
+
+- `export_cwd` is read by the export projection, so the working directory is
+  absent from a summary until the owner opts in
+- `accept_messages` is read by `CreateMessage`, so a session that has not opted
+  in accumulates no queue
+
+A review of this change found two gaps that mattered only once a transport
+exists, both closed here:
+
+- `selected` was not enforced per recipient. The builder produced one envelope
+  for everyone, so a session published to one node would have reached every
+  peer. `BuildFor(peer)` now filters by the grant list, and `Build` is
+  documented as the owner's preview rather than anything a peer receives.
+- Publishing through the compatibility path turned on the working-directory
+  export as a side effect, so `ah publish` shared the account and project name
+  without asking. It leaves both flags closed; a test fails if that returns.
+
+The stale `visibility` column is gone. It was still read by one count query
+after everything else moved to `audience_mode`, which would have reported the
+pre-upgrade public count — the value ADR-001 requires be discarded.
+
+ADR-001's migration rule is covered by a test that builds a database with the
+pre-audience schema, inserts a row marked `public`, opens it with the current
+build, and requires audience `none` and an empty export view.
+
 Payload schemas exist for `node.heartbeat` only. `node.hello`, `agent.message`
 and `agent.ack` are reserved names whose payloads are unconstrained until issues
 #11, #12 and #16 define them; nothing in the build emits them.

@@ -18,6 +18,10 @@ export function Overview() {
   return window['go']['main']['App']['Overview']();
 }
 
+export function SetAudience(arg1, arg2) {
+  return window['go']['main']['App']['SetAudience'](arg1, arg2);
+}
+
 export function SetNodeURL(arg1) {
   return window['go']['main']['App']['SetNodeURL'](arg1);
 }

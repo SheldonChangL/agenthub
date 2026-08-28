@@ -1,5 +1,23 @@
 export namespace main {
 	
+	export class Audience {
+	    mode: string;
+	    nodes?: string[];
+	    exportCwd: boolean;
+	    acceptMessages: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Audience(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.nodes = source["nodes"];
+	        this.exportCwd = source["exportCwd"];
+	        this.acceptMessages = source["acceptMessages"];
+	    }
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;
@@ -43,6 +61,7 @@ export namespace main {
 	    providerSessionId: string;
 	    management: string;
 	    visibility: string;
+	    audience: Audience;
 	    status: string;
 	    statusSource: string;
 	    cwd?: string;
@@ -63,6 +82,7 @@ export namespace main {
 	        this.providerSessionId = source["providerSessionId"];
 	        this.management = source["management"];
 	        this.visibility = source["visibility"];
+	        this.audience = this.convertValues(source["audience"], Audience);
 	        this.status = source["status"];
 	        this.statusSource = source["statusSource"];
 	        this.cwd = source["cwd"];

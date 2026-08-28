@@ -57,6 +57,13 @@ func TestSendAndInboxRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A session accepts messages only when its owner said so.
+	allow := perform(t, handler, http.MethodPut, "/v1/sessions/codex:target/audience",
+		map[string]any{"mode": "none", "acceptMessages": true})
+	if allow.Code != http.StatusOK {
+		t.Fatalf("opt in response = %d %s", allow.Code, allow.Body.String())
+	}
+
 	sent := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{"to": "codex:target", "from": "claude:source", "body": "check tests"})
 	if sent.Code != http.StatusCreated {
 		t.Fatalf("send response = %d %s", sent.Code, sent.Body.String())
