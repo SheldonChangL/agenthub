@@ -3,6 +3,7 @@ package protocol_test
 import (
 	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -23,7 +24,7 @@ func descriptor(nodeID string, public ed25519.PublicKey) protocol.NodeDescriptor
 		NodeID:      nodeID,
 		DisplayName: "peer",
 		Platform:    "linux/amd64",
-		PublicKey:   "AAAA",
+		PublicKey:   base64.StdEncoding.EncodeToString(public),
 		Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
 	}
 }
@@ -260,5 +261,66 @@ func TestVerifyRefusesUnusableKeysWithoutPanicking(t *testing.T) {
 				t.Errorf("error = %v", err)
 			}
 		})
+	}
+}
+
+// The signed bytes are a cross-implementation contract, written out in
+// docs/broker-protocol.schema.json. A second implementation reading that
+// description must compute exactly these bytes, so the encoding is pinned here
+// rather than left to whatever the current code happens to produce.
+func TestSignableBytesMatchTheDocumentedEncoding(t *testing.T) {
+	envelope := protocol.Envelope{
+		ProtocolVersion: "agenthub.broker/v1alpha1",
+		MessageID:       "msg_1",
+		Type:            "node.hello",
+		SentAt:          time.Date(2026, 8, 28, 2, 0, 0, 0, time.UTC),
+		NodeID:          "node_0123456789abcdef",
+		Payload:         json.RawMessage(`{"a":1}`),
+	}
+
+	want := "agenthub.broker/v1alpha1/envelope\n" +
+		"24:agenthub.broker/v1alpha1" +
+		"5:msg_1" +
+		"10:node.hello" +
+		"20:2026-08-28T02:00:00Z" +
+		"21:node_0123456789abcdef" +
+		"7:" + `{"a":1}`
+
+	if got := string(protocol.SignableBytes(envelope)); got != want {
+		t.Errorf("signable bytes changed.\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// Length prefixes exist so no value can be shifted into its neighbour. Without
+// them, moving a character from one field to the next would produce identical
+// bytes and one signature would cover two different envelopes.
+func TestSignableBytesCannotShiftValuesBetweenFields(t *testing.T) {
+	base := protocol.Envelope{
+		ProtocolVersion: "v",
+		MessageID:       "ab",
+		Type:            "c",
+		SentAt:          time.Date(2026, 8, 28, 2, 0, 0, 0, time.UTC),
+		NodeID:          "node_0123456789abcdef",
+		Payload:         json.RawMessage(`{}`),
+	}
+	shifted := base
+	shifted.MessageID = "a"
+	shifted.Type = "bc"
+
+	if bytes.Equal(protocol.SignableBytes(base), protocol.SignableBytes(shifted)) {
+		t.Error("two different envelopes produced the same signable bytes")
+	}
+}
+
+// The domain separator keeps these signatures from being valid anywhere else.
+func TestSignableBytesCarryADomainSeparator(t *testing.T) {
+	envelope := protocol.Envelope{
+		ProtocolVersion: "v", MessageID: "m", Type: "t",
+		SentAt: time.Now().UTC(), NodeID: "node_0123456789abcdef",
+		Payload: json.RawMessage(`{}`),
+	}
+	signable := protocol.SignableBytes(envelope)
+	if !bytes.HasPrefix(signable, []byte("agenthub.broker/v1alpha1/envelope\n")) {
+		t.Errorf("signable bytes do not start with the domain separator: %q", signable[:40])
 	}
 }

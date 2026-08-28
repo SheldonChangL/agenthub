@@ -2,7 +2,9 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +83,9 @@ func TestRevokeRemovesEverySessionGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.TrustNode(ctx, peer(nodeID, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TrustNode(ctx, peer("node_other000000000000", "key-b")); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetAudience(ctx, session.ID, model.Audience{
@@ -163,5 +168,112 @@ func TestTrustNodeValidatesInput(t *testing.T) {
 				t.Errorf("TrustNode accepted %+v", node)
 			}
 		})
+	}
+}
+
+// A grant must never outlive the ability to remove it. Revoking a node that is
+// not trusted still drops any grant naming it, so an authorization cannot sit
+// dormant waiting for that node to be paired.
+func TestRevokeDropsGrantsEvenWithoutATrustRow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	const ghost = "node_ghost0000000000"
+
+	session := sessionFixture("haunted")
+	if _, err := store.UpsertSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TrustNode(ctx, peer(ghost, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, session.ID, model.Audience{
+		Mode: model.AudienceSelected, Nodes: []string{ghost},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the trust row behind the store's back, the way an older build or a
+	// partial revoke could have left things.
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM trusted_nodes WHERE node_id = ?`, ghost); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.RevokeNode(ctx, ghost)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("RevokeNode() = %v; want ErrNotFound for a node that is not trusted", err)
+	}
+
+	audience, audienceErr := store.GetAudience(ctx, session.ID)
+	if audienceErr != nil {
+		t.Fatal(audienceErr)
+	}
+	if audience.PublishesTo(ghost) {
+		t.Error("a grant survived a revoke and would take effect if the node were paired again")
+	}
+}
+
+// Pairing must not activate an authorization nobody made.
+func TestPairingCannotActivateAnUnmadeGrant(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	const stranger = "node_stranger0000000"
+
+	session := sessionFixture("stranger")
+	if _, err := store.UpsertSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, session.ID, model.Audience{
+		Mode: model.AudienceSelected, Nodes: []string{stranger},
+	}); err == nil {
+		t.Fatal("SetAudience granted access to a node that is not paired")
+	}
+
+	if err := store.TrustNode(ctx, peer(stranger, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	audience, err := store.GetAudience(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audience.PublishesTo(stranger) {
+		t.Error("pairing a node published a session to it")
+	}
+}
+
+// A node that has never been in contact must not read as having been seen at
+// the zero time. encoding/json does not omit a zero time.Time under omitempty,
+// and the desktop view renders any present value as "last seen N days ago".
+func TestNeverContactedNodeHasNoLastSeenInJSON(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	if err := store.TrustNode(ctx, peer("node_peer0000000000000", "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	node, err := store.TrustedNode(ctx, "node_peer0000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, err := json.Marshal(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "lastSeenAt") {
+		t.Errorf("a never-contacted node carries lastSeenAt: %s", encoded)
+	}
+
+	if err := store.MarkNodeSeen(ctx, node.NodeID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := store.TrustedNode(ctx, node.NodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), "lastSeenAt") {
+		t.Errorf("a contacted node lost lastSeenAt: %s", encoded)
 	}
 }

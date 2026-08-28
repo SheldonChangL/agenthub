@@ -57,6 +57,22 @@ func ParseAddress(raw string, localNodeID string) (Address, error) {
 	return Address{NodeID: nodeID, SessionID: sessionID}, nil
 }
 
+// ResolveLocal parses an address and insists it names a session on this node.
+//
+// It returns ErrUnknownNode for a well-formed address this installation cannot
+// reach, so a caller can tell a routing answer from a malformed request without
+// re-deriving the distinction.
+func ResolveLocal(raw string, localNodeID string) (string, error) {
+	address, err := ParseAddress(raw, localNodeID)
+	if err != nil {
+		return "", err
+	}
+	if !address.Local() {
+		return "", fmt.Errorf("%w: %q", ErrUnknownNode, address.NodeID)
+	}
+	return address.SessionID, nil
+}
+
 func validateLocalSessionID(sessionID string) error {
 	provider, providerSessionID, found := strings.Cut(sessionID, ":")
 	if !found {

@@ -78,13 +78,16 @@ func (a *App) SetNodeURL(raw string) error {
 }
 
 type Overview struct {
-	Node      NodeIdentity   `json:"node"`
-	Sessions  []Session      `json:"sessions"`
-	Nodes     []TrustedNode  `json:"nodes"`
-	Counts    map[string]int `json:"counts"`
-	NodeURL   string         `json:"nodeUrl"`
-	Reachable bool           `json:"reachable"`
-	Error     string         `json:"error,omitempty"`
+	Node     NodeIdentity   `json:"node"`
+	Sessions []Session      `json:"sessions"`
+	Nodes    []TrustedNode  `json:"nodes"`
+	Counts   map[string]int `json:"counts"`
+	// NodeCount is separate from Counts, which is keyed by session attribute
+	// values; a provider or status could otherwise collide with it.
+	NodeCount int    `json:"nodeCount"`
+	NodeURL   string `json:"nodeUrl"`
+	Reachable bool   `json:"reachable"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Overview loads everything the management view needs in one round trip so the
@@ -117,7 +120,7 @@ func (a *App) Overview() Overview {
 	result.Sessions = sessions
 	result.Nodes = nodes
 	result.Counts = summarize(sessions)
-	result.Counts["nodes"] = len(nodes)
+	result.NodeCount = len(nodes)
 	return result
 }
 

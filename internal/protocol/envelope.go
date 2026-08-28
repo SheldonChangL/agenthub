@@ -122,13 +122,18 @@ func (e Envelope) Verify(publicKey ed25519.PublicKey, expectedNodeID string) err
 	return nil
 }
 
-// signable is the byte sequence a signature covers.
+// SignableBytes is the byte sequence a signature covers.
 //
 // It is built field by field rather than by re-encoding the struct, because a
 // signature has to be reproducible by a receiver that only ever saw JSON — and
 // by an implementation in another language. Each field is length-prefixed so no
 // value can be shifted into its neighbour: "ab" + "c" and "a" + "bc" must not
 // produce the same bytes.
+//
+// It is exported because those bytes are a contract with other implementations,
+// documented in docs/broker-protocol.schema.json, not an implementation detail.
+func SignableBytes(envelope Envelope) []byte { return envelope.signable() }
+
 func (e Envelope) signable() []byte {
 	var buffer bytes.Buffer
 	buffer.WriteString(signatureDomain)

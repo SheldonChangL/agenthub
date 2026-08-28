@@ -162,9 +162,13 @@ become separate trust entries that read identically; the key file is refused if
 others can read it and is written through a temporary file and a rename; the
 sender label on a message is parsed rather than stored as free text.
 
-Payload schemas exist for `node.heartbeat` only. `node.hello`, `agent.message`
-and `agent.ack` are reserved names whose payloads are unconstrained until issues
-#11, #12 and #16 define them; nothing in the build emits them.
+Payload schemas exist for `node.heartbeat`, `node.hello` and the four `pair.*`
+types. `agent.message` and `agent.ack` remain reserved names whose payloads are
+unconstrained until #16 defines them.
+
+Only `node.heartbeat` has a producer. The pairing types are defined and
+schema-tested ahead of the transport that will carry them, so nothing in the
+build emits one.
 
 ## Automated checks
 

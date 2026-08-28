@@ -147,13 +147,6 @@ type Message struct {
 // the qualified export address <node-id>/<provider>:<provider-session-id>.
 const SessionIDSeparator = "/"
 
-// ValidateProviderSessionID rejects provider session IDs that would corrupt a
-// qualified address.
-//
-// The value comes from a metadata JSON field, not a filename, so a provider —
-// or anything that can write a file under a provider's directory — chooses it.
-// Every write path must agree on this rule, which is why it lives here rather
-// than in one store.
 // ValidateNodeID constrains a node identifier to what this project generates
 // and a person can compare.
 //
@@ -175,6 +168,13 @@ func ValidateNodeID(nodeID string) error {
 	return nil
 }
 
+// ValidateProviderSessionID rejects provider session IDs that would corrupt a
+// qualified address.
+//
+// The value comes from a metadata JSON field, not a filename, so a provider —
+// or anything that can write a file under a provider's directory — chooses it.
+// Every write path must agree on this rule, which is why it lives here rather
+// than in one store.
 func ValidateProviderSessionID(providerSessionID string) error {
 	if providerSessionID == "" {
 		return errors.New("provider session id is required")

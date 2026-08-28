@@ -151,7 +151,12 @@ are complete.
 3. **Node keypair and fingerprint** (#10) — done. Extend `internal/identity` with a
    keypair and derive a stable fingerprint. Verifiable: fingerprint is stable
    across restarts and differs per node.
-4. **Pairing exchange** (#11, #12, #13) — done. New envelope types, signature
+4. **Pairing exchange** (#11, #12, #13) — pairing done by hand; the exchange
+   waits on transport. The trust store, the fingerprint check and revocation are
+   implemented and the owner pairs by entering the peer's details. The
+   `pair.request` / `approve` / `reject` / `revoke` envelope types are defined
+   and schema-tested but have no producer or consumer: nothing sends them until
+   there is something to send them over. New envelope types, signature
    verification, a trust store. Still no session data crosses the wire.
    Verifiable: two nodes on one machine can pair and refuse a mismatched
    fingerprint.
