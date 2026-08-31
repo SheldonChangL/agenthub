@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -27,11 +28,11 @@ func (d CodexDiscoverer) Discover(ctx context.Context) ([]model.Session, error) 
 		now = d.Now().UTC()
 	}
 	root := filepath.Join(d.Root, "sessions")
-	return walkJSONL(root, func(path string, info fs.FileInfo) (model.Session, bool, error) {
+	return walkJSONL(root, func(path string, file *os.File, info fs.FileInfo) (model.Session, bool, error) {
 		if err := ctx.Err(); err != nil {
 			return model.Session{}, false, err
 		}
-		metadata, ok, err := parseCodexMetadata(path)
+		metadata, ok, err := parseCodexMetadata(file)
 		if err != nil {
 			return model.Session{}, false, fmt.Errorf("parse Codex metadata %q: %w", path, err)
 		}
@@ -48,13 +49,9 @@ type codexMetadata struct {
 	Source string
 }
 
-func parseCodexMetadata(path string) (codexMetadata, bool, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return codexMetadata{}, false, err
-	}
-	defer file.Close()
-
+// parseCodexMetadata reads an already-open handle so the bytes decoded here
+// are the ones the rooted open resolved, not whatever the path names later.
+func parseCodexMetadata(file io.Reader) (codexMetadata, bool, error) {
 	type record struct {
 		Type    string `json:"type"`
 		Payload struct {
