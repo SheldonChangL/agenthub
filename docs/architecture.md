@@ -63,7 +63,7 @@ pairing, and export contracts are implemented.
 |---|---|
 | Provider session -> client node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
 | Owner -> client node | `ah`, desktop app, and loopback HTTP API are implemented |
-| Client node -> broker server | Not implemented; non-loopback bind is rejected. Node identity, signed envelopes, the trust store and the pairing schema exist; no transport carries them |
+| Client node -> broker server | Not implemented; non-loopback bind is rejected. Node identity, recipient-bound signed envelopes, a persisted outbound sequence, the trust store and the pairing schema exist; no transport carries them and no receiver consumes them |
 | MCP client -> client node | Tool contracts are drafted; no MCP transport is running |
 | Node -> AI agent message delivery | Local messages are queued only; no provider injection or wake-up |
 
@@ -126,6 +126,16 @@ an arbitrary identifier would make `all_paired` mean "anyone who supplies a node
 id". Checking trust in the builder also makes revocation immediate — a revoked
 node stops receiving heartbeats without the owner revisiting each session's
 audience. `Build` stays a union because it is the owner's own preview.
+
+Every heartbeat also names the node it was built for, in a signed
+`recipientNodeId`. Without it a snapshot is only bound to its sender, so a
+snapshot built for one peer is a valid snapshot for every peer that trusts that
+sender — the per-peer filtering above would be undone by anyone who could hand
+the envelope on. `BuildFor(peer)` addresses the envelope to that already-trusted
+peer. The owner preview is addressed to this node: it stays the union the owner
+needs to see, and it is not usable as any peer's heartbeat, because the
+recipient it names is not that peer. There is no way to produce an undirected
+`node.heartbeat`; the constructor for undirected envelopes refuses the type.
 
 The MVP local inbox accepts local destinations and parses both local and
 qualified addresses, but a qualified remote address returns `UNKNOWN_NODE`
@@ -207,14 +217,40 @@ four hex digits. The grouping is for a human comparing two screens during
 pairing; an unbroken run of hex invites people to check the first characters and
 stop.
 
-`Verify` takes the key the receiver already trusts for that node ID. A key
+Verification takes the key the receiver already trusts for that node ID. A key
 travels inside `pair.request`, but holding a key is not identity: that key is
 trusted only after a person compares fingerprints on both machines. The full
 fingerprint must match — the API compares the whole value, because a check of
 the first group or two is cheap to forge.
 
+There are two verification calls, and the split is deliberate:
+
+- `VerifySender(key, senderNodeID)` answers only "is this authentically from
+  that node". It refuses a directed envelope rather than reporting it verified,
+  so no future receiver can reach an accept decision on a heartbeat without also
+  checking who the envelope was addressed to.
+- `VerifyDirected(key, senderNodeID, localNodeID)` answers that question and
+  "was this built for me". A signature says who wrote an envelope, never who may
+  act on it.
+
+Both check the signature first, and the order is part of the contract. The two
+failures mean different things: `ErrUnsigned` is a stranger, `ErrNotAddressed`
+is a known peer's envelope meant for somebody else — something a receiver may
+reasonably count or log as traffic from a node it trusts. If a forgery could
+produce the second, that reading would promote an unauthenticated sender to a
+known one, so authenticity is decided before anything is said about the address.
+Rewriting the recipient does not reach the address comparison at all: the
+recipient is a signed field, so a redirected envelope fails as unsigned. The
+local node ID is validated against the shared node-ID rule before it is accepted
+as a destination, so a receiver that does not yet know its own identity cannot
+match an envelope that carries the same unusable value.
+
 A signature covers a length-prefixed encoding of the envelope's fields, not a
-re-serialization of the Go value. The payload travels as the exact bytes the
+re-serialization of the Go value. The fields, in order, are `protocolVersion`,
+`messageId`, `type`, `sentAt`, `nodeId`, `recipientNodeId` and the payload's raw
+bytes; an undirected envelope contributes an empty recipient rather than
+omitting the field, so a receiver reproducing the bytes never has to guess
+whether a field is absent or empty. The payload travels as the exact bytes the
 sender produced and is signed as those bytes. This is what makes a signature
 reproducible by a receiver that only ever saw JSON: a Go struct serializes in
 field order while the map it decodes into serializes in key order, and a uint64
@@ -234,10 +270,66 @@ A target broker heartbeat is a replaceable presence snapshot with:
 - protocol version
 - a signature over the envelope
 - node ID and display name
+- the recipient node ID it was built for
 - monotonically increasing sequence number
 - sent/expiry timestamps
 - capabilities
 - session summaries authorized for the receiving peer only
+
+The sequence is owned by the registry and stored in SQLite, not by the builder.
+One counter covers everything this node sends, reserved by a single atomic
+`UPDATE`, so concurrent builds and a recreated builder cannot be handed the same
+number. It survives a restart, which an in-memory counter does not: a counter
+that returns to one after a restart forces a receiver to choose between
+rejecting the restarted sender forever and not checking sequences at all. Gaps
+are allowed — a build that fails after reserving a number does not give it back
+— because a gap costs a receiver nothing while a repeat makes a fresh snapshot
+indistinguishable from a replayed one. SQLite's INTEGER is signed, so the
+counter stops at `MaxInt64` and refuses to allocate rather than wrapping,
+returning zero, or reusing the last value; a build that cannot reserve a number
+produces no envelope. Reaching that limit and finding the counter damaged or
+missing are reported apart — `ErrSequenceExhausted` against
+`ErrSequenceUnavailable` — because they describe different damage, not because
+one is milder. Both fail closed.
+
+Opening the database is not a repair. The upgrade that creates the counter also
+records a marker row in `schema_markers`, written in the same transaction, and
+that marker — not the presence of the table — is what says the migration ever
+ran. Table existence cannot carry that meaning: dropping the table would then
+make a node that has been publishing for months look like a database from before
+the counter existed, and the upgrade path for those starts at zero. So `Open`
+reads both and acts on the pair:
+
+| Marker | Counter table | Result |
+|---|---|---|
+| absent | absent | genuine pre-counter database: marker, table and row created in one transaction; first allocation is 1 |
+| present and valid | present and valid | preserved and opened, exactly as found |
+| present and valid | absent | `ErrSequenceUnavailable`; nothing is recreated |
+| absent | present | `ErrSequenceUnavailable`; the two are written together, so one alone is lost evidence |
+| present but malformed, missing its row, or from another version | any | `ErrSequenceUnavailable` |
+
+The counter row is checked the same way: missing, duplicated, or holding a value
+this store could not have written all fail with `ErrSequenceUnavailable` and
+write nothing.
+
+Re-creating either is not a recovery. It restarts at zero under the same node
+identity and republishes sequences a receiver may already hold, signed by this
+node's own key — the replay the persisted counter exists to prevent — and the
+previous high-water mark is exactly what has been lost. The safe answers are a
+backup whose high-water mark cannot roll back, or rotating to a new node
+identity with explicit re-pairing.
+
+### What this does not protect against
+
+The marker detects *inconsistent* loss: one piece of the evidence gone while
+another contradicts it. It cannot detect the loss of all of it at once. A
+database rolled back to a backup taken before any heartbeat, or deleted and
+recreated together with `node.key`, presents no contradiction and is
+indistinguishable from a first start — as it would be to any scheme that keeps
+its high-water mark in the same file it is protecting. Local storage
+authenticity is not something this build can infer. Ruling out a full rollback
+needs a monotonic store outside the database, or a node identity that rotates
+whenever the database does; AgentHub implements neither and claims neither.
 
 Consumers replace the complete previous snapshot for that node; they never
 merge session arrays. **A session absent from a heartbeat has had its

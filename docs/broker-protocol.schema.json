@@ -44,12 +44,19 @@
       "maxLength": 128,
       "pattern": "^[!-~]{16,128}$"
     },
+    "recipientNodeId": {
+      "$comment": "The one node this envelope was built for. It is covered by the signature, so an envelope cannot be redirected: a receiver whose own node ID is not this value must reject the envelope even when it trusts the sender. Required for node.heartbeat, because a heartbeat carries the export view of one peer. Other types may still travel undirected and omit it until their own protocol work defines a recipient.",
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128,
+      "pattern": "^[!-~]{16,128}$"
+    },
     "payload": {
       "$comment": "Carried and signed as the exact bytes the sender produced. Do not re-encode a decoded payload before verifying. Bound to a definition per type below; an unbound type carries no payload schema yet.",
       "type": "object"
     },
     "signature": {
-      "$comment": "Base64 Ed25519 signature. The signed bytes are NOT a re-serialization of this document: an implementation that re-encodes a decoded payload will compute different bytes and every verification will fail. Build them as the literal ASCII prefix \"agenthub.broker/v1alpha1/envelope\\n\" followed by six length-prefixed fields in this exact order: protocolVersion, messageId, type, sentAt (RFC 3339 with nanoseconds, UTC), nodeId, and the payload's raw JSON bytes exactly as transmitted. Each field is written as its byte length in decimal, then ':', then the bytes. A receiver verifies against the public key it already trusts for the node named in nodeId, never against a key carried in the payload.",
+      "$comment": "Base64 Ed25519 signature. The signed bytes are NOT a re-serialization of this document: an implementation that re-encodes a decoded payload will compute different bytes and every verification will fail. Build them as the literal ASCII prefix \"agenthub.broker/v1alpha1/envelope\\n\" followed by seven length-prefixed fields in this exact order: protocolVersion, messageId, type, sentAt (RFC 3339 with nanoseconds, UTC), nodeId, recipientNodeId, and the payload's raw JSON bytes exactly as transmitted. Each field is written as its byte length in decimal, then ':', then the bytes; an absent recipientNodeId contributes the empty value, written as \"0:\". A receiver verifies against the public key it already trusts for the node named in nodeId, never against a key carried in the payload, and a valid signature attributes the envelope without authorizing the receiver to accept it: a directed envelope must also name that receiver in recipientNodeId.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128
@@ -69,6 +76,10 @@
         ]
       },
       "then": {
+        "$comment": "A heartbeat must name its recipient. An undirected one is replayable to every peer that trusts the sender.",
+        "required": [
+          "recipientNodeId"
+        ],
         "properties": {
           "payload": {
             "$ref": "#/$defs/heartbeat"
@@ -240,8 +251,9 @@
       ],
       "properties": {
         "sequence": {
+          "$comment": "Strictly increasing per sender, and never reused across a restart. The producer reserves each value by incrementing a persisted counter, so the lowest value a peer can ever see is 1; zero means the sender is not counting.",
           "type": "integer",
-          "minimum": 0
+          "minimum": 1
         },
         "expiresAt": {
           "type": "string",
