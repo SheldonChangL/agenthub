@@ -41,6 +41,8 @@ func wrapProtected(scheme byte, payload []byte) ([]byte, error) {
 	out := make([]byte, 0, protectedHeaderSize+len(payload))
 	out = append(out, protectedMagic...)
 	out = append(out, scheme)
+	// #nosec G115 -- the length was just bounded by MaxUint32 above, so the
+	// conversion cannot truncate.
 	out = binary.BigEndian.AppendUint32(out, uint32(len(payload)))
 	return append(out, payload...), nil
 }
