@@ -43,6 +43,8 @@ func checkKeyFileAccess(info fs.FileInfo, path string) error {
 // the file's content is durable but the directory entry pointing at it need
 // not be, and the node would come back with no key it can find.
 func syncDirectory(directory string) error {
+	// #nosec G304 -- the directory is opened only to fsync it after the key was
+	// installed; no file content is read through this handle.
 	handle, err := os.Open(directory)
 	if err != nil {
 		return fmt.Errorf("open key directory: %w", err)
