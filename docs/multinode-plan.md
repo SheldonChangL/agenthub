@@ -44,6 +44,11 @@ the runtime tests:
   broker schema. The owner preview is a union; `BuildFor(peer)` requires the
   recipient to be a currently trusted node and then applies the actual per-peer
   audience.
+- Every heartbeat names its recipient in a signed `recipientNodeId`, so a
+  snapshot built for one peer cannot be replayed to another, and the owner
+  preview is addressed to the local node. The outbound sequence is persisted in
+  SQLite and stays monotonic across restarts. Both are producer-side properties;
+  nothing verifies or consumes them yet.
 - Every session-addressed API accepts a bare local or qualified address. Remote
   routing and a destination-node column in the message store remain in #7.
 - Audience, `export_cwd`, and `accept_messages` are persisted with safe defaults
@@ -55,9 +60,10 @@ the runtime tests:
 
 ## Remaining protocol gaps
 
-1. There is no transport or presence consumer. Nothing verifies a received
-   heartbeat against a trusted key, rejects replay/expiry, or replaces stored
-   presence state.
+1. There is no transport or presence consumer. `Envelope.VerifyDirected` is the
+   call a receiver would use — sender signature plus exact recipient — but it
+   has no caller: nothing receives a heartbeat, rejects replay/expiry, or
+   replaces stored presence state.
 2. Manual trust is not the automated `pair.request` / `pair.approve` exchange.
    The wire types are reserved and tested, but not sent.
 3. `agent.message` and `agent.ack` payloads and delivery semantics remain

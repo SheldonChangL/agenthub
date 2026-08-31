@@ -14,6 +14,7 @@ Privacy is the default: discovered sessions start with audience `none`. The curr
 - Managed and unmanaged session model
 - Conservative `active`, `idle`, `inactive`, and `unknown` status inference
 - Persistent Ed25519 node identity, signed envelopes, and a schema-validated heartbeat preview
+- Heartbeats bound to their recipient and a heartbeat sequence that survives restarts
 - Local HTTP API and `ah` CLI
 - Local message inbox for the future broker path
 - Per-session audience, working-directory export, and inbound-message policy
@@ -164,7 +165,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/sessions/{id}/audience` | Read one session's export policy |
 | `PUT` | `/v1/sessions/{id}/audience` | Replace one session's export policy |
 | `POST` | `/v1/sessions/audience` | Apply one policy to many sessions |
-| `GET` | `/v1/heartbeat` | Owner preview of a signed heartbeat; union of sessions published to any audience |
+| `GET` | `/v1/heartbeat` | Owner preview of a signed heartbeat; union of sessions published to any audience, addressed to this node so no peer can accept it |
 | `GET` | `/v1/nodes` | List paired nodes |
 | `POST` | `/v1/nodes` | Manually trust a node whose full fingerprint the owner compared |
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |

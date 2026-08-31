@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync/atomic"
 	"time"
 
 	"agenthub.local/agenthub/internal/model"
@@ -28,6 +27,11 @@ type Envelope struct {
 	Type            string    `json:"type"`
 	SentAt          time.Time `json:"sentAt"`
 	NodeID          string    `json:"nodeId"`
+	// RecipientNodeID names the one node this envelope was built for. It is
+	// covered by the signature, so an envelope cannot be redirected to a peer it
+	// was not built for. Every node.heartbeat carries one; types whose protocol
+	// work has not happened yet may still travel undirected, and omit it.
+	RecipientNodeID string `json:"recipientNodeId,omitempty"`
 	// Payload travels and is signed as the exact bytes the sender produced.
 	// Re-encoding a decoded payload would not reproduce them.
 	Payload json.RawMessage `json:"payload"`
@@ -54,11 +58,16 @@ type HeartbeatPayload struct {
 	Sessions     []SessionSummary `json:"sessions"`
 }
 
+// HeartbeatBuilder produces this node's heartbeats.
+//
+// It holds no sequence of its own. The counter lives in the registry, because a
+// builder is recreated whenever the process is, and an in-memory counter would
+// restart at one: a receiver that rejects a sequence it has already seen would
+// then have to reject the restarted sender forever, or stop checking.
 type HeartbeatBuilder struct {
-	store    *registry.Registry
-	node     model.NodeIdentity
-	signer   Signer
-	sequence atomic.Uint64
+	store  *registry.Registry
+	node   model.NodeIdentity
+	signer Signer
 }
 
 func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, signer Signer) *HeartbeatBuilder {
@@ -69,9 +78,24 @@ func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, sign
 //
 // It is not what any peer receives. A "selected" session reaches only the nodes
 // its owner named, so the envelope a peer gets comes from BuildFor.
+//
+// The preview is addressed to this node. That keeps it a preview: it is a real,
+// signed heartbeat, and a peer that received one would have to reject it,
+// because the recipient it names is not that peer.
 func (b *HeartbeatBuilder) Build(ctx context.Context, now time.Time) (Envelope, error) {
-	return b.build(ctx, now, "")
+	return b.build(ctx, now, b.node.ID, ownerPreview)
 }
+
+// recipientFilter says whether the recipient also decides which sessions the
+// envelope may carry. The owner preview is addressed to this node but is still
+// the union of everything published anywhere, so the two questions — who is this
+// for, and what may they see — are answered separately.
+type recipientFilter bool
+
+const (
+	ownerPreview   recipientFilter = false
+	peerExportView recipientFilter = true
+)
 
 // ErrPeerNotTrusted marks a recipient this owner has not paired with. A caller
 // that gets it must send nothing, not fall back to the owner preview.
@@ -99,10 +123,10 @@ func (b *HeartbeatBuilder) BuildFor(ctx context.Context, now time.Time, peerNode
 		}
 		return Envelope{}, fmt.Errorf("check trust for peer %q: %w", peerNodeID, err)
 	}
-	return b.build(ctx, now, peerNodeID)
+	return b.build(ctx, now, peerNodeID, peerExportView)
 }
 
-func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, peerNodeID string) (Envelope, error) {
+func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, recipientNodeID string, filter recipientFilter) (Envelope, error) {
 	sessions, err := b.store.ListSessions(ctx, registry.ListOptions{PublicOnly: true})
 	if err != nil {
 		return Envelope{}, fmt.Errorf("list public sessions: %w", err)
@@ -113,7 +137,7 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, peerNodeID 
 		// The registry filter answers "does this leave the host at all". Only
 		// the recipient answers "may this peer see it", so a per-peer build
 		// applies the grant list here.
-		if peerNodeID != "" && !session.Audience.PublishesTo(peerNodeID) {
+		if filter == peerExportView && !session.Audience.PublishesTo(recipientNodeID) {
 			continue
 		}
 		// A refusal here means the registry returned something the export view
@@ -127,11 +151,20 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, peerNodeID 
 		summaries = append(summaries, summary)
 	}
 
+	// The sequence is reserved last, and a failure here produces no envelope at
+	// all. Reserving it may leave a gap, which costs a receiver nothing; sending
+	// a snapshot without a fresh number would leave it unable to order the
+	// snapshots it already holds.
+	sequence, err := b.store.NextHeartbeatSequence(ctx)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("reserve heartbeat sequence: %w", err)
+	}
+
 	payload := HeartbeatPayload{
-		Sequence:     b.sequence.Add(1),
+		Sequence:     sequence,
 		ExpiresAt:    now.UTC().Add(heartbeatTTL),
 		Capabilities: []string{"session.list", "session.status", "message.send", "message.inbox"},
 		Sessions:     summaries,
 	}
-	return NewEnvelope(b.node.ID, TypeNodeHeartbeat, At(now), payload, b.signer)
+	return NewDirectedEnvelope(b.node.ID, recipientNodeID, TypeNodeHeartbeat, At(now), payload, b.signer)
 }
