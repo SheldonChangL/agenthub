@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -26,11 +27,11 @@ func (d ClaudeDiscoverer) Discover(ctx context.Context) ([]model.Session, error)
 		now = d.Now().UTC()
 	}
 	root := filepath.Join(d.Root, "projects")
-	return walkJSONL(root, func(path string, info fs.FileInfo) (model.Session, bool, error) {
+	return walkJSONL(root, func(path string, file *os.File, info fs.FileInfo) (model.Session, bool, error) {
 		if err := ctx.Err(); err != nil {
 			return model.Session{}, false, err
 		}
-		metadata, ok, err := parseClaudeMetadata(path)
+		metadata, ok, err := parseClaudeMetadata(file)
 		if err != nil {
 			return model.Session{}, false, fmt.Errorf("parse Claude metadata %q: %w", path, err)
 		}
@@ -47,13 +48,9 @@ type claudeMetadata struct {
 	IsSidechain bool
 }
 
-func parseClaudeMetadata(path string) (claudeMetadata, bool, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return claudeMetadata{}, false, err
-	}
-	defer file.Close()
-
+// parseClaudeMetadata reads an already-open handle so the bytes decoded here
+// are the ones the rooted open resolved, not whatever the path names later.
+func parseClaudeMetadata(file io.Reader) (claudeMetadata, bool, error) {
 	type record struct {
 		SessionID   string `json:"sessionId"`
 		CWD         string `json:"cwd"`

@@ -149,6 +149,9 @@ func readKeyFile(path string) ([]byte, error) {
 			"node key %s is not a regular file (mode %s); refusing to read it", path, linkInfo.Mode())
 	}
 
+	// #nosec G304 -- path is the fixed node.key filename under the owner-selected
+	// data directory, refused above unless Lstat saw a regular file, and confirmed
+	// through the handle below by same-file, access-mode, and size checks.
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
