@@ -111,6 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
 	if err := r.addMessageDestinationColumn(ctx); err != nil {
 		return err
 	}
+	if err := r.migrateOutbox(ctx); err != nil {
+		return err
+	}
 	// Indexes come last: a database created by an earlier build only gains the
 	// audience columns in the step above.
 	const indexes = `

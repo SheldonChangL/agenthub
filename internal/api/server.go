@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
+	mux.HandleFunc("GET /v1/outbound/{id}", s.outboundStatus)
 	return securityBoundary(mux)
 }
 
@@ -103,6 +104,11 @@ func (s *Server) PeerHandler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/challenge", s.answerChallenge)
 	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
+	// The peer's message endpoint shares a path with the owner's, on a
+	// different mux and with a different handler. The owner's takes a JSON
+	// body and decides where the message goes; this one takes a signed
+	// envelope from a paired node and queues it for a local session.
+	mux.HandleFunc("POST /v1/messages", s.receiveMessage)
 	// Rate limiting wraps only this surface. Every endpoint here answers an
 	// unauthenticated caller — /v1/challenge signs on request, and both refuse
 	// before knowing who is asking — so a throttle is the only thing bounding
@@ -443,8 +449,9 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	to, ok := s.localSession(w, input.To)
-	if !ok {
+	destination, err := protocol.ParseAddress(input.To, s.node.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
 	// The sender label is stored and shown. Validating it now means it cannot
@@ -461,6 +468,11 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 			from = address.SessionID
 		}
 	}
+	if !destination.Local() {
+		s.queueForPeer(w, r, destination, from, input.Body)
+		return
+	}
+	to := destination.SessionID
 	// The destination node is recorded explicitly. Today it is always this
 	// node — localSession refuses anything else — but the row must say where
 	// the message was addressed rather than leaving it to be inferred from the

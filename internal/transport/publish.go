@@ -190,6 +190,12 @@ func (p *Publisher) Run(ctx context.Context) {
 			if _, err := p.PublishOnce(ctx); err != nil {
 				log.Printf("heartbeat publishing failed: %v", err)
 			}
+			// Messages go on the same schedule and the same pinned, challenged
+			// connection. A message is content rather than metadata, so it must
+			// not travel on a weaker path than the metadata does.
+			if _, err := p.DeliverMessages(ctx); err != nil {
+				log.Printf("message delivery failed: %v", err)
+			}
 		}
 	}
 }

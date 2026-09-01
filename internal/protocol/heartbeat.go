@@ -80,6 +80,17 @@ func (b *HeartbeatBuilder) AnswerChallenge(responderNodeID, challengerNodeID str
 	return AnswerChallenge(responderNodeID, challengerNodeID, nonce, b.signer)
 }
 
+// BuildMessage signs one outbound message for a peer.
+//
+// It lives here for the same reason AnswerChallenge does: the builder already
+// holds the signer, and exposing the signer itself would make "sign these
+// arbitrary bytes" available to every caller. Each thing this node signs gets a
+// named method whose payload shape is fixed, so the set of things its key can
+// be made to say stays enumerable.
+func (b *HeartbeatBuilder) BuildMessage(recipientNodeID string, payload MessagePayload) (Envelope, error) {
+	return NewMessageEnvelope(b.node.ID, recipientNodeID, payload, b.signer)
+}
+
 func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, signer Signer) *HeartbeatBuilder {
 	return &HeartbeatBuilder{store: store, node: node, signer: signer}
 }
