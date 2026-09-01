@@ -105,8 +105,12 @@ func run() error {
 	// It is separate from the owner's API on purpose: opening a port for
 	// heartbeats must not also open the endpoints that change who may see a
 	// session.
-	certificate, err := keypair.TLSCertificate(node.ID)
-	if err != nil {
+	// Built per handshake rather than once at startup: a node that runs longer
+	// than the certificate's lifetime would otherwise serve an expired one. The
+	// key never changes, so a renewal is invisible to a peer, which pins the key.
+	rotating := identity.NewRotatingCertificate(keypair, node.ID)
+	if _, err := rotating.GetCertificate(nil); err != nil {
+		// Fail at startup rather than on the first peer connection.
 		return fmt.Errorf("build node certificate: %w", err)
 	}
 	peerServer := &http.Server{
@@ -118,8 +122,8 @@ func run() error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{certificate},
-			MinVersion:   tls.VersionTLS13,
+			GetCertificate: rotating.GetCertificate,
+			MinVersion:     tls.VersionTLS13,
 		},
 	}
 
