@@ -19,6 +19,7 @@ import (
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
+	"agenthub.local/agenthub/internal/transport"
 )
 
 // maxBatchSessions bounds one batch so a single request cannot hold a write
@@ -30,10 +31,16 @@ type Server struct {
 	hub        *hub.Hub
 	heartbeats *protocol.HeartbeatBuilder
 	node       model.NodeIdentity
+	// deliveryPolicy is the same rule the publisher applies, so an address the
+	// owner can save is an address that will actually be delivered to.
+	deliveryPolicy func(string) error
 }
 
 func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity) *Server {
-	return &Server{store: store, hub: service, heartbeats: heartbeats, node: node}
+	return &Server{
+		store: store, hub: service, heartbeats: heartbeats, node: node,
+		deliveryPolicy: transport.LoopbackOnly,
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -50,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/nodes", s.listNodes)
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
+	mux.HandleFunc("PUT /v1/nodes/{id}/address", s.setNodeAddress)
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
 	mux.HandleFunc("GET /v1/peers", s.listPeers)

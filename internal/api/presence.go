@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/identity"
@@ -165,4 +167,37 @@ func (s *Server) listPeers(w http.ResponseWriter, r *http.Request) {
 		peers = append(peers, view)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
+}
+
+// setNodeAddress records where a paired peer answers.
+//
+// The address is validated as host:port and refused if it is not one this build
+// will deliver to. Storing an address the publisher would skip would leave the
+// owner looking at a configured peer that never receives anything, with the
+// reason buried in a log line.
+func (s *Server) setNodeAddress(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Address string `json:"address"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	address := strings.TrimSpace(input.Address)
+	if address != "" {
+		if _, _, err := net.SplitHostPort(address); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				"address must be host:port")
+			return
+		}
+		if err := s.deliveryPolicy(address); err != nil {
+			writeError(w, http.StatusBadRequest, "ADDRESS_NOT_ALLOWED", err.Error())
+			return
+		}
+	}
+	if err := s.store.SetNodeAddress(r.Context(), r.PathValue("id"), address); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
