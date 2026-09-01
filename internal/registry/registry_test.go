@@ -115,7 +115,11 @@ func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
 func TestCreateMessageRejectsUnknownRecipientWithoutDatabaseDetails(t *testing.T) {
 	store := openTestRegistry(t)
 
-	_, err := store.CreateMessage(context.Background(), model.Message{To: "codex:missing", Body: "hello"})
+	// Every other field is valid, so the unknown recipient is the only thing
+	// left for the error to be about.
+	_, err := store.CreateMessage(context.Background(), model.Message{
+		To: "codex:missing", DestinationNodeID: testNodeID, Body: "hello",
+	})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CreateMessage() error = %v; want ErrNotFound", err)
 	}

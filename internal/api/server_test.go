@@ -234,6 +234,9 @@ func TestQualifiedAddressesReachTheRightAnswer(t *testing.T) {
 	})
 
 	t.Run("a malformed address is refused with context", func(t *testing.T) {
+		// "With context" means a named error code, not merely a non-empty body:
+		// asserting the latter would pass on any error at all, including one
+		// about something other than the address.
 		for _, address := range []string{"", "not-an-address", "claude:", ":abc", "node_x/", "//claude:a"} {
 			response := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{
 				"to": address, "body": "hello",
@@ -241,8 +244,19 @@ func TestQualifiedAddressesReachTheRightAnswer(t *testing.T) {
 			if response.Code == http.StatusCreated || response.Code == http.StatusOK {
 				t.Fatalf("address %q was accepted", address)
 			}
-			if response.Body.Len() == 0 {
-				t.Fatalf("address %q was refused with an empty body", address)
+			var decoded struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("address %q was refused with a body that is not an error object: %s",
+					address, response.Body.String())
+			}
+			if decoded.Error.Code == "" || decoded.Error.Message == "" {
+				t.Fatalf("address %q was refused without a code and message: %s",
+					address, response.Body.String())
 			}
 		}
 	})

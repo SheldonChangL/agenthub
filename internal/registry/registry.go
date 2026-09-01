@@ -244,6 +244,12 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
 		return model.Message{}, fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
 	}
+	// Checked with the other fields rather than at the insert: a structurally
+	// invalid message should not cost a session lookup and an id first.
+	if message.DestinationNodeID == "" {
+		return model.Message{}, fmt.Errorf(
+			"%w: message destination node is required", ErrInvalidSession)
+	}
 	destination, err := r.GetSession(ctx, message.To)
 	if err != nil {
 		return model.Message{}, err
@@ -264,10 +270,6 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	}
 	if message.CreatedAt.IsZero() {
 		message.CreatedAt = time.Now().UTC()
-	}
-	if message.DestinationNodeID == "" {
-		return model.Message{}, fmt.Errorf(
-			"%w: message destination node is required", ErrInvalidSession)
 	}
 	if _, err := r.db.ExecContext(ctx, `
 INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
