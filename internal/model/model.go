@@ -136,11 +136,18 @@ type NodeIdentity struct {
 }
 
 type Message struct {
-	ID        string    `json:"id"`
-	From      string    `json:"from,omitempty"`
-	To        string    `json:"to"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID   string `json:"id"`
+	From string `json:"from,omitempty"`
+	To   string `json:"to"`
+	// DestinationNodeID names the node whose inbox this message belongs in.
+	//
+	// It is recorded even when that node is this one. A message is addressed to
+	// a session on a machine, and leaving the machine implicit means the only
+	// record of where a message was meant to go is the absence of a prefix —
+	// which stops being readable the moment any message is for somewhere else.
+	DestinationNodeID string    `json:"destinationNodeId"`
+	Body              string    `json:"body"`
+	CreatedAt         time.Time `json:"createdAt"`
 }
 
 // SessionIDSeparator is the character that joins a node ID to a session ID in

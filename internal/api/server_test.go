@@ -178,3 +178,86 @@ func (apiTestSigner) Sign(message []byte) []byte {
 	}
 	return ed25519.Sign(private, message)
 }
+
+// TestQualifiedAddressesReachTheRightAnswer covers issue #7's acceptance list
+// directly. Each case is one of its bullets, and the distinction between them
+// is the point: "I do not know that node" and "that is not an address" call for
+// different reactions from whoever typed it.
+func TestQualifiedAddressesReachTheRightAnswer(t *testing.T) {
+	store, handler := testServer(t)
+	ctx := context.Background()
+	const session = "codex:local-target"
+	now := time.Now().UTC()
+	if _, err := store.UpsertSession(ctx, model.Session{
+		ID: session, Provider: model.ProviderCodex, ProviderSessionID: "local-target",
+		Management: model.Managed, Status: model.StatusIdle, StatusSource: "test",
+		LastSeenAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allow := perform(t, handler, http.MethodPut, "/v1/sessions/"+session+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true})
+	if allow.Code != http.StatusOK {
+		t.Fatalf("opt in = %d %s", allow.Code, allow.Body.String())
+	}
+
+	t.Run("a qualified address for an unknown node reports the node, not a parse failure", func(t *testing.T) {
+		response := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{
+			"to": "node_somewhereelse00/claude:abc", "body": "hello",
+		})
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("response = %d %s; want 404", response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "UNKNOWN_NODE") {
+			t.Fatalf("body = %s; want UNKNOWN_NODE", response.Body.String())
+		}
+	})
+
+	t.Run("a bare address still works and records this node as the destination", func(t *testing.T) {
+		response := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{
+			"to": session, "body": "hello",
+		})
+		if response.Code != http.StatusCreated && response.Code != http.StatusOK {
+			t.Fatalf("response = %d %s", response.Code, response.Body.String())
+		}
+		inbox, err := store.Inbox(ctx, session, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(inbox) != 1 {
+			t.Fatalf("inbox = %#v", inbox)
+		}
+		if inbox[0].DestinationNodeID != testNodeID {
+			t.Fatalf("destination = %q; a local message must still record where it went",
+				inbox[0].DestinationNodeID)
+		}
+	})
+
+	t.Run("a malformed address is refused with context", func(t *testing.T) {
+		// "With context" means a named error code, not merely a non-empty body:
+		// asserting the latter would pass on any error at all, including one
+		// about something other than the address.
+		for _, address := range []string{"", "not-an-address", "claude:", ":abc", "node_x/", "//claude:a"} {
+			response := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{
+				"to": address, "body": "hello",
+			})
+			if response.Code == http.StatusCreated || response.Code == http.StatusOK {
+				t.Fatalf("address %q was accepted", address)
+			}
+			var decoded struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+				t.Fatalf("address %q was refused with a body that is not an error object: %s",
+					address, response.Body.String())
+			}
+			if decoded.Error.Code == "" || decoded.Error.Message == "" {
+				t.Fatalf("address %q was refused without a code and message: %s",
+					address, response.Body.String())
+			}
+		}
+	})
+}
