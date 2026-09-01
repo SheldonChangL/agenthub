@@ -3,6 +3,7 @@ package api
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
 )
@@ -39,11 +40,19 @@ type rateLimiter struct {
 	burst     float64
 	ttl       time.Duration
 	maxKeys   int
+	sweptAt   time.Time
 }
 
 type bucket struct {
-	tokens   float64
-	lastSeen time.Time
+	tokens float64
+	// refilledAt drives the token maths and moves on every request, allowed or
+	// not, because credit accrues with time regardless of what is asked for.
+	refilledAt time.Time
+	// activeAt moves only when a request is allowed, and is what decides expiry
+	// and eviction. Refused requests must not keep an entry alive: if they did,
+	// a source that only ever gets refused could hold its slot forever at the
+	// cost of one request per TTL.
+	activeAt time.Time
 }
 
 func newRateLimiter() *rateLimiter {
@@ -59,39 +68,88 @@ func newRateLimiter() *rateLimiter {
 
 // allow reports whether a request from source may proceed.
 func (l *rateLimiter) allow(source string) bool {
+	key := limiterKey(source)
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	now := l.now()
 
-	existing, found := l.buckets[source]
+	existing, found := l.buckets[key]
 	if !found {
-		// Only sweep when adding a key. Sweeping on every request would make
-		// the common path proportional to the table size, which is the sort of
-		// thing an attacker measures and then exploits.
-		l.sweepLocked(now)
-		if len(l.buckets) >= l.maxKeys {
-			// The table is full of other sources. Refusing is the safe answer:
-			// admitting an untracked request would make the cap a way to bypass
-			// the limiter rather than a bound on it.
-			return false
-		}
-		l.buckets[source] = &bucket{tokens: l.burst - 1, lastSeen: now}
+		l.makeRoomLocked(now)
+		l.buckets[key] = &bucket{tokens: l.burst - 1, refilledAt: now, activeAt: now}
 		return true
 	}
 
-	elapsed := now.Sub(existing.lastSeen).Minutes()
+	// A clock that went backwards must not subtract credit. Only an injected
+	// clock can do this — time.Now carries a monotonic reading — but an
+	// unguarded negative would drive tokens arbitrarily below zero and lock the
+	// source out for as long as it took to climb back.
+	elapsed := now.Sub(existing.refilledAt).Minutes()
+	if elapsed < 0 {
+		elapsed = 0
+	}
 	existing.tokens = min(existing.tokens+elapsed*l.perMinute, l.burst)
-	existing.lastSeen = now
+	existing.refilledAt = now
 	if existing.tokens < 1 {
 		return false
 	}
 	existing.tokens--
+	existing.activeAt = now
 	return true
+}
+
+// makeRoomLocked ensures a new source can always be tracked.
+//
+// Refusing when the table is full would be worse than not limiting at all. An
+// attacker with 4096 addresses — one IPv6 host has as many as it wants — could
+// fill the table and then every peer not already tracked would be refused
+// permanently, which is a switch for locking out every peer rather than a bound
+// on cost. So a full table evicts instead: the least recently *allowed* entry
+// goes. A working peer speaks every 15 seconds, so it is never the oldest,
+// while an attacker cycling addresses evicts only its own earlier entries.
+func (l *rateLimiter) makeRoomLocked(now time.Time) {
+	// Sweeping is throttled because it is O(n) under the one mutex every peer
+	// request needs, and an attacker who keeps the table full otherwise decides
+	// when that cost is paid.
+	if now.Sub(l.sweptAt) >= l.ttl/2 {
+		l.sweepLocked(now)
+		l.sweptAt = now
+	}
+	for len(l.buckets) >= l.maxKeys {
+		oldestKey, oldest := "", time.Time{}
+		for candidate, tracked := range l.buckets {
+			if oldestKey == "" || tracked.activeAt.Before(oldest) {
+				oldestKey, oldest = candidate, tracked.activeAt
+			}
+		}
+		if oldestKey == "" {
+			return
+		}
+		delete(l.buckets, oldestKey)
+	}
+}
+
+// limiterKey groups a source into the unit being limited.
+//
+// IPv6 is grouped by /64. A single host is routinely given a whole /64 and can
+// bind as many addresses in it as it likes, so keying on the full address would
+// let one machine mint an unbounded number of budgets. IPv4 is keyed exactly:
+// addresses there are scarce enough that a /24 would sweep up unrelated hosts.
+func limiterKey(source string) string {
+	address, err := netip.ParseAddr(source)
+	if err != nil || !address.Is6() || address.Is4In6() {
+		return source
+	}
+	prefix, err := address.Prefix(64)
+	if err != nil {
+		return source
+	}
+	return prefix.String()
 }
 
 func (l *rateLimiter) sweepLocked(now time.Time) {
 	for source, tracked := range l.buckets {
-		if now.Sub(tracked.lastSeen) > l.ttl {
+		if now.Sub(tracked.activeAt) > l.ttl {
 			delete(l.buckets, source)
 		}
 	}
