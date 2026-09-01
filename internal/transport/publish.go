@@ -20,6 +20,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"agenthub.local/agenthub/internal/identity"
@@ -85,39 +86,40 @@ func LoopbackOnly(address string) error {
 	return nil
 }
 
-// PrivateNetworks allows delivery to loopback and to private network addresses.
+// PrivateNetworks returns the delivery policy for a node serving a local
+// network: loopback, the ranges that are private by definition, and any block
+// the owner declared private for this installation.
 //
-// This is the policy a node uses once its owner has opted into serving peers on
-// a local network. It is deliberately not "anything routable": session metadata
-// goes to the machine on the next desk, not onto the internet, and an address
-// that left the private ranges is either a mistake or a destination the owner
-// did not intend.
+// It is deliberately not "anything routable". Session metadata goes to the
+// machine on the next desk, not onto the internet, and an address outside those
+// ranges is either a mistake or a destination the owner did not intend.
 //
-// Names are refused outright rather than resolved, which is the same rule the
-// listen side applies and for the same reason.
-//
-// Resolving here would check one answer and dial another: the policy resolves
-// the name, then net/http resolves it again when the connection is made. A DNS
-// answer that is private at check time and public at dial time sends the TCP
-// connection and the TLS ClientHello — carrying the name in SNI — to a host the
-// owner never chose, every publishing round. The pinned key means no session
-// metadata follows, because the handshake cannot complete, but a check that can
-// be satisfied by one answer and acted on with another is not a check.
-func PrivateNetworks(address string) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return fmt.Errorf("invalid peer address %q: %w", address, err)
+// Names are refused outright, which is the same rule the listen side applies
+// and for the same reason. Resolving here would check one answer and dial
+// another: this policy would resolve the name, then net/http would resolve it
+// again when the connection is made. A name that answers private at check time
+// and public at dial time sends the TCP connection and the TLS ClientHello —
+// carrying the name in SNI — to a host the owner never chose. The pinned key
+// means no session metadata follows, because the handshake cannot complete, but
+// a check that can be satisfied by one answer and acted on with another is not
+// a check.
+func PrivateNetworks(declared nodeconfig.PrivateRanges) AddressPolicy {
+	return func(address string) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fmt.Errorf("invalid peer address %q: %w", address, err)
+		}
+		ip, err := netip.ParseAddr(host)
+		if err != nil {
+			return fmt.Errorf(
+				"peer address %q must be an IP address, not a name; a name can resolve somewhere else between this check and the connection",
+				address)
+		}
+		if !nodeconfig.IsPrivateAddress(ip, declared) {
+			return fmt.Errorf("peer address %q is outside the private network ranges", address)
+		}
+		return nil
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return fmt.Errorf(
-			"peer address %q must be an IP address, not a name; a name can resolve somewhere else between this check and the connection",
-			address)
-	}
-	if !privateOrLoopback(ip) {
-		return fmt.Errorf("peer address %q is outside the private network ranges", address)
-	}
-	return nil
 }
 
 // refuseRedirects is the redirect policy for every peer request.
@@ -131,12 +133,6 @@ func PrivateNetworks(address string) error {
 // still counted as a success.
 func refuseRedirects(request *http.Request, _ []*http.Request) error {
 	return fmt.Errorf("peer redirected the delivery to %s; refusing to follow", request.URL.Host)
-}
-
-// privateOrLoopback mirrors the listen-side rule so a node cannot be configured
-// to serve on an address it would refuse to deliver to, or the reverse.
-func privateOrLoopback(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // Publisher sends this node's heartbeat to each paired peer that has an address.
