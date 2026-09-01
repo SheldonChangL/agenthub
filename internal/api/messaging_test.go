@@ -262,3 +262,119 @@ func TestALocalSendStillBehavesAsBefore(t *testing.T) {
 		t.Fatalf("inbox = %s", inbox.Body.String())
 	}
 }
+
+// TestAnUnreadableTrustStoreAnswersRetriably covers the first thing that breaks
+// when a recipient's database is unavailable: the trust lookup.
+//
+// It used to answer 403 "not a trusted node", which tells a legitimate paired
+// peer it is no longer paired. The database being unreadable is this node
+// having a bad moment, not a decision about the sender, so it answers 5xx and
+// the sender leaves the message queued.
+//
+// The storage failure further down the same handler is covered at the registry
+// layer by TestATransientStoreFailureIsNotARefusal — closing the database here
+// cannot reach it, because the trust lookup fails first.
+func TestAnUnreadableTrustStoreAnswersRetriably(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	// Take the database away, which is what a lock or a full disk looks like
+	// from the handler's point of view.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	envelope := peer.messageEnvelope(t, testNodeID, "msg_during_failure", session, "", "important")
+	response := perform(t, peers, http.MethodPost, "/v1/messages", envelope)
+	if response.Code == http.StatusOK {
+		var ack protocol.AckPayload
+		_ = json.Unmarshal(response.Body.Bytes(), &ack)
+		t.Fatalf("a storage failure answered 200 %s; the sender would settle this permanently and lose the message",
+			ack.Status)
+	}
+	if response.Code < 500 {
+		t.Fatalf("response = %d %s; a transient failure must be retriable", response.Code, response.Body.String())
+	}
+}
+
+// TestATakenIDIsRefusedLikeAnythingElse closes an oracle over the inbox's id
+// namespace: an unscoped duplicate check would tell a peer whether an id exists
+// anywhere here, including ids from local sends and from other peers.
+func TestATakenIDIsRefusedLikeAnythingElse(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	first := newSender(t, "node_peeraaaaaaaaaaaa")
+	first.pairWith(t, owner)
+	second := newSender(t, "node_peerbbbbbbbbbbbb")
+	second.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	taken := first.messageEnvelope(t, testNodeID, "msg_contested", session, "", "mine")
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", taken); response.Code != http.StatusOK {
+		t.Fatalf("first message = %d %s", response.Code, response.Body.String())
+	}
+
+	// A different peer reusing that id.
+	collision := second.messageEnvelope(t, testNodeID, "msg_contested", session, "", "theirs")
+	collisionResponse := perform(t, peers, http.MethodPost, "/v1/messages", collision)
+	collisionAck := decodeAck(t, collisionResponse.Body.Bytes())
+	if collisionAck.Status != protocol.AckRefused {
+		t.Fatalf("ack = %+v; want refused", collisionAck)
+	}
+
+	// And a session that simply declines, from the same peer.
+	declining := acceptingLocalSession(t, store, owner, "codex:other")
+	if err := store.SetAudience(context.Background(), declining, model.Audience{Mode: model.AudienceNone}); err != nil {
+		t.Fatal(err)
+	}
+	declined := second.messageEnvelope(t, testNodeID, "msg_fresh", declining, "", "hello")
+	declinedAck := decodeAck(t, perform(t, peers, http.MethodPost, "/v1/messages", declined).Body.Bytes())
+	if declinedAck.Status != protocol.AckRefused {
+		t.Fatalf("ack = %+v; want refused", declinedAck)
+	}
+
+	if collisionAck.Reason != declinedAck.Reason {
+		t.Errorf("a taken id is distinguishable from a declining session:\n taken:    %q\n declined: %q",
+			collisionAck.Reason, declinedAck.Reason)
+	}
+	// The first peer's message must be untouched.
+	inbox, err := store.Inbox(context.Background(), session, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 || inbox[0].Body != "mine" {
+		t.Fatalf("inbox = %#v; the second peer overwrote or duplicated the first", inbox)
+	}
+}
+
+// TestAForgedSenderLabelCannotNameAnotherNode pins attribution against a peer
+// that lies about where a message came from.
+func TestAForgedSenderLabelCannotNameAnotherNode(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	// The peer claims the message came from a session on a different node.
+	forged := peer.messageEnvelope(t, testNodeID, "msg_forged_from", session,
+		"node_someoneelse0000/claude:their-session", "trust me")
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", forged); response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+
+	inbox, err := store.Inbox(context.Background(), session, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("inbox = %#v", inbox)
+	}
+	from := inbox[0].From
+	if strings.Contains(from, "node_someoneelse0000") {
+		t.Fatalf("from = %q; a peer named another node as the sender", from)
+	}
+	if !strings.HasPrefix(from, peerNodeID) {
+		t.Fatalf("from = %q; want it attributed to the node that signed the envelope", from)
+	}
+}

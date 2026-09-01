@@ -100,15 +100,19 @@ func (p *Publisher) deliverMessage(ctx context.Context, peer registry.TrustedNod
 
 	response, err := p.post(ctx, peer, "/v1/messages", body)
 	if err != nil {
-		// The peer is unreachable or unhappy. Leave the message pending: this is
-		// the case retrying exists for.
+		// The peer is unreachable, or answered a non-2xx — which now includes a
+		// storage failure on its side. Leave the message pending: this is the
+		// case retrying exists for, and the attempt is recorded so an owner can
+		// see why a message is not moving.
 		log.Printf("message %s to %q failed: %v", message.ID, peer.NodeID, err)
+		p.noteAttempt(ctx, message.ID, err.Error())
 		return false
 	}
 
 	var ack protocol.AckPayload
 	if err := json.Unmarshal(response, &ack); err != nil {
 		log.Printf("message %s to %q: unreadable ack: %v", message.ID, peer.NodeID, err)
+		p.noteAttempt(ctx, message.ID, "peer sent an unreadable acknowledgement")
 		return false
 	}
 	switch ack.Status {
@@ -121,7 +125,16 @@ func (p *Publisher) deliverMessage(ctx context.Context, peer registry.TrustedNod
 		return false
 	default:
 		log.Printf("message %s to %q: unknown ack status %q", message.ID, peer.NodeID, ack.Status)
+		p.noteAttempt(ctx, message.ID, fmt.Sprintf("peer answered with an unknown status %q", ack.Status))
 		return false
+	}
+}
+
+// noteAttempt records a delivery that did not settle, so a message stuck in the
+// queue can say why rather than reading as though nothing had been tried.
+func (p *Publisher) noteAttempt(ctx context.Context, messageID, reason string) {
+	if err := p.store.RecordAttempt(ctx, messageID, reason); err != nil {
+		log.Printf("could not record the attempt for message %s: %v", messageID, err)
 	}
 }
 

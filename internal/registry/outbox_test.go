@@ -158,3 +158,134 @@ func TestMessageByIDFindsAStoredMessage(t *testing.T) {
 		t.Errorf("error for an absent id = %v; want ErrNotFound", err)
 	}
 }
+
+// TestATransientStoreFailureIsNotARefusal is the distinction the ack statuses
+// were documented as making and did not make.
+//
+// A recipient whose database is momentarily busy must not answer in a way the
+// sender settles permanently. Here the storage layer must report the failure as
+// an error rather than as a decision, so the caller can tell them apart.
+func TestATransientStoreFailureIsNotARefusal(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	// Close the database underneath to produce a failure that is nothing to do
+	// with the owner's decisions.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_transient", To: session.ID, From: "node_peer0000000000000",
+		DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if err == nil {
+		t.Fatal("a storage failure was reported as success")
+	}
+	if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v; a storage failure must not look like a decision the owner made", err)
+	}
+}
+
+// TestARedeliveryFromTheSameSenderIsNotStoredTwice pins the case a lost ack
+// creates.
+func TestARedeliveryFromTheSameSenderIsNotStoredTwice(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+	message := model.Message{
+		ID: "msg_repeat", To: session.ID, From: "node_peer0000000000000",
+		DestinationNodeID: testNodeID, Body: "only once",
+	}
+
+	stored, err := store.StoreIncomingMessage(ctx, message)
+	if err != nil || !stored {
+		t.Fatalf("first store = %v, %v", stored, err)
+	}
+	stored, err = store.StoreIncomingMessage(ctx, message)
+	if err != nil {
+		t.Fatalf("second store = %v", err)
+	}
+	if stored {
+		t.Fatal("a redelivery was stored as a new message")
+	}
+	inbox, err := store.Inbox(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("inbox holds %d copies", len(inbox))
+	}
+}
+
+// TestADifferentSenderCannotTellATakenIDApart closes an oracle: an unscoped
+// duplicate lookup would let a peer discover whether an id exists anywhere in
+// this node's inbox, including ids from local sends and from other peers.
+func TestADifferentSenderCannotTellATakenIDApart(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_taken", To: session.ID, From: "node_peeraaaaaaaaaaaa",
+		DestinationNodeID: testNodeID, Body: "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different peer reusing that id must be refused with the ordinary
+	// refusal, indistinguishable from a session that declines messages.
+	_, takenErr := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_taken", To: session.ID, From: "node_peerbbbbbbbbbbbb",
+		DestinationNodeID: testNodeID, Body: "second",
+	})
+	if !errors.Is(takenErr, ErrInvalidSession) {
+		t.Fatalf("error = %v; want the ordinary refusal", takenErr)
+	}
+
+	// Which is the same class of error a declining session produces.
+	declining := testSession("claude:declines")
+	if _, err := store.UpsertSession(ctx, declining); err != nil {
+		t.Fatal(err)
+	}
+	_, declineErr := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_new", To: declining.ID, From: "node_peerbbbbbbbbbbbb",
+		DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if !errors.Is(declineErr, ErrInvalidSession) {
+		t.Fatalf("declining error = %v; want ErrInvalidSession", declineErr)
+	}
+}
+
+// TestAttemptsAreRecordedWhileStillPending keeps a stuck message from reading
+// as though nothing had been tried.
+func TestAttemptsAreRecordedWhileStillPending(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	queued, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := store.RecordAttempt(ctx, queued.ID, "connection refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := store.OutboundFor(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != OutboundPending {
+		t.Fatalf("state = %q; recording an attempt must not settle the message", after.State)
+	}
+	if after.Attempts != 3 {
+		t.Fatalf("attempts = %d; want 3", after.Attempts)
+	}
+	if after.LastError == "" {
+		t.Error("a stuck message does not say why it is stuck")
+	}
+}

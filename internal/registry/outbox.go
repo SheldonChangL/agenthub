@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
@@ -229,4 +230,94 @@ FROM messages WHERE id = ?`, messageID).
 	}
 	message.CreatedAt = time.UnixMilli(createdMS).UTC()
 	return message, nil
+}
+
+// StoreIncomingMessage inserts a message from a peer, or reports that this
+// sender already sent it.
+//
+// The insert is what decides, in one statement. A check-then-insert would let
+// two concurrent deliveries of the same id both see nothing and both try to
+// write, and the loser would surface as a generic storage error — which the
+// sender would read as a refusal and give up on a message that was in fact
+// stored.
+//
+// The duplicate lookup is scoped to the sender. An unscoped one would let a
+// peer discover whether an id exists anywhere in this node's inbox, including
+// ids from local sends and from other peers, which is an oracle over a
+// namespace it has no business reading.
+func (r *Registry) StoreIncomingMessage(ctx context.Context, message model.Message) (bool, error) {
+	if err := r.checkMessageAcceptable(ctx, message); err != nil {
+		return false, err
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	}
+
+	result, err := r.db.ExecContext(ctx, `
+INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO NOTHING`,
+		message.ID, message.From, message.To, message.DestinationNodeID,
+		message.Body, message.CreatedAt.UTC().UnixMilli())
+	if err != nil {
+		return false, fmt.Errorf("store incoming message: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store incoming message: %w", err)
+	}
+	if affected == 1 {
+		return true, nil
+	}
+
+	// The id was taken. Only the same sender writing to the same session counts
+	// as a redelivery; anything else is refused with the ordinary refusal, so a
+	// peer cannot tell a taken id from a session that declines.
+	existing, err := r.MessageByID(ctx, message.ID)
+	if err != nil {
+		return false, err
+	}
+	if existing.From == message.From && existing.To == message.To {
+		return false, nil
+	}
+	return false, fmt.Errorf("%w: that message cannot be stored", ErrInvalidSession)
+}
+
+// checkMessageAcceptable applies the same rules CreateMessage does, so the
+// insert above cannot store something the local path would refuse.
+func (r *Registry) checkMessageAcceptable(ctx context.Context, message model.Message) error {
+	switch {
+	case strings.TrimSpace(message.To) == "":
+		return fmt.Errorf("%w: message recipient is required", ErrInvalidSession)
+	case strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768:
+		return fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
+	case message.DestinationNodeID == "":
+		return fmt.Errorf("%w: message destination node is required", ErrInvalidSession)
+	case message.ID == "":
+		return fmt.Errorf("%w: message id is required", ErrInvalidSession)
+	}
+	destination, err := r.GetSession(ctx, message.To)
+	if err != nil {
+		return err
+	}
+	if !destination.Audience.AcceptMessages {
+		return fmt.Errorf("%w: session %q does not accept messages", ErrInvalidSession, message.To)
+	}
+	return nil
+}
+
+// RecordAttempt notes a delivery attempt that did not settle the message.
+//
+// Without it, a message that has failed a hundred times reads as "pending,
+// attempts: 0, last error: none", and the owner has no way to see why it is not
+// moving.
+func (r *Registry) RecordAttempt(ctx context.Context, messageID, reason string) error {
+	if _, err := r.db.ExecContext(ctx, `
+UPDATE outbound_messages
+SET attempts = attempts + 1, last_error = ?, updated_at_ms = ?
+WHERE id = ? AND state = 'pending'`,
+		reason, time.Now().UTC().UnixMilli(), messageID); err != nil {
+		return fmt.Errorf("record delivery attempt: %w", err)
+	}
+	return nil
 }
