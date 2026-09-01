@@ -17,6 +17,7 @@ const state = {
   view: "local",
   nodes: [],
   peers: [],
+  presenceError: "",
   selectedNode: null,
   busy: false,
 };
@@ -234,6 +235,7 @@ async function load() {
     : `無法連線到 ${overview.nodeUrl}`;
   el("footer-right").textContent = overview.reachable ? overview.node.id : "";
   state.peers = overview.peers ?? [];
+  state.presenceError = overview.presenceError ?? "";
 
   if (!overview.reachable) {
     banner(`節點未連線：${overview.error || "unknown error"}。請先啟動 agenthub-node。`);
@@ -324,7 +326,17 @@ function nodeSessions(node) {
   const presence = presenceFor(node.nodeId);
   const heading = element("h3", "", "這個節點公開給我的 session");
 
-  if (!presence) {
+  // A failure to read presence is a fact about this node, not about the peer.
+  // Saying "we have not heard from it" here would turn a transport error into a
+  // confident claim that happens to be unfounded.
+  if (state.presenceError) {
+    return [heading, element(
+      "div",
+      "stale",
+      "無法向本機節點取得對端狀態，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方離線或沒有公開 session。"
+    )];
+  }
+  if (!heardFrom(presence)) {
     return [heading, element(
       "div",
       "empty",
@@ -332,11 +344,11 @@ function nodeSessions(node) {
     )];
   }
   if (!presence.online) {
-    const when = presence.receivedAt ? relative(presence.receivedAt) : "不明時間";
     return [heading, element(
       "div",
       "stale",
-      `這個節點目前離線，最後一次心跳在${when}。先前的內容已不再顯示，因為那是過去的狀態，不是現在的。`
+      `這個節點目前離線，最後一次心跳在${relative(presence.receivedAt)}。` +
+      "先前的內容已不再顯示，因為那是過去的狀態，不是現在的。"
     )];
   }
   const sessions = presence.sessions ?? [];
@@ -376,11 +388,21 @@ function lastSeen(node) {
 
 // presenceFor returns what this node currently believes about a peer.
 //
-// A paired node with no entry has never been heard from, which is different
-// from one that was heard from and has since gone quiet. The caller needs to
-// tell those apart, so this returns null rather than a blank peer.
+// The node lists every trusted peer, heard from or not, so an entry existing
+// says nothing on its own. What separates the states is receivedAt: a peer that
+// has never sent a heartbeat has no such moment.
 function presenceFor(nodeId) {
   return state.peers.find((peer) => peer.nodeId === nodeId) ?? null;
+}
+
+// heardFrom reports whether this node has ever received a heartbeat from a peer.
+//
+// This is the distinction that matters, and it is not "is there an entry": the
+// node reports a row for every trusted peer. Keying off the row's existence
+// instead would describe a peer that has never spoken as one that went quiet at
+// an unknown time, which asserts a heartbeat that never happened.
+function heardFrom(presence) {
+  return Boolean(presence && presence.receivedAt);
 }
 
 // presenceLabel describes a peer's reachability in words, never as a bare dot.
@@ -388,12 +410,10 @@ function presenceFor(nodeId) {
 // An offline peer must not have its last snapshot rendered as the current
 // state, so the label always says when the information is from.
 function presenceLabel(presence) {
-  if (!presence) return { text: "尚未收到心跳", className: "never" };
+  if (state.presenceError) return { text: "節點狀態無法取得", className: "unknown" };
+  if (!heardFrom(presence)) return { text: "尚未收到心跳", className: "never" };
   if (presence.online) return { text: "線上", className: "online" };
-  if (presence.receivedAt) {
-    return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
-  }
-  return { text: "離線", className: "offline" };
+  return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
 }
 
 function nodeDetail(node) {

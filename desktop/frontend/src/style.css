@@ -353,6 +353,13 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
 .noderow .presence.online {
   color: var(--ok, #3fb950);
 }
+.noderow .dot.unknown {
+  background: transparent;
+  border: 1px dashed var(--muted-dot, #6e7681);
+}
+.noderow .presence.unknown {
+  font-style: italic;
+}
 
 /* A peer's last snapshot is never shown once it has expired, so this explains
    the absence rather than leaving an empty panel that reads as "nothing shared". */
