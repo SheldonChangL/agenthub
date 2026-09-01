@@ -673,7 +673,7 @@ func TestPrivateNetworksAcceptsPrivateLiterals(t *testing.T) {
 	for _, address := range []string{
 		"127.0.0.1:7463",
 		"[::1]:7463",
-		"192.168.161.73:7463",
+		"192.168.0.73:7463",
 		"10.0.0.5:7463",
 		"172.16.0.1:7463",
 		"[fd00::1]:7463",
@@ -692,7 +692,7 @@ func TestPrivateNetworksRefusesPublicLiterals(t *testing.T) {
 		"203.0.113.10:7463",
 		"[2001:db8::1]:7463",
 		"100.64.0.1:7463",
-		"122.122.122.2:7463",
+		"203.0.113.2:7463",
 		"[::ffff:203.0.113.1]:7463",
 	} {
 		if err := PrivateNetworks(address); err == nil {
