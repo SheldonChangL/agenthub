@@ -58,12 +58,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
 	mux.HandleFunc("PUT /v1/nodes/{id}/address", s.setNodeAddress)
+	// GET /v1/heartbeat is the owner's preview of what this node would publish.
+	// The peer-facing POST /v1/heartbeat and POST /v1/challenge deliberately do
+	// not appear here: they live only on PeerHandler, so the management port has
+	// no peer ingress at all rather than ingress nobody is expected to use.
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
-	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
-	mux.HandleFunc("POST /v1/challenge", s.answerChallenge)
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
+	return securityBoundary(mux)
+}
+
+// PeerHandler serves only what another node is allowed to reach.
+//
+// This is a separate surface from Handler, not a subset enforced by a check
+// inside it, because the two answer to different people. Handler is the
+// owner's: it changes who may see a session, revokes a peer, sends messages.
+// PeerHandler is a stranger's, and a stranger must not be one routing rule away
+// from PUT /v1/sessions/{id}/audience.
+//
+// Keeping them apart is what makes widening the peer listener a bounded
+// decision. If both lived on one mux, opening a port for heartbeats would also
+// open every management endpoint, and the only thing standing between a peer
+// and the owner's controls would be that nobody had written the request.
+func (s *Server) PeerHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("POST /v1/challenge", s.answerChallenge)
+	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
 	return securityBoundary(mux)
 }
 

@@ -11,6 +11,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -84,15 +85,30 @@ func LoopbackOnly(address string) error {
 	return nil
 }
 
+// refuseRedirects is the redirect policy for every peer request.
+//
+// The address policy is checked against the address the owner configured, and a
+// redirect is the peer choosing a different destination after that check has
+// passed. This is not theoretical: the request body is a bytes.Reader, so
+// net/http populates GetBody and replays the body on a 307 or 308. A peer at a
+// loopback address answering "307 Location: http://192.0.2.10:7462/v1/heartbeat"
+// would have the entire heartbeat re-sent to a routable host while the delivery
+// still counted as a success.
+func refuseRedirects(request *http.Request, _ []*http.Request) error {
+	return fmt.Errorf("peer redirected the delivery to %s; refusing to follow", request.URL.Host)
+}
+
 // Publisher sends this node's heartbeat to each paired peer that has an address.
 type Publisher struct {
 	store       *registry.Registry
 	builder     *protocol.HeartbeatBuilder
 	localNodeID string
-	client      *http.Client
-	policy      AddressPolicy
-	interval    time.Duration
-	now         func() time.Time
+	// transport is the template every per-peer client is cloned from, so the
+	// proxy and timeout decisions are made once.
+	transport *http.Transport
+	policy    AddressPolicy
+	interval  time.Duration
+	now       func() time.Time
 }
 
 func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, localNodeID string, policy AddressPolicy, interval time.Duration) *Publisher {
@@ -100,38 +116,16 @@ func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, 
 		store:       store,
 		builder:     builder,
 		localNodeID: localNodeID,
-		client: &http.Client{
-			Timeout: deliveryTimeout,
-			// An explicit transport with no proxy. The default transport reads
-			// HTTP_PROXY from the environment; Go already declines to proxy
-			// loopback destinations, but relying on that leaves the boundary
-			// depending on a detail of another package's env parsing. Saying
-			// "no proxy" is the same reasoning as refusing redirects below:
-			// the bytes go to the address the owner configured, or nowhere.
-			Transport: &http.Transport{
-				Proxy:               nil,
-				TLSHandshakeTimeout: deliveryTimeout,
-			},
-			// Never follow a redirect. The address policy is checked against
-			// the address the owner configured, and a redirect is the peer
-			// choosing a different destination after that check has passed.
-			//
-			// This is not theoretical. The request body is a bytes.Reader, so
-			// http.NewRequestWithContext populates GetBody, and Go replays the
-			// body on a 307 or 308. A peer at a loopback address answering
-			// "307 Location: http://192.0.2.10:7462/v1/heartbeat" would
-			// therefore have the entire signed heartbeat re-POSTed to a
-			// routable host — session ids, statuses and any granted cwd —
-			// while the delivery still counted as a success. The recipient
-			// binding does not help: the bytes are readable by whatever host
-			// receives them.
-			CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-				return fmt.Errorf("peer redirected the delivery to %s; refusing to follow", request.URL.Host)
-			},
+		policy:      policy,
+		interval:    interval,
+		now:         func() time.Time { return time.Now().UTC() },
+		transport: &http.Transport{
+			// No proxy. The default transport reads HTTP_PROXY; Go already
+			// declines to proxy loopback, but the boundary should not depend
+			// on another package's env parsing.
+			Proxy:               nil,
+			TLSHandshakeTimeout: deliveryTimeout,
 		},
-		policy:   policy,
-		interval: interval,
-		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -252,7 +246,7 @@ func (p *Publisher) challenge(ctx context.Context, peer registry.TrustedNode, lo
 		return fmt.Errorf("encode challenge: %w", err)
 	}
 
-	answerBody, err := p.post(ctx, peer.Address, "/v1/challenge", body)
+	answerBody, err := p.post(ctx, peer, "/v1/challenge", body)
 	if err != nil {
 		return fmt.Errorf("challenge %q: %w", peer.NodeID, err)
 	}
@@ -270,6 +264,48 @@ func (p *Publisher) challenge(ctx context.Context, peer registry.TrustedNode, lo
 		return fmt.Errorf("%w: %q answered as %q", protocol.ErrChallengeUnanswered, peer.Address, answer.NodeID)
 	}
 	return protocol.VerifyChallengeAnswer(publicKey, peer.NodeID, localNodeID, nonce, answer.Signature)
+}
+
+// clientFor builds a client whose TLS connection will only complete against
+// this peer's key.
+//
+// The client is per peer and per delivery rather than shared: a pooled
+// connection carries the identity it was established with, and reusing one
+// across peers would mean the pin that mattered was whichever peer opened it
+// first.
+func (p *Publisher) clientFor(peer registry.TrustedNode) (*http.Client, error) {
+	publicKey, err := identity.DecodePublicKey(peer.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("stored key for %q is unusable: %w", peer.NodeID, err)
+	}
+	transport := p.transport.Clone()
+	// Each delivery builds its own client, so a pooled connection has nobody to
+	// serve after this request: it would sit idle, holding a socket and a
+	// readLoop goroutine, until the peer closed it. Against a peer that never
+	// closes, that grows without bound. Keep-alive buys nothing here because
+	// the challenge and the heartbeat already use separate clients.
+	transport.DisableKeepAlives = true
+	transport.TLSClientConfig = &tls.Config{
+		// There is no CA to chain to. VerifyPeerCertificate below is the
+		// check, and it is stricter than a chain: it accepts one key, not
+		// anything an authority vouched for.
+		InsecureSkipVerify: true, // #nosec G402 -- replaced by the pin below, not omitted
+		MinVersion:         tls.VersionTLS13,
+		// VerifyConnection, not VerifyPeerCertificate: a resumed TLS 1.3
+		// session performs no full handshake, so a pin installed in
+		// VerifyPeerCertificate would be skipped on resumption.
+		VerifyConnection: identity.PinnedConnectionVerifier(publicKey, fmt.Sprintf("peer %q", peer.NodeID)),
+		// And no session cache, so resumption is not attempted in the first
+		// place. Belt and braces: the pin above is correct on its own, but a
+		// connection that is never resumed cannot be resumed past a future
+		// mistake either.
+		ClientSessionCache: nil,
+	}
+	return &http.Client{
+		Timeout:       deliveryTimeout,
+		Transport:     transport,
+		CheckRedirect: refuseRedirects,
+	}, nil
 }
 
 func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) error {
@@ -291,7 +327,7 @@ func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) erro
 		return fmt.Errorf("encode envelope: %w", err)
 	}
 
-	if _, err := p.post(ctx, peer.Address, "/v1/heartbeat", body); err != nil {
+	if _, err := p.post(ctx, peer, "/v1/heartbeat", body); err != nil {
 		return err
 	}
 	return nil
@@ -301,16 +337,24 @@ func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) erro
 //
 // Every outbound request goes through here so the transport's guarantees are
 // stated once: the address policy has already been applied by the caller, the
-// client refuses redirects and proxies, and the response is bounded.
-func (p *Publisher) post(ctx context.Context, address, path string, body []byte) ([]byte, error) {
-	endpoint := "http://" + address + path
+// connection is TLS pinned to that peer's key, redirects and proxies are
+// refused, and the response is bounded.
+func (p *Publisher) post(ctx context.Context, peer registry.TrustedNode, path string, body []byte) ([]byte, error) {
+	client, err := p.clientFor(peer)
+	if err != nil {
+		return nil, err
+	}
+	// Keep-alives are already off, so this is the second of two belts: a
+	// transport that outlived its request must not outlive this function.
+	defer client.CloseIdleConnections()
+	endpoint := "https://" + peer.Address + path
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 
-	response, err := p.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("post to %s: %w", endpoint, err)
 	}

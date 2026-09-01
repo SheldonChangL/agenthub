@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -39,9 +40,16 @@ func run() error {
 	codexRoot := flag.String("codex-root", defaults.codex, "Codex data root")
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
+	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
+	}
+	// The peer listener is gated by the same rule as the owner's API. It is the
+	// listener that a later step will widen, and it must be a deliberate change
+	// to this line rather than something that happened because nobody checked.
+	if err := nodeconfig.ValidateLoopback(*peerListenAddress); err != nil {
+		return fmt.Errorf("peer listener: %w", err)
 	}
 	if err := nodeconfig.ValidateLoopback(*listenAddress); err != nil {
 		return err
@@ -76,9 +84,10 @@ func run() error {
 	log.Printf("node fingerprint %s", node.Fingerprint)
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
+	apiServer := api.NewServer(store, service, heartbeats, node)
 	server := &http.Server{
 		Addr:              *listenAddress,
-		Handler:           api.NewServer(store, service, heartbeats, node).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -86,11 +95,43 @@ func run() error {
 		MaxHeaderBytes:    1 << 20,
 	}
 
+	// The peer surface is a second listener, over TLS, presenting this node's
+	// identity key. A peer verifies that key against what it recorded when
+	// pairing, so the connection itself proves who each side is — which a
+	// forwardable challenge cannot do.
+	//
+	// It is separate from the owner's API on purpose: opening a port for
+	// heartbeats must not also open the endpoints that change who may see a
+	// session.
+	certificate, err := keypair.TLSCertificate(node.ID)
+	if err != nil {
+		return fmt.Errorf("build node certificate: %w", err)
+	}
+	peerServer := &http.Server{
+		Addr:              *peerListenAddress,
+		Handler:           apiServer.PeerHandler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS13,
+		},
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, nodeconfig.ShutdownSignals()...)
 	defer signal.Stop(stop)
 	serveError := make(chan error, 1)
 	go func() { serveError <- server.ListenAndServe() }()
+	go func() {
+		// The certificate and key are already in TLSConfig.
+		if err := peerServer.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
+			serveError <- fmt.Errorf("peer listener: %w", err)
+		}
+	}()
 	go discoveryLoop(service, *scanInterval)
 
 	// Publishing starts only after the listener is up: a peer that answers this
@@ -104,6 +145,7 @@ func run() error {
 	defer stopPublishing()
 	go publisher.Run(publishCtx)
 	log.Printf("listening on http://%s", *listenAddress)
+	log.Printf("peer listener on https://%s", *peerListenAddress)
 
 	select {
 	case err := <-serveError:
@@ -115,6 +157,9 @@ func run() error {
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown server: %w", err)
+		}
+		if err := peerServer.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown peer listener: %w", err)
 		}
 	}
 	return nil
