@@ -1,0 +1,291 @@
+package registry
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"agenthub.local/agenthub/internal/model"
+)
+
+const outboxPeer = "node_peer0000000000000"
+
+func trustedPeer(t *testing.T, store *Registry) string {
+	t.Helper()
+	if err := store.TrustNode(context.Background(), peer(outboxPeer, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	return outboxPeer
+}
+
+// TestQueueingIsNotDelivering pins the contract `ah send` depends on: a queued
+// message has been recorded here and nothing else has happened.
+func TestQueueingIsNotDelivering(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	queued, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatalf("QueueOutbound() error = %v", err)
+	}
+	if queued.State != OutboundPending {
+		t.Fatalf("state = %q; a freshly queued message is pending", queued.State)
+	}
+	if queued.ID == "" {
+		t.Fatal("no id was assigned")
+	}
+
+	pending, err := store.PendingOutbound(ctx, node, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].ID != queued.ID {
+		t.Fatalf("pending = %#v", pending)
+	}
+}
+
+// TestQueueingForAnUnpairedNodeIsRefused keeps the queue from filling with
+// messages that can never be delivered.
+func TestQueueingForAnUnpairedNodeIsRefused(t *testing.T) {
+	store := openTestRegistry(t)
+	_, err := store.QueueOutbound(context.Background(), OutboundMessage{
+		DestinationNodeID: "node_neverpaired00000", To: "codex:theirs", Body: "hello",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v; want ErrNotFound", err)
+	}
+}
+
+// TestASettledMessageIsNeverRetried is what stops a delivered message becoming
+// a second copy in the reader's inbox, and a refused one being re-offered.
+func TestASettledMessageIsNeverRetried(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	for _, terminal := range []OutboundState{OutboundDelivered, OutboundRefused} {
+		queued, err := store.QueueOutbound(ctx, OutboundMessage{
+			DestinationNodeID: node, To: "codex:theirs", Body: "hello",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.MarkOutbound(ctx, queued.ID, terminal, "because"); err != nil {
+			t.Fatalf("MarkOutbound(%q) error = %v", terminal, err)
+		}
+
+		// It must leave the pending queue...
+		pending, err := store.PendingOutbound(ctx, node, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range pending {
+			if message.ID == queued.ID {
+				t.Fatalf("a %s message is still pending", terminal)
+			}
+		}
+		// ...and a second attempt to settle it must find nothing to do.
+		if err := store.MarkOutbound(ctx, queued.ID, OutboundDelivered, ""); !errors.Is(err, ErrOutboundNotFound) {
+			t.Errorf("re-settling a %s message = %v; want ErrOutboundNotFound", terminal, err)
+		}
+
+		settled, err := store.OutboundFor(ctx, queued.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if settled.State != terminal {
+			t.Errorf("state = %q; want %q", settled.State, terminal)
+		}
+		if settled.Attempts != 1 {
+			t.Errorf("attempts = %d; want the refused re-settle not to have counted", settled.Attempts)
+		}
+	}
+}
+
+// TestQueueRefusesUnusableMessages keeps malformed rows out of the queue rather
+// than discovering them at delivery time.
+func TestQueueRefusesUnusableMessages(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	for name, message := range map[string]OutboundMessage{
+		"no destination": {To: "codex:theirs", Body: "hello"},
+		"no recipient":   {DestinationNodeID: node, Body: "hello"},
+		"no body":        {DestinationNodeID: node, To: "codex:theirs"},
+		"oversized body": {DestinationNodeID: node, To: "codex:theirs", Body: string(make([]byte, 32769))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.QueueOutbound(ctx, message); err == nil {
+				t.Fatal("an unusable message was queued")
+			}
+		})
+	}
+}
+
+// TestOutboundForReportsAnUnknownID keeps a status lookup from inventing one.
+func TestOutboundForReportsAnUnknownID(t *testing.T) {
+	store := openTestRegistry(t)
+	if _, err := store.OutboundFor(context.Background(), "msg_nope"); !errors.Is(err, ErrOutboundNotFound) {
+		t.Fatalf("error = %v; want ErrOutboundNotFound", err)
+	}
+}
+
+// TestMessageByIDFindsAStoredMessage is what makes redelivery detection
+// possible on the receiving side.
+func TestMessageByIDFindsAStoredMessage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	created, err := store.CreateMessage(ctx, model.Message{
+		ID: "msg_known", To: session.ID, DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := store.MessageByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("MessageByID() error = %v", err)
+	}
+	if found.Body != "hello" || found.To != session.ID {
+		t.Fatalf("found = %+v", found)
+	}
+	if _, err := store.MessageByID(ctx, "msg_absent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("error for an absent id = %v; want ErrNotFound", err)
+	}
+}
+
+// TestATransientStoreFailureIsNotARefusal is the distinction the ack statuses
+// were documented as making and did not make.
+//
+// A recipient whose database is momentarily busy must not answer in a way the
+// sender settles permanently. Here the storage layer must report the failure as
+// an error rather than as a decision, so the caller can tell them apart.
+func TestATransientStoreFailureIsNotARefusal(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	// Close the database underneath to produce a failure that is nothing to do
+	// with the owner's decisions.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_transient", To: session.ID, From: "node_peer0000000000000",
+		DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if err == nil {
+		t.Fatal("a storage failure was reported as success")
+	}
+	if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v; a storage failure must not look like a decision the owner made", err)
+	}
+}
+
+// TestARedeliveryFromTheSameSenderIsNotStoredTwice pins the case a lost ack
+// creates.
+func TestARedeliveryFromTheSameSenderIsNotStoredTwice(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+	message := model.Message{
+		ID: "msg_repeat", To: session.ID, From: "node_peer0000000000000",
+		DestinationNodeID: testNodeID, Body: "only once",
+	}
+
+	stored, err := store.StoreIncomingMessage(ctx, message)
+	if err != nil || !stored {
+		t.Fatalf("first store = %v, %v", stored, err)
+	}
+	stored, err = store.StoreIncomingMessage(ctx, message)
+	if err != nil {
+		t.Fatalf("second store = %v", err)
+	}
+	if stored {
+		t.Fatal("a redelivery was stored as a new message")
+	}
+	inbox, err := store.Inbox(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("inbox holds %d copies", len(inbox))
+	}
+}
+
+// TestADifferentSenderCannotTellATakenIDApart closes an oracle: an unscoped
+// duplicate lookup would let a peer discover whether an id exists anywhere in
+// this node's inbox, including ids from local sends and from other peers.
+func TestADifferentSenderCannotTellATakenIDApart(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_taken", To: session.ID, From: "node_peeraaaaaaaaaaaa",
+		DestinationNodeID: testNodeID, Body: "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A different peer reusing that id must be refused with the ordinary
+	// refusal, indistinguishable from a session that declines messages.
+	_, takenErr := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_taken", To: session.ID, From: "node_peerbbbbbbbbbbbb",
+		DestinationNodeID: testNodeID, Body: "second",
+	})
+	if !errors.Is(takenErr, ErrInvalidSession) {
+		t.Fatalf("error = %v; want the ordinary refusal", takenErr)
+	}
+
+	// Which is the same class of error a declining session produces.
+	declining := testSession("claude:declines")
+	if _, err := store.UpsertSession(ctx, declining); err != nil {
+		t.Fatal(err)
+	}
+	_, declineErr := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_new", To: declining.ID, From: "node_peerbbbbbbbbbbbb",
+		DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if !errors.Is(declineErr, ErrInvalidSession) {
+		t.Fatalf("declining error = %v; want ErrInvalidSession", declineErr)
+	}
+}
+
+// TestAttemptsAreRecordedWhileStillPending keeps a stuck message from reading
+// as though nothing had been tried.
+func TestAttemptsAreRecordedWhileStillPending(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	queued, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		if err := store.RecordAttempt(ctx, queued.ID, "connection refused"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := store.OutboundFor(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != OutboundPending {
+		t.Fatalf("state = %q; recording an attempt must not settle the message", after.State)
+	}
+	if after.Attempts != 3 {
+		t.Fatalf("attempts = %d; want 3", after.Attempts)
+	}
+	if after.LastError == "" {
+		t.Error("a stuck message does not say why it is stuck")
+	}
+}

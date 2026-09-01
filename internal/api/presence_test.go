@@ -476,7 +476,11 @@ func TestThePeerSurfaceExposesNothingElse(t *testing.T) {
 		{http.MethodGet, "/v1/heartbeat"},
 		{http.MethodGet, "/v1/peers"},
 		{http.MethodPost, "/v1/discover"},
-		{http.MethodPost, "/v1/messages"},
+		// POST /v1/messages is deliberately absent from this list: it exists on
+		// both surfaces with different handlers. The owner's takes a JSON body
+		// and decides where a message goes; the peer's takes a signed envelope
+		// from a paired node and queues it for a local session. That they share
+		// a path is checked separately, below.
 		{http.MethodGet, "/v1/inbox/claude:abc"},
 	}
 	for _, route := range management {
@@ -487,6 +491,23 @@ func TestThePeerSurfaceExposesNothingElse(t *testing.T) {
 					route.method, route.path, response.Code, response.Body.String())
 			}
 		})
+	}
+}
+
+// TestThePeerMessageEndpointIsNotTheOwnersKeeps the shared path from becoming a
+// shared handler. The owner's accepts a plain JSON body naming any destination;
+// the peer's must accept only a signed envelope addressed to this node.
+func TestThePeerMessageEndpointIsNotTheOwners(t *testing.T) {
+	_, _, peers := testSurfaces(t)
+
+	// The owner's request shape must not be understood here. If it were, an
+	// unauthenticated caller could queue messages for arbitrary destinations.
+	response := perform(t, peers, http.MethodPost, "/v1/messages", map[string]string{
+		"to": "node_somewhere000000/codex:abc", "body": "hello",
+	})
+	if response.Code == http.StatusOK || response.Code == http.StatusCreated || response.Code == http.StatusAccepted {
+		t.Fatalf("the peer surface accepted an owner-shaped message request: %d %s",
+			response.Code, response.Body.String())
 	}
 }
 
