@@ -264,6 +264,17 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 		return model.Message{}, fmt.Errorf(
 			"%w: session %q does not accept messages", ErrInvalidSession, message.To)
 	}
+	// The same bound the peer path enforces. Without it a local send could push
+	// a session past the cap, and every peer would then be deferred until the
+	// owner cleared an inbox they had filled themselves.
+	held, err := r.CountInbox(ctx, message.To)
+	if err != nil {
+		return model.Message{}, err
+	}
+	if held >= MaxInboxMessages {
+		return model.Message{}, fmt.Errorf(
+			"%w: %q holds %d of %d", ErrInboxFull, message.To, held, MaxInboxMessages)
+	}
 	if message.ID == "" {
 		var err error
 		message.ID, err = id.New("msg_")
