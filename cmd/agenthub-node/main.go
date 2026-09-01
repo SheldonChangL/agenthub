@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,14 +44,19 @@ func run() error {
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
+	allowLAN := flag.Bool("allow-lan", false,
+		"serve paired peers on a private network address instead of loopback only")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
 	}
-	// The peer listener is gated by the same rule as the owner's API. It is the
-	// listener that a later step will widen, and it must be a deliberate change
-	// to this line rather than something that happened because nobody checked.
-	if err := nodeconfig.ValidateLoopback(*peerListenAddress); err != nil {
+	// The peer listener is the only surface that may leave this machine, and
+	// only when the owner says so. Without -allow-lan it stays on loopback,
+	// which is what every earlier build did.
+	//
+	// The owner's API is never widened: it changes who may see a session and
+	// revokes peers, and whoever can reach it can already restart the process.
+	if err := nodeconfig.ValidatePeerListen(*peerListenAddress, *allowLAN); err != nil {
 		return fmt.Errorf("peer listener: %w", err)
 	}
 	if err := nodeconfig.ValidateLoopback(*listenAddress); err != nil {
@@ -85,8 +91,17 @@ func run() error {
 	log.Printf("node %s discovered %d sessions (%d Claude, %d Codex)", node.ID, result.Total, result.Claude, result.Codex)
 	log.Printf("node fingerprint %s", node.Fingerprint)
 
+	// One policy decides three things that must agree: where this node will
+	// deliver, which addresses discovery may record, and which addresses the
+	// owner's API will accept. If they disagreed, an owner could save an address
+	// that is silently never used, with the reason only in a log line.
+	deliveryPolicy := transport.LoopbackOnly
+	if *allowLAN {
+		deliveryPolicy = transport.PrivateNetworks
+	}
+
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
-	apiServer := api.NewServer(store, service, heartbeats, node)
+	apiServer := api.NewServer(store, service, heartbeats, node, api.WithDeliveryPolicy(deliveryPolicy))
 	server := &http.Server{
 		Addr:              *listenAddress,
 		Handler:           apiServer.Handler(),
@@ -133,8 +148,18 @@ func run() error {
 	serveError := make(chan error, 1)
 	go func() { serveError <- server.ListenAndServe() }()
 	go func() {
+		// Listen explicitly so the connection cap wraps the listener. The
+		// request rate limiter cannot bound this: it runs after the TLS
+		// handshake, so the handshake's CPU and the connection's descriptor are
+		// already spent by the time anything is counted.
+		peerListener, err := net.Listen("tcp", peerServer.Addr)
+		if err != nil {
+			serveError <- fmt.Errorf("peer listener: %w", err)
+			return
+		}
+		capped := nodeconfig.LimitConnections(peerListener, nodeconfig.MaxPeerConnections)
 		// The certificate and key are already in TLSConfig.
-		if err := peerServer.ListenAndServeTLS("", ""); !errors.Is(err, http.ErrServerClosed) {
+		if err := peerServer.ServeTLS(capped, "", ""); !errors.Is(err, http.ErrServerClosed) {
 			serveError <- fmt.Errorf("peer listener: %w", err)
 		}
 	}()
@@ -143,10 +168,10 @@ func run() error {
 	// Publishing starts only after the listener is up: a peer that answers this
 	// node's heartbeat by sending its own must find somewhere to send it.
 	//
-	// LoopbackOnly is the boundary from docs/multinode-plan.md. Two nodes on one
-	// machine exchange real, signed, per-peer heartbeats; nothing reaches the
-	// network until the step that widens this is done deliberately.
-	publisher := transport.NewPublisher(store, heartbeats, node.ID, transport.LoopbackOnly, *publishInterval)
+	// The delivery policy above is the boundary. Without -allow-lan it is
+	// loopback only, so two nodes on one machine exchange real, signed, per-peer
+	// heartbeats and nothing reaches the network.
+	publisher := transport.NewPublisher(store, heartbeats, node.ID, deliveryPolicy, *publishInterval)
 	publishCtx, stopPublishing := context.WithCancel(context.Background())
 	defer stopPublishing()
 	go publisher.Run(publishCtx)
@@ -156,7 +181,7 @@ func run() error {
 	// forged announcement cannot leak anything: delivery pins TLS to the key
 	// recorded when pairing, and whoever forged the packet does not hold it.
 	if *discover {
-		browser := discovery.NewBrowser(store, transport.LoopbackOnly)
+		browser := discovery.NewBrowser(store, deliveryPolicy)
 		go func() {
 			if err := browser.Listen(publishCtx, discovery.MulticastGroupV4()); err != nil {
 				log.Printf("discovery stopped: %v", err)

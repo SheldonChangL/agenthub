@@ -85,6 +85,43 @@ func LoopbackOnly(address string) error {
 	return nil
 }
 
+// PrivateNetworks allows delivery to loopback and to private network addresses.
+//
+// This is the policy a node uses once its owner has opted into serving peers on
+// a local network. It is deliberately not "anything routable": session metadata
+// goes to the machine on the next desk, not onto the internet, and an address
+// that left the private ranges is either a mistake or a destination the owner
+// did not intend.
+//
+// Names are resolved rather than trusted, and every address a name resolves to
+// must qualify — the resolver picks which one is used, so one public answer
+// among several is enough to make the destination unsafe.
+func PrivateNetworks(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid peer address %q: %w", address, err)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !privateOrLoopback(ip) {
+			return fmt.Errorf("peer address %q is outside the private network ranges", address)
+		}
+		return nil
+	}
+	resolved, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("peer address %q does not resolve: %w", address, err)
+	}
+	if len(resolved) == 0 {
+		return fmt.Errorf("peer address %q resolves to nothing", address)
+	}
+	for _, ip := range resolved {
+		if !privateOrLoopback(ip) {
+			return fmt.Errorf("peer address %q resolves to %s, which is outside the private ranges", address, ip)
+		}
+	}
+	return nil
+}
+
 // refuseRedirects is the redirect policy for every peer request.
 //
 // The address policy is checked against the address the owner configured, and a
@@ -96,6 +133,12 @@ func LoopbackOnly(address string) error {
 // still counted as a success.
 func refuseRedirects(request *http.Request, _ []*http.Request) error {
 	return fmt.Errorf("peer redirected the delivery to %s; refusing to follow", request.URL.Host)
+}
+
+// privateOrLoopback mirrors the listen-side rule so a node cannot be configured
+// to serve on an address it would refuse to deliver to, or the reverse.
+func privateOrLoopback(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
 }
 
 // Publisher sends this node's heartbeat to each paired peer that has an address.
