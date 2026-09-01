@@ -62,6 +62,12 @@ func (s *Server) receiveHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	peer, err := s.store.TrustedNode(r.Context(), envelope.NodeID)
 	if err != nil {
+		if !errors.Is(err, registry.ErrNotFound) {
+			// Reading the trust store failed. Refusing would tell a paired peer
+			// it is no longer paired, which is not what happened.
+			writeInternalError(w, "TRUST_UNAVAILABLE", "could not check the sender", err)
+			return
+		}
 		refuse("sender is not a trusted node", err)
 		return
 	}

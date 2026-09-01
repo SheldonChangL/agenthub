@@ -50,6 +50,13 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 
 	peer, err := s.store.TrustedNode(r.Context(), envelope.NodeID)
 	if err != nil {
+		if !errors.Is(err, registry.ErrNotFound) {
+			// The trust store could not be read. That is this node having a bad
+			// moment, not a decision about the sender, and answering 403 would
+			// tell a legitimate peer it is no longer trusted.
+			writeInternalError(w, "TRUST_UNAVAILABLE", "could not check the sender", err)
+			return
+		}
 		refuse("sender is not a trusted node", err)
 		return
 	}
@@ -77,43 +84,25 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ack := s.storeIncoming(r, envelope.NodeID, payload)
-	writeJSON(w, http.StatusOK, ack)
+	s.storeIncoming(w, r, envelope.NodeID, payload)
 }
 
-// storeIncoming writes an authenticated message to the local inbox.
+// storeIncoming writes an authenticated message to the local inbox and answers.
 //
-// Every refusal answers with the same reason text. A sender that could tell
-// "no such session" from "that session declines messages" could map the
-// recipient's sessions by sending messages to guessed addresses, which is the
-// same oracle the heartbeat endpoint avoids at a different layer.
-func (s *Server) storeIncoming(r *http.Request, senderNodeID string, payload protocol.MessagePayload) protocol.AckPayload {
+// A storage failure answers 5xx, not a refusal. The distinction is the whole
+// difference between "this owner decided no" and "this machine is having a bad
+// moment": the sender settles a refusal permanently and retries a failure, so
+// reporting a locked database as a refusal silently destroys somebody's
+// message. An earlier version of this did exactly that, while its own doc
+// comment described the distinction it was not making.
+//
+// Every refusal that is a decision reads the same. A sender that could tell "no
+// such session" from "that session declines messages" — or from "that id is
+// taken" — could map this node by addressing guesses at it.
+func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNodeID string, payload protocol.MessagePayload) {
 	const refusal = "the addressed session does not accept messages from this node"
 
-	// A redelivery must not become a second copy. The sender's id is carried
-	// through to the stored row so this is answerable without a second table.
-	existing, err := s.store.MessageByID(r.Context(), payload.MessageID)
-	switch {
-	case err == nil:
-		if existing.From == qualifiedSender(senderNodeID, payload.From) && existing.To == payload.To {
-			return protocol.AckPayload{MessageID: payload.MessageID, Status: protocol.AckDuplicate}
-		}
-		// The id is taken by a different message. Refusing is the safe answer:
-		// accepting would either overwrite something or duplicate an id.
-		return protocol.AckPayload{
-			MessageID: payload.MessageID, Status: protocol.AckRefused,
-			Reason: "that message id is already in use here",
-		}
-	case errors.Is(err, registry.ErrNotFound):
-		// The normal path.
-	default:
-		log.Printf("could not check for a duplicate message: %v", err)
-		return protocol.AckPayload{
-			MessageID: payload.MessageID, Status: protocol.AckRefused, Reason: "this node could not store the message",
-		}
-	}
-
-	stored, err := s.store.CreateMessage(r.Context(), model.Message{
+	stored, err := s.store.StoreIncomingMessage(r.Context(), model.Message{
 		ID:                payload.MessageID,
 		To:                payload.To,
 		From:              qualifiedSender(senderNodeID, payload.From),
@@ -122,19 +111,26 @@ func (s *Server) storeIncoming(r *http.Request, senderNodeID string, payload pro
 		CreatedAt:         time.Now().UTC(),
 	})
 	switch {
+	case err == nil && stored:
+		log.Printf("queued a message from %q for %q", senderNodeID, payload.To)
+		writeJSON(w, http.StatusOK, protocol.AckPayload{
+			MessageID: payload.MessageID, Status: protocol.AckQueued,
+		})
 	case err == nil:
-		log.Printf("queued a message from %q for %q", senderNodeID, stored.To)
-		return protocol.AckPayload{MessageID: payload.MessageID, Status: protocol.AckQueued}
+		// Already held, from the same sender to the same session. A lost ack
+		// must not cost the reader a second copy.
+		writeJSON(w, http.StatusOK, protocol.AckPayload{
+			MessageID: payload.MessageID, Status: protocol.AckDuplicate,
+		})
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrInvalidSession):
-		// Both mean "not going to happen": the session is absent, or its owner
-		// has not opted it in. One answer for both, so neither can be told from
-		// the other.
-		return protocol.AckPayload{MessageID: payload.MessageID, Status: protocol.AckRefused, Reason: refusal}
+		// A decision, and the same one however it was reached.
+		writeJSON(w, http.StatusOK, protocol.AckPayload{
+			MessageID: payload.MessageID, Status: protocol.AckRefused, Reason: refusal,
+		})
 	default:
-		log.Printf("could not queue a message from %q: %v", senderNodeID, err)
-		return protocol.AckPayload{
-			MessageID: payload.MessageID, Status: protocol.AckRefused, Reason: "this node could not store the message",
-		}
+		// Not a decision. Answering 5xx leaves the message queued at the sender,
+		// which is what a transient failure calls for.
+		writeInternalError(w, "MESSAGE_STORE_FAILED", "could not store the message", err)
 	}
 }
 
