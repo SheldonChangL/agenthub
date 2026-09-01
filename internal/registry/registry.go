@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     sender_id TEXT NOT NULL DEFAULT '',
     recipient_id TEXT NOT NULL REFERENCES sessions(id),
+    destination_node_id TEXT NOT NULL DEFAULT '',
     body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 32768),
     created_at_ms INTEGER NOT NULL
 );
@@ -105,6 +106,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
 		return fmt.Errorf("migrate registry: %w", err)
 	}
 	if err := r.addSessionPolicyColumns(ctx); err != nil {
+		return err
+	}
+	if err := r.addMessageDestinationColumn(ctx); err != nil {
 		return err
 	}
 	// Indexes come last: a database created by an earlier build only gains the
@@ -123,6 +127,39 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 		return err
 	}
 	return r.migratePresence(ctx)
+}
+
+// addMessageDestinationColumn brings a database created by an earlier build up
+// to recording where each message was addressed.
+//
+// Existing rows default to the empty string rather than to this node's id. A
+// message queued before the column existed was necessarily local — nothing
+// could route anywhere else — but writing this node's id into those rows would
+// be inventing a record that was never made. Empty reads as "not recorded",
+// which is what is true of them.
+func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
+	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('messages')`)
+	if err != nil {
+		return fmt.Errorf("read messages columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan messages column: %w", err)
+		}
+		if name == "destination_node_id" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read messages columns: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE messages ADD COLUMN destination_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add messages destination column: %w", err)
+	}
+	return nil
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
@@ -207,6 +244,12 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
 		return model.Message{}, fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
 	}
+	// Checked with the other fields rather than at the insert: a structurally
+	// invalid message should not cost a session lookup and an id first.
+	if message.DestinationNodeID == "" {
+		return model.Message{}, fmt.Errorf(
+			"%w: message destination node is required", ErrInvalidSession)
+	}
 	destination, err := r.GetSession(ctx, message.To)
 	if err != nil {
 		return model.Message{}, err
@@ -229,8 +272,9 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 		message.CreatedAt = time.Now().UTC()
 	}
 	if _, err := r.db.ExecContext(ctx, `
-INSERT INTO messages (id, sender_id, recipient_id, body, created_at_ms)
-VALUES (?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Body, message.CreatedAt.UTC().UnixMilli()); err != nil {
+INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
+VALUES (?, ?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.DestinationNodeID,
+		message.Body, message.CreatedAt.UTC().UnixMilli()); err != nil {
 		return model.Message{}, fmt.Errorf("create message: %w", err)
 	}
 	return message, nil
@@ -241,7 +285,7 @@ func (r *Registry) Inbox(ctx context.Context, recipientID string, limit int) ([]
 		limit = 50
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, sender_id, recipient_id, body, created_at_ms
+SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms
 FROM messages WHERE recipient_id = ?
 ORDER BY created_at_ms ASC, id ASC LIMIT ?`, recipientID, limit)
 	if err != nil {
@@ -252,7 +296,8 @@ ORDER BY created_at_ms ASC, id ASC LIMIT ?`, recipientID, limit)
 	for rows.Next() {
 		var message model.Message
 		var createdMS int64
-		if err := rows.Scan(&message.ID, &message.From, &message.To, &message.Body, &createdMS); err != nil {
+		if err := rows.Scan(&message.ID, &message.From, &message.To, &message.DestinationNodeID,
+			&message.Body, &createdMS); err != nil {
 			return nil, fmt.Errorf("scan inbox message: %w", err)
 		}
 		message.CreatedAt = time.UnixMilli(createdMS).UTC()

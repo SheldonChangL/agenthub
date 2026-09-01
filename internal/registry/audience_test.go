@@ -318,7 +318,7 @@ func TestCreateMessageRequiresOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.CreateMessage(ctx, model.Message{To: session.ID, Body: "hello"}); err == nil {
+	if _, err := store.CreateMessage(ctx, model.Message{To: session.ID, DestinationNodeID: testNodeID, Body: "hello"}); err == nil {
 		t.Fatal("CreateMessage accepted a message for a session that does not accept them")
 	}
 
@@ -327,7 +327,7 @@ func TestCreateMessageRequiresOptIn(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CreateMessage(ctx, model.Message{To: session.ID, Body: "hello"}); err != nil {
+	if _, err := store.CreateMessage(ctx, model.Message{To: session.ID, DestinationNodeID: testNodeID, Body: "hello"}); err != nil {
 		t.Fatalf("CreateMessage() after opting in = %v", err)
 	}
 }
