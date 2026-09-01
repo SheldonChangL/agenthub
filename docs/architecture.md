@@ -388,6 +388,40 @@ The challenge is kept alongside it. TLS answers "is this the paired key"; the
 challenge answers "does this node agree it is the peer we meant", which catches
 a discovery record aimed at the wrong node and a peer whose key has rotated.
 
+### Messages between nodes
+
+A heartbeat carries metadata this node observed. A message carries what a person
+wrote, which is a different kind of data and is treated as one: it is queued for
+the owner to read, and **nothing injects it into a provider**.
+
+`ah send <node-id>/<provider>:<id>` records the message in a local queue and
+answers `202 Accepted`. That status is the contract: the message is queued here
+and nothing else has happened. The destination machine may be asleep. Answering
+`201 Created` would make success mean something this node cannot know, so
+`ah outbound <message-id>` is where the outcome is found afterwards.
+
+Delivery rides the same schedule and the same pinned, challenged connection as
+the heartbeat. Content must not travel on a weaker path than metadata does.
+
+The receiving side applies the same order of checks as `POST /v1/heartbeat`, and
+adds two rules of its own:
+
+- **Every refusal reads the same.** A sender that could tell "no such session"
+  from "that session declines messages" could map the recipient's sessions by
+  addressing guesses at them, so both answer with one sentence.
+- **A redelivery is not a duplicate.** A sender whose ack was lost sends again;
+  the recipient recognises the message id it already holds and answers
+  `duplicate` rather than putting a second copy in the inbox. A lost ack must
+  not cost the reader two of the same message.
+
+The sender label on a stored message names the node the envelope was *signed
+by*, not the node the payload claimed. Only the session part of the sender's own
+label is used, because that part is the only thing it is entitled to assert.
+
+There is no relaying node in this design, so the requirement that a relay must
+not persist message content is met by there being nothing in the middle: a
+message goes from the machine that queued it to the machine that stores it.
+
 ### Two listeners, not one
 
 The owner's API and the peer surface are separate listeners with separate muxes.
