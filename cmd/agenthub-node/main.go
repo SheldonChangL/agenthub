@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/api"
@@ -48,6 +49,10 @@ func run() error {
 		"serve paired peers on a private network address instead of loopback only")
 	outboundRetention := flag.Duration("outbound-retention", 7*24*time.Hour,
 		"how long a delivered or refused outbound message stays queryable")
+	var declaredPrivate stringList
+	flag.Var(&declaredPrivate, "treat-as-private",
+		"CIDR block to treat as a private network, repeatable "+
+			"(for a network that is private despite its addresses, such as a direct cable)")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
@@ -58,7 +63,16 @@ func run() error {
 	//
 	// The owner's API is never widened: it changes who may see a session and
 	// revokes peers, and whoever can reach it can already restart the process.
-	if err := nodeconfig.ValidatePeerListen(*peerListenAddress, *allowLAN); err != nil {
+	// What the owner says is private, recorded before it is used so the claim
+	// is in the log next to whatever it later allows.
+	declaredRanges, err := nodeconfig.ParsePrivateRanges(declaredPrivate)
+	if err != nil {
+		return err
+	}
+	if len(declaredRanges) > 0 {
+		log.Printf("treating these as private networks on the owner's word: %s", declaredRanges)
+	}
+	if err := nodeconfig.ValidatePeerListen(*peerListenAddress, *allowLAN, declaredRanges); err != nil {
 		return fmt.Errorf("peer listener: %w", err)
 	}
 	if err := nodeconfig.ValidateLoopback(*listenAddress); err != nil {
@@ -99,7 +113,7 @@ func run() error {
 	// that is silently never used, with the reason only in a log line.
 	deliveryPolicy := transport.LoopbackOnly
 	if *allowLAN {
-		deliveryPolicy = transport.PrivateNetworks
+		deliveryPolicy = transport.PrivateNetworks(declaredRanges)
 	}
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
@@ -278,4 +292,14 @@ func pruneLoop(store *registry.Registry, retention time.Duration) {
 	for range ticker.C {
 		prune()
 	}
+}
+
+// stringList collects a flag given more than once.
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
