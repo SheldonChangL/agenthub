@@ -10,6 +10,9 @@ import (
 	"agenthub.local/agenthub/internal/model"
 )
 
+// testNodeID stands in for this node in tests that record a message destination.
+const testNodeID = "node_local000000000000"
+
 func TestUpsertSessionDefaultsNewSessionToPrivate(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
@@ -90,7 +93,9 @@ func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	created, err := store.CreateMessage(ctx, model.Message{To: session.ID, From: "codex:sender", Body: "review schema"})
+	created, err := store.CreateMessage(ctx, model.Message{
+		To: session.ID, From: "codex:sender", DestinationNodeID: testNodeID, Body: "review schema",
+	})
 	if err != nil {
 		t.Fatalf("CreateMessage() error = %v", err)
 	}
@@ -114,6 +119,35 @@ func TestCreateMessageRejectsUnknownRecipientWithoutDatabaseDetails(t *testing.T
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("CreateMessage() error = %v; want ErrNotFound", err)
 	}
+}
+
+// openRegistryAt opens a registry at a caller-chosen path, so a test can close
+// and reopen the same database to exercise a migration.
+func openRegistryAt(t *testing.T, path string) *Registry {
+	t.Helper()
+	store, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open(%q) error = %v", path, err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+// acceptingSession stores a session whose owner has opted in to messages.
+func acceptingSession(t *testing.T, store *Registry) model.Session {
+	t.Helper()
+	ctx := context.Background()
+	session := testSession("claude:inbox-target")
+	stored, err := store.UpsertSession(ctx, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, stored.ID, model.Audience{
+		Mode: model.AudienceAllPaired, AcceptMessages: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return stored
 }
 
 func openTestRegistry(t *testing.T) *Registry {
@@ -192,5 +226,93 @@ func TestValidateSessionRejectsSeparatorIndependentlyOfSQL(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidSession) {
 		t.Errorf("error = %v; callers rely on ErrInvalidSession to tell a bad record from a broken store", err)
+	}
+}
+
+// TestAMessageRecordsWhereItWasAddressed is issue #7's remaining change-scope
+// item: the row must say which node the message was for.
+func TestAMessageRecordsWhereItWasAddressed(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	created, err := store.CreateMessage(ctx, model.Message{
+		To: session.ID, DestinationNodeID: testNodeID, Body: "hello",
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+	if created.DestinationNodeID != testNodeID {
+		t.Fatalf("destination = %q", created.DestinationNodeID)
+	}
+
+	inbox, err := store.Inbox(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("inbox = %#v", inbox)
+	}
+	if inbox[0].DestinationNodeID != testNodeID {
+		t.Fatalf("stored destination = %q; want it read back", inbox[0].DestinationNodeID)
+	}
+}
+
+// TestAMessageWithoutADestinationIsRefused keeps the column from quietly
+// filling with empty strings once routing exists and the value matters.
+func TestAMessageWithoutADestinationIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	if _, err := store.CreateMessage(ctx, model.Message{To: session.ID, Body: "hello"}); !errors.Is(err, ErrInvalidSession) {
+		t.Fatalf("error = %v; want ErrInvalidSession", err)
+	}
+}
+
+// TestAnOlderDatabaseGainsTheDestinationColumn covers the upgrade path: a
+// database written before the column existed must open, keep its messages, and
+// read them back with an empty destination rather than an invented one.
+func TestAnOlderDatabaseGainsTheDestinationColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agenthub.db")
+	store := openRegistryAt(t, path)
+	session := acceptingSession(t, store)
+	if _, err := store.CreateMessage(ctx, model.Message{
+		To: session.ID, DestinationNodeID: testNodeID, Body: "before the upgrade",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Drop the column to reproduce a database from the earlier build.
+	if _, err := store.db.ExecContext(ctx, `ALTER TABLE messages DROP COLUMN destination_node_id`); err != nil {
+		t.Skipf("this SQLite build cannot drop a column: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening runs the migration.
+	reopened := openRegistryAt(t, path)
+	inbox, err := reopened.Inbox(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatalf("Inbox() after upgrade = %v", err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("the upgrade lost messages: %#v", inbox)
+	}
+	if inbox[0].Body != "before the upgrade" {
+		t.Fatalf("body = %q", inbox[0].Body)
+	}
+	if inbox[0].DestinationNodeID != "" {
+		t.Fatalf("destination = %q; a pre-upgrade row must read as unrecorded, not as an invented node",
+			inbox[0].DestinationNodeID)
+	}
+
+	// And new messages still record a destination.
+	if _, err := reopened.CreateMessage(ctx, model.Message{
+		To: session.ID, DestinationNodeID: testNodeID, Body: "after the upgrade",
+	}); err != nil {
+		t.Fatalf("CreateMessage() after upgrade = %v", err)
 	}
 }
