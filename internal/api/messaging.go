@@ -122,6 +122,15 @@ func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNod
 		writeJSON(w, http.StatusOK, protocol.AckPayload{
 			MessageID: payload.MessageID, Status: protocol.AckDuplicate,
 		})
+	case errors.Is(err, registry.ErrInboxFull):
+		// Not a decision and not a failure: a condition that clears when the
+		// owner reads. Answering 503 leaves the message queued at the sender,
+		// so a full inbox delays a message rather than destroying it — which is
+		// the outcome this bound exists to prevent, not to cause.
+		log.Printf("inbox full, deferring a message from %q: %v", senderNodeID, err)
+		w.Header().Set("Retry-After", "300")
+		writeError(w, http.StatusServiceUnavailable, "INBOX_FULL",
+			"the addressed session's inbox is full; try again later")
 	case errors.Is(err, registry.ErrNotFound), errors.Is(err, registry.ErrInvalidSession):
 		// A decision, and the same one however it was reached.
 		writeJSON(w, http.StatusOK, protocol.AckPayload{

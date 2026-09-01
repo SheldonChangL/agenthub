@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -376,5 +377,123 @@ func TestAForgedSenderLabelCannotNameAnotherNode(t *testing.T) {
 	}
 	if !strings.HasPrefix(from, peerNodeID) {
 		t.Fatalf("from = %q; want it attributed to the node that signed the envelope", from)
+	}
+}
+
+// TestAFullInboxDefersTheSenderRatherThanLosingTheMessage is the reason this
+// answers 503 rather than a refusal.
+//
+// A refusal is settled permanently by the sender, so reporting a full inbox as
+// one would destroy the message — the exact failure the bound exists to
+// prevent. 503 leaves it queued, and the sender retries once the owner has read
+// and cleared.
+func TestAFullInboxDefersTheSenderRatherThanLosingTheMessage(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	ctx := context.Background()
+	for i := range registry.MaxInboxMessages {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: fmt.Sprintf("msg_fill_%d", i), To: session, From: peerNodeID,
+			DestinationNodeID: testNodeID, Body: "filler",
+		}); err != nil {
+			t.Fatalf("filling at %d: %v", i, err)
+		}
+	}
+
+	envelope := peer.messageEnvelope(t, testNodeID, "msg_deferred", session, "", "please keep me")
+	response := perform(t, peers, http.MethodPost, "/v1/messages", envelope)
+
+	if response.Code == http.StatusOK {
+		ack := decodeAck(t, response.Body.Bytes())
+		t.Fatalf("a full inbox answered 200 %s; the sender would settle this and lose the message", ack.Status)
+	}
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("response = %d %s; want 503", response.Code, response.Body.String())
+	}
+	if retry := response.Header().Get("Retry-After"); retry == "" {
+		t.Error("a deferral did not say when to come back")
+	}
+
+	// After the owner clears, the same message goes in.
+	cleared := perform(t, owner, http.MethodDelete, "/v1/inbox/"+session, nil)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear = %d %s", cleared.Code, cleared.Body.String())
+	}
+	retried := perform(t, peers, http.MethodPost, "/v1/messages", envelope)
+	if retried.Code != http.StatusOK {
+		t.Fatalf("after clearing = %d %s", retried.Code, retried.Body.String())
+	}
+	if ack := decodeAck(t, retried.Body.Bytes()); ack.Status != protocol.AckQueued {
+		t.Fatalf("ack = %+v; want queued", ack)
+	}
+}
+
+// TestTheInboxReportsHowFullItIs keeps a filling session visible before senders
+// start backing up.
+func TestTheInboxReportsHowFullItIs(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	envelope := peer.messageEnvelope(t, testNodeID, "msg_one", session, "", "hello")
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+		t.Fatalf("send = %d", response.Code)
+	}
+
+	response := perform(t, owner, http.MethodGet, "/v1/inbox/"+session, nil)
+	var view struct {
+		Held     int  `json:"held"`
+		Capacity int  `json:"capacity"`
+		Full     bool `json:"full"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Held != 1 {
+		t.Errorf("held = %d; want 1", view.Held)
+	}
+	if view.Capacity != registry.MaxInboxMessages {
+		t.Errorf("capacity = %d; want %d", view.Capacity, registry.MaxInboxMessages)
+	}
+	if view.Full {
+		t.Error("an inbox with one message reports itself full")
+	}
+}
+
+// TestDeletingOneMessageLeavesTheRest covers the finer control the owner needs
+// when only some of an inbox has been dealt with.
+func TestDeletingOneMessageLeavesTheRest(t *testing.T) {
+	store, owner, peers := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:inbox-target")
+
+	for _, id := range []string{"msg_a", "msg_b"} {
+		envelope := peer.messageEnvelope(t, testNodeID, id, session, "", "body "+id)
+		if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+			t.Fatalf("send %s = %d", id, response.Code)
+		}
+	}
+
+	deleted := perform(t, owner, http.MethodDelete, "/v1/inbox/"+session+"/msg_a", nil)
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete = %d %s", deleted.Code, deleted.Body.String())
+	}
+	remaining, err := store.Inbox(context.Background(), session, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "msg_b" {
+		t.Fatalf("remaining = %#v; want only msg_b", remaining)
+	}
+
+	// Deleting something that is not there says so rather than pretending.
+	missing := perform(t, owner, http.MethodDelete, "/v1/inbox/"+session+"/msg_absent", nil)
+	if missing.Code != http.StatusNotFound {
+		t.Errorf("deleting an absent message = %d; want 404", missing.Code)
 	}
 }
