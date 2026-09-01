@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -58,7 +63,7 @@ func newCapture(t *testing.T, nodeID string) *capture {
 		t.Fatal(err)
 	}
 	c := &capture{status: http.StatusNoContent, nodeID: nodeID, public: public, private: private}
-	c.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			t.Error(err)
@@ -108,8 +113,34 @@ func newCapture(t *testing.T, nodeID string) *capture {
 			t.Errorf("peer received an unexpected path %q", r.URL.Path)
 		}
 	}))
+	// The peer presents its identity key as its TLS certificate, exactly as a
+	// real node does. A publisher that pins a different key must fail to
+	// handshake, so this is what makes the impostor tests meaningful.
+	c.server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{certificateFor(t, private, public, nodeID)},
+		MinVersion:   tls.VersionTLS13,
+	}
+	c.server.StartTLS()
 	t.Cleanup(c.server.Close)
 	return c
+}
+
+// certificateFor mirrors identity.Keypair.TLSCertificate for a raw key pair.
+func certificateFor(t *testing.T, private ed25519.PrivateKey, public ed25519.PublicKey, nodeID string) tls.Certificate {
+	t.Helper()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: nodeID},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: private}
 }
 
 func (c *capture) address(t *testing.T) string {
@@ -514,32 +545,36 @@ func TestTheChallengeHappensBeforeAnythingIsSent(t *testing.T) {
 	}
 }
 
-// TestARelayDefeatsTheChallenge documents a limit of the challenge exchange
-// rather than a property of it, and it is written as a passing test on purpose:
-// the weakness is real, and a comment saying so would rot.
+// TestARelayCannotInterceptAPinnedDelivery is the test that changed meaning
+// when the transport was pinned, and it is worth saying why.
 //
-// The relay forwards this node's challenge to the genuine peer and returns the
-// genuine answer. Every value the answer binds — responder id, challenger id,
-// nonce — is forwarded verbatim, so binding them proves only that the real peer
-// is reachable and answered, never that the entity being delivered to is that
-// peer. The heartbeat then goes to the relay in plaintext.
+// It was written as a PASSING test reproducing a real weakness: with only a
+// challenge-response, an interceptor forwarded this node's challenge to the
+// genuine peer, returned the genuine answer, and then received the heartbeat in
+// plaintext. Every value the answer bound — responder id, challenger id, nonce
+// — travels through a forwarder unchanged, so binding them proved only that the
+// real peer was reachable, never that the thing being delivered to was it.
 //
-// What this means for the roadmap: the challenge detects an address pointing at
-// the wrong node, and a spoofer that cannot reach the real peer. It is NOT
-// sufficient to make discovered addresses safe. Delivery beyond loopback needs
-// the channel itself bound to the peer's identity — TLS pinned to the key in
-// the trust store — so that metadata is unreadable to whatever is in the middle.
-// That is a prerequisite for widening LoopbackOnly, not an optional extra.
-func TestARelayDefeatsTheChallenge(t *testing.T) {
+// The interceptor below is exactly that: it terminates TLS with its own key,
+// forwards the challenge to the genuine peer, and returns the genuine answer.
+// The challenge alone cannot tell it apart from the real peer. Pinning can, and
+// earlier than the challenge: the handshake fails, so the interceptor never
+// receives a request to forward.
+//
+// Removing the pin makes this test fail with the metadata it captured.
+func TestARelayCannotInterceptAPinnedDelivery(t *testing.T) {
 	store := openStore(t)
 	peerID := "node_peeraaaaaaaaaaaa"
-
-	// The genuine peer, holding the key the owner recorded.
 	genuine := newCapture(t, peerID)
 
-	// The relay: forwards challenges to the genuine peer, keeps heartbeats.
+	// The interceptor holds its own key — it is not the peer — but it can reach
+	// the genuine peer and relay the proof.
 	var stolen []protocol.Envelope
-	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	interceptorKey, interceptorPrivate, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interceptor := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			t.Error(err)
@@ -547,9 +582,21 @@ func TestARelayDefeatsTheChallenge(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/challenge":
-			forwarded, err := http.Post(genuine.server.URL+"/v1/challenge", "application/json", bytes.NewReader(body))
+			// Forward verbatim to the genuine peer and return its answer.
+			//
+			// The attacker does not validate the peer's certificate — it has no
+			// reason to. Using a validating client here would make the test pass
+			// for the wrong reason: the interception would fail on the
+			// attacker's own TLS strictness rather than on this node's pin.
+			attacker := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // #nosec G402 -- this is the attacker in a test
+				MinVersion:         tls.VersionTLS13,
+			}}}
+			forwarded, err := attacker.Post(
+				genuine.server.URL+"/v1/challenge", "application/json", bytes.NewReader(body))
 			if err != nil {
-				t.Error(err)
+				t.Logf("interceptor could not reach the genuine peer: %v", err)
+				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
 			defer func() { _ = forwarded.Body.Close() }()
@@ -570,29 +617,30 @@ func TestARelayDefeatsTheChallenge(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}
 	}))
-	t.Cleanup(relay.Close)
-	relayHost, err := url.Parse(relay.URL)
+	interceptor.TLS = &tls.Config{
+		Certificates: []tls.Certificate{certificateFor(t, interceptorPrivate, interceptorKey, peerID)},
+		MinVersion:   tls.VersionTLS13,
+	}
+	interceptor.StartTLS()
+	t.Cleanup(interceptor.Close)
+	interceptorHost, err := url.Parse(interceptor.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Discovery pointed at the relay; the trust store holds the genuine key.
-	trust(t, store, peerID, relayHost.Host, genuine.public)
+	// Discovery points at the interceptor; the trust store holds the genuine key.
+	trust(t, store, peerID, interceptorHost.Host, genuine.public)
 	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
 
 	result, err := publisherFor(t, store).PublishOnce(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Delivered != 1 {
-		t.Fatalf("result = %+v; the relay was expected to pass the challenge", result)
+	if len(stolen) != 0 {
+		t.Fatalf("an interceptor relaying the genuine peer's proof captured session metadata: %s",
+			stolen[0].Payload)
 	}
-	if len(stolen) != 1 {
-		t.Fatalf("the relay captured %d envelopes; expected the documented weakness to reproduce", len(stolen))
+	if result.Delivered != 0 {
+		t.Errorf("result = %+v; the delivery must not have succeeded", result)
 	}
-	// This assertion is the point: the metadata really is readable by the relay.
-	if !bytes.Contains(stolen[0].Payload, []byte("claude:secret")) {
-		t.Fatalf("relay captured an envelope without the session: %s", stolen[0].Payload)
-	}
-	t.Logf("known limit reproduced: a relay obtained %s", stolen[0].Payload)
 }

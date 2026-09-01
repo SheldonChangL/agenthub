@@ -356,18 +356,50 @@ and a challenge answer over bytes beginning `agenthub.broker/v1alpha1/challenge\
 both with length-prefixed fields. No attacker-chosen value appears before those
 prefixes, so an answer can never be presented as an envelope's signature.
 
-**What the challenge does not do.** It proves the peer's key-holder is reachable
-and answered; it does not prove the entity at the address *is* that peer. An
-active relay forwards the challenge to the genuine peer and returns the genuine
-answer — the responder id, challenger id and nonce all travel unchanged, so
-binding them does not help — and then receives the heartbeat in plaintext.
+**What the challenge does not do on its own.** It proves the peer's key-holder
+is reachable and answered; it does not prove the entity at the address *is* that
+peer. An active relay forwards the challenge to the genuine peer and returns the
+genuine answer — the responder id, challenger id and nonce all travel unchanged,
+so binding them does not help — and then receives the heartbeat.
 
-This is why delivery is restricted to loopback, where there is no middle to sit
-in. Widening it requires the channel to be bound to the peer's identity: TLS
-whose certificate key must equal the key in the trust store. That is a
-prerequisite for LAN delivery and for address discovery, not an enhancement —
-an attacker able to spoof a discovery record on a LAN can usually also reach the
-peer being impersonated.
+### The connection is the identity
+
+Peer traffic runs over TLS 1.3 whose certificate carries the node's own identity
+key, and the client accepts exactly that key: the one recorded when pairing.
+There is no CA and no chain, because a certificate here is a container for a
+public key and the only question asked of it is the one pairing already
+answered.
+
+This is what closes the relay. A forwarder does not hold the peer's private key,
+so it cannot terminate the connection at all — there is no plaintext for it to
+read and forward. Identity stops being a side exchange that can be relayed and
+becomes a property of the channel carrying the data.
+
+The pin is installed as `VerifyConnection`, not `VerifyPeerCertificate`. The two
+look interchangeable and are not: a resumed TLS 1.3 session performs no full
+handshake, and Go calls `VerifyPeerCertificate` only for full handshakes.
+Measured against a real server, three connections over a session cache produce
+one call to `VerifyPeerCertificate` and three to `VerifyConnection` — so a pin
+in the former would apply to the first connection and not the rest, which is not
+a pin. The publisher additionally uses no session cache and a fresh client per
+peer, so a connection established for one peer can never be resumed for another.
+
+The challenge is kept alongside it. TLS answers "is this the paired key"; the
+challenge answers "does this node agree it is the peer we meant", which catches
+a discovery record aimed at the wrong node and a peer whose key has rotated.
+
+### Two listeners, not one
+
+The owner's API and the peer surface are separate listeners with separate muxes.
+The owner's API changes who may see a session, revokes peers, and sends
+messages; the peer surface answers challenges and accepts heartbeats. Keeping
+them apart is what makes opening a port to peers a bounded decision — on one mux,
+exposing heartbeats would also expose `PUT /v1/sessions/{id}/audience`, and the
+only thing between a peer and the owner's controls would be that nobody had sent
+the request.
+
+Both listeners are still bound to loopback. Widening the peer listener is the
+remaining step, and it is a deliberate change to one guarded line.
 
 ### The receiving side
 

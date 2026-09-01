@@ -76,6 +76,24 @@ func summary(id string) protocol.SessionSummary {
 	}
 }
 
+// testSurfaces returns the two handlers a node actually serves. They are
+// separate listeners in production — the owner's management API and the peer
+// surface — so a test that drove both through one handler would not be testing
+// the deployed shape.
+func testSurfaces(t *testing.T) (*registry.Registry, http.Handler, http.Handler) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
+	server := NewServer(store, nil, heartbeats, node)
+	return store, server.Handler(), server.PeerHandler()
+}
+
 const peerNodeID = "node_peer0000000000000"
 
 // TestUnpairedNodeGetsNothing is issue #14's "an unpaired node cannot obtain any
@@ -83,11 +101,11 @@ const peerNodeID = "node_peer0000000000000"
 // refusal says nothing that distinguishes an unknown sender from a bad
 // signature, so it cannot be used to probe who this owner has paired with.
 func TestUnpairedNodeGetsNothing(t *testing.T) {
-	store, handler := testServer(t)
+	store, owner, peers := testSurfaces(t)
 	stranger := newSender(t, peerNodeID)
 
 	envelope := stranger.heartbeatTo(t, testNodeID, 1, time.Now().Add(time.Minute), []protocol.SessionSummary{summary("node_x/claude:a")})
-	response := perform(t, handler, http.MethodPost, "/v1/heartbeat", envelope)
+	response := perform(t, peers, http.MethodPost, "/v1/heartbeat", envelope)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("response = %d %s; an unpaired sender must be refused", response.Code, response.Body.String())
 	}
@@ -99,10 +117,10 @@ func TestUnpairedNodeGetsNothing(t *testing.T) {
 
 	// Now pair, then send an envelope signed by a different key. The refusal
 	// must be indistinguishable from the unpaired one.
-	stranger.pairWith(t, handler)
+	stranger.pairWith(t, owner)
 	impostor := newSender(t, peerNodeID)
 	forged := impostor.heartbeatTo(t, testNodeID, 1, time.Now().Add(time.Minute), nil)
-	forgedResponse := perform(t, handler, http.MethodPost, "/v1/heartbeat", forged)
+	forgedResponse := perform(t, peers, http.MethodPost, "/v1/heartbeat", forged)
 	if forgedResponse.Code != http.StatusForbidden {
 		t.Fatalf("a forged signature was not refused: %d %s", forgedResponse.Code, forgedResponse.Body.String())
 	}
@@ -116,13 +134,13 @@ func TestUnpairedNodeGetsNothing(t *testing.T) {
 // recipient inside the signature: without this check, a snapshot a peer built
 // for one node is a valid snapshot for every node that trusts that peer.
 func TestHeartbeatBuiltForAnotherNodeIsRefused(t *testing.T) {
-	store, handler := testServer(t)
+	store, owner, peers := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
-	peer.pairWith(t, handler)
+	peer.pairWith(t, owner)
 
 	misdirected := peer.heartbeatTo(t, "node_somebodyelse0000", 1, time.Now().Add(time.Minute),
 		[]protocol.SessionSummary{summary("node_x/claude:secret")})
-	response := perform(t, handler, http.MethodPost, "/v1/heartbeat", misdirected)
+	response := perform(t, peers, http.MethodPost, "/v1/heartbeat", misdirected)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("response = %d %s; an envelope addressed elsewhere must be refused",
 			response.Code, response.Body.String())
@@ -136,26 +154,26 @@ func TestHeartbeatBuiltForAnotherNodeIsRefused(t *testing.T) {
 // end: the second snapshot replaces the first, and a session that vanished from
 // the array stops being reported.
 func TestSnapshotReplacesAndRevocationByOmissionTakesEffect(t *testing.T) {
-	_, handler := testServer(t)
+	_, owner, peers := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
-	peer.pairWith(t, handler)
+	peer.pairWith(t, owner)
 	expires := time.Now().Add(time.Minute)
 
 	first := peer.heartbeatTo(t, testNodeID, 1, expires,
 		[]protocol.SessionSummary{summary("node_p/claude:kept"), summary("node_p/claude:withdrawn")})
-	if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", first); response.Code != http.StatusNoContent {
+	if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", first); response.Code != http.StatusNoContent {
 		t.Fatalf("first heartbeat = %d %s", response.Code, response.Body.String())
 	}
-	if ids := peerSessionIDs(t, handler, peerNodeID); len(ids) != 2 {
+	if ids := peerSessionIDs(t, owner, peerNodeID); len(ids) != 2 {
 		t.Fatalf("sessions after the first heartbeat = %v; want both", ids)
 	}
 
 	second := peer.heartbeatTo(t, testNodeID, 2, expires,
 		[]protocol.SessionSummary{summary("node_p/claude:kept")})
-	if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", second); response.Code != http.StatusNoContent {
+	if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", second); response.Code != http.StatusNoContent {
 		t.Fatalf("second heartbeat = %d %s", response.Code, response.Body.String())
 	}
-	ids := peerSessionIDs(t, handler, peerNodeID)
+	ids := peerSessionIDs(t, owner, peerNodeID)
 	if len(ids) != 1 || ids[0] != "node_p/claude:kept" {
 		t.Fatalf("sessions = %v; the withdrawn session survived, so the consumer merged instead of replacing", ids)
 	}
@@ -163,18 +181,18 @@ func TestSnapshotReplacesAndRevocationByOmissionTakesEffect(t *testing.T) {
 
 // TestReplayedAndExpiredHeartbeatsAreRefused is issue #11's remaining item.
 func TestReplayedAndExpiredHeartbeatsAreRefused(t *testing.T) {
-	_, handler := testServer(t)
+	_, owner, peers := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
-	peer.pairWith(t, handler)
+	peer.pairWith(t, owner)
 	expires := time.Now().Add(time.Minute)
 
 	live := peer.heartbeatTo(t, testNodeID, 2, expires, []protocol.SessionSummary{summary("node_p/claude:live")})
-	if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", live); response.Code != http.StatusNoContent {
+	if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", live); response.Code != http.StatusNoContent {
 		t.Fatalf("live heartbeat = %d %s", response.Code, response.Body.String())
 	}
 
 	t.Run("an exact replay of the accepted delivery", func(t *testing.T) {
-		response := perform(t, handler, http.MethodPost, "/v1/heartbeat", live)
+		response := perform(t, peers, http.MethodPost, "/v1/heartbeat", live)
 		if response.Code != http.StatusConflict {
 			t.Fatalf("response = %d %s; want the replay refused", response.Code, response.Body.String())
 		}
@@ -183,10 +201,10 @@ func TestReplayedAndExpiredHeartbeatsAreRefused(t *testing.T) {
 	t.Run("a rolled-back sequence carrying a stale view", func(t *testing.T) {
 		rolledBack := peer.heartbeatTo(t, testNodeID, 1, expires,
 			[]protocol.SessionSummary{summary("node_p/claude:stale")})
-		if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", rolledBack); response.Code != http.StatusConflict {
+		if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", rolledBack); response.Code != http.StatusConflict {
 			t.Fatalf("response = %d %s; want the rollback refused", response.Code, response.Body.String())
 		}
-		ids := peerSessionIDs(t, handler, peerNodeID)
+		ids := peerSessionIDs(t, owner, peerNodeID)
 		if len(ids) != 1 || ids[0] != "node_p/claude:live" {
 			t.Fatalf("sessions = %v; a rolled-back heartbeat overwrote the live snapshot", ids)
 		}
@@ -194,10 +212,10 @@ func TestReplayedAndExpiredHeartbeatsAreRefused(t *testing.T) {
 
 	t.Run("an already expired heartbeat", func(t *testing.T) {
 		stale := peer.heartbeatTo(t, testNodeID, 3, time.Now().Add(-time.Second), nil)
-		if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", stale); response.Code != http.StatusConflict {
+		if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", stale); response.Code != http.StatusConflict {
 			t.Fatalf("response = %d %s; want the expired heartbeat refused", response.Code, response.Body.String())
 		}
-		ids := peerSessionIDs(t, handler, peerNodeID)
+		ids := peerSessionIDs(t, owner, peerNodeID)
 		if len(ids) != 1 || ids[0] != "node_p/claude:live" {
 			t.Fatalf("sessions = %v; an expired heartbeat replaced the live snapshot", ids)
 		}
@@ -208,9 +226,9 @@ func TestReplayedAndExpiredHeartbeatsAreRefused(t *testing.T) {
 // offline once the heartbeat expires", and pins that offline is not the same as
 // absent: the peer is still listed, with the moment it went quiet.
 func TestPeerGoesOfflineWhenItsHeartbeatExpires(t *testing.T) {
-	store, handler := testServer(t)
+	store, owner, _ := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
-	peer.pairWith(t, handler)
+	peer.pairWith(t, owner)
 
 	// Store directly so the expiry can be placed in the past without waiting.
 	payload, err := json.Marshal(protocol.HeartbeatPayload{
@@ -229,17 +247,17 @@ func TestPeerGoesOfflineWhenItsHeartbeatExpires(t *testing.T) {
 		t.Fatalf("StorePeerSnapshot() error = %v", err)
 	}
 
-	peers := decodePeers(t, handler)
-	if len(peers) != 1 {
-		t.Fatalf("peers = %#v; an expired peer must still be listed", peers)
+	views := decodePeers(t, owner)
+	if len(views) != 1 {
+		t.Fatalf("peers = %#v; an expired peer must still be listed", views)
 	}
-	if peers[0].Online {
+	if views[0].Online {
 		t.Error("a peer whose heartbeat expired is reported online")
 	}
-	if len(peers[0].Sessions) != 0 {
-		t.Errorf("sessions = %v; an expired snapshot must not still be shown", peers[0].Sessions)
+	if len(views[0].Sessions) != 0 {
+		t.Errorf("sessions = %v; an expired snapshot must not still be shown", views[0].Sessions)
 	}
-	if peers[0].ReceivedAt == nil {
+	if views[0].ReceivedAt == nil {
 		t.Error("the moment the peer was last heard from is not reported")
 	}
 }
@@ -247,25 +265,25 @@ func TestPeerGoesOfflineWhenItsHeartbeatExpires(t *testing.T) {
 // TestRevokingAPeerRemovesItsView pins that withdrawing trust withdraws what
 // the peer published, not just its ability to publish more.
 func TestRevokingAPeerRemovesItsView(t *testing.T) {
-	_, handler := testServer(t)
+	_, owner, peers := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
-	peer.pairWith(t, handler)
+	peer.pairWith(t, owner)
 
 	live := peer.heartbeatTo(t, testNodeID, 1, time.Now().Add(time.Minute),
 		[]protocol.SessionSummary{summary("node_p/claude:visible")})
-	if response := perform(t, handler, http.MethodPost, "/v1/heartbeat", live); response.Code != http.StatusNoContent {
+	if response := perform(t, peers, http.MethodPost, "/v1/heartbeat", live); response.Code != http.StatusNoContent {
 		t.Fatalf("heartbeat = %d %s", response.Code, response.Body.String())
 	}
-	if ids := peerSessionIDs(t, handler, peerNodeID); len(ids) != 1 {
+	if ids := peerSessionIDs(t, owner, peerNodeID); len(ids) != 1 {
 		t.Fatalf("sessions before revoke = %v", ids)
 	}
 
-	if response := perform(t, handler, http.MethodDelete, "/v1/nodes/"+peerNodeID, nil); response.Code != http.StatusNoContent {
+	if response := perform(t, owner, http.MethodDelete, "/v1/nodes/"+peerNodeID, nil); response.Code != http.StatusNoContent {
 		t.Fatalf("revoke = %d %s", response.Code, response.Body.String())
 	}
-	peers := decodePeers(t, handler)
-	if len(peers) != 0 {
-		t.Fatalf("peers after revoke = %#v; a revoked node must not remain listed", peers)
+	views := decodePeers(t, owner)
+	if len(views) != 0 {
+		t.Fatalf("peers after revoke = %#v; a revoked node must not remain listed", views)
 	}
 }
 
@@ -310,14 +328,14 @@ func peerSessionIDs(t *testing.T, handler http.Handler, nodeID string) []string 
 // TestChallengeEndpointProvesKeyPossession covers the endpoint a sender uses to
 // confirm it is talking to the peer it thinks it is.
 func TestChallengeEndpointProvesKeyPossession(t *testing.T) {
-	_, handler := testServer(t)
+	_, _, peers := testSurfaces(t)
 	nonce, err := protocol.NewChallengeNonce()
 	if err != nil {
 		t.Fatal(err)
 	}
 	const challenger = "node_challenger000000"
 
-	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+	response := perform(t, peers, http.MethodPost, "/v1/challenge", map[string]string{
 		"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": challenger,
 	})
 	if response.Code != http.StatusOK {
@@ -344,14 +362,14 @@ func TestChallengeEndpointProvesKeyPossession(t *testing.T) {
 // TestChallengeRefusesAShortNonce keeps the endpoint from signing bytes a
 // caller can fully predict.
 func TestChallengeRefusesAShortNonce(t *testing.T) {
-	_, handler := testServer(t)
+	_, _, peers := testSurfaces(t)
 	for name, nonce := range map[string][]byte{
 		"empty":                 {},
 		"one byte":              {0x01},
 		"one under the minimum": make([]byte, protocol.ChallengeNonceSize-1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+			response := perform(t, peers, http.MethodPost, "/v1/challenge", map[string]string{
 				"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": "node_challenger000000",
 			})
 			if response.Code != http.StatusBadRequest {
@@ -364,8 +382,8 @@ func TestChallengeRefusesAShortNonce(t *testing.T) {
 // TestChallengeRefusesANonBase64Nonce pins input handling on an endpoint that
 // answers anyone.
 func TestChallengeRefusesANonBase64Nonce(t *testing.T) {
-	_, handler := testServer(t)
-	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+	_, _, peers := testSurfaces(t)
+	response := perform(t, peers, http.MethodPost, "/v1/challenge", map[string]string{
 		"nonce": "this is not base64!!", "challengerNodeId": "node_challenger000000",
 	})
 	if response.Code != http.StatusBadRequest {
@@ -393,14 +411,14 @@ func TestChallengeHandlerSignsTheRealBytesWithTheRealKey(t *testing.T) {
 
 	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 	builder := protocol.NewHeartbeatBuilder(store, node, fixedSigner{private: private})
-	handler := NewServer(store, nil, builder, node).Handler()
+	peers := NewServer(store, nil, builder, node).PeerHandler()
 
 	nonce, err := protocol.NewChallengeNonce()
 	if err != nil {
 		t.Fatal(err)
 	}
 	const challenger = "node_challenger000000"
-	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+	response := perform(t, peers, http.MethodPost, "/v1/challenge", map[string]string{
 		"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": challenger,
 	})
 	if response.Code != http.StatusOK {
@@ -431,3 +449,62 @@ func TestChallengeHandlerSignsTheRealBytesWithTheRealKey(t *testing.T) {
 type fixedSigner struct{ private ed25519.PrivateKey }
 
 func (s fixedSigner) Sign(message []byte) []byte { return ed25519.Sign(s.private, message) }
+
+// TestThePeerSurfaceExposesNothingElse is the test that makes opening a port to
+// peers a bounded decision.
+//
+// The owner's API changes who may see a session, revokes peers and sends
+// messages. If those lived on the same mux as heartbeats, exposing the peer
+// surface would expose them too, and the only thing between a peer and the
+// owner's controls would be that nobody had sent the request. This enumerates
+// the management routes and requires every one of them to be absent.
+func TestThePeerSurfaceExposesNothingElse(t *testing.T) {
+	_, _, peers := testSurfaces(t)
+
+	management := []struct{ method, path string }{
+		{http.MethodGet, "/v1/sessions"},
+		{http.MethodGet, "/v1/sessions/claude:abc"},
+		{http.MethodPut, "/v1/sessions/claude:abc/visibility"},
+		{http.MethodGet, "/v1/sessions/claude:abc/audience"},
+		{http.MethodPut, "/v1/sessions/claude:abc/audience"},
+		{http.MethodPost, "/v1/sessions/audience"},
+		{http.MethodGet, "/v1/node"},
+		{http.MethodGet, "/v1/nodes"},
+		{http.MethodPost, "/v1/nodes"},
+		{http.MethodDelete, "/v1/nodes/node_peer0000000000000"},
+		{http.MethodPut, "/v1/nodes/node_peer0000000000000/address"},
+		{http.MethodGet, "/v1/heartbeat"},
+		{http.MethodGet, "/v1/peers"},
+		{http.MethodPost, "/v1/discover"},
+		{http.MethodPost, "/v1/messages"},
+		{http.MethodGet, "/v1/inbox/claude:abc"},
+	}
+	for _, route := range management {
+		t.Run(route.method+" "+route.path, func(t *testing.T) {
+			response := perform(t, peers, route.method, route.path, map[string]string{})
+			if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("the peer surface served %s %s with %d %s",
+					route.method, route.path, response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestThePeerSurfaceStillServesItsOwnRoutes keeps the test above honest: a
+// handler that served nothing at all would satisfy it.
+func TestThePeerSurfaceStillServesItsOwnRoutes(t *testing.T) {
+	_, _, peers := testSurfaces(t)
+	if response := perform(t, peers, http.MethodGet, "/healthz", nil); response.Code != http.StatusOK {
+		t.Errorf("/healthz = %d", response.Code)
+	}
+	nonce, err := protocol.NewChallengeNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := perform(t, peers, http.MethodPost, "/v1/challenge", map[string]string{
+		"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": "node_challenger000000",
+	})
+	if response.Code != http.StatusOK {
+		t.Errorf("/v1/challenge = %d %s", response.Code, response.Body.String())
+	}
+}
