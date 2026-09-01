@@ -21,6 +21,7 @@ import (
 
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -693,7 +694,7 @@ func TestPrivateNetworksRefusesNames(t *testing.T) {
 		"my-laptop:7463",
 		"example.com:7463",
 	} {
-		if err := PrivateNetworks(address); err == nil {
+		if err := PrivateNetworks(nil)(address); err == nil {
 			t.Errorf("PrivateNetworks(%q) = nil; a name must be refused, not resolved", address)
 		}
 	}
@@ -711,7 +712,7 @@ func TestPrivateNetworksAcceptsPrivateLiterals(t *testing.T) {
 		"[fd00::1]:7463",
 		"169.254.10.20:7463",
 	} {
-		if err := PrivateNetworks(address); err != nil {
+		if err := PrivateNetworks(nil)(address); err != nil {
 			t.Errorf("PrivateNetworks(%q) = %v", address, err)
 		}
 	}
@@ -727,7 +728,7 @@ func TestPrivateNetworksRefusesPublicLiterals(t *testing.T) {
 		"203.0.113.2:7463",
 		"[::ffff:203.0.113.1]:7463",
 	} {
-		if err := PrivateNetworks(address); err == nil {
+		if err := PrivateNetworks(nil)(address); err == nil {
 			t.Errorf("PrivateNetworks(%q) = nil; a public address must be refused", address)
 		}
 	}
@@ -843,5 +844,75 @@ func TestADeliveredAckSettlesTheMessage(t *testing.T) {
 	}
 	if len(peer.messages) != 1 || peer.messages[0].Body != "hello" {
 		t.Fatalf("the peer received %#v", peer.messages)
+	}
+}
+
+// TestDeliveryFollowsTheSameDeclaration keeps the listen side and the delivery
+// side from disagreeing about what is private.
+//
+// If they could disagree, a node could be configured to serve on an address it
+// would then refuse to deliver to, or the reverse — and the owner would see a
+// peer that is configured, reachable, and silently never contacted.
+func TestDeliveryFollowsTheSameDeclaration(t *testing.T) {
+	const address = "203.0.113.2:7463"
+
+	if err := PrivateNetworks(nil)(address); err == nil {
+		t.Fatal("a public address was deliverable with nothing declared")
+	}
+
+	declared, err := nodeconfig.ParsePrivateRanges([]string{"203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PrivateNetworks(declared)(address); err != nil {
+		t.Fatalf("PrivateNetworks(declared)(%q) = %v", address, err)
+	}
+	// And the listen side agrees, which is the property that matters.
+	if err := nodeconfig.ValidatePeerListen(address, true, declared); err != nil {
+		t.Fatalf("the listen side refused what delivery accepts: %v", err)
+	}
+
+	// Still no names, declaration or not.
+	if err := PrivateNetworks(declared)("peer.local:7463"); err == nil {
+		t.Error("a name was accepted because a range was declared")
+	}
+}
+
+// TestDeliveryAndListenAgreeOnRefusals complements the accepted-address test:
+// that one would not notice if the delivery side stopped consulting the shared
+// definition for refusals.
+func TestDeliveryAndListenAgreeOnRefusals(t *testing.T) {
+	declared, err := nodeconfig.ParsePrivateRanges([]string{"122.122.0.0/16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PrivateNetworks(declared)
+
+	for _, address := range []string{
+		"203.0.113.1:7463",     // outside the declaration
+		"122.121.255.255:7463", // one below the declared block
+		"122.123.0.0:7463",     // one above it
+		"0.0.0.0:7463",         // every interface
+		"[::ffff:0.0.0.0]:7463",
+		"peer.local:7463", // a name
+		"[fe80::1%en0]:7463",
+	} {
+		deliveryErr := policy(address)
+		listenErr := nodeconfig.ValidatePeerListen(address, true, declared)
+		if deliveryErr == nil {
+			t.Errorf("delivery accepted %q", address)
+		}
+		if listenErr == nil {
+			t.Errorf("the listen side accepted %q", address)
+		}
+	}
+
+	// And both accept what the declaration actually names.
+	const inside = "122.122.122.2:7463"
+	if err := policy(inside); err != nil {
+		t.Errorf("delivery refused %q: %v", inside, err)
+	}
+	if err := nodeconfig.ValidatePeerListen(inside, true, declared); err != nil {
+		t.Errorf("the listen side refused %q: %v", inside, err)
 	}
 }

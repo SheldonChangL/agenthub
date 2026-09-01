@@ -449,6 +449,42 @@ settlement, because `ah outbound <id>` is the only place an owner finds out what
 happened to a message and deleting the answer as it becomes true would make the
 command useless. Pending rows are never pruned.
 
+### When private is not visible from the address
+
+`-allow-lan` accepts loopback and the ranges that are private by definition —
+RFC 1918, RFC 4193, link-local. It refuses everything else, including addresses
+that are public by assignment but private in practice.
+
+That refusal is right by default and wrong for some real networks. Two machines
+on a direct cable can be using a block IANA assigned to somebody else: the
+addresses look routable, nothing reaches them, and no amount of inspection can
+tell that apart from the genuine article. So the owner says:
+
+    -treat-as-private 122.122.0.0/16
+
+The declaration is specific on purpose. A flag that disabled the check would be
+easier to use and would also be what somebody reaches for at 2am to make an
+error go away, taking every other address with it. Naming a block states a
+belief about your own network, the belief is logged at startup where it can be
+questioned, and it widens the rule by exactly as much as it names — a default
+route is refused outright, because "everything is private" is the absence of a
+belief rather than one.
+
+The line is drawn by what a block contains, not by how many bits it has. A
+declaration is refused if it covers the unspecified address (binding that means
+every interface, including any public one the host later gains), multicast, or
+the broadcast address. That rules out `0.0.0.0/1` and `224.0.0.0/4` on principle
+while leaving any genuine unicast block, however large, to the owner's judgement.
+
+The listener refuses the unspecified address independently, whatever is
+declared, and asks the parsed address rather than comparing strings — `0.0.0.0`
+is only one of its spellings, and `0::0`, `::0` and `::ffff:0.0.0.0` bind
+everything too.
+
+Both sides read the same declaration. The listener asks before binding and the
+publisher asks before sending, from one definition, so a node can never be
+configured to serve on an address it would then refuse to deliver to.
+
 ### Two listeners, not one
 
 The owner's API and the peer surface are separate listeners with separate muxes.
