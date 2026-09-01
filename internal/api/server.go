@@ -60,6 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/nodes/{id}/address", s.setNodeAddress)
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
+	mux.HandleFunc("POST /v1/challenge", s.answerChallenge)
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)

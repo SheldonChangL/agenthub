@@ -1,7 +1,10 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
@@ -35,24 +39,74 @@ type capture struct {
 	server    *httptest.Server
 	envelopes []protocol.Envelope
 	status    int
+	nodeID    string
+	public    ed25519.PublicKey
+	private   ed25519.PrivateKey
+	// answerAs overrides the node id this peer claims when answering a
+	// challenge, so a test can impersonate.
+	answerAs string
+	// refuseChallenge makes the peer fail the proof while still serving.
+	refuseChallenge bool
 }
 
-func newCapture(t *testing.T) *capture {
+func (c *capture) Sign(message []byte) []byte { return ed25519.Sign(c.private, message) }
+
+func newCapture(t *testing.T, nodeID string) *capture {
 	t.Helper()
-	c := &capture{status: http.StatusNoContent}
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &capture{status: http.StatusNoContent, nodeID: nodeID, public: public, private: private}
 	c.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
 			t.Error(err)
 			return
 		}
-		var envelope protocol.Envelope
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			t.Errorf("peer received something that is not an envelope: %v", err)
-			return
+		switch r.URL.Path {
+		case "/v1/challenge":
+			var input struct {
+				Nonce            string `json:"nonce"`
+				ChallengerNodeID string `json:"challengerNodeId"`
+			}
+			if err := json.Unmarshal(body, &input); err != nil {
+				t.Errorf("peer received an unreadable challenge: %v", err)
+				return
+			}
+			nonce, err := base64.StdEncoding.DecodeString(input.Nonce)
+			if err != nil {
+				t.Errorf("peer received a non-base64 nonce: %v", err)
+				return
+			}
+			claimed := c.nodeID
+			if c.answerAs != "" {
+				claimed = c.answerAs
+			}
+			answer, err := protocol.AnswerChallenge(claimed, input.ChallengerNodeID, nonce, c)
+			if err != nil {
+				t.Errorf("peer could not answer: %v", err)
+				return
+			}
+			if c.refuseChallenge {
+				// A well-formed answer signed over the wrong nonce: the shape
+				// of an impostor that cannot produce the real proof.
+				answer, _ = protocol.AnswerChallenge(claimed, input.ChallengerNodeID,
+					bytes.Repeat([]byte{9}, protocol.ChallengeNonceSize), c)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"nodeId": claimed, "signature": answer})
+		case "/v1/heartbeat":
+			var envelope protocol.Envelope
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Errorf("peer received something that is not an envelope: %v", err)
+				return
+			}
+			c.envelopes = append(c.envelopes, envelope)
+			w.WriteHeader(c.status)
+		default:
+			t.Errorf("peer received an unexpected path %q", r.URL.Path)
 		}
-		c.envelopes = append(c.envelopes, envelope)
-		w.WriteHeader(c.status)
 	}))
 	t.Cleanup(c.server.Close)
 	return c
@@ -87,7 +141,7 @@ func publisherFor(t *testing.T, store *registry.Registry) *Publisher {
 	t.Helper()
 	node := model.NodeIdentity{ID: localNodeID, DisplayName: "local", Platform: "test"}
 	builder := protocol.NewHeartbeatBuilder(store, node, stubSigner{})
-	return NewPublisher(store, builder, LoopbackOnly, time.Hour)
+	return NewPublisher(store, builder, localNodeID, LoopbackOnly, time.Hour)
 }
 
 type stubSigner struct{}
@@ -98,12 +152,16 @@ func (stubSigner) Sign(message []byte) []byte {
 	return signature
 }
 
-func trust(t *testing.T, store *registry.Registry, nodeID, address string) {
+func trust(t *testing.T, store *registry.Registry, nodeID, address string, public ed25519.PublicKey) {
 	t.Helper()
 	ctx := context.Background()
+	encoded := "key-" + nodeID
+	if public != nil {
+		encoded = identity.EncodePublicKey(public)
+	}
 	if err := store.TrustNode(ctx, registry.TrustedNode{
 		NodeID: nodeID, DisplayName: nodeID, Platform: "test",
-		PublicKey: "key-" + nodeID, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
+		PublicKey: encoded, Fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -141,9 +199,9 @@ func publish(t *testing.T, store *registry.Registry, sessionID string, audience 
 func TestEachPeerReceivesOnlyItsOwnGrants(t *testing.T) {
 	store := openStore(t)
 	peerA, peerB := "node_peeraaaaaaaaaaaa", "node_peerbbbbbbbbbbbb"
-	captureA, captureB := newCapture(t), newCapture(t)
-	trust(t, store, peerA, captureA.address(t))
-	trust(t, store, peerB, captureB.address(t))
+	captureA, captureB := newCapture(t, peerA), newCapture(t, peerB)
+	trust(t, store, peerA, captureA.address(t), captureA.public)
+	trust(t, store, peerB, captureB.address(t), captureB.public)
 
 	publish(t, store, "claude:for-a-only", model.Audience{Mode: model.AudienceSelected, Nodes: []string{peerA}})
 	publish(t, store, "claude:for-everyone", model.Audience{Mode: model.AudienceAllPaired})
@@ -177,9 +235,9 @@ func TestEachPeerReceivesOnlyItsOwnGrants(t *testing.T) {
 func TestEachPeerGetsAnEnvelopeAddressedToItself(t *testing.T) {
 	store := openStore(t)
 	peerA, peerB := "node_peeraaaaaaaaaaaa", "node_peerbbbbbbbbbbbb"
-	captureA, captureB := newCapture(t), newCapture(t)
-	trust(t, store, peerA, captureA.address(t))
-	trust(t, store, peerB, captureB.address(t))
+	captureA, captureB := newCapture(t, peerA), newCapture(t, peerB)
+	trust(t, store, peerA, captureA.address(t), captureA.public)
+	trust(t, store, peerB, captureB.address(t), captureB.public)
 	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
 
 	if _, err := publisherFor(t, store).PublishOnce(context.Background()); err != nil {
@@ -200,11 +258,11 @@ func TestEachPeerGetsAnEnvelopeAddressedToItself(t *testing.T) {
 // stop this node publishing to every other peer.
 func TestASleepingPeerDoesNotStopTheOthers(t *testing.T) {
 	store := openStore(t)
-	live := newCapture(t)
+	live := newCapture(t, "node_zzzzliveliveliv0")
 	// An address nothing is listening on. Sorted before the live peer's node id
 	// so it is attempted first and would abort the round if failures propagated.
-	trust(t, store, "node_aaaadeadaaaadead0", "127.0.0.1:1")
-	trust(t, store, "node_zzzzliveliveliv0", live.address(t))
+	trust(t, store, "node_aaaadeadaaaadead0", "127.0.0.1:1", nil)
+	trust(t, store, "node_zzzzliveliveliv0", live.address(t), live.public)
 	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
 
 	result, err := publisherFor(t, store).PublishOnce(context.Background())
@@ -223,7 +281,7 @@ func TestASleepingPeerDoesNotStopTheOthers(t *testing.T) {
 // docs/multinode-plan.md: no session metadata leaves this host in this build.
 func TestANonLoopbackAddressIsNotDeliveredTo(t *testing.T) {
 	store := openStore(t)
-	trust(t, store, "node_remote0000000000", "192.0.2.10:7462")
+	trust(t, store, "node_remote0000000000", "192.0.2.10:7462", nil)
 	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
 
 	result, err := publisherFor(t, store).PublishOnce(context.Background())
@@ -242,7 +300,7 @@ func TestANonLoopbackAddressIsNotDeliveredTo(t *testing.T) {
 // the failure count: it is the normal state before discovery has run.
 func TestAPeerWithNoAddressIsSkippedNotFailed(t *testing.T) {
 	store := openStore(t)
-	trust(t, store, "node_unlocated0000000", "")
+	trust(t, store, "node_unlocated0000000", "", nil)
 	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
 
 	result, err := publisherFor(t, store).PublishOnce(context.Background())
@@ -258,8 +316,8 @@ func TestAPeerWithNoAddressIsSkippedNotFailed(t *testing.T) {
 func TestARevokedPeerIsNoLongerPublishedTo(t *testing.T) {
 	store := openStore(t)
 	peerID := "node_peeraaaaaaaaaaaa"
-	peer := newCapture(t)
-	trust(t, store, peerID, peer.address(t))
+	peer := newCapture(t, peerID)
+	trust(t, store, peerID, peer.address(t), peer.public)
 	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
 	publisher := publisherFor(t, store)
 
@@ -295,7 +353,7 @@ func TestARevokedPeerIsNoLongerPublishedTo(t *testing.T) {
 // heartbeat — session ids, statuses, any granted cwd — to a routable host, and
 // still counted the delivery as a success.
 func TestARedirectingPeerCannotMoveTheDeliveryOffHost(t *testing.T) {
-	offHost := newCapture(t)
+	offHost := newCapture(t, "node_offhost00000000")
 
 	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, offHost.server.URL+"/v1/heartbeat", http.StatusTemporaryRedirect)
@@ -307,7 +365,7 @@ func TestARedirectingPeerCannotMoveTheDeliveryOffHost(t *testing.T) {
 	}
 
 	store := openStore(t)
-	trust(t, store, "node_redirector00000", redirectorHost.Host)
+	trust(t, store, "node_redirector00000", redirectorHost.Host, nil)
 	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
 
 	result, err := publisherFor(t, store).PublishOnce(context.Background())
@@ -353,4 +411,188 @@ func TestLoopbackOnlyResolvesNamesRatherThanTrustingThem(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAnImpostorAtTheAddressGetsNothing is the reason the challenge exists.
+//
+// Once addresses come from discovery, anything on the network can claim to be
+// at a peer's address. This peer serves correctly and even claims the right
+// node id — it simply cannot produce a signature over the nonce, because it
+// does not hold the key the owner recorded when pairing. No session metadata
+// may reach it.
+func TestAnImpostorAtTheAddressGetsNothing(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	impostor := newCapture(t, peerID)
+
+	// The owner paired with the real peer's key; the impostor holds a different
+	// one. This is exactly what a spoofed discovery record produces.
+	realPublic, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust(t, store, peerID, impostor.address(t), realPublic)
+	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
+
+	result, err := publisherFor(t, store).PublishOnce(context.Background())
+	if err != nil {
+		t.Fatalf("PublishOnce() error = %v", err)
+	}
+	if len(impostor.envelopes) != 0 {
+		t.Fatalf("session metadata reached an impostor: %s", impostor.envelopes[0].Payload)
+	}
+	if result.Delivered != 0 || result.Failed != 1 {
+		t.Errorf("result = %+v; want the delivery refused", result)
+	}
+}
+
+// TestAPeerAnsweringAsSomebodyElseGetsNothing covers the discovery record that
+// points at a real, honest node that simply is not the peer we meant.
+func TestAPeerAnsweringAsSomebodyElseGetsNothing(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	other := newCapture(t, peerID)
+	other.answerAs = "node_somebodyelse0000"
+	trust(t, store, peerID, other.address(t), other.public)
+	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
+
+	result, err := publisherFor(t, store).PublishOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other.envelopes) != 0 {
+		t.Fatalf("session metadata reached a node answering as somebody else: %s", other.envelopes[0].Payload)
+	}
+	if result.Failed != 1 {
+		t.Errorf("result = %+v; want the delivery refused", result)
+	}
+}
+
+// TestAWrongProofGetsNothing covers a peer that holds the right key but signs
+// the wrong bytes — a captured answer replayed against a fresh nonce.
+func TestAWrongProofGetsNothing(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	peer := newCapture(t, peerID)
+	peer.refuseChallenge = true
+	trust(t, store, peerID, peer.address(t), peer.public)
+	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
+
+	result, err := publisherFor(t, store).PublishOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.envelopes) != 0 {
+		t.Fatalf("session metadata reached a peer that failed its proof: %s", peer.envelopes[0].Payload)
+	}
+	if result.Failed != 1 {
+		t.Errorf("result = %+v; want the delivery refused", result)
+	}
+}
+
+// TestTheChallengeHappensBeforeAnythingIsSent pins the ordering. Verifying
+// after sending would be decorative: the metadata would already be gone.
+func TestTheChallengeHappensBeforeAnythingIsSent(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+
+	var paths []string
+	peer := newCapture(t, peerID)
+	base := peer.server.Config.Handler
+	peer.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		base.ServeHTTP(w, r)
+	})
+	trust(t, store, peerID, peer.address(t), peer.public)
+	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
+
+	if _, err := publisherFor(t, store).PublishOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 2 || paths[0] != "/v1/challenge" || paths[1] != "/v1/heartbeat" {
+		t.Fatalf("request order = %v; want the challenge before the heartbeat", paths)
+	}
+}
+
+// TestARelayDefeatsTheChallenge documents a limit of the challenge exchange
+// rather than a property of it, and it is written as a passing test on purpose:
+// the weakness is real, and a comment saying so would rot.
+//
+// The relay forwards this node's challenge to the genuine peer and returns the
+// genuine answer. Every value the answer binds — responder id, challenger id,
+// nonce — is forwarded verbatim, so binding them proves only that the real peer
+// is reachable and answered, never that the entity being delivered to is that
+// peer. The heartbeat then goes to the relay in plaintext.
+//
+// What this means for the roadmap: the challenge detects an address pointing at
+// the wrong node, and a spoofer that cannot reach the real peer. It is NOT
+// sufficient to make discovered addresses safe. Delivery beyond loopback needs
+// the channel itself bound to the peer's identity — TLS pinned to the key in
+// the trust store — so that metadata is unreadable to whatever is in the middle.
+// That is a prerequisite for widening LoopbackOnly, not an optional extra.
+func TestARelayDefeatsTheChallenge(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+
+	// The genuine peer, holding the key the owner recorded.
+	genuine := newCapture(t, peerID)
+
+	// The relay: forwards challenges to the genuine peer, keeps heartbeats.
+	var stolen []protocol.Envelope
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/challenge":
+			forwarded, err := http.Post(genuine.server.URL+"/v1/challenge", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer func() { _ = forwarded.Body.Close() }()
+			answer, err := io.ReadAll(io.LimitReader(forwarded.Body, 1<<20))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(answer)
+		case "/v1/heartbeat":
+			var envelope protocol.Envelope
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Error(err)
+				return
+			}
+			stolen = append(stolen, envelope)
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	t.Cleanup(relay.Close)
+	relayHost, err := url.Parse(relay.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery pointed at the relay; the trust store holds the genuine key.
+	trust(t, store, peerID, relayHost.Host, genuine.public)
+	publish(t, store, "claude:secret", model.Audience{Mode: model.AudienceAllPaired})
+
+	result, err := publisherFor(t, store).PublishOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Delivered != 1 {
+		t.Fatalf("result = %+v; the relay was expected to pass the challenge", result)
+	}
+	if len(stolen) != 1 {
+		t.Fatalf("the relay captured %d envelopes; expected the documented weakness to reproduce", len(stolen))
+	}
+	// This assertion is the point: the metadata really is readable by the relay.
+	if !bytes.Contains(stolen[0].Payload, []byte("claude:secret")) {
+		t.Fatalf("relay captured an envelope without the session: %s", stolen[0].Payload)
+	}
+	t.Logf("known limit reproduced: a relay obtained %s", stolen[0].Payload)
 }
