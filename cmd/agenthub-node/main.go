@@ -71,6 +71,11 @@ func run() error {
 	}
 	if len(declaredRanges) > 0 {
 		log.Printf("treating these as private networks on the owner's word: %s", declaredRanges)
+		if !*allowLAN {
+			// Said plainly, because the line above otherwise reads as though
+			// something had been enabled.
+			log.Printf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
+		}
 	}
 	if err := nodeconfig.ValidatePeerListen(*peerListenAddress, *allowLAN, declaredRanges); err != nil {
 		return fmt.Errorf("peer listener: %w", err)
