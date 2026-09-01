@@ -98,10 +98,13 @@ ON CONFLICT(node_id) DO UPDATE SET
 	return nil
 }
 
-// RevokeNode withdraws trust and removes every session grant the node held.
+// RevokeNode withdraws trust, removes every session grant the node held, and
+// discards the presence snapshot it last sent.
 //
-// Both happen in one transaction. A node that is no longer trusted must not
-// keep grants that would take effect again if it were paired a second time.
+// All three happen in one transaction. A node that is no longer trusted must
+// not keep grants that would take effect again if it were paired a second
+// time, and the last view it published must not stay on screen: trust is what
+// made that view admissible, so withdrawing trust withdraws the view with it.
 func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 	transaction, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -114,6 +117,11 @@ func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 	// says "not found" while the grant waits for the node to be paired.
 	if _, err := transaction.ExecContext(ctx, `DELETE FROM session_audience WHERE node_id = ?`, nodeID); err != nil {
 		return fmt.Errorf("drop grants for %q: %w", nodeID, err)
+	}
+	// The peer's last snapshot goes with the grants, and for the same reason:
+	// it is data this owner accepted only because the node was trusted.
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM peer_snapshots WHERE node_id = ?`, nodeID); err != nil {
+		return fmt.Errorf("drop peer snapshot for %q: %w", nodeID, err)
 	}
 	result, err := transaction.ExecContext(ctx, `DELETE FROM trusted_nodes WHERE node_id = ?`, nodeID)
 	if err != nil {
