@@ -48,6 +48,21 @@ type TrustedNode struct {
 	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
 }
 
+// Peer is what this node currently believes about one paired peer.
+//
+// Online and Sessions are answered together by the node: an expired snapshot
+// reports offline and carries no sessions, so a stale view cannot be rendered
+// as the current one by a client that forgets to check.
+type Peer struct {
+	NodeID      string    `json:"nodeId"`
+	DisplayName string    `json:"displayName"`
+	Online      bool      `json:"online"`
+	Sequence    uint64    `json:"sequence,omitempty"`
+	ReceivedAt  time.Time `json:"receivedAt,omitzero"`
+	ExpiresAt   time.Time `json:"expiresAt,omitzero"`
+	Sessions    []Session `json:"sessions"`
+}
+
 type NodeIdentity struct {
 	ID          string    `json:"id"`
 	DisplayName string    `json:"displayName"`
@@ -166,6 +181,23 @@ func (c *client) trustNode(ctx context.Context, input map[string]string) (Truste
 func (c *client) revokeNode(ctx context.Context, nodeID string) error {
 	_, err := c.request(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(nodeID), nil)
 	return err
+}
+
+func (c *client) peers(ctx context.Context) ([]Peer, error) {
+	body, err := c.request(ctx, http.MethodGet, "/v1/peers", nil)
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Peers []Peer `json:"peers"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode peers: %w", err)
+	}
+	if decoded.Peers == nil {
+		decoded.Peers = []Peer{}
+	}
+	return decoded.Peers, nil
 }
 
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {

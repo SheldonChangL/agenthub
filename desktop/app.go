@@ -78,10 +78,15 @@ func (a *App) SetNodeURL(raw string) error {
 }
 
 type Overview struct {
-	Node     NodeIdentity   `json:"node"`
-	Sessions []Session      `json:"sessions"`
-	Nodes    []TrustedNode  `json:"nodes"`
-	Counts   map[string]int `json:"counts"`
+	Node     NodeIdentity  `json:"node"`
+	Sessions []Session     `json:"sessions"`
+	Nodes    []TrustedNode `json:"nodes"`
+	// Peers is what each paired node has published to this one. It is separate
+	// from Nodes because the two answer different questions: Nodes is who the
+	// owner trusts, Peers is who is currently reachable and what they are
+	// sharing. A node can be trusted and silent.
+	Peers  []Peer         `json:"peers"`
+	Counts map[string]int `json:"counts"`
 	// NodeCount is separate from Counts, which is keyed by session attribute
 	// values; a provider or status could otherwise collide with it.
 	NodeCount int    `json:"nodeCount"`
@@ -95,7 +100,7 @@ type Overview struct {
 func (a *App) Overview() Overview {
 	activeClient, nodeURL := a.current()
 	result := Overview{NodeURL: nodeURL, Counts: map[string]int{},
-		Sessions: []Session{}, Nodes: []TrustedNode{}}
+		Sessions: []Session{}, Nodes: []TrustedNode{}, Peers: []Peer{}}
 
 	identity, err := activeClient.node(a.ctx)
 	if err != nil {
@@ -115,8 +120,17 @@ func (a *App) Overview() Overview {
 		nodes = []TrustedNode{}
 	}
 
+	// Presence failing must not blank the view either, for the same reason the
+	// pairing list must not: the local sessions are still worth showing.
+	peers, err := activeClient.peers(a.ctx)
+	if err != nil {
+		result.Error = err.Error()
+		peers = []Peer{}
+	}
+
 	result.Reachable = true
 	result.Node = identity
+	result.Peers = peers
 	result.Sessions = sessions
 	result.Nodes = nodes
 	result.Counts = summarize(sessions)
