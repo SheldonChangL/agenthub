@@ -11,6 +11,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"net/http"
 	"time"
 
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
@@ -84,18 +86,20 @@ func LoopbackOnly(address string) error {
 
 // Publisher sends this node's heartbeat to each paired peer that has an address.
 type Publisher struct {
-	store    *registry.Registry
-	builder  *protocol.HeartbeatBuilder
-	client   *http.Client
-	policy   AddressPolicy
-	interval time.Duration
-	now      func() time.Time
+	store       *registry.Registry
+	builder     *protocol.HeartbeatBuilder
+	localNodeID string
+	client      *http.Client
+	policy      AddressPolicy
+	interval    time.Duration
+	now         func() time.Time
 }
 
-func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, policy AddressPolicy, interval time.Duration) *Publisher {
+func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, localNodeID string, policy AddressPolicy, interval time.Duration) *Publisher {
 	return &Publisher{
-		store:   store,
-		builder: builder,
+		store:       store,
+		builder:     builder,
+		localNodeID: localNodeID,
 		client: &http.Client{
 			Timeout: deliveryTimeout,
 			// An explicit transport with no proxy. The default transport reads
@@ -200,7 +204,78 @@ func (p *Publisher) PublishOnce(ctx context.Context) (Result, error) {
 	return result, nil
 }
 
+// challenge asks whatever answers at this address to prove it holds the key the
+// owner recorded for this peer, before any session metadata is sent.
+//
+// WHAT THIS PROVES, AND WHAT IT DOES NOT.
+//
+// It proves the peer's key-holder is reachable and answered this exact
+// challenge. It catches an address pointing at the wrong node, a node that has
+// lost or rotated its key, and an off-path spoofer that cannot reach the real
+// peer. Comparing public keys would catch none of that, because a public key is
+// public and an impostor can present the real one.
+//
+// It does NOT prove that the entity at this address is that peer. An active
+// relay defeats it: forward the challenge to the genuine peer, return the
+// genuine answer, and collect the heartbeat. The answer binds the responder id,
+// the challenger id and the nonce, and a relay forwards all three unchanged, so
+// binding them cannot help. TestARelayDefeatsTheChallenge reproduces this and
+// exists so the limit cannot be forgotten.
+//
+// The consequence for the roadmap is concrete: this is not enough to make
+// discovered addresses safe, because an attacker who can spoof mDNS on a LAN
+// can generally also reach the peer being impersonated. Widening LoopbackOnly
+// requires the channel itself to be bound to the peer's identity — TLS pinned
+// to the key in the trust store — so the metadata is unreadable to whatever
+// sits in the middle. Until then delivery stays on loopback, where there is no
+// middle to sit in.
+//
+// This runs before every delivery rather than once per peer. A cached result
+// would mean the address was verified at some point in the past, which is not
+// the same as "the thing about to receive this heartbeat answered just now".
+func (p *Publisher) challenge(ctx context.Context, peer registry.TrustedNode, localNodeID string) error {
+	publicKey, err := identity.DecodePublicKey(peer.PublicKey)
+	if err != nil {
+		return fmt.Errorf("stored key for %q is unusable: %w", peer.NodeID, err)
+	}
+	nonce, err := protocol.NewChallengeNonce()
+	if err != nil {
+		return err
+	}
+
+	request := struct {
+		Nonce            string `json:"nonce"`
+		ChallengerNodeID string `json:"challengerNodeId"`
+	}{Nonce: base64.StdEncoding.EncodeToString(nonce), ChallengerNodeID: localNodeID}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("encode challenge: %w", err)
+	}
+
+	answerBody, err := p.post(ctx, peer.Address, "/v1/challenge", body)
+	if err != nil {
+		return fmt.Errorf("challenge %q: %w", peer.NodeID, err)
+	}
+	var answer struct {
+		NodeID    string `json:"nodeId"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(answerBody, &answer); err != nil {
+		return fmt.Errorf("%w: %q answered with something unreadable", protocol.ErrChallengeUnanswered, peer.NodeID)
+	}
+	if answer.NodeID != peer.NodeID {
+		// Whatever is at this address is not claiming to be the peer. Say so
+		// distinctly: an owner whose discovery pointed at the wrong machine
+		// needs a different message than one whose peer is misbehaving.
+		return fmt.Errorf("%w: %q answered as %q", protocol.ErrChallengeUnanswered, peer.Address, answer.NodeID)
+	}
+	return protocol.VerifyChallengeAnswer(publicKey, peer.NodeID, localNodeID, nonce, answer.Signature)
+}
+
 func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) error {
+	if err := p.challenge(ctx, peer, p.localNodeID); err != nil {
+		return err
+	}
 	envelope, err := p.builder.BuildFor(ctx, p.now(), peer.NodeID)
 	if err != nil {
 		if errors.Is(err, protocol.ErrPeerNotTrusted) {
@@ -216,25 +291,40 @@ func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) erro
 		return fmt.Errorf("encode envelope: %w", err)
 	}
 
-	endpoint := "http://" + peer.Address + "/v1/heartbeat"
+	if _, err := p.post(ctx, peer.Address, "/v1/heartbeat", body); err != nil {
+		return err
+	}
+	return nil
+}
+
+// post sends one request to a peer and returns its body.
+//
+// Every outbound request goes through here so the transport's guarantees are
+// stated once: the address policy has already been applied by the caller, the
+// client refuses redirects and proxies, and the response is bounded.
+func (p *Publisher) post(ctx context.Context, address, path string, body []byte) ([]byte, error) {
+	endpoint := "http://" + address + path
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := p.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("deliver to %s: %w", endpoint, err)
+		return nil, fmt.Errorf("post to %s: %w", endpoint, err)
 	}
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBody))
 		_ = response.Body.Close()
 	}()
 
-	if response.StatusCode == http.StatusNoContent || response.StatusCode == http.StatusOK {
-		return nil
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBody))
+	if err != nil {
+		return nil, fmt.Errorf("read response from %s: %w", endpoint, err)
 	}
-	detail, _ := io.ReadAll(io.LimitReader(response.Body, maxResponseBody))
-	return fmt.Errorf("peer answered HTTP %d: %s", response.StatusCode, bytes.TrimSpace(detail))
+	if response.StatusCode == http.StatusNoContent || response.StatusCode == http.StatusOK {
+		return data, nil
+	}
+	return nil, fmt.Errorf("peer answered HTTP %d: %s", response.StatusCode, bytes.TrimSpace(data))
 }

@@ -70,6 +70,16 @@ type HeartbeatBuilder struct {
 	signer Signer
 }
 
+// AnswerChallenge signs a challenge with this node's key.
+//
+// It lives on the builder because the builder is what already holds the signer;
+// exposing the signer itself would make "sign these arbitrary bytes" available
+// to every caller, which is precisely the capability this indirection keeps
+// narrow.
+func (b *HeartbeatBuilder) AnswerChallenge(responderNodeID, challengerNodeID string, nonce []byte) (string, error) {
+	return AnswerChallenge(responderNodeID, challengerNodeID, nonce, b.signer)
+}
+
 func NewHeartbeatBuilder(store *registry.Registry, node model.NodeIdentity, signer Signer) *HeartbeatBuilder {
 	return &HeartbeatBuilder{store: store, node: node, signer: signer}
 }
