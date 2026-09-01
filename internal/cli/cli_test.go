@@ -91,3 +91,53 @@ func TestDescribeAudience(t *testing.T) {
 		})
 	}
 }
+
+// TestRunRevokeAcceptsNoContent pins the CLI against a success the API states
+// by saying nothing. DELETE /v1/nodes/{id} answers 204 with an empty body, and
+// decoding that as JSON reported "decode response JSON: unexpected end of JSON
+// input" with exit 1 for a revocation that had already succeeded. An owner
+// reading that would believe a peer still has access it no longer has.
+func TestRunRevokeAcceptsNoContent(t *testing.T) {
+	const nodeID = "node_0123456789abcdef0123"
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/v1/nodes/"+nodeID {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--url", server.URL, "revoke", nodeID}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("Run() exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+	if !called {
+		t.Fatal("the revoke endpoint was never called")
+	}
+	if stdout.String() != "" {
+		t.Errorf("stdout = %q; a no-content success should print nothing", stdout.String())
+	}
+}
+
+// TestRunStillReportsAnUndecodableBody keeps the fix narrow: only an empty body
+// is a silent success. A 2xx carrying bytes that are not JSON is still a
+// broken response and must not be reported as success.
+func TestRunStillReportsAnUndecodableBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("this is not JSON"))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	exitCode := Run(context.Background(), []string{"--url", server.URL, "nodes"}, &stdout, &stderr)
+	if exitCode == 0 {
+		t.Fatalf("Run() exit = 0 for a body that is not JSON; stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "decode response JSON") {
+		t.Errorf("stderr = %q; want the decode failure reported", stderr.String())
+	}
+}
