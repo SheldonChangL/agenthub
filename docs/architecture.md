@@ -341,6 +341,34 @@ another's and the two must never be combined. The broker must authenticate nodes
 heartbeats, and route only the export view produced by the owner node. These are
 target requirements, not capabilities of the current build.
 
+### Proving a peer is who its address claims
+
+Before any heartbeat is delivered, the publisher challenges the address:
+`POST /v1/challenge` carries a fresh 32-byte nonce and the challenger's node id,
+and the responder returns a signature over those bytes. The publisher verifies
+it against the public key already recorded in the trust store — never a key
+carried in the answer.
+
+The challenge signs bytes a stranger chose, which is a signing oracle by
+construction. What stops it from being a useful one is domain separation: an
+envelope signature is over bytes beginning `agenthub.broker/v1alpha1/envelope\n`
+and a challenge answer over bytes beginning `agenthub.broker/v1alpha1/challenge\n`,
+both with length-prefixed fields. No attacker-chosen value appears before those
+prefixes, so an answer can never be presented as an envelope's signature.
+
+**What the challenge does not do.** It proves the peer's key-holder is reachable
+and answered; it does not prove the entity at the address *is* that peer. An
+active relay forwards the challenge to the genuine peer and returns the genuine
+answer — the responder id, challenger id and nonce all travel unchanged, so
+binding them does not help — and then receives the heartbeat in plaintext.
+
+This is why delivery is restricted to loopback, where there is no middle to sit
+in. Widening it requires the channel to be bound to the peer's identity: TLS
+whose certificate key must equal the key in the trust store. That is a
+prerequisite for LAN delivery and for address discovery, not an enhancement —
+an attacker able to spoof a discovery record on a LAN can usually also reach the
+peer being impersonated.
+
 ### The receiving side
 
 `POST /v1/heartbeat` accepts one peer's snapshot. It is the first endpoint that

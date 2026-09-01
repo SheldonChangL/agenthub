@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -200,4 +201,48 @@ func (s *Server) setNodeAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// answerChallenge proves this node holds the key its identity advertises.
+//
+// The answer is what lets a sender confirm it is talking to the peer it thinks
+// it is before handing over any session metadata. Address discovery is an
+// untrusted input — anything on the network can claim to be at an address — and
+// comparing public keys would prove nothing, because a public key is public.
+// Only signing over a nonce the challenger chose proves possession.
+//
+// This endpoint answers anyone, and deliberately so. It reveals nothing that
+// GET /v1/node does not already publish, and refusing strangers would mean
+// deciding who a caller is before they have proven anything, which is the
+// problem this endpoint exists to solve. What makes that safe is the domain
+// separation in protocol.ChallengeBytes: signing bytes a stranger chose is a
+// signing oracle, and the challenge prefix is what stops it from being a useful
+// one — no answer can ever be presented as an envelope signature.
+func (s *Server) answerChallenge(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Nonce            string `json:"nonce"`
+		ChallengerNodeID string `json:"challengerNodeId"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	nonce, err := base64.StdEncoding.DecodeString(input.Nonce)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "nonce is not base64")
+		return
+	}
+	answer, err := s.heartbeats.AnswerChallenge(s.node.ID, input.ChallengerNodeID, nonce)
+	if err != nil {
+		if errors.Is(err, protocol.ErrChallengeRefused) {
+			writeError(w, http.StatusBadRequest, "CHALLENGE_REFUSED", err.Error())
+			return
+		}
+		writeInternalError(w, "CHALLENGE_FAILED", "could not answer the challenge", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"nodeId":    s.node.ID,
+		"signature": answer,
+	})
 }

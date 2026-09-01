@@ -99,7 +99,7 @@ func run() error {
 	// LoopbackOnly is the boundary from docs/multinode-plan.md. Two nodes on one
 	// machine exchange real, signed, per-peer heartbeats; nothing reaches the
 	// network until the step that widens this is done deliberately.
-	publisher := transport.NewPublisher(store, heartbeats, transport.LoopbackOnly, *publishInterval)
+	publisher := transport.NewPublisher(store, heartbeats, node.ID, transport.LoopbackOnly, *publishInterval)
 	publishCtx, stopPublishing := context.WithCancel(context.Background())
 	defer stopPublishing()
 	go publisher.Run(publishCtx)

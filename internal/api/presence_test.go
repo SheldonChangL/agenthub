@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"agenthub.local/agenthub/internal/identity"
+	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -303,3 +306,128 @@ func peerSessionIDs(t *testing.T, handler http.Handler, nodeID string) []string 
 	}
 	return nil
 }
+
+// TestChallengeEndpointProvesKeyPossession covers the endpoint a sender uses to
+// confirm it is talking to the peer it thinks it is.
+func TestChallengeEndpointProvesKeyPossession(t *testing.T) {
+	_, handler := testServer(t)
+	nonce, err := protocol.NewChallengeNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const challenger = "node_challenger000000"
+
+	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+		"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": challenger,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	var answer struct {
+		NodeID    string `json:"nodeId"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if answer.NodeID != testNodeID {
+		t.Errorf("nodeId = %q; want this node's id", answer.NodeID)
+	}
+	if answer.Signature == "" {
+		t.Fatal("the endpoint answered without a signature")
+	}
+	// The test server signs with a stub, so verifying the bytes here would test
+	// the stub. What matters is that the answer is over the challenge form and
+	// nothing else, which the protocol tests pin directly.
+}
+
+// TestChallengeRefusesAShortNonce keeps the endpoint from signing bytes a
+// caller can fully predict.
+func TestChallengeRefusesAShortNonce(t *testing.T) {
+	_, handler := testServer(t)
+	for name, nonce := range map[string][]byte{
+		"empty":                 {},
+		"one byte":              {0x01},
+		"one under the minimum": make([]byte, protocol.ChallengeNonceSize-1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+				"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": "node_challenger000000",
+			})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("response = %d %s; a short nonce must be refused", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestChallengeRefusesANonBase64Nonce pins input handling on an endpoint that
+// answers anyone.
+func TestChallengeRefusesANonBase64Nonce(t *testing.T) {
+	_, handler := testServer(t)
+	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+		"nonce": "this is not base64!!", "challengerNodeId": "node_challenger000000",
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+// TestChallengeHandlerSignsTheRealBytesWithTheRealKey closes a gap the shared
+// test server leaves open: it signs with a throwaway key, so no test proved the
+// HTTP handler signs the correct (nodeId, challengerNodeId, nonce) form with
+// the node's actual key. A handler that signed the nonce alone, or swapped the
+// two node ids, would satisfy every other test here and be relay-and-replay
+// material in production.
+func TestChallengeHandlerSignsTheRealBytesWithTheRealKey(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	builder := protocol.NewHeartbeatBuilder(store, node, fixedSigner{private: private})
+	handler := NewServer(store, nil, builder, node).Handler()
+
+	nonce, err := protocol.NewChallengeNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const challenger = "node_challenger000000"
+	response := perform(t, handler, http.MethodPost, "/v1/challenge", map[string]string{
+		"nonce": base64.StdEncoding.EncodeToString(nonce), "challengerNodeId": challenger,
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	var answer struct {
+		NodeID    string `json:"nodeId"`
+		Signature string `json:"signature"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+
+	// The real check: a sender holding only this node's public key must be able
+	// to verify the answer.
+	if err := protocol.VerifyChallengeAnswer(public, testNodeID, challenger, nonce, answer.Signature); err != nil {
+		t.Fatalf("VerifyChallengeAnswer() = %v; the handler did not sign the challenge form", err)
+	}
+	// And the binding must be real: the same answer must not verify for a
+	// different challenger.
+	if err := protocol.VerifyChallengeAnswer(public, testNodeID, "node_someoneelse00000", nonce, answer.Signature); err == nil {
+		t.Error("the answer verified for a challenger it was not produced for")
+	}
+}
+
+// fixedSigner signs with one stable key, unlike the shared test signer which
+// generates a throwaway per call.
+type fixedSigner struct{ private ed25519.PrivateKey }
+
+func (s fixedSigner) Sign(message []byte) []byte { return ed25519.Sign(s.private, message) }
