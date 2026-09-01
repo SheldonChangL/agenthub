@@ -447,7 +447,13 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 			from = address.SessionID
 		}
 	}
-	message, err := s.store.CreateMessage(r.Context(), model.Message{To: to, From: from, Body: input.Body})
+	// The destination node is recorded explicitly. Today it is always this
+	// node — localSession refuses anything else — but the row must say where
+	// the message was addressed rather than leaving it to be inferred from the
+	// absence of a prefix, which stops being readable once routing exists.
+	message, err := s.store.CreateMessage(r.Context(), model.Message{
+		To: to, From: from, DestinationNodeID: s.node.ID, Body: input.Body,
+	})
 	if err != nil {
 		// CreateMessage resolves the destination session, so a store failure
 		// reaches here as readily as a bad request. Classifying by sentinel
