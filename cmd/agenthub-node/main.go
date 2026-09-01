@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/api"
+	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/nodeconfig"
@@ -41,6 +42,7 @@ func run() error {
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
+	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
@@ -144,6 +146,19 @@ func run() error {
 	publishCtx, stopPublishing := context.WithCancel(context.Background())
 	defer stopPublishing()
 	go publisher.Run(publishCtx)
+
+	// Discovery only fills in addresses for nodes already paired, and only
+	// addresses this build would deliver to. It cannot create trust, and a
+	// forged announcement cannot leak anything: delivery pins TLS to the key
+	// recorded when pairing, and whoever forged the packet does not hold it.
+	if *discover {
+		browser := discovery.NewBrowser(store, transport.LoopbackOnly)
+		go func() {
+			if err := browser.Listen(publishCtx, discovery.MulticastGroupV4()); err != nil {
+				log.Printf("discovery stopped: %v", err)
+			}
+		}()
+	}
 	log.Printf("listening on http://%s", *listenAddress)
 	log.Printf("peer listener on https://%s", *peerListenAddress)
 

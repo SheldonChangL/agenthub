@@ -256,6 +256,31 @@ func (r *Registry) SetNodeAddress(ctx context.Context, nodeID, address string) e
 	return nil
 }
 
+// TrustedNodeIDs returns just the ids of paired nodes.
+//
+// Discovery uses it to answer one question — is this announcement about someone
+// we paired with — without being handed keys and addresses it has no business
+// reading.
+func (r *Registry) TrustedNodeIDs(ctx context.Context) ([]string, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT node_id FROM trusted_nodes ORDER BY node_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list trusted node ids: %w", err)
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan trusted node id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read trusted node ids: %w", err)
+	}
+	return ids, nil
+}
+
 // MarkNodeSeen records contact with a peer. It never creates a row: an unknown
 // node making contact must not become trusted by making contact.
 func (r *Registry) MarkNodeSeen(ctx context.Context, nodeID string, at time.Time) error {
