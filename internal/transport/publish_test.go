@@ -644,3 +644,59 @@ func TestARelayCannotInterceptAPinnedDelivery(t *testing.T) {
 		t.Errorf("result = %+v; the delivery must not have succeeded", result)
 	}
 }
+
+// TestPrivateNetworksRefusesNames pins the rule that closes a TOCTOU.
+//
+// Resolving a name here would check one answer and dial another: this policy
+// would resolve it, then net/http would resolve it again when the connection is
+// made. A name that answers private at check time and public at dial time sends
+// the TCP connection and the TLS ClientHello — carrying the name in SNI — to a
+// host the owner never chose. The pinned key stops session metadata following,
+// but a check that can be satisfied by one answer and acted on with another is
+// not a check.
+func TestPrivateNetworksRefusesNames(t *testing.T) {
+	for _, address := range []string{
+		"peer.local:7463",
+		"localhost:7463",
+		"my-laptop:7463",
+		"example.com:7463",
+	} {
+		if err := PrivateNetworks(address); err == nil {
+			t.Errorf("PrivateNetworks(%q) = nil; a name must be refused, not resolved", address)
+		}
+	}
+}
+
+// TestPrivateNetworksAcceptsPrivateLiterals is the other half: refusing names
+// must not refuse the addresses this policy exists to allow.
+func TestPrivateNetworksAcceptsPrivateLiterals(t *testing.T) {
+	for _, address := range []string{
+		"127.0.0.1:7463",
+		"[::1]:7463",
+		"192.168.161.73:7463",
+		"10.0.0.5:7463",
+		"172.16.0.1:7463",
+		"[fd00::1]:7463",
+		"169.254.10.20:7463",
+	} {
+		if err := PrivateNetworks(address); err != nil {
+			t.Errorf("PrivateNetworks(%q) = %v", address, err)
+		}
+	}
+}
+
+// TestPrivateNetworksRefusesPublicLiterals keeps the policy from becoming
+// "anything that parses".
+func TestPrivateNetworksRefusesPublicLiterals(t *testing.T) {
+	for _, address := range []string{
+		"203.0.113.10:7463",
+		"[2001:db8::1]:7463",
+		"100.64.0.1:7463",
+		"122.122.122.2:7463",
+		"[::ffff:203.0.113.1]:7463",
+	} {
+		if err := PrivateNetworks(address); err == nil {
+			t.Errorf("PrivateNetworks(%q) = nil; a public address must be refused", address)
+		}
+	}
+}

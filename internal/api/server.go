@@ -38,12 +38,26 @@ type Server struct {
 	peerLimiter *rateLimiter
 }
 
-func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity) *Server {
-	return &Server{
+// Option adjusts a Server at construction.
+type Option func(*Server)
+
+// WithDeliveryPolicy makes the API accept exactly the addresses the publisher
+// will deliver to. The default is loopback only, matching a node that has not
+// been told to serve peers on a network.
+func WithDeliveryPolicy(policy func(string) error) Option {
+	return func(s *Server) { s.deliveryPolicy = policy }
+}
+
+func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity, options ...Option) *Server {
+	server := &Server{
 		store: store, hub: service, heartbeats: heartbeats, node: node,
 		deliveryPolicy: transport.LoopbackOnly,
 		peerLimiter:    newRateLimiter(),
 	}
+	for _, option := range options {
+		option(server)
+	}
+	return server
 }
 
 func (s *Server) Handler() http.Handler {
