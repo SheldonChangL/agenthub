@@ -115,6 +115,15 @@ func PrivateNetworks(declared nodeconfig.PrivateRanges) AddressPolicy {
 				"peer address %q must be an IP address, not a name; a name can resolve somewhere else between this check and the connection",
 				address)
 		}
+		if ip.Unmap().IsUnspecified() {
+			return fmt.Errorf("peer address %q is the unspecified address", address)
+		}
+		// A zoned literal parses but breaks when the URL is built, so refusing
+		// it here keeps the owner from saving an address that would look
+		// configured and never be contacted.
+		if ip.Zone() != "" {
+			return fmt.Errorf("peer address %q carries a zone; give the address without %%zone", address)
+		}
 		if !nodeconfig.IsPrivateAddress(ip, declared) {
 			return fmt.Errorf("peer address %q is outside the private network ranges", address)
 		}

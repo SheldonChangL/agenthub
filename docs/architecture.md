@@ -470,6 +470,17 @@ questioned, and it widens the rule by exactly as much as it names — a default
 route is refused outright, because "everything is private" is the absence of a
 belief rather than one.
 
+The line is drawn by what a block contains, not by how many bits it has. A
+declaration is refused if it covers the unspecified address (binding that means
+every interface, including any public one the host later gains), multicast, or
+the broadcast address. That rules out `0.0.0.0/1` and `224.0.0.0/4` on principle
+while leaving any genuine unicast block, however large, to the owner's judgement.
+
+The listener refuses the unspecified address independently, whatever is
+declared, and asks the parsed address rather than comparing strings — `0.0.0.0`
+is only one of its spellings, and `0::0`, `::0` and `::ffff:0.0.0.0` bind
+everything too.
+
 Both sides read the same declaration. The listener asks before binding and the
 publisher asks before sending, from one definition, so a node can never be
 configured to serve on an address it would then refuse to deliver to.

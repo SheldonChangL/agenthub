@@ -22,6 +22,21 @@ import (
 type PrivateRanges []netip.Prefix
 
 // ParsePrivateRanges reads CIDR blocks the owner declared private.
+//
+// A declaration must name real unicast addresses. Blocks that reach past that
+// are refused rather than trusted, because each of them turns "the network on
+// my cable" into something much larger:
+//
+//   - a block containing the unspecified address, because binding it means
+//     every interface, including any public one the host has or later gains
+//   - a block containing multicast or the broadcast address, which are not
+//     destinations a peer lives at
+//   - an IPv4-mapped IPv6 prefix, which would be logged as declared and then
+//     match nothing, so the log would describe an allowance that is not real
+//
+// Refusing "everything" outright and refusing these by what they contain are
+// the same rule: a declaration says which network you believe is private, and
+// a block that swallows special-purpose space is not an answer to that.
 func ParsePrivateRanges(values []string) (PrivateRanges, error) {
 	ranges := make(PrivateRanges, 0, len(values))
 	for _, value := range values {
@@ -33,17 +48,42 @@ func ParsePrivateRanges(values []string) (PrivateRanges, error) {
 		if err != nil {
 			return nil, fmt.Errorf("declared private range %q is not a CIDR block: %w", value, err)
 		}
-		// A default route is not a declaration, it is the absence of one. If
-		// somebody wants to serve every address they should say which
-		// addresses, and if they cannot enumerate them they have not thought
-		// about it enough to be doing this.
-		if prefix.Bits() == 0 {
+		if prefix.Addr().Is4In6() {
 			return nil, fmt.Errorf(
-				"declared private range %q covers every address; name the network you actually mean", value)
+				"declared private range %q is an IPv4-mapped prefix; write it as an IPv4 block such as 122.122.0.0/16",
+				value)
 		}
-		ranges = append(ranges, prefix.Masked())
+		masked := prefix.Masked()
+		if reason := overreaching(masked); reason != "" {
+			return nil, fmt.Errorf("declared private range %q %s; name the network you actually mean", value, reason)
+		}
+		ranges = append(ranges, masked)
 	}
 	return ranges, nil
+}
+
+// overreaching says why a prefix is too broad to be a declaration, or "" if it
+// is fine.
+func overreaching(prefix netip.Prefix) string {
+	unspecified := netip.IPv4Unspecified()
+	multicast := netip.MustParseAddr("224.0.0.1")
+	broadcast := netip.MustParseAddr("255.255.255.255")
+	if prefix.Addr().Is6() {
+		unspecified = netip.IPv6Unspecified()
+		multicast = netip.MustParseAddr("ff02::1")
+		broadcast = unspecified // IPv6 has no broadcast; the check below is a no-op
+	}
+	switch {
+	case prefix.Bits() == 0:
+		return "covers every address"
+	case prefix.Contains(unspecified):
+		return "contains the unspecified address, which binds every interface"
+	case prefix.Contains(multicast):
+		return "contains multicast, which is not where a peer lives"
+	case prefix.Addr().Is4() && prefix.Contains(broadcast):
+		return "contains the broadcast address"
+	}
+	return ""
 }
 
 // Contains reports whether an address falls in a declared range.

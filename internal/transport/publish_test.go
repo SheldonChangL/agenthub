@@ -877,3 +877,42 @@ func TestDeliveryFollowsTheSameDeclaration(t *testing.T) {
 		t.Error("a name was accepted because a range was declared")
 	}
 }
+
+// TestDeliveryAndListenAgreeOnRefusals complements the accepted-address test:
+// that one would not notice if the delivery side stopped consulting the shared
+// definition for refusals.
+func TestDeliveryAndListenAgreeOnRefusals(t *testing.T) {
+	declared, err := nodeconfig.ParsePrivateRanges([]string{"122.122.0.0/16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PrivateNetworks(declared)
+
+	for _, address := range []string{
+		"203.0.113.1:7463",     // outside the declaration
+		"122.121.255.255:7463", // one below the declared block
+		"122.123.0.0:7463",     // one above it
+		"0.0.0.0:7463",         // every interface
+		"[::ffff:0.0.0.0]:7463",
+		"peer.local:7463", // a name
+		"[fe80::1%en0]:7463",
+	} {
+		deliveryErr := policy(address)
+		listenErr := nodeconfig.ValidatePeerListen(address, true, declared)
+		if deliveryErr == nil {
+			t.Errorf("delivery accepted %q", address)
+		}
+		if listenErr == nil {
+			t.Errorf("the listen side accepted %q", address)
+		}
+	}
+
+	// And both accept what the declaration actually names.
+	const inside = "122.122.122.2:7463"
+	if err := policy(inside); err != nil {
+		t.Errorf("delivery refused %q: %v", inside, err)
+	}
+	if err := nodeconfig.ValidatePeerListen(inside, true, declared); err != nil {
+		t.Errorf("the listen side refused %q: %v", inside, err)
+	}
+}
