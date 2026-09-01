@@ -51,6 +51,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
+	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
+	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	return securityBoundary(mux)

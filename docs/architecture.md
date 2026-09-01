@@ -341,6 +341,40 @@ another's and the two must never be combined. The broker must authenticate nodes
 heartbeats, and route only the export view produced by the owner node. These are
 target requirements, not capabilities of the current build.
 
+### The receiving side
+
+`POST /v1/heartbeat` accepts one peer's snapshot. It is the first endpoint that
+exists to be called by another machine, so the order of its checks is part of
+the contract rather than an implementation detail:
+
+1. Decode the envelope. Nothing about it is believed yet.
+2. Look the sender up in the trust store. An unpaired node is refused here,
+   before anything is read from its payload.
+3. Verify the signature *and* the recipient together, using the key the owner
+   already recorded for that node ID — never a key carried in the envelope.
+4. Only then read the payload.
+
+Every refusal before step 4 answers `403` with an identical body. A caller must
+not be able to tell "I do not know you" from "your signature is wrong" from
+"that was addressed to somebody else": the difference is an oracle for which
+nodes this owner has paired with, and answering it would leak the trust store to
+anyone who can reach the port.
+
+Storage enforces the replacement contract structurally. One peer holds exactly
+one row containing the whole payload as the bytes that were verified, so there
+is nowhere to merge into — a consumer that wanted to combine two snapshots would
+have to defeat the schema. The sequence must *strictly* advance: equal is
+refused along with lower, because a repeat of the last number is precisely what
+a captured delivery replayed later looks like. A heartbeat whose own expiry has
+already passed is refused rather than stored and hidden.
+
+An expired snapshot makes its peer read as offline, not absent. The peer stays
+listed with the moment it was last heard from, because "went quiet at 10:04" is
+what an owner needs and deleting the row would make a peer that stopped sending
+indistinguishable from one that was never paired. Revoking a node discards its
+snapshot along with its grants: trust is what made that view admissible, so
+withdrawing trust withdraws the view.
+
 The centralized broker is trusted with metadata the owner has authorized for
 routing. It must not receive private registry rows or provider transcripts and
 must not persist message bodies. End-to-end encryption between peer nodes is a
