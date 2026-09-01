@@ -28,7 +28,7 @@ if (wiring > 0) source = source.slice(0, wiring);
 const noop = async () => ({});
 const scope = new Function(
   "document", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode", "Heartbeat",
-  source + "\nreturn { nodeSessions, presenceLabel, state };"
+  source + "\nreturn { nodeSessions, presenceLabel, heardFrom, state };"
 )(document, noop, noop, noop, noop, noop, noop);
 
 const { nodeSessions, presenceLabel, state } = scope;
@@ -104,12 +104,31 @@ if (!offlineHTML.includes("離線")) {
 }
 
 // 3. A paired peer that has never been heard from shows no sessions.
-state.peers = [];
+//
+// The shape matters. The node lists a row for EVERY trusted peer, so a
+// never-heard peer arrives as an entry with no receivedAt — not as a missing
+// entry. An earlier version of this check used an empty peers array, which is
+// a shape the backend only produces when the presence fetch fails, and that
+// gap hid a real bug: never-heard peers were being described as having gone
+// offline at an unknown time.
+state.presenceError = "";
+state.peers = [{
+  nodeId: "node_silent000000000",
+  displayName: "silent",
+  online: false,
+  sessions: [],
+}];
 const never = document.getElementById("probe-never");
 never.replaceChildren(...nodeSessions({ nodeId: "node_silent000000000", displayName: "silent" }));
 const neverHTML = never.serialize();
 if (neverHTML.includes("claude:")) {
   failures.push("a peer with no heartbeat showed sessions");
+}
+if (!neverHTML.includes("尚未收到")) {
+  failures.push("a never-heard peer was not described as never heard from");
+}
+if (neverHTML.includes("離線")) {
+  failures.push("a peer that never sent a heartbeat was described as having gone offline");
 }
 
 // 4. The three states must be distinguishable from each other.
@@ -117,14 +136,31 @@ if (offlineHTML === neverHTML) {
   failures.push('"offline" and "never heard from" render identically');
 }
 
-// 5. presenceLabel must never claim an offline peer is current.
+// 5. A failure to read presence must not be stated as a fact about the peer.
+state.presenceError = "dial tcp 127.0.0.1:7462: connection refused";
+const broken = document.getElementById("probe-broken");
+broken.replaceChildren(...nodeSessions({ nodeId: "node_silent000000000", displayName: "silent" }));
+const brokenHTML = broken.serialize();
+if (brokenHTML.includes("尚未收到")) {
+  failures.push("a presence fetch failure was rendered as a claim that the peer never spoke");
+}
+if (brokenHTML.includes("claude:")) {
+  failures.push("sessions were rendered while presence was unavailable");
+}
+if (presenceLabel(null).className !== "unknown") {
+  failures.push("a peer was labelled while presence was unavailable");
+}
+state.presenceError = "";
+
+// 6. presenceLabel must never claim an offline peer is current, and must not
+//    describe a never-heard peer as offline.
 const offlineLabel = presenceLabel({ online: false, receivedAt: new Date().toISOString() });
 if (offlineLabel.className !== "offline") {
   failures.push(`offline peer labelled ${offlineLabel.className}`);
 }
-const neverLabel = presenceLabel(null);
+const neverLabel = presenceLabel({ online: false, sessions: [] });
 if (neverLabel.className !== "never") {
-  failures.push(`unheard peer labelled ${neverLabel.className}`);
+  failures.push(`a peer with no receivedAt was labelled ${neverLabel.className}, not never`);
 }
 
 if (failures.length > 0) {

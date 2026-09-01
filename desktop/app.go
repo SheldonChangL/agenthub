@@ -85,8 +85,13 @@ type Overview struct {
 	// from Nodes because the two answer different questions: Nodes is who the
 	// owner trusts, Peers is who is currently reachable and what they are
 	// sharing. A node can be trusted and silent.
-	Peers  []Peer         `json:"peers"`
-	Counts map[string]int `json:"counts"`
+	Peers []Peer `json:"peers"`
+	// PresenceError is separate from Error because a failure to read presence
+	// must not be rendered as a fact about the peers. Without it, an
+	// unreachable presence endpoint looks exactly like every peer having gone
+	// quiet, which is a confident claim with nothing behind it.
+	PresenceError string         `json:"presenceError,omitempty"`
+	Counts        map[string]int `json:"counts"`
 	// NodeCount is separate from Counts, which is keyed by session attribute
 	// values; a provider or status could otherwise collide with it.
 	NodeCount int    `json:"nodeCount"`
@@ -124,7 +129,10 @@ func (a *App) Overview() Overview {
 	// pairing list must not: the local sessions are still worth showing.
 	peers, err := activeClient.peers(a.ctx)
 	if err != nil {
-		result.Error = err.Error()
+		// Reported separately so it cannot overwrite a pairing-list error, and
+		// so the view can say "presence is unavailable" rather than inventing a
+		// claim about every peer.
+		result.PresenceError = err.Error()
 		peers = []Peer{}
 	}
 
