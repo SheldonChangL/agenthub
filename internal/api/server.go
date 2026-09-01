@@ -34,12 +34,15 @@ type Server struct {
 	// deliveryPolicy is the same rule the publisher applies, so an address the
 	// owner can save is an address that will actually be delivered to.
 	deliveryPolicy func(string) error
+	// peerLimiter throttles the peer surface by source address.
+	peerLimiter *rateLimiter
 }
 
 func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity) *Server {
 	return &Server{
 		store: store, hub: service, heartbeats: heartbeats, node: node,
 		deliveryPolicy: transport.LoopbackOnly,
+		peerLimiter:    newRateLimiter(),
 	}
 }
 
@@ -86,7 +89,12 @@ func (s *Server) PeerHandler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("POST /v1/challenge", s.answerChallenge)
 	mux.HandleFunc("POST /v1/heartbeat", s.receiveHeartbeat)
-	return securityBoundary(mux)
+	// Rate limiting wraps only this surface. Every endpoint here answers an
+	// unauthenticated caller — /v1/challenge signs on request, and both refuse
+	// before knowing who is asking — so a throttle is the only thing bounding
+	// what one host can cost. The owner API is loopback-only and belongs to
+	// somebody who can already restart the process.
+	return limitPeers(s.peerLimiter, securityBoundary(mux))
 }
 
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
