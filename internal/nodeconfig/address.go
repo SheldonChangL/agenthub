@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -30,12 +31,13 @@ var ErrNotPrivate = errors.New("listen address is not on a private network")
 // Loopback is always allowed and remains the default: a node that is not told
 // otherwise serves nothing to the network, exactly as before.
 //
-// Beyond loopback the address must be private — link-local, or one of the
-// RFC 1918 / RFC 4193 ranges — and must be named explicitly. Binding the peer
-// surface to a public address would put session metadata on the open internet,
-// which is a different decision from sharing it with the machine on the next
-// desk, and not one a command-line flag should be able to make by accident.
-func ValidatePeerListen(address string, allowLAN bool) error {
+// Beyond loopback the address must be named explicitly and must be private —
+// either private by definition (RFC 1918 / RFC 4193 / link-local) or in a block
+// the owner declared private for this installation. Binding the peer surface to
+// an address that is neither would put session metadata somewhere the owner has
+// not thought about, which is a different decision from sharing it with the
+// machine on the next desk.
+func ValidatePeerListen(address string, allowLAN bool, declared PrivateRanges) error {
 	if err := ValidateLoopback(address); err == nil {
 		return nil
 	}
@@ -48,33 +50,32 @@ func ValidatePeerListen(address string, allowLAN bool) error {
 			"peer listener %q is not loopback; pass -allow-lan to serve paired peers on this network", address)
 	}
 
-	// The unspecified address binds every interface, including any public one
-	// the host may gain later. Naming the interface is the point of this check:
-	// the owner should be choosing a network, not accepting all of them.
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		return fmt.Errorf("%w: %q binds every interface, including any public one; name the address to serve on",
-			ErrNotPrivate, address)
+	if host == "" {
+		return fmt.Errorf("%w: %q names no address; say which one to serve on", ErrNotPrivate, address)
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
 		return fmt.Errorf(
 			"peer listener %q must be an IP address, not a name; a name can resolve somewhere else later", address)
 	}
-	if !isPrivate(ip) {
+	// The unspecified address binds every interface, including any public one
+	// the host has or later gains. This is asked of the parsed address rather
+	// than the string, because "0.0.0.0" is only one of its spellings: "0::0",
+	// "::0", "0:0:0:0:0:0:0:0" and "::ffff:0.0.0.0" all bind everything too,
+	// and a string comparison lets them through.
+	if ip.Unmap().IsUnspecified() {
+		return fmt.Errorf("%w: %q binds every interface, including any public one; name the address to serve on",
+			ErrNotPrivate, address)
+	}
+	// A zoned literal parses here but breaks when a URL is built from it, so a
+	// peer configured this way would be reachable and silently never contacted.
+	if ip.Zone() != "" {
+		return fmt.Errorf("peer listener %q carries a zone; give the address without %%zone", address)
+	}
+	if !IsPrivateAddress(ip, declared) {
 		return fmt.Errorf(
-			"%w: %q is a public address, and AgentHub shares session metadata with paired peers on a local network, not with the internet",
+			"%w: %q is not in a private range. If this network is private despite the address, declare it with -treat-as-private",
 			ErrNotPrivate, address)
 	}
 	return nil
-}
-
-// isPrivate reports whether an address belongs to a range that is not routed on
-// the public internet.
-//
-// net.IP.IsPrivate covers RFC 1918 and RFC 4193. Link-local is added because a
-// direct cable between two machines lands there and is exactly the case this
-// feature exists for. Everything else is refused, including carrier-grade NAT,
-// which looks private and is shared with strangers.
-func isPrivate(ip net.IP) bool {
-	return ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLoopback()
 }

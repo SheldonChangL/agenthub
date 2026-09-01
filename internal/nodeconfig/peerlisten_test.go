@@ -3,6 +3,7 @@ package nodeconfig
 import (
 	"errors"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -13,11 +14,11 @@ import (
 // serve a network behaves exactly as every earlier build did.
 func TestLoopbackIsAlwaysAllowed(t *testing.T) {
 	for _, address := range []string{"127.0.0.1:7463", "[::1]:7463", "localhost:7463"} {
-		if err := ValidatePeerListen(address, false); err != nil {
-			t.Errorf("ValidatePeerListen(%q, false) = %v; loopback must never need a flag", address, err)
+		if err := ValidatePeerListen(address, false, nil); err != nil {
+			t.Errorf("ValidatePeerListen(%q, false, nil) = %v; loopback must never need a flag", address, err)
 		}
-		if err := ValidatePeerListen(address, true); err != nil {
-			t.Errorf("ValidatePeerListen(%q, true) = %v", address, err)
+		if err := ValidatePeerListen(address, true, nil); err != nil {
+			t.Errorf("ValidatePeerListen(%q, true, nil) = %v", address, err)
 		}
 	}
 }
@@ -26,15 +27,15 @@ func TestLoopbackIsAlwaysAllowed(t *testing.T) {
 // a default configuration may put session metadata on a network.
 func TestServingANetworkNeedsTheFlag(t *testing.T) {
 	const address = "192.168.1.10:7463"
-	err := ValidatePeerListen(address, false)
+	err := ValidatePeerListen(address, false, nil)
 	if err == nil {
 		t.Fatal("a private address was served without the flag")
 	}
 	if !strings.Contains(err.Error(), "-allow-lan") {
 		t.Errorf("error = %v; it should say which flag turns this on", err)
 	}
-	if err := ValidatePeerListen(address, true); err != nil {
-		t.Errorf("ValidatePeerListen(%q, true) = %v; a private address is the case this is for", address, err)
+	if err := ValidatePeerListen(address, true, nil); err != nil {
+		t.Errorf("ValidatePeerListen(%q, true, nil) = %v; a private address is the case this is for", address, err)
 	}
 }
 
@@ -49,9 +50,9 @@ func TestAPublicAddressIsRefusedEvenWithTheFlag(t *testing.T) {
 		"a public range someone uses as a LAN": "203.0.113.1:7463",
 	} {
 		t.Run(name, func(t *testing.T) {
-			err := ValidatePeerListen(address, true)
+			err := ValidatePeerListen(address, true, nil)
 			if err == nil {
-				t.Fatalf("ValidatePeerListen(%q, true) = nil; a public address must be refused", address)
+				t.Fatalf("ValidatePeerListen(%q, true, nil) = nil; a public address must be refused", address)
 			}
 			if !errors.Is(err, ErrNotPrivate) {
 				t.Errorf("error = %v; want ErrNotPrivate", err)
@@ -64,9 +65,9 @@ func TestAPublicAddressIsRefusedEvenWithTheFlag(t *testing.T) {
 // check above: 0.0.0.0 includes whatever public address the host has or gains.
 func TestBindingEveryInterfaceIsRefused(t *testing.T) {
 	for _, address := range []string{"0.0.0.0:7463", "[::]:7463", ":7463"} {
-		err := ValidatePeerListen(address, true)
+		err := ValidatePeerListen(address, true, nil)
 		if err == nil {
-			t.Fatalf("ValidatePeerListen(%q, true) = nil; the unspecified address must be refused", address)
+			t.Fatalf("ValidatePeerListen(%q, true, nil) = nil; the unspecified address must be refused", address)
 		}
 		if !errors.Is(err, ErrNotPrivate) {
 			t.Errorf("%q: error = %v; want ErrNotPrivate", address, err)
@@ -77,7 +78,7 @@ func TestBindingEveryInterfaceIsRefused(t *testing.T) {
 // TestANameIsRefused keeps the decision pinned to an address. A name can
 // resolve somewhere else after the check has passed.
 func TestANameIsRefused(t *testing.T) {
-	if err := ValidatePeerListen("my-laptop.local:7463", true); err == nil {
+	if err := ValidatePeerListen("my-laptop.local:7463", true, nil); err == nil {
 		t.Fatal("a name was accepted as a peer listen address")
 	}
 }
@@ -93,8 +94,8 @@ func TestPrivateRangesAreRecognised(t *testing.T) {
 		"IPv6 link-local":   "[fe80::1]:7463",
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := ValidatePeerListen(address, true); err != nil {
-				t.Errorf("ValidatePeerListen(%q, true) = %v", address, err)
+			if err := ValidatePeerListen(address, true, nil); err != nil {
+				t.Errorf("ValidatePeerListen(%q, true, nil) = %v", address, err)
 			}
 		})
 	}
@@ -295,4 +296,249 @@ func TestTheListenerIsSafeUnderConcurrentDials(t *testing.T) {
 		}()
 	}
 	group.Wait()
+}
+
+// TestADeclaredRangeMakesAnAddressServable is the case this exists for: two
+// machines on a direct cable, using a block that looks public because IANA
+// assigned it to somebody else. Nothing about the address says it is private,
+// so the owner says.
+func TestADeclaredRangeMakesAnAddressServable(t *testing.T) {
+	const address = "203.0.113.2:7463"
+
+	// Without a declaration it is refused, as any public address is.
+	if err := ValidatePeerListen(address, true, nil); !errors.Is(err, ErrNotPrivate) {
+		t.Fatalf("error = %v; want ErrNotPrivate before anything is declared", err)
+	}
+
+	declared, err := ParsePrivateRanges([]string{"203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePeerListen(address, true, declared); err != nil {
+		t.Fatalf("ValidatePeerListen() with the range declared = %v", err)
+	}
+
+	// A declaration covers what it names and nothing else.
+	if err := ValidatePeerListen("198.51.100.2:7463", true, declared); !errors.Is(err, ErrNotPrivate) {
+		t.Errorf("error = %v; a declaration must not cover an unrelated block", err)
+	}
+}
+
+// TestADeclarationStillNeedsTheFlag keeps the two controls independent: saying
+// a network is private does not by itself start serving it.
+func TestADeclarationStillNeedsTheFlag(t *testing.T) {
+	declared, err := ParsePrivateRanges([]string{"203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = ValidatePeerListen("203.0.113.2:7463", false, declared)
+	if err == nil {
+		t.Fatal("a declared range was served without -allow-lan")
+	}
+	if !strings.Contains(err.Error(), "-allow-lan") {
+		t.Errorf("error = %v; it should still name the flag", err)
+	}
+}
+
+// TestADefaultRouteCannotBeDeclared refuses the declaration that is not one.
+//
+// "Everything is private" is the absence of a belief about the network, not a
+// statement of one, and it is what somebody reaches for at 2am to make an error
+// go away. Naming a block is the whole point.
+func TestADefaultRouteCannotBeDeclared(t *testing.T) {
+	for _, value := range []string{"0.0.0.0/0", "::/0"} {
+		if _, err := ParsePrivateRanges([]string{value}); err == nil {
+			t.Errorf("ParsePrivateRanges(%q) succeeded; it covers every address", value)
+		}
+	}
+	// A merely large block is allowed: the owner said which one.
+	if _, err := ParsePrivateRanges([]string{"122.122.0.0/16"}); err != nil {
+		t.Errorf("a /16 was refused: %v", err)
+	}
+}
+
+// TestAMalformedDeclarationIsRefusedAtStartup keeps a typo from silently
+// declaring nothing and leaving the owner wondering why delivery fails.
+func TestAMalformedDeclarationIsRefusedAtStartup(t *testing.T) {
+	for _, value := range []string{"122.122.122.2", "not-a-cidr", "192.168.0.0/33", "192.168.0.0/-1"} {
+		if _, err := ParsePrivateRanges([]string{value}); err == nil {
+			t.Errorf("ParsePrivateRanges(%q) succeeded", value)
+		}
+	}
+}
+
+// TestTheDeclarationIsVisible keeps the claim auditable: whatever it later
+// allows, the belief behind it is in the startup log.
+func TestTheDeclarationIsVisible(t *testing.T) {
+	declared, err := ParsePrivateRanges([]string{"122.122.0.0/16", "203.0.113.0/24"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := declared.String()
+	for _, want := range []string{"122.122.0.0/16", "203.0.113.0/24"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("String() = %q; missing %q", rendered, want)
+		}
+	}
+	if PrivateRanges(nil).String() != "none" {
+		t.Errorf("an empty declaration renders as %q", PrivateRanges(nil).String())
+	}
+}
+
+// TestDeclaringDoesNotWeakenTheRestOfTheRule pins that the escape hatch is
+// exactly as wide as what was declared.
+func TestDeclaringDoesNotWeakenTheRestOfTheRule(t *testing.T) {
+	declared, err := ParsePrivateRanges([]string{"122.122.0.0/16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, address := range map[string]string{
+		"the unspecified address": "0.0.0.0:7463",
+		"a name":                  "peer.local:7463",
+		"another public block":    "203.0.113.1:7463",
+		"carrier-grade NAT":       "100.64.0.1:7463",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidatePeerListen(address, true, declared); err == nil {
+				t.Fatalf("ValidatePeerListen(%q) = nil despite an unrelated declaration", address)
+			}
+		})
+	}
+}
+
+// TestADeclarationHasEdges is the test the earlier ones were not.
+//
+// Every case in TestDeclaringDoesNotWeakenTheRestOfTheRule differed from the
+// declared block in its first octet, so a Contains that compared one octet
+// would have passed. These sit on the boundary.
+func TestADeclarationHasEdges(t *testing.T) {
+	declared, err := ParsePrivateRanges([]string{"122.122.0.0/16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for address, want := range map[string]bool{
+		"122.122.0.0:7463":     true,  // first address in the block
+		"122.122.255.255:7463": true,  // last address in the block
+		"122.122.122.2:7463":   true,  // the machine this exists for
+		"122.121.255.255:7463": false, // one below
+		"122.123.0.0:7463":     false, // one above
+		"121.122.122.2:7463":   false, // neighbouring first octet
+		"123.122.122.2:7463":   false,
+	} {
+		t.Run(address, func(t *testing.T) {
+			err := ValidatePeerListen(address, true, declared)
+			if want && err != nil {
+				t.Errorf("ValidatePeerListen(%q) = %v; it is inside the declared block", address, err)
+			}
+			if !want && err == nil {
+				t.Errorf("ValidatePeerListen(%q) = nil; it is outside the declared block", address)
+			}
+		})
+	}
+}
+
+// TestTheUnspecifiedAddressIsRefusedInEverySpelling covers the hole a string
+// comparison left.
+//
+// "0.0.0.0" is one spelling. "0::0", "::0", "0:0:0:0:0:0:0:0" and
+// "::ffff:0.0.0.0" all bind every interface too, and a string check lets them
+// through — which mattered the moment a declaration could make them look
+// private.
+func TestTheUnspecifiedAddressIsRefusedInEverySpelling(t *testing.T) {
+	// A declaration wide enough to cover the unspecified address is refused
+	// outright, so build the test on one that is not.
+	declared, err := ParsePrivateRanges([]string{"122.122.0.0/16"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{
+		"0.0.0.0:7463",
+		"[::]:7463",
+		"[0::0]:7463",
+		"[::0]:7463",
+		"[0:0:0:0:0:0:0:0]:7463",
+		"[::ffff:0.0.0.0]:7463",
+		":7463",
+	} {
+		if err := ValidatePeerListen(address, true, declared); err == nil {
+			t.Errorf("ValidatePeerListen(%q) = nil; it binds every interface", address)
+		}
+	}
+}
+
+// TestADeclarationCannotCoverSpecialPurposeSpace is the principled version of
+// refusing a default route: the line is what a block contains, not how many
+// bits it has.
+func TestADeclarationCannotCoverSpecialPurposeSpace(t *testing.T) {
+	for name, value := range map[string]string{
+		"everything, v4":       "0.0.0.0/0",
+		"everything, v6":       "::/0",
+		"half the internet":    "0.0.0.0/1",
+		"the unspecified /8":   "0.0.0.0/8",
+		"half of v6":           "::/1",
+		"multicast":            "224.0.0.0/4",
+		"multicast and above":  "128.0.0.0/1",
+		"v6 multicast":         "ff00::/8",
+		"an IPv4-mapped block": "::ffff:122.122.0.0/112",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParsePrivateRanges([]string{value}); err == nil {
+				t.Errorf("ParsePrivateRanges(%q) succeeded", value)
+			}
+		})
+	}
+
+	// Genuine unicast blocks of any size are the owner's call.
+	for _, value := range []string{"122.122.0.0/16", "203.0.113.0/24", "100.64.0.0/10", "2001:db8::/32"} {
+		if _, err := ParsePrivateRanges([]string{value}); err != nil {
+			t.Errorf("ParsePrivateRanges(%q) = %v; a unicast block is a real declaration", value, err)
+		}
+	}
+}
+
+// TestAZonedLiteralIsRefused keeps a peer from being configured into silence: a
+// zoned address parses, passes the private check, and then breaks when a URL is
+// built from it.
+func TestAZonedLiteralIsRefused(t *testing.T) {
+	if err := ValidatePeerListen("[fe80::1%en0]:7463", true, nil); err == nil {
+		t.Fatal("a zoned literal was accepted; the URL built from it would be invalid")
+	}
+}
+
+// TestTheListenCheckStandsWithoutTheParseCheck isolates one of two defences.
+//
+// Refusing the unspecified address is guarded twice: ParsePrivateRanges will
+// not accept a declaration that covers it, and ValidatePeerListen refuses it
+// whatever is declared. On the normal path the first defence means the second
+// is never reached, so a test that goes through parsing cannot tell which one
+// is working — replacing the second with the string comparison it used to be
+// left the suite green.
+//
+// This builds the declaration directly, which is the only way to ask the second
+// defence a question the first has not already answered. The redundancy is
+// deliberate: the parse check is about what an owner may say, and this is about
+// what the listener will bind, and neither should depend on the other.
+func TestTheListenCheckStandsWithoutTheParseCheck(t *testing.T) {
+	// A declaration ParsePrivateRanges would refuse, constructed anyway.
+	everything := PrivateRanges{netip.MustParsePrefix("0.0.0.0/1"), netip.MustParsePrefix("::/1")}
+
+	for _, address := range []string{
+		"0.0.0.0:7463",
+		"[::]:7463",
+		"[0::0]:7463",
+		"[::0]:7463",
+		"[0:0:0:0:0:0:0:0]:7463",
+		"[::ffff:0.0.0.0]:7463",
+	} {
+		if err := ValidatePeerListen(address, true, everything); err == nil {
+			t.Errorf("ValidatePeerListen(%q) = nil even with the unspecified address declared private; "+
+				"it binds every interface, including any public one", address)
+		}
+	}
+
+	// The same declaration does let an ordinary address through, so the test
+	// above is not passing because everything is refused.
+	if err := ValidatePeerListen("122.122.122.2:7463", true, everything); err != nil {
+		t.Fatalf("the constructed declaration refuses everything: %v", err)
+	}
 }
