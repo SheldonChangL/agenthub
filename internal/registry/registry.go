@@ -119,7 +119,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	if err := r.migrateTrust(ctx); err != nil {
 		return err
 	}
-	return r.migrateSequence(ctx)
+	if err := r.migrateSequence(ctx); err != nil {
+		return err
+	}
+	return r.migratePresence(ctx)
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
