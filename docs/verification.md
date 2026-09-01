@@ -470,3 +470,41 @@ On one Windows and one Ubuntu host with the target providers installed:
 4. Publish one disposable session and confirm only that session appears in heartbeat.
 5. Confirm running/recent sessions transition through active, idle, and inactive as documented.
 6. Confirm paths containing spaces and non-ASCII characters round-trip through `ah list/status`.
+
+## The merge gate
+
+CI answers whether the checks ran and passed. It does not answer whether a
+finding is acceptable, and it is not asked to: severity is a judgement about
+consequences, and a scanner that could make it would be deciding what this
+project is willing to ship.
+
+**Critical or High residual risk blocks the merge.** Not "is tracked" or "is
+mitigated in a follow-up" — blocks it. The change waits.
+
+**Medium requires a written decision before merging**, recorded in the pull
+request, saying what the risk is, why shipping with it is the better of the
+available options, and what would change that. If the answer is "we will fix it
+later", the follow-up issue must exist and be linked before the merge, so the
+decision cannot quietly become a permanent one.
+
+**Low is recorded, not gated.** Say it in the pull request so it is in the
+history, and fix it when the code is next open anyway.
+
+Two rules about how findings are established, both learned the hard way in this
+repository:
+
+- **A passing test is not evidence until it has failed.** Before a test is
+  offered as proof that a protection works, break the protection and watch the
+  test fail. Several tests here passed for reasons unrelated to what they
+  claimed — a channel assertion that could never be false, a resumption check
+  that could not tell two callbacks apart, a "never heard from" case that the
+  backend never produces. Each was found by breaking the code, not by reading
+  the test.
+- **A review that finds nothing is a review that has not finished.** The
+  security reviews behind this transport each returned findings that the author
+  had missed, including one that invalidated a design decision after it had been
+  implemented. Treat an empty result as a reason to look at a different layer,
+  not as a clean bill of health.
+
+These are enforced by people, not by the workflow. Branch protection makes the
+checks mandatory; nothing automated can make the judgement mandatory.
