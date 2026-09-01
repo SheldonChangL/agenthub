@@ -1,0 +1,274 @@
+name: CI
+
+# Every gate runs against the revision being merged. A pull_request run checks
+# the merge result, which is what lands on main; a push run re-checks main
+# itself, so a green PR that raced with another merge cannot leave main unproven.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only by default. No job here writes to the repository, publishes a
+# package, or comments on a pull request, so nothing needs more. A job that
+# later does must raise its own permissions block rather than widening this one.
+permissions:
+  contents: read
+
+# Without this, a run: step gets `bash -e` and a failing command on the left of
+# a pipe is masked by a successful one on the right — `go test | tee` would
+# report green for a failing test suite. `shell: bash` is `-eo pipefail`.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned so a scanner version bump is a reviewed commit, not a silent change
+  # in what "green" means.
+  GOSEC_VERSION: v2.29.0
+  GOVULNCHECK_VERSION: v1.7.0
+
+jobs:
+  root-module:
+    name: root module (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -count=1 ./...
+      - name: go test -race
+        run: go test -race -count=1 ./...
+      - name: build node and cli
+        run: go build ./...
+
+  desktop-module:
+    name: desktop module (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      # Node is required, not optional. The frontend render check skips itself
+      # when node is absent, and a security test that silently skips is a test
+      # that is not running.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      - name: install wails build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      # main.go embeds all:frontend/dist, so the module does not compile at all
+      # until the frontend is built. The build therefore comes before any Go step.
+      - name: build frontend
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+      - name: confirm node is on PATH for the render check
+        run: |
+          command -v node
+          node --version
+      - name: go vet
+        working-directory: desktop
+        run: go vet ./...
+      - name: go test -race
+        working-directory: desktop
+        run: go test -race -count=1 ./...
+      # TestFrontendRendersUntrustedMetadataAsText is the one check that feeds
+      # hostile provider metadata through the real renderer, and it skips itself
+      # when node is missing. Asserting that it PASSED — rather than that
+      # nothing skipped — is what keeps this from passing vacuously if the test
+      # is renamed and -run stops selecting anything.
+      - name: prove the hostile-metadata render check actually ran
+        working-directory: desktop
+        run: |
+          go test -count=1 -v -run TestFrontend ./... | tee render-check.log
+          if ! grep -q -- "--- PASS: TestFrontendRendersUntrustedMetadataAsText" render-check.log; then
+            echo
+            echo "the hostile-metadata render check did not pass; it was skipped, renamed, or removed."
+            echo "if it was renamed, update this step to name the new test."
+            exit 1
+          fi
+          if grep -q -- "--- SKIP" render-check.log; then
+            echo
+            echo "a frontend check skipped instead of running:"
+            grep -B2 -- "--- SKIP" render-check.log
+            exit 1
+          fi
+      # The desktop module pulls in Wails and its transitive tree, which the
+      # root module never sees. Scanning only the root module would leave the
+      # larger dependency surface unchecked.
+      - name: govulncheck (desktop module)
+        working-directory: desktop
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          govulncheck ./...
+
+  frontend:
+    name: frontend (install, build, audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      # npm ci, not npm install: it installs exactly the lockfile and fails if
+      # package.json and the lockfile disagree, so the tree CI builds is the
+      # tree the lockfile describes.
+      - name: reproducible install
+        working-directory: desktop/frontend
+        run: npm ci
+      - name: production build
+        working-directory: desktop/frontend
+        run: npm run build
+      # Pinned to the official registry so the audit cannot be answered by
+      # whatever registry a future .npmrc points at.
+      - name: audit against the official registry
+        working-directory: desktop/frontend
+        run: npm audit --audit-level=high --registry=https://registry.npmjs.org/
+
+  security-scan:
+    name: govulncheck and gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: install scanners
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+      - name: govulncheck (root module)
+        run: govulncheck ./...
+      # Any finding fails the job. Reviewed false positives carry a reasoned
+      # #nosec at the exact line (see internal/identity); the rules are never
+      # disabled globally.
+      - name: gosec (root module)
+        run: gosec -fmt=text ./...
+
+  cross-build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build agenthub-node and ah
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -o /dev/null ./cmd/agenthub-node
+          go build -o /dev/null ./cmd/ah
+      # Compiling the tests, not just the packages, is what keeps build-tagged
+      # code and its tests from rotting: Windows DPAPI key protection and its
+      # tests are never built by a darwin or linux run.
+      - name: compile tests for this platform
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          status=0
+          while read -r package; do
+            if ! go test -c -o /dev/null "$package"; then
+              echo "test compilation failed: $package"
+              status=1
+            fi
+          done < <(go list ./...)
+          exit $status
+
+  hygiene:
+    name: whitespace, contracts, secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      # Scoped to what this change introduces, not the whole history. Wails
+      # generates desktop/frontend/wailsjs and vendors a font licence, all of
+      # which carry trailing whitespace; checking every commit ever made would
+      # fail on files this project does not author and cannot reformat without
+      # fighting the generator on the next run.
+      - name: git diff --check (this change only)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "${BASE_SHA}" ]; then
+            range="${BASE_SHA}...HEAD"
+          elif git rev-parse --verify -q HEAD~1 >/dev/null; then
+            range="HEAD~1 HEAD"
+          else
+            echo "no earlier revision to compare against; nothing to check"
+            exit 0
+          fi
+          echo "checking ${range}"
+          git diff --check ${range}
+      # The broker and MCP contracts are consumed by other implementations. A
+      # JSON file that no longer parses breaks them before any Go test notices.
+      - name: broker and MCP contracts parse
+        run: |
+          status=0
+          while read -r document; do
+            if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$document"; then
+              echo "not valid JSON: $document"
+              status=1
+            fi
+          done < <(find docs -name '*.json' -type f)
+          exit $status
+      # The self-test runs first: it proves each pattern still matches a
+      # synthetic sample, so a clean scan means the scan looked rather than that
+      # its regexes rotted.
+      - name: secret scanner self-test
+        run: ./.github/scripts/secret-scan.sh --self-test
+      - name: secret-pattern scan
+        run: ./.github/scripts/secret-scan.sh
