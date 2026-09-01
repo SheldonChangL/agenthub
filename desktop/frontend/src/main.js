@@ -16,6 +16,8 @@ const state = {
   filters: { provider: null, status: null, audience: null },
   view: "local",
   nodes: [],
+  peers: [],
+  presenceError: "",
   selectedNode: null,
   busy: false,
 };
@@ -232,6 +234,8 @@ async function load() {
     ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}`
     : `無法連線到 ${overview.nodeUrl}`;
   el("footer-right").textContent = overview.reachable ? overview.node.id : "";
+  state.peers = overview.peers ?? [];
+  state.presenceError = overview.presenceError ?? "";
 
   if (!overview.reachable) {
     banner(`節點未連線：${overview.error || "unknown error"}。請先啟動 agenthub-node。`);
@@ -290,8 +294,11 @@ function renderNodes() {
 
   for (const node of state.nodes) {
     const row = element("div", state.selectedNode === node.nodeId ? "noderow on" : "noderow");
+    const presence = presenceFor(node.nodeId);
+    const label = presenceLabel(presence);
     const line = element("div", "line");
-    line.append(element("span", "dot"), element("span", "name", node.displayName));
+    line.append(element("span", `dot ${label.className}`), element("span", "name", node.displayName));
+    line.append(element("span", `presence ${label.className}`, label.text));
     const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)}`);
     row.append(line, meta);
     row.onclick = () => {
@@ -305,10 +312,108 @@ function renderNodes() {
   el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
     element("div", "empty", "選擇左側的節點以檢視詳細資料。"),
   ]));
+  el("node-sessions").replaceChildren(...(selected ? nodeSessions(selected) : []));
+}
+
+// nodeSessions renders what one peer has published to this node.
+//
+// The three cases are deliberately distinct rather than collapsed into an empty
+// table. "Never heard from", "went quiet at 10:04", and "reachable and sharing
+// nothing" mean different things to an owner, and showing the same empty list
+// for all three would hide the difference — in particular it would let a stale
+// view pass for a current one, which is what issue #15 asks not to happen.
+function nodeSessions(node) {
+  const presence = presenceFor(node.nodeId);
+  const heading = element("h3", "", "這個節點公開給我的 session");
+
+  // A failure to read presence is a fact about this node, not about the peer.
+  // Saying "we have not heard from it" here would turn a transport error into a
+  // confident claim that happens to be unfounded.
+  if (state.presenceError) {
+    return [heading, element(
+      "div",
+      "stale",
+      "無法向本機節點取得對端狀態，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方離線或沒有公開 session。"
+    )];
+  }
+  if (!heardFrom(presence)) {
+    return [heading, element(
+      "div",
+      "empty",
+      "尚未收到這個節點的心跳。配對只確認身分，對方仍須主動發布，而且必須把 session 公開給這個節點。"
+    )];
+  }
+  if (!presence.online) {
+    return [heading, element(
+      "div",
+      "stale",
+      `這個節點目前離線，最後一次心跳在${relative(presence.receivedAt)}。` +
+      "先前的內容已不再顯示，因為那是過去的狀態，不是現在的。"
+    )];
+  }
+  const sessions = presence.sessions ?? [];
+  if (sessions.length === 0) {
+    return [heading, element("div", "empty", "這個節點線上，但沒有公開任何 session 給我。")];
+  }
+
+  const table = element("table", "peer-sessions");
+  const head = element("tr");
+  for (const title of ["SESSION", "節點", "PROVIDER", "狀態", "最後活動"]) {
+    head.append(element("th", "", title));
+  }
+  const header = element("thead");
+  header.append(head);
+  table.append(header);
+  const body = element("tbody");
+  for (const session of sessions) {
+    const row = element("tr");
+    row.append(
+      element("td", "mono", session.id ?? ""),
+      element("td", "", node.displayName),
+      element("td", "", session.provider ?? ""),
+      cell(element("td"), pill(session.status ?? "unknown", statusPillClass(session.status))),
+      element("td", "muted", session.lastSeenAt ? relative(session.lastSeenAt) : "—")
+    );
+    body.append(row);
+  }
+  table.append(body);
+  return [heading, table];
 }
 
 function lastSeen(node) {
   return node.lastSeenAt ? `最後聯繫 ${relative(node.lastSeenAt)}` : "尚未聯繫過";
+}
+
+/* ---------------- presence ---------------- */
+
+// presenceFor returns what this node currently believes about a peer.
+//
+// The node lists every trusted peer, heard from or not, so an entry existing
+// says nothing on its own. What separates the states is receivedAt: a peer that
+// has never sent a heartbeat has no such moment.
+function presenceFor(nodeId) {
+  return state.peers.find((peer) => peer.nodeId === nodeId) ?? null;
+}
+
+// heardFrom reports whether this node has ever received a heartbeat from a peer.
+//
+// This is the distinction that matters, and it is not "is there an entry": the
+// node reports a row for every trusted peer. Keying off the row's existence
+// instead would describe a peer that has never spoken as one that went quiet at
+// an unknown time, which asserts a heartbeat that never happened.
+function heardFrom(presence) {
+  return Boolean(presence && presence.receivedAt);
+}
+
+// presenceLabel describes a peer's reachability in words, never as a bare dot.
+//
+// An offline peer must not have its last snapshot rendered as the current
+// state, so the label always says when the information is from.
+function presenceLabel(presence) {
+  if (state.presenceError) return { text: "節點狀態無法取得", className: "unknown" };
+  if (!heardFrom(presence)) return { text: "尚未收到心跳", className: "never" };
+  if (presence.online) return { text: "線上", className: "online" };
+  return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
 }
 
 function nodeDetail(node) {

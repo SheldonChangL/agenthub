@@ -332,3 +332,75 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
   user-select: text;
 }
 .pairform input:focus { outline: none; border-color: var(--accent); }
+
+/* ---------------- peer presence ---------------- */
+
+.noderow .dot.online {
+  background: var(--ok, #3fb950);
+}
+.noderow .dot.offline {
+  background: var(--muted-dot, #6e7681);
+}
+.noderow .dot.never {
+  background: transparent;
+  border: 1px solid var(--muted-dot, #6e7681);
+}
+.noderow .presence {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted-text, #8b949e);
+}
+.noderow .presence.online {
+  color: var(--ok, #3fb950);
+}
+.noderow .dot.unknown {
+  background: transparent;
+  border: 1px dashed var(--muted-dot, #6e7681);
+}
+.noderow .presence.unknown {
+  font-style: italic;
+}
+
+/* A peer's last snapshot is never shown once it has expired, so this explains
+   the absence rather than leaving an empty panel that reads as "nothing shared". */
+.nodedetail .stale {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--muted-dot, #6e7681);
+  background: var(--surface-2, rgba(110, 118, 129, 0.1));
+  color: var(--muted-text, #8b949e);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#node-sessions {
+  margin-top: 18px;
+}
+#node-sessions h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-text, #8b949e);
+}
+table.peer-sessions {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.peer-sessions th {
+  text-align: left;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted-text, #8b949e);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, rgba(110, 118, 129, 0.3));
+}
+table.peer-sessions td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border, rgba(110, 118, 129, 0.15));
+}
+table.peer-sessions td.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}

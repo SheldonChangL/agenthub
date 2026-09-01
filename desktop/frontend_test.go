@@ -90,3 +90,27 @@ func TestFrontendRendersUntrustedMetadataAsText(t *testing.T) {
 		t.Fatalf("render check failed: %v\n%s", err, output)
 	}
 }
+
+// TestFrontendRendersHostilePeerMetadataAsText covers the network view, whose
+// input is strictly less trustworthy than the local table's.
+//
+// Peer session metadata arrives from another machine. It is authenticated — the
+// signature is verified and the envelope must name this node — but
+// authenticated is not benign: a paired peer that has itself been compromised,
+// or whose provider files were tampered with, sends signed hostile strings. The
+// same rule therefore applies, and the check also pins that an offline peer's
+// last snapshot is not rendered as the current one.
+func TestFrontendRendersHostilePeerMetadataAsText(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the network view render check")
+	}
+	script := filepath.Join("frontend", "test", "render-hostile-peer.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("network view render check failed: %v\n%s", err, output)
+	}
+}
