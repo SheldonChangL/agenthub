@@ -3,7 +3,9 @@ package registry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/model"
 )
@@ -287,5 +289,208 @@ func TestAttemptsAreRecordedWhileStillPending(t *testing.T) {
 	}
 	if after.LastError == "" {
 		t.Error("a stuck message does not say why it is stuck")
+	}
+}
+
+// TestAFullInboxDefersRatherThanRefuses is the decision at the centre of this
+// bound.
+//
+// Refusing would make the sender settle the message permanently — the message
+// is destroyed, which is the failure the bound exists to prevent rather than to
+// cause. Dropping the oldest would destroy one silently at this end. Neither is
+// acceptable for something a person wrote, so a full inbox is a distinct,
+// temporary condition that the caller can leave queued.
+func TestAFullInboxDefersRatherThanRefuses(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	for i := range MaxInboxMessages {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: fmt.Sprintf("msg_fill_%d", i), To: session.ID, From: outboxPeer,
+			DestinationNodeID: testNodeID, Body: "filler",
+		}); err != nil {
+			t.Fatalf("filling at %d: %v", i, err)
+		}
+	}
+
+	_, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_over", To: session.ID, From: outboxPeer,
+		DestinationNodeID: testNodeID, Body: "one too many",
+	})
+	if !errors.Is(err, ErrInboxFull) {
+		t.Fatalf("error = %v; want ErrInboxFull", err)
+	}
+	// It must NOT read as a decision the owner made, or the sender settles it.
+	if errors.Is(err, ErrInvalidSession) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v; a full inbox must not look like a refusal", err)
+	}
+
+	held, err := store.CountInbox(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != MaxInboxMessages {
+		t.Fatalf("held = %d; want the bound of %d", held, MaxInboxMessages)
+	}
+}
+
+// TestClearingAnInboxLetsItReceiveAgain is what makes the bound survivable. A
+// bound with no release is a session that stops receiving forever.
+func TestClearingAnInboxLetsItReceiveAgain(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	for i := range MaxInboxMessages {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: fmt.Sprintf("msg_%d", i), To: session.ID, From: outboxPeer,
+			DestinationNodeID: testNodeID, Body: "filler",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_blocked", To: session.ID, From: outboxPeer,
+		DestinationNodeID: testNodeID, Body: "blocked",
+	}); !errors.Is(err, ErrInboxFull) {
+		t.Fatalf("the inbox did not fill: %v", err)
+	}
+
+	// Deleting one message makes room for exactly one.
+	if err := store.DeleteMessage(ctx, session.ID, "msg_0"); err != nil {
+		t.Fatalf("DeleteMessage() error = %v", err)
+	}
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_after_delete", To: session.ID, From: outboxPeer,
+		DestinationNodeID: testNodeID, Body: "fits now",
+	}); err != nil {
+		t.Fatalf("a freed slot was not usable: %v", err)
+	}
+
+	removed, err := store.ClearInbox(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != MaxInboxMessages {
+		t.Fatalf("removed = %d; want the whole inbox", removed)
+	}
+	held, err := store.CountInbox(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 0 {
+		t.Fatalf("held = %d after clearing", held)
+	}
+}
+
+// TestDeletingScopesToTheSession keeps one session's clear-out from reaching
+// another's messages.
+func TestDeletingScopesToTheSession(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	mine := acceptingSession(t, store)
+
+	other := testSession("claude:other-inbox")
+	if _, err := store.UpsertSession(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAudience(ctx, other.ID, model.Audience{
+		Mode: model.AudienceAllPaired, AcceptMessages: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for id, to := range map[string]string{"msg_mine": mine.ID, "msg_theirs": other.ID} {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: id, To: to, From: outboxPeer, DestinationNodeID: testNodeID, Body: "hello",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Deleting by the wrong session id must not work.
+	if err := store.DeleteMessage(ctx, mine.ID, "msg_theirs"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v; a message was deletable through another session", err)
+	}
+	if _, err := store.ClearInbox(ctx, mine.ID); err != nil {
+		t.Fatal(err)
+	}
+	held, err := store.CountInbox(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 1 {
+		t.Fatalf("the other session holds %d; clearing one inbox emptied another", held)
+	}
+}
+
+// TestPruningKeepsSettledMessagesQueryableForAWhile balances the two things
+// that pull against each other: ah outbound needs the row, and nothing needs it
+// forever.
+func TestPruningKeepsSettledMessagesQueryableForAWhile(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	queued, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkOutbound(ctx, queued.ID, OutboundDelivered, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// A long retention keeps it: the owner can still ask what happened.
+	removed, err := store.PruneSettledOutbound(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed %d; a just-settled message must stay queryable", removed)
+	}
+	if _, err := store.OutboundFor(ctx, queued.ID); err != nil {
+		t.Fatalf("OutboundFor() = %v", err)
+	}
+
+	// A retention shorter than its age removes it. Timestamps are stored in
+	// milliseconds, so the message has to be measurably older than the cutoff
+	// rather than merely not-newer.
+	time.Sleep(5 * time.Millisecond)
+	removed, err = store.PruneSettledOutbound(ctx, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d; want the settled message pruned", removed)
+	}
+	if _, err := store.OutboundFor(ctx, queued.ID); !errors.Is(err, ErrOutboundNotFound) {
+		t.Errorf("error = %v; want it gone", err)
+	}
+}
+
+// TestPruningNeverRemovesAPendingMessage keeps the cleanup from deleting work.
+func TestPruningNeverRemovesAPendingMessage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	queued, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "still trying",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	removed, err := store.PruneSettledOutbound(ctx, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d; a pending message must never be pruned", removed)
+	}
+	if _, err := store.OutboundFor(ctx, queued.ID); err != nil {
+		t.Fatalf("the pending message is gone: %v", err)
 	}
 }
