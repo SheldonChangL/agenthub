@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -201,4 +202,119 @@ func TestThePinRefusesAWrongKeyOnEveryConnection(t *testing.T) {
 			t.Fatalf("connection %d completed against a key that was not pinned", attempt+1)
 		}
 	}
+}
+
+// TestACertificateIsReusedUntilItNearsExpiry keeps renewal from happening on
+// every handshake, which would be a signature per connection.
+func TestACertificateIsReusedUntilItNearsExpiry(t *testing.T) {
+	keypair := testKeypair(t)
+	clock := time.Now()
+	rotating := NewRotatingCertificate(keypair, "node_server000000000")
+	rotating.now = func() time.Time { return clock }
+
+	first, err := rotating.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetCertificate() error = %v", err)
+	}
+	for range 10 {
+		clock = clock.Add(time.Hour)
+		again, err := rotating.GetCertificate(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again != first {
+			t.Fatal("a certificate was rebuilt while it was still comfortably valid")
+		}
+	}
+}
+
+// TestALongRunningNodeNeverServesAnExpiredCertificate is the bug this type
+// exists for: a node whose process outlives its certificate.
+func TestALongRunningNodeNeverServesAnExpiredCertificate(t *testing.T) {
+	keypair := testKeypair(t)
+	clock := time.Now()
+	rotating := NewRotatingCertificate(keypair, "node_server000000000")
+	rotating.now = func() time.Time { return clock }
+
+	// Walk a year in daily steps, which crosses the lifetime several times.
+	renewals := 0
+	var previous *tls.Certificate
+	for day := range 365 {
+		clock = clock.Add(24 * time.Hour)
+		certificate, err := rotating.GetCertificate(nil)
+		if err != nil {
+			t.Fatalf("day %d: GetCertificate() error = %v", day+1, err)
+		}
+		if certificate != previous {
+			renewals++
+			previous = certificate
+		}
+		parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if clock.After(parsed.NotAfter) {
+			t.Fatalf("day %d: served a certificate that expired at %v", day+1, parsed.NotAfter)
+		}
+		if clock.Before(parsed.NotBefore) {
+			t.Fatalf("day %d: served a certificate not yet valid at %v", day+1, parsed.NotBefore)
+		}
+	}
+	if renewals < 2 {
+		t.Fatalf("renewals = %d over a year; the test never crossed a renewal boundary", renewals)
+	}
+}
+
+// TestRenewalKeepsTheIdentity pins that a renewed certificate is still pinned
+// to by peers. If renewal changed the key, every paired peer would refuse the
+// connection the moment it happened.
+func TestRenewalKeepsTheIdentity(t *testing.T) {
+	keypair := testKeypair(t)
+	clock := time.Now()
+	rotating := NewRotatingCertificate(keypair, "node_server000000000")
+	rotating.now = func() time.Time { return clock }
+
+	first, err := rotating.GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(tlsCertificateLifetime)
+	second, err := rotating.GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("the certificate was not renewed after a full lifetime")
+	}
+
+	verify := PinnedConnectionVerifier(keypair.Public, "the renewed peer")
+	for name, certificate := range map[string]*tls.Certificate{"first": first, "renewed": second} {
+		parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := verify(tls.ConnectionState{PeerCertificates: []*x509.Certificate{parsed}}); err != nil {
+			t.Fatalf("the %s certificate failed the pin: %v", name, err)
+		}
+	}
+}
+
+// TestGetCertificateIsSafeUnderConcurrentHandshakes matches how it is called:
+// once per handshake, from many connections.
+func TestGetCertificateIsSafeUnderConcurrentHandshakes(t *testing.T) {
+	rotating := NewRotatingCertificate(testKeypair(t), "node_server000000000")
+	var group sync.WaitGroup
+	for range 16 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for range 50 {
+				if _, err := rotating.GetCertificate(nil); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	group.Wait()
 }
