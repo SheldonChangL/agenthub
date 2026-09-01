@@ -83,6 +83,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
+	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
+	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
 	mux.HandleFunc("GET /v1/outbound/{id}", s.outboundStatus)
 	return securityBoundary(mux)
 }
@@ -510,7 +512,54 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
+	// How full the inbox is travels with its contents. The bound defers
+	// incoming messages rather than destroying them, so a session that is
+	// filling up is something the owner can act on — but only if they can see
+	// it before senders start backing up.
+	held, err := s.store.CountInbox(r.Context(), recipient)
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"messages": messages,
+		"held":     held,
+		"capacity": registry.MaxInboxMessages,
+		"full":     held >= registry.MaxInboxMessages,
+	})
+}
+
+// deleteMessage removes one message the owner has finished with.
+//
+// The inbox is bounded, so there has to be a way to clear it: a bound with no
+// release is a session that stops receiving the first time it fills. Deletion
+// is explicit rather than inferred from reading, because nothing here tracks
+// what has been read and guessing would throw away things the owner was not
+// done with.
+func (s *Server) deleteMessage(w http.ResponseWriter, r *http.Request) {
+	recipient, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	if err := s.store.DeleteMessage(r.Context(), recipient, r.PathValue("messageId")); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// clearInbox empties one session's inbox.
+func (s *Server) clearInbox(w http.ResponseWriter, r *http.Request) {
+	recipient, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	removed, err := s.store.ClearInbox(r.Context(), recipient)
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
 func positiveQueryInt(r *http.Request, name string, defaultValue, maximum int) (int, error) {

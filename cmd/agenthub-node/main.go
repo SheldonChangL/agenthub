@@ -46,6 +46,8 @@ func run() error {
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
+	outboundRetention := flag.Duration("outbound-retention", 7*24*time.Hour,
+		"how long a delivered or refused outbound message stays queryable")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
@@ -164,6 +166,7 @@ func run() error {
 		}
 	}()
 	go discoveryLoop(service, *scanInterval)
+	go pruneLoop(store, *outboundRetention)
 
 	// Publishing starts only after the listener is up: a peer that answers this
 	// node's heartbeat by sending its own must find somewhere to send it.
@@ -239,4 +242,40 @@ func defaultPaths() (paths, error) {
 		claude:   filepath.Join(home, ".claude"),
 		codex:    filepath.Join(home, ".codex"),
 	}, nil
+}
+
+// pruneLoop removes settled outbound rows once nothing reads them any more.
+//
+// They are kept for a while rather than deleted on settlement: `ah outbound
+// <id>` is the only way an owner finds out what happened to a message, and
+// deleting the answer at the moment it becomes true would make the command
+// useless. They are not kept forever, because after the owner has looked, they
+// are just rows.
+func pruneLoop(store *registry.Registry, retention time.Duration) {
+	if retention <= 0 {
+		return
+	}
+	prune := func() {
+		// Bounded per call. Without it one hung database call stops pruning for
+		// the life of the process, silently.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		removed, err := store.PruneSettledOutbound(ctx, retention)
+		if err != nil {
+			log.Printf("pruning settled messages failed: %v", err)
+			return
+		}
+		if removed > 0 {
+			log.Printf("pruned %d settled outbound message(s) older than %s", removed, retention)
+		}
+	}
+
+	// Once at startup, then hourly. A node restarted more often than the tick
+	// would otherwise never prune at all.
+	prune()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		prune()
+	}
 }
