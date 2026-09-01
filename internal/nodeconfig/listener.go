@@ -1,8 +1,10 @@
 package nodeconfig
 
 import (
+	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 )
 
 // MaxPeerConnections bounds how many connections the peer surface holds at once.
@@ -26,9 +28,15 @@ const MaxPeerConnections = 100
 // same exhaustion with an extra step.
 type LimitedListener struct {
 	net.Listener
-	slots chan struct{}
-	once  sync.Once
+	slots   chan struct{}
+	once    sync.Once
+	refused atomic.Int64
 }
+
+// Refused reports how many connections have been turned away at capacity.
+// Exported so a test, or an operator-facing command, can see it without
+// scraping logs.
+func (l *LimitedListener) Refused() int64 { return l.refused.Load() }
 
 // LimitConnections wraps a listener with a concurrency cap.
 func LimitConnections(inner net.Listener, limit int) *LimitedListener {
@@ -51,6 +59,15 @@ func (l *LimitedListener) Accept() (net.Conn, error) {
 			// At capacity. Close and keep accepting: returning the error would
 			// stop the server entirely, which is the outcome the attacker wants.
 			_ = connection.Close()
+			l.refused.Add(1)
+			// Said out loud, but not once per refusal: a flood would then write
+			// a log line per connection, which is its own denial of service.
+			// Without any signal at all an attack is indistinguishable from the
+			// network being down, and the operator has no way to tell.
+			if refused := l.refused.Load(); refused == 1 || refused%100 == 0 {
+				log.Printf("peer listener at capacity (%d connections); refused %d so far, most recently from %v",
+					cap(l.slots), refused, connection.RemoteAddr())
+			}
 		}
 	}
 }

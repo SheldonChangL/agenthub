@@ -178,47 +178,84 @@ collect:
 	}
 }
 
-// TestClosingTwiceReleasesOneSlot pins that a double close cannot mint capacity.
-func TestClosingTwiceReleasesOneSlot(t *testing.T) {
+// TestADoubleCloseCannotMintCapacity pins the guard in limitedConn.Close.
+//
+// An earlier version of this test asserted len(slots) > cap(slots), which a
+// channel can never satisfy — it passed with the guard deleted entirely. A
+// double release does not grow the channel; it drains a slot belonging to a
+// connection that is still open, so the listener admits one more connection
+// than its cap. That is what this measures: hold the cap, double-close one
+// held connection from both ends, and require the next connection to still be
+// refused.
+func TestADoubleCloseCannotMintCapacity(t *testing.T) {
 	inner, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	capped := LimitConnections(inner, 1)
+	const limit = 3
+	capped := LimitConnections(inner, limit)
 	defer func() { _ = capped.Close() }()
 
+	accepted := make(chan net.Conn, limit*4)
 	go func() {
 		for {
 			connection, err := capped.Accept()
 			if err != nil {
 				return
 			}
-			// Close twice on purpose.
-			_ = connection.Close()
-			_ = connection.Close()
+			accepted <- connection
 		}
 	}()
 
-	for range 5 {
+	dial := func() (net.Conn, bool) {
 		client, err := net.DialTimeout("tcp", capped.Addr().String(), 2*time.Second)
 		if err != nil {
-			t.Fatalf("dial: %v", err)
+			return nil, false
 		}
-		_ = client.Close()
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case server := <-accepted:
+			return server, true
+		case <-time.After(500 * time.Millisecond):
+			_ = client.Close()
+			return nil, false
+		}
 	}
 
-	capped.mutexProbe(t, 1)
-}
-
-// mutexProbe asserts the number of slots currently held.
-func (l *LimitedListener) mutexProbe(t *testing.T, capacity int) {
-	t.Helper()
-	if got := cap(l.slots); got != capacity {
-		t.Fatalf("slot capacity = %d; want %d", got, capacity)
+	// Fill to capacity and keep every connection open.
+	held := make([]net.Conn, 0, limit)
+	for range limit {
+		server, ok := dial()
+		if !ok {
+			t.Fatalf("only filled %d of %d slots", len(held), limit)
+		}
+		held = append(held, server)
 	}
-	if held := len(l.slots); held > capacity {
-		t.Fatalf("slots held = %d, above the capacity of %d: a double close minted capacity", held, capacity)
+	defer func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	}()
+
+	// Close one of them twice. The second close must release nothing: the other
+	// connections are still open and still own their slots.
+	_ = held[0].Close()
+	_ = held[0].Close()
+	held = held[1:]
+
+	// The double close freed exactly one slot, so exactly one more connection
+	// fits — and the one after it must be refused.
+	replacement, ok := dial()
+	if !ok {
+		t.Fatal("the slot freed by the close was not reusable")
+	}
+	held = append(held, replacement)
+
+	if extra, ok := dial(); ok {
+		_ = extra.Close()
+		t.Fatalf("a connection beyond the cap of %d was admitted; the double close minted a slot", limit)
+	}
+	if capped.Refused() == 0 {
+		t.Error("a connection was refused but not counted")
 	}
 }
 
