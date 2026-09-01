@@ -277,3 +277,71 @@ func TestNeverContactedNodeHasNoLastSeenInJSON(t *testing.T) {
 		t.Errorf("a contacted node lost lastSeenAt: %s", encoded)
 	}
 }
+
+// TestSetNodeAddressNeverCreatesARow is the second half of discovery's safety
+// argument, and it was untested.
+//
+// Discovery filters announcements to already-paired nodes, but the claim that
+// nothing on the network can decide who this node believes in rests on two
+// independent gates. This is the other one: even a caller that skipped the
+// filter cannot introduce a node by announcing an address for it.
+func TestSetNodeAddressNeverCreatesARow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+
+	err := store.SetNodeAddress(ctx, "node_stranger00000000", "192.0.2.10:7463")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetNodeAddress() error = %v; want ErrNotFound", err)
+	}
+	nodes, err := store.TrustedNodes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("trusted nodes = %#v; announcing an address must not create trust", nodes)
+	}
+	ids, err := store.TrustedNodeIDs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("trusted node ids = %v", ids)
+	}
+}
+
+// TestSetNodeAddressUpdatesAPairedNode is the positive half, so the test above
+// cannot pass because the call never works at all.
+func TestSetNodeAddressUpdatesAPairedNode(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	const nodeID = "node_peer0000000000000"
+
+	if err := store.TrustNode(ctx, peer(nodeID, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetNodeAddress(ctx, nodeID, "127.0.0.1:7463"); err != nil {
+		t.Fatalf("SetNodeAddress() error = %v", err)
+	}
+	node, err := store.TrustedNode(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Address != "127.0.0.1:7463" {
+		t.Fatalf("address = %q", node.Address)
+	}
+
+	// Clearing is allowed and means "no longer located", without touching trust.
+	if err := store.SetNodeAddress(ctx, nodeID, ""); err != nil {
+		t.Fatal(err)
+	}
+	node, err = store.TrustedNode(ctx, nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node.Address != "" {
+		t.Fatalf("address = %q; want it cleared", node.Address)
+	}
+	if node.PublicKey != "key-a" {
+		t.Fatalf("clearing an address disturbed the trust record: %+v", node)
+	}
+}

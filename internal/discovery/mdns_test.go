@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strconv"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
 )
@@ -12,17 +14,21 @@ import (
 // fakeResolver records what discovery tried to write, so a test can assert on
 // the attempt rather than only on the outcome.
 type fakeResolver struct {
-	trusted  []string
-	stored   map[string]string
-	writes   int
-	failWith error
+	trusted    []string
+	stored     map[string]string
+	writes     int
+	trustReads int
+	failWith   error
 }
 
 func newResolver(trusted ...string) *fakeResolver {
 	return &fakeResolver{trusted: trusted, stored: map[string]string{}}
 }
 
-func (r *fakeResolver) TrustedNodeIDs(context.Context) ([]string, error) { return r.trusted, nil }
+func (r *fakeResolver) TrustedNodeIDs(context.Context) ([]string, error) {
+	r.trustReads++
+	return r.trusted, nil
+}
 
 func (r *fakeResolver) SetNodeAddress(_ context.Context, nodeID, address string) error {
 	r.writes++
@@ -79,11 +85,20 @@ func TestAPairedNodesAddressIsRecorded(t *testing.T) {
 	}
 }
 
+// clockedBrowser returns a browser whose time the test controls, so cooldown
+// behaviour is asserted rather than waited for.
+func clockedBrowser(resolver Resolver, policy AddressPolicy, clock *time.Time) *Browser {
+	browser := NewBrowser(resolver, policy)
+	browser.now = func() time.Time { return *clock }
+	return browser
+}
+
 // TestARepeatedAnnouncementIsNotRewritten keeps a peer announcing every few
 // seconds from writing to the database every few seconds.
 func TestARepeatedAnnouncementIsNotRewritten(t *testing.T) {
 	resolver := newResolver(pairedNode)
-	browser := NewBrowser(resolver, anyAddress)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
 	announcement := Announcement{NodeID: pairedNode, Address: "192.0.2.10:7463"}
 
 	for range 5 {
@@ -95,7 +110,8 @@ func TestARepeatedAnnouncementIsNotRewritten(t *testing.T) {
 		t.Fatalf("writes = %d; an unchanged address must be written once", resolver.writes)
 	}
 
-	// A genuinely new address must still get through.
+	// A genuinely new address gets through once the cooldown has passed.
+	clock = clock.Add(addressChangeCooldown + time.Second)
 	if _, err := browser.Apply(context.Background(), Announcement{
 		NodeID: pairedNode, Address: "192.0.2.11:7463",
 	}); err != nil {
@@ -103,6 +119,62 @@ func TestARepeatedAnnouncementIsNotRewritten(t *testing.T) {
 	}
 	if resolver.writes != 2 {
 		t.Fatalf("writes = %d; a changed address must be recorded", resolver.writes)
+	}
+}
+
+// TestFlappingAddressesCannotAmplifyWrites covers the attack the cooldown
+// exists for: alternating between two acceptable addresses defeats the
+// unchanged-address check, so without a cooldown every packet is a write and
+// the peer stays pointed somewhere it is not.
+func TestFlappingAddressesCannotAmplifyWrites(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+
+	for i := range 100 {
+		address := "192.0.2.10:7463"
+		if i%2 == 1 {
+			address = "192.0.2.11:7463"
+		}
+		if _, err := browser.Apply(context.Background(), Announcement{
+			NodeID: pairedNode, Address: address,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(time.Second)
+	}
+	// 100 packets over 100 simulated seconds, with a 30s cooldown: a handful of
+	// writes, not one per packet.
+	if resolver.writes > 5 {
+		t.Fatalf("writes = %d for 100 flapping announcements; the cooldown is not bounding them",
+			resolver.writes)
+	}
+	if resolver.writes == 0 {
+		t.Fatal("no write at all; the cooldown is refusing the first announcement too")
+	}
+}
+
+// TestOneTrustReadPerPacket pins that the trust store is read once for a whole
+// packet, not once per announcement. One datagram can carry hundreds of address
+// records, and a full table read per record is a read amplifier for anyone able
+// to send multicast.
+func TestOneTrustReadPerPacket(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	browser := NewBrowser(resolver, anyAddress)
+
+	announcements := make([]Announcement, 0, 200)
+	for i := range 200 {
+		announcements = append(announcements, Announcement{
+			NodeID:  unpairedNode,
+			Address: "192.0.2." + strconv.Itoa(i%250+1) + ":7463",
+		})
+	}
+	if _, err := browser.ApplyAll(context.Background(), announcements); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 1 {
+		t.Fatalf("trust store read %d times for one packet of %d announcements",
+			resolver.trustReads, len(announcements))
 	}
 }
 

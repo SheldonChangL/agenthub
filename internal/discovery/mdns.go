@@ -73,43 +73,91 @@ type Resolver interface {
 // never receives anything, with the reason in a log line.
 type AddressPolicy func(address string) error
 
+// addressChangeCooldown is the shortest interval between two recorded address
+// changes for one peer.
+//
+// Without it, an attacker who knows a paired node's id can alternate between
+// two acceptable addresses to defeat the unchanged-address check, writing to
+// the database on every packet and keeping that peer pointed somewhere it is
+// not. A peer that genuinely moves network waits this long to be found again,
+// which is a small price for making the flap harmless.
+const addressChangeCooldown = 30 * time.Second
+
 // Browser listens for peer announcements and records the ones that name a
 // node this owner has already paired with.
 type Browser struct {
 	resolver Resolver
 	policy   AddressPolicy
+	now      func() time.Time
 	// applied remembers the last address stored for each node, so a peer
 	// re-announcing an unchanged address does not write on every packet.
 	applied map[string]string
+	// changedAt remembers when each node's address last moved, so alternating
+	// announcements cannot turn the dedup above into a write amplifier.
+	changedAt map[string]time.Time
 }
 
 func NewBrowser(resolver Resolver, policy AddressPolicy) *Browser {
-	return &Browser{resolver: resolver, policy: policy, applied: map[string]string{}}
+	return &Browser{
+		resolver:  resolver,
+		policy:    policy,
+		now:       func() time.Time { return time.Now().UTC() },
+		applied:   map[string]string{},
+		changedAt: map[string]time.Time{},
+	}
 }
 
-// Apply records an announcement if, and only if, it names an already-paired
+// ApplyAll records every announcement in one packet.
+//
+// The trust store is read once per packet rather than once per announcement.
+// One 9000-byte datagram can carry hundreds of address records, and a full
+// table read per record hands anyone who can send multicast a way to drive
+// database reads at packet rate.
+func (b *Browser) ApplyAll(ctx context.Context, announcements []Announcement) (int, error) {
+	if len(announcements) == 0 {
+		return 0, nil
+	}
+	ids, err := b.resolver.TrustedNodeIDs(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read trusted nodes: %w", err)
+	}
+	trusted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		trusted[id] = struct{}{}
+	}
+
+	applied := 0
+	for _, announcement := range announcements {
+		ok, err := b.apply(ctx, trusted, announcement)
+		if err != nil {
+			return applied, err
+		}
+		if ok {
+			applied++
+		}
+	}
+	return applied, nil
+}
+
+// Apply records a single announcement. It reads the trust store itself, so
+// ApplyAll is what the packet path uses.
+func (b *Browser) Apply(ctx context.Context, announcement Announcement) (bool, error) {
+	applied, err := b.ApplyAll(ctx, []Announcement{announcement})
+	return applied == 1, err
+}
+
+// apply records an announcement if, and only if, it names an already-paired
 // node and carries an address this build will deliver to.
 //
-// The two checks are the entire trust boundary of this package. An unpaired
-// node id is dropped without a trace of it reaching the registry, because
-// SetNodeAddress would not create a row for it anyway and calling it would be
+// The paired check is the entire trust boundary of this package. An unpaired
+// node id is dropped without a trace of it reaching the registry — SetNodeAddress
+// would refuse to create a row for it anyway, and relying on that would be
 // asking the storage layer to enforce a rule this layer is responsible for.
-func (b *Browser) Apply(ctx context.Context, announcement Announcement) (bool, error) {
+func (b *Browser) apply(ctx context.Context, trusted map[string]struct{}, announcement Announcement) (bool, error) {
 	if announcement.NodeID == "" || announcement.Address == "" {
 		return false, nil
 	}
-	trusted, err := b.resolver.TrustedNodeIDs(ctx)
-	if err != nil {
-		return false, fmt.Errorf("read trusted nodes: %w", err)
-	}
-	paired := false
-	for _, nodeID := range trusted {
-		if nodeID == announcement.NodeID {
-			paired = true
-			break
-		}
-	}
-	if !paired {
+	if _, paired := trusted[announcement.NodeID]; !paired {
 		// Not an error and not worth logging at volume: on a shared network,
 		// most announcements are from nodes this owner has nothing to do with.
 		return false, nil
@@ -121,10 +169,15 @@ func (b *Browser) Apply(ctx context.Context, announcement Announcement) (bool, e
 	if b.applied[announcement.NodeID] == announcement.Address {
 		return false, nil
 	}
+	if last, seen := b.changedAt[announcement.NodeID]; seen && b.now().Sub(last) < addressChangeCooldown {
+		// The address is moving faster than a real peer moves networks.
+		return false, nil
+	}
 	if err := b.resolver.SetNodeAddress(ctx, announcement.NodeID, announcement.Address); err != nil {
 		return false, fmt.Errorf("record address for %q: %w", announcement.NodeID, err)
 	}
 	b.applied[announcement.NodeID] = announcement.Address
+	b.changedAt[announcement.NodeID] = b.now()
 	return true, nil
 }
 
@@ -241,9 +294,17 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 		return fmt.Errorf("join mDNS group %q: %w", group, err)
 	}
 	defer func() { _ = connection.Close() }()
+	// The closer must not outlive this function. Without the done channel it
+	// stays parked on ctx.Done() after a read error returns, which is a leaked
+	// goroutine per Listen call.
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-ctx.Done()
-		_ = connection.Close()
+		select {
+		case <-ctx.Done():
+			_ = connection.Close()
+		case <-done:
+		}
 	}()
 
 	buffer := make([]byte, maxPacket)
@@ -258,10 +319,8 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 			}
 			return fmt.Errorf("read mDNS packet: %w", err)
 		}
-		for _, announcement := range ParseAnnouncements(buffer[:read]) {
-			if _, err := b.Apply(ctx, announcement); err != nil {
-				log.Printf("discovery could not apply an announcement: %v", err)
-			}
+		if _, err := b.ApplyAll(ctx, ParseAnnouncements(buffer[:read])); err != nil {
+			log.Printf("discovery could not apply announcements: %v", err)
 		}
 	}
 }
