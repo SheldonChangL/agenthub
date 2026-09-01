@@ -43,10 +43,10 @@ func TestServingANetworkNeedsTheFlag(t *testing.T) {
 // publishing to the internet, and one flag must not do both.
 func TestAPublicAddressIsRefusedEvenWithTheFlag(t *testing.T) {
 	for name, address := range map[string]string{
-		"a public IPv4":                "203.0.113.10:7463",
-		"a public IPv6":                "[2001:db8::1]:7463",
-		"carrier-grade NAT":            "100.64.0.1:7463",
-		"a public range used as a LAN": "122.122.122.1:7463",
+		"a public IPv4":                        "203.0.113.10:7463",
+		"a public IPv6":                        "[2001:db8::1]:7463",
+		"carrier-grade NAT":                    "100.64.0.1:7463",
+		"a public range someone uses as a LAN": "203.0.113.1:7463",
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := ValidatePeerListen(address, true)
@@ -87,7 +87,7 @@ func TestPrivateRangesAreRecognised(t *testing.T) {
 	for name, address := range map[string]string{
 		"RFC 1918 ten":      "10.1.2.3:7463",
 		"RFC 1918 172.16":   "172.16.5.4:7463",
-		"RFC 1918 192.168":  "192.168.161.43:7463",
+		"RFC 1918 192.168":  "192.168.0.43:7463",
 		"IPv6 unique local": "[fd00::1]:7463",
 		"IPv4 link-local":   "169.254.10.20:7463",
 		"IPv6 link-local":   "[fe80::1]:7463",
