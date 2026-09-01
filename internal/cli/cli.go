@@ -258,6 +258,15 @@ func (r runner) simple(ctx context.Context, method, path string, input any) erro
 	if err != nil {
 		return err
 	}
+	// A 2xx that carries no body is a success the API states by saying nothing:
+	// DELETE /v1/nodes/{id} answers 204 No Content. Decoding that as JSON turns
+	// a completed revocation into a reported failure, and telling an owner that
+	// revoking a node failed when the trust is in fact gone is the wrong error
+	// in the wrong direction — they would try again, or believe a peer still
+	// has access that it does not.
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
 	return writePrettyJSON(r.stdout, body)
 }
 
