@@ -93,31 +93,29 @@ func LoopbackOnly(address string) error {
 // that left the private ranges is either a mistake or a destination the owner
 // did not intend.
 //
-// Names are resolved rather than trusted, and every address a name resolves to
-// must qualify — the resolver picks which one is used, so one public answer
-// among several is enough to make the destination unsafe.
+// Names are refused outright rather than resolved, which is the same rule the
+// listen side applies and for the same reason.
+//
+// Resolving here would check one answer and dial another: the policy resolves
+// the name, then net/http resolves it again when the connection is made. A DNS
+// answer that is private at check time and public at dial time sends the TCP
+// connection and the TLS ClientHello — carrying the name in SNI — to a host the
+// owner never chose, every publishing round. The pinned key means no session
+// metadata follows, because the handshake cannot complete, but a check that can
+// be satisfied by one answer and acted on with another is not a check.
 func PrivateNetworks(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("invalid peer address %q: %w", address, err)
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if !privateOrLoopback(ip) {
-			return fmt.Errorf("peer address %q is outside the private network ranges", address)
-		}
-		return nil
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf(
+			"peer address %q must be an IP address, not a name; a name can resolve somewhere else between this check and the connection",
+			address)
 	}
-	resolved, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("peer address %q does not resolve: %w", address, err)
-	}
-	if len(resolved) == 0 {
-		return fmt.Errorf("peer address %q resolves to nothing", address)
-	}
-	for _, ip := range resolved {
-		if !privateOrLoopback(ip) {
-			return fmt.Errorf("peer address %q resolves to %s, which is outside the private ranges", address, ip)
-		}
+	if !privateOrLoopback(ip) {
+		return fmt.Errorf("peer address %q is outside the private network ranges", address)
 	}
 	return nil
 }
