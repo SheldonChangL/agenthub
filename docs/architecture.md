@@ -422,6 +422,33 @@ There is no relaying node in this design, so the requirement that a relay must
 not persist message content is met by there being nothing in the middle: a
 message goes from the machine that queued it to the machine that stores it.
 
+### The inbox is bounded
+
+One session holds at most 500 messages. Bodies are capped at 32KB, so a full
+inbox is about 16MB — far more than anyone reads, and far less than a
+compromised paired peer needs to fill a disk. The bound is per session rather
+than global because sessions come from providers on this machine: a peer cannot
+invent sessions to multiply its allowance.
+
+**A full inbox defers, it does not refuse.** The two obvious designs both
+destroy a message. Refusing makes the sender settle it permanently, so the
+message is lost at the sending end; dropping the oldest loses one silently at
+the receiving end. Neither is acceptable for something a person wrote, so a full
+inbox answers `503` with `Retry-After` and the message stays in the sender's
+queue until somebody reads and clears.
+
+That only works if clearing is possible, so `DELETE /v1/inbox/{id}` empties one
+and `DELETE /v1/inbox/{id}/{messageId}` drops a single message. Deletion is
+explicit rather than inferred from reading: nothing here tracks what has been
+read, and guessing would throw away things the owner had not finished with. How
+full an inbox is travels with its contents, so a session that is filling up is
+visible before senders start backing up.
+
+Settled outbound rows are pruned after a retention period rather than on
+settlement, because `ah outbound <id>` is the only place an owner finds out what
+happened to a message and deleting the answer as it becomes true would make the
+command useless. Pending rows are never pruned.
+
 ### Two listeners, not one
 
 The owner's API and the peer surface are separate listeners with separate muxes.

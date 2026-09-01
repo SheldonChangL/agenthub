@@ -105,6 +105,17 @@ func (r runner) command(ctx context.Context, args []string) error {
 			return errors.New("usage: ah inbox <session-id>")
 		}
 		return r.simple(ctx, http.MethodGet, "/v1/inbox/"+url.PathEscape(args[1]), nil)
+	case "inbox-clear":
+		// The inbox is bounded, so it needs emptying. Deletion is explicit
+		// rather than inferred from reading: nothing tracks what has been read.
+		if len(args) < 2 || len(args) > 3 {
+			return errors.New("usage: ah inbox-clear <session-id> [message-id]")
+		}
+		path := "/v1/inbox/" + url.PathEscape(args[1])
+		if len(args) == 3 {
+			path += "/" + url.PathEscape(args[2])
+		}
+		return r.simple(ctx, http.MethodDelete, path, nil)
 	case "outbound":
 		// A message to another node is queued, not delivered, so there has to
 		// be somewhere to find out what became of it.
@@ -330,9 +341,10 @@ func writePrettyJSON(output io.Writer, data []byte) error {
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
-	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, outbound, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send <node-id>/<provider>:<id> <message>   queues for a paired node")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
+	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 }
