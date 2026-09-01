@@ -18,6 +18,7 @@ import (
 	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
+	"agenthub.local/agenthub/internal/transport"
 )
 
 func main() {
@@ -37,6 +38,7 @@ func run() error {
 	claudeRoot := flag.String("claude-root", defaults.claude, "Claude data root")
 	codexRoot := flag.String("codex-root", defaults.codex, "Codex data root")
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
+	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
@@ -90,6 +92,17 @@ func run() error {
 	serveError := make(chan error, 1)
 	go func() { serveError <- server.ListenAndServe() }()
 	go discoveryLoop(service, *scanInterval)
+
+	// Publishing starts only after the listener is up: a peer that answers this
+	// node's heartbeat by sending its own must find somewhere to send it.
+	//
+	// LoopbackOnly is the boundary from docs/multinode-plan.md. Two nodes on one
+	// machine exchange real, signed, per-peer heartbeats; nothing reaches the
+	// network until the step that widens this is done deliberately.
+	publisher := transport.NewPublisher(store, heartbeats, transport.LoopbackOnly, *publishInterval)
+	publishCtx, stopPublishing := context.WithCancel(context.Background())
+	defer stopPublishing()
+	go publisher.Run(publishCtx)
 	log.Printf("listening on http://%s", *listenAddress)
 
 	select {

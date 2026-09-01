@@ -23,6 +23,12 @@ type TrustedNode struct {
 	Fingerprint string    `json:"fingerprint"`
 	PairedAt    time.Time `json:"pairedAt"`
 	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
+	// Address is where this node reaches the peer, as host:port. It is empty
+	// until something supplies one, and an empty address simply means "nothing
+	// to deliver to" — it is not a trust decision. Trust says who a node is;
+	// the address says where it currently answers, which is the part that
+	// changes when a laptop moves between networks.
+	Address string `json:"address,omitempty"`
 }
 
 func (r *Registry) migrateTrust(ctx context.Context) error {
@@ -39,6 +45,35 @@ CREATE TABLE IF NOT EXISTS trusted_nodes (
 `
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate trust store: %w", err)
+	}
+	return r.addTrustAddressColumn(ctx)
+}
+
+// addTrustAddressColumn brings a database paired by an earlier build up to
+// holding peer addresses. The default is empty, which delivers to nobody: an
+// upgrade must not invent a destination for a node the owner paired when no
+// address existed.
+func (r *Registry) addTrustAddressColumn(ctx context.Context) error {
+	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('trusted_nodes')`)
+	if err != nil {
+		return fmt.Errorf("read trusted_nodes columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan trusted_nodes column: %w", err)
+		}
+		if name == "address" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read trusted_nodes columns: %w", err)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE trusted_nodes ADD COLUMN address TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add trusted_nodes address column: %w", err)
 	}
 	return nil
 }
@@ -149,10 +184,10 @@ func (r *Registry) TrustedNode(ctx context.Context, nodeID string) (TrustedNode,
 	var node TrustedNode
 	var pairedMS, lastSeenMS int64
 	err := r.db.QueryRowContext(ctx, `
-SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms
+SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address
 FROM trusted_nodes WHERE node_id = ?`, nodeID).
 		Scan(&node.NodeID, &node.DisplayName, &node.Platform, &node.PublicKey, &node.Fingerprint,
-			&pairedMS, &lastSeenMS)
+			&pairedMS, &lastSeenMS, &node.Address)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TrustedNode{}, fmt.Errorf("node %q: %w", nodeID, ErrNotFound)
 	}
@@ -168,7 +203,7 @@ FROM trusted_nodes WHERE node_id = ?`, nodeID).
 
 func (r *Registry) TrustedNodes(ctx context.Context) ([]TrustedNode, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms
+SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address
 FROM trusted_nodes ORDER BY display_name, node_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list trusted nodes: %w", err)
@@ -180,7 +215,7 @@ FROM trusted_nodes ORDER BY display_name, node_id`)
 		var node TrustedNode
 		var pairedMS, lastSeenMS int64
 		if err := rows.Scan(&node.NodeID, &node.DisplayName, &node.Platform, &node.PublicKey,
-			&node.Fingerprint, &pairedMS, &lastSeenMS); err != nil {
+			&node.Fingerprint, &pairedMS, &lastSeenMS, &node.Address); err != nil {
 			return nil, fmt.Errorf("scan trusted node: %w", err)
 		}
 		node.PairedAt = time.UnixMilli(pairedMS).UTC()
@@ -193,6 +228,32 @@ FROM trusted_nodes ORDER BY display_name, node_id`)
 		return nil, fmt.Errorf("read trusted nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+// SetNodeAddress records where a trusted peer currently answers.
+//
+// It never creates a row, for the same reason MarkNodeSeen does not: learning
+// an address is not a trust decision. Anything that discovers addresses —
+// today an owner typing one, later mDNS — is an untrusted input source, and a
+// discovery that could add rows here would let whatever is shouting on the
+// network decide who this node believes in.
+//
+// An empty address is allowed and means "I no longer know where this peer is",
+// which stops delivery without touching trust.
+func (r *Registry) SetNodeAddress(ctx context.Context, nodeID, address string) error {
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE trusted_nodes SET address = ? WHERE node_id = ?`, address, nodeID)
+	if err != nil {
+		return fmt.Errorf("set address for %q: %w", nodeID, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read address update for %q: %w", nodeID, err)
+	}
+	if count == 0 {
+		return fmt.Errorf("node %q: %w", nodeID, ErrNotFound)
+	}
+	return nil
 }
 
 // MarkNodeSeen records contact with a peer. It never creates a row: an unknown
