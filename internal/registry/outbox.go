@@ -271,12 +271,18 @@ func (r *Registry) StoreIncomingMessage(ctx context.Context, message model.Messa
 		message.CreatedAt = time.Now().UTC()
 	}
 
+	// One statement decides everything: whether this id is already held, and
+	// whether there is room for a new one. Two statements would let two
+	// concurrent deliveries both see 499 and both insert, and would let a
+	// separate count drift from the insert it was guarding.
 	result, err := r.db.ExecContext(ctx, `
 INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
-VALUES (?, ?, ?, ?, ?, ?)
+SELECT ?, ?, ?, ?, ?, ?
+WHERE (SELECT count(*) FROM messages WHERE recipient_id = ?) < ?
 ON CONFLICT(id) DO NOTHING`,
 		message.ID, message.From, message.To, message.DestinationNodeID,
-		message.Body, message.CreatedAt.UTC().UnixMilli())
+		message.Body, message.CreatedAt.UTC().UnixMilli(),
+		message.To, MaxInboxMessages)
 	if err != nil {
 		return false, fmt.Errorf("store incoming message: %w", err)
 	}
@@ -288,21 +294,40 @@ ON CONFLICT(id) DO NOTHING`,
 		return true, nil
 	}
 
-	// The id was taken. Only the same sender writing to the same session counts
-	// as a redelivery; anything else is refused with the ordinary refusal, so a
-	// peer cannot tell a taken id from a session that declines.
+	// Nothing was written, for one of two reasons. Which one matters: a
+	// redelivery must be recognised as one even when the inbox is full.
+	//
+	// Answering "full" to a message already held would be worse than merely
+	// unhelpful. The sender's row would stay pending forever, ah outbound would
+	// report a delivered message as undelivered, and the moment the owner read
+	// and cleared the inbox the id would come free — so the next round would
+	// insert it again and hand back a message they had already read. Losing an
+	// ack must not cost the reader two of the same message, full or not.
 	existing, err := r.MessageByID(ctx, message.ID)
-	if err != nil {
+	switch {
+	case err == nil:
+		if existing.From == message.From && existing.To == message.To {
+			return false, nil
+		}
+		// The id belongs to a different message. Refused with the ordinary
+		// refusal, so a peer cannot tell a taken id from a declining session.
+		return false, fmt.Errorf("%w: that message cannot be stored", ErrInvalidSession)
+	case errors.Is(err, ErrNotFound):
+		// The id is free, so the room ran out. Deferred, not refused: the
+		// sender keeps it queued and it arrives once somebody reads.
+		held, countErr := r.CountInbox(ctx, message.To)
+		if countErr != nil {
+			return false, countErr
+		}
+		return false, fmt.Errorf("%w: %q holds %d of %d", ErrInboxFull, message.To, held, MaxInboxMessages)
+	default:
 		return false, err
 	}
-	if existing.From == message.From && existing.To == message.To {
-		return false, nil
-	}
-	return false, fmt.Errorf("%w: that message cannot be stored", ErrInvalidSession)
 }
 
-// checkMessageAcceptable applies the same rules CreateMessage does, so the
-// insert above cannot store something the local path would refuse.
+// checkMessageAcceptable applies the rules that do not depend on how full the
+// inbox is. The bound is enforced by the insert itself, so that a redelivery of
+// something already held is never turned away for lack of room it does not need.
 func (r *Registry) checkMessageAcceptable(ctx context.Context, message model.Message) error {
 	switch {
 	case strings.TrimSpace(message.To) == "":
@@ -320,15 +345,6 @@ func (r *Registry) checkMessageAcceptable(ctx context.Context, message model.Mes
 	}
 	if !destination.Audience.AcceptMessages {
 		return fmt.Errorf("%w: session %q does not accept messages", ErrInvalidSession, message.To)
-	}
-	// The bound is checked last, so a message that would be refused anyway is
-	// refused for the reason that actually applies.
-	held, err := r.CountInbox(ctx, message.To)
-	if err != nil {
-		return err
-	}
-	if held >= MaxInboxMessages {
-		return fmt.Errorf("%w: %q holds %d of %d", ErrInboxFull, message.To, held, MaxInboxMessages)
 	}
 	return nil
 }

@@ -255,16 +255,27 @@ func pruneLoop(store *registry.Registry, retention time.Duration) {
 	if retention <= 0 {
 		return
 	}
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for range ticker.C {
-		removed, err := store.PruneSettledOutbound(context.Background(), retention)
+	prune := func() {
+		// Bounded per call. Without it one hung database call stops pruning for
+		// the life of the process, silently.
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		removed, err := store.PruneSettledOutbound(ctx, retention)
 		if err != nil {
 			log.Printf("pruning settled messages failed: %v", err)
-			continue
+			return
 		}
 		if removed > 0 {
 			log.Printf("pruned %d settled outbound message(s) older than %s", removed, retention)
 		}
+	}
+
+	// Once at startup, then hourly. A node restarted more often than the tick
+	// would otherwise never prune at all.
+	prune()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		prune()
 	}
 }

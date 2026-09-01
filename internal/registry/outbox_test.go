@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -492,5 +493,100 @@ func TestPruningNeverRemovesAPendingMessage(t *testing.T) {
 	}
 	if _, err := store.OutboundFor(ctx, queued.ID); err != nil {
 		t.Fatalf("the pending message is gone: %v", err)
+	}
+}
+
+// TestAFullInboxStillRecognisesARedelivery is the interaction between two
+// features that each looked correct alone.
+//
+// A sender whose ack was lost redelivers. If a full inbox answered "full" to
+// that, the sender's row would stay pending forever, `ah outbound` would report
+// a delivered message as undelivered, and — worse — the moment the owner read
+// and cleared the inbox the id would come free, so the next round would insert
+// it again and hand back a message they had already read. The recommended
+// recovery action would deterministically produce a duplicate.
+//
+// A redelivery adds no row, so admitting it can never violate the bound.
+func TestAFullInboxStillRecognisesARedelivery(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	for i := range MaxInboxMessages {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: fmt.Sprintf("msg_%d", i), To: session.ID, From: outboxPeer,
+			DestinationNodeID: testNodeID, Body: "filler",
+		}); err != nil {
+			t.Fatalf("filling at %d: %v", i, err)
+		}
+	}
+
+	// The same sender redelivers something already held, while full.
+	stored, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_0", To: session.ID, From: outboxPeer,
+		DestinationNodeID: testNodeID, Body: "filler",
+	})
+	if err != nil {
+		t.Fatalf("a redelivery into a full inbox = %v; it must be recognised as a duplicate, "+
+			"or the sender never settles and the owner gets a second copy after clearing", err)
+	}
+	if stored {
+		t.Fatal("a redelivery was stored as a new message")
+	}
+
+	// A genuinely new message is still deferred.
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_brand_new", To: session.ID, From: outboxPeer,
+		DestinationNodeID: testNodeID, Body: "new",
+	}); !errors.Is(err, ErrInboxFull) {
+		t.Fatalf("a new message into a full inbox = %v; want ErrInboxFull", err)
+	}
+
+	held, err := store.CountInbox(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != MaxInboxMessages {
+		t.Fatalf("held = %d; the redelivery changed the count", held)
+	}
+}
+
+// TestTheBoundHoldsUnderConcurrentDeliveries covers the count-then-insert race
+// the single statement exists to avoid.
+func TestTheBoundHoldsUnderConcurrentDeliveries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	// Fill to one short of the bound.
+	for i := range MaxInboxMessages - 1 {
+		if _, err := store.StoreIncomingMessage(ctx, model.Message{
+			ID: fmt.Sprintf("msg_%d", i), To: session.ID, From: outboxPeer,
+			DestinationNodeID: testNodeID, Body: "filler",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Race several deliveries for the last slot.
+	var group sync.WaitGroup
+	for i := range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, _ = store.StoreIncomingMessage(ctx, model.Message{
+				ID: fmt.Sprintf("msg_racer_%d", i), To: session.ID, From: outboxPeer,
+				DestinationNodeID: testNodeID, Body: "racing",
+			})
+		}()
+	}
+	group.Wait()
+
+	held, err := store.CountInbox(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held > MaxInboxMessages {
+		t.Fatalf("held = %d; the bound of %d was exceeded by concurrent inserts", held, MaxInboxMessages)
 	}
 }

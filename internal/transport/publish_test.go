@@ -50,6 +50,13 @@ type capture struct {
 	// answerAs overrides the node id this peer claims when answering a
 	// challenge, so a test can impersonate.
 	answerAs string
+	// messages records what arrived on the message endpoint.
+	messages []protocol.MessagePayload
+	// messageStatus overrides the status the message endpoint answers with, so
+	// a test can drive the sender's handling of a deferral.
+	messageStatus int
+	// refuseMessages answers with a refusal ack rather than queueing.
+	refuseMessages bool
 	// refuseChallenge makes the peer fail the proof while still serving.
 	refuseChallenge bool
 }
@@ -109,6 +116,31 @@ func newCapture(t *testing.T, nodeID string) *capture {
 			}
 			c.envelopes = append(c.envelopes, envelope)
 			w.WriteHeader(c.status)
+		case "/v1/messages":
+			var envelope protocol.Envelope
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Errorf("peer received something that is not an envelope: %v", err)
+				return
+			}
+			var payload protocol.MessagePayload
+			if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+				t.Errorf("peer received an unreadable message payload: %v", err)
+				return
+			}
+			if c.messageStatus != 0 && c.messageStatus != http.StatusOK {
+				// A deferral or a failure: no ack body, just the status.
+				w.WriteHeader(c.messageStatus)
+				return
+			}
+			c.messages = append(c.messages, payload)
+			status := protocol.AckQueued
+			if c.refuseMessages {
+				status = protocol.AckRefused
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.AckPayload{
+				MessageID: payload.MessageID, Status: status, Reason: "because",
+			})
 		default:
 			t.Errorf("peer received an unexpected path %q", r.URL.Path)
 		}
@@ -698,5 +730,118 @@ func TestPrivateNetworksRefusesPublicLiterals(t *testing.T) {
 		if err := PrivateNetworks(address); err == nil {
 			t.Errorf("PrivateNetworks(%q) = nil; a public address must be refused", address)
 		}
+	}
+}
+
+// TestA503LeavesTheMessageQueued is the sender-side half of the full-inbox
+// design, and until this test nothing exercised it.
+//
+// The whole 503 decision rests on the sender treating it as transient: a full
+// inbox defers rather than refuses precisely so the message survives. That
+// property lived in the interaction between two packages and was enforced by no
+// test — an edit classifying 503 as a refusal would have passed the suite while
+// silently destroying messages.
+func TestA503LeavesTheMessageQueued(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	peer := newCapture(t, peerID)
+	peer.messageStatus = http.StatusServiceUnavailable
+	trust(t, store, peerID, peer.address(t), peer.public)
+
+	ctx := context.Background()
+	if _, err := store.TrustedNode(ctx, peerID); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := store.QueueOutbound(ctx, registry.OutboundMessage{
+		DestinationNodeID: peerID, To: "codex:theirs", Body: "please keep me",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := publisherFor(t, store).DeliverMessages(ctx)
+	if err != nil {
+		t.Fatalf("DeliverMessages() error = %v", err)
+	}
+	if result.Delivered != 0 {
+		t.Errorf("result = %+v; a 503 is not a delivery", result)
+	}
+
+	after, err := store.OutboundFor(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != registry.OutboundPending {
+		t.Fatalf("state = %q; a 503 must leave the message queued, not settle it — "+
+			"settling would destroy a message the recipient never took", after.State)
+	}
+	if after.Attempts == 0 {
+		t.Error("the failed attempt was not recorded, so the owner cannot see why it is stuck")
+	}
+	if after.LastError == "" {
+		t.Error("a stuck message does not say why")
+	}
+}
+
+// TestARefusedAckSettlesTheMessage is the other side of the same distinction:
+// a decision the recipient's owner made is terminal, and retrying it forever
+// would be pointless traffic.
+func TestARefusedAckSettlesTheMessage(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	peer := newCapture(t, peerID)
+	peer.refuseMessages = true
+	trust(t, store, peerID, peer.address(t), peer.public)
+
+	ctx := context.Background()
+	queued, err := store.QueueOutbound(ctx, registry.OutboundMessage{
+		DestinationNodeID: peerID, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisherFor(t, store).DeliverMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.OutboundFor(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != registry.OutboundRefused {
+		t.Fatalf("state = %q; a refusal is a decision and is terminal", after.State)
+	}
+}
+
+// TestADeliveredAckSettlesTheMessage keeps the happy path from being the one
+// nobody checks.
+func TestADeliveredAckSettlesTheMessage(t *testing.T) {
+	store := openStore(t)
+	peerID := "node_peeraaaaaaaaaaaa"
+	peer := newCapture(t, peerID)
+	trust(t, store, peerID, peer.address(t), peer.public)
+
+	ctx := context.Background()
+	queued, err := store.QueueOutbound(ctx, registry.OutboundMessage{
+		DestinationNodeID: peerID, To: "codex:theirs", Body: "hello",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := publisherFor(t, store).DeliverMessages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Delivered != 1 {
+		t.Fatalf("result = %+v; want one delivery", result)
+	}
+	after, err := store.OutboundFor(ctx, queued.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != registry.OutboundDelivered {
+		t.Fatalf("state = %q; want delivered", after.State)
+	}
+	if len(peer.messages) != 1 || peer.messages[0].Body != "hello" {
+		t.Fatalf("the peer received %#v", peer.messages)
 	}
 }
