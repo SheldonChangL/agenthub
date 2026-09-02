@@ -1,11 +1,11 @@
 package protocol_test
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"strings"
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 )

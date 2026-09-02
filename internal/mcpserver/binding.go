@@ -1,11 +1,12 @@
 package mcpserver
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
+
+	"agenthub.local/agenthub/internal/address"
 )
 
 // ErrNoBinding marks a server started without being told which session it acts

@@ -21,14 +21,14 @@ var ErrUnknownNode = errors.New("unknown node")
 // QualifiedID renders the address a peer uses to reach a session:
 // <node-id>/<provider>:<provider-session-id>.
 func QualifiedID(nodeID, sessionID string) string {
-	return nodeID + "/" + sessionID
+	return nodeID + model.SessionIDSeparator + sessionID
 }
 
 // SplitQualifiedID reverses QualifiedID. ok is false when the value is not a
 // qualified address, which callers must treat as a local session ID rather
 // than guessing a node.
 func SplitQualifiedID(qualified string) (nodeID, sessionID string, ok bool) {
-	nodeID, sessionID, found := strings.Cut(qualified, "/")
+	nodeID, sessionID, found := strings.Cut(qualified, model.SessionIDSeparator)
 	if !found || nodeID == "" || sessionID == "" {
 		return "", "", false
 	}

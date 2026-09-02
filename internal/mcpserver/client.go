@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -39,15 +40,30 @@ func NewClient(baseURL string) (*Client, error) {
 	if parsed.Host == "" {
 		return nil, fmt.Errorf("node URL %q must include a host", baseURL)
 	}
+	// A query or fragment survives String() and would land in the middle of
+	// every path this client builds, producing requests that fail in ways that
+	// point nowhere near the cause.
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return nil, fmt.Errorf("node URL %q must be a bare scheme://host:port", baseURL)
+	}
+	// Loopback only, and not merely because the owner's API binds there.
+	// This process writes message bodies authored on other machines into an
+	// agent's reasoning context. Pointing it at a node someone else controls
+	// would let that party choose what the agent reads, and the instructions
+	// this server sends at initialize would stop being true.
+	if err := requireLoopback(parsed.Hostname()); err != nil {
+		return nil, fmt.Errorf("node URL %q: %w", baseURL, err)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return &Client{
-		baseURL: strings.TrimRight(parsed.String(), "/"),
+		baseURL: parsed.String(),
 		http:    &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
 // SessionExists reports whether the node has this local session.
 func (c *Client) SessionExists(ctx context.Context, sessionID string) error {
-	status, _, err := c.get(ctx, "/v1/sessions/"+url.PathEscape(sessionID))
+	status, body, err := c.get(ctx, "/v1/sessions/"+url.PathEscape(sessionID))
 	if err != nil {
 		return err
 	}
@@ -55,7 +71,7 @@ func (c *Client) SessionExists(ctx context.Context, sessionID string) error {
 		return ErrSessionNotFound
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("node answered %d for that session", status)
+		return fmt.Errorf("node answered %s for that session", describe(status, body))
 	}
 	return nil
 }
@@ -67,7 +83,7 @@ func (c *Client) NodeID(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("node answered %d for its identity", status)
+		return "", fmt.Errorf("node answered %s for its identity", describe(status, body))
 	}
 	var decoded struct {
 		ID string `json:"id"`
@@ -79,6 +95,34 @@ func (c *Client) NodeID(ctx context.Context) (string, error) {
 		return "", errors.New("node reported no identifier")
 	}
 	return decoded.ID, nil
+}
+
+// requireLoopback accepts only names that cannot leave this machine.
+func requireLoopback(host string) error {
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return errors.New("must be loopback; this server reads other machines' messages into an agent's context")
+	}
+	return nil
+}
+
+// describe turns the node's error envelope into something an operator can act
+// on. Reporting only the status code makes them guess at a message the node
+// already wrote down.
+func describe(status int, body []byte) string {
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
+		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, envelope.Error.Message)
+	}
+	return fmt.Sprintf("%d", status)
 }
 
 func (c *Client) get(ctx context.Context, path string) (int, []byte, error) {

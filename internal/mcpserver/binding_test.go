@@ -110,3 +110,17 @@ func TestAnUnvalidatedBindingCannotBuildAServer(t *testing.T) {
 		t.Fatalf("New(valid binding) = %v, want success", err)
 	}
 }
+
+// New must also refuse a nil client: a server with a validated binding but no
+// way to reach the node would accept calls and fail on the first one, inside a
+// tool, where the reason is hardest to see.
+func TestAServerNeedsANodeClient(t *testing.T) {
+	client := nodeStub(t, map[string]bool{"codex:demo": true})
+	binding, err := mcpserver.Bind(context.Background(), client, "codex:demo")
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := mcpserver.New(nil, binding, "node_0123456789abcdef0123"); err == nil {
+		t.Fatal("New(nil client) succeeded")
+	}
+}
