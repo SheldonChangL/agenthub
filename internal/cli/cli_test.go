@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -139,5 +140,60 @@ func TestRunStillReportsAnUndecodableBody(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "decode response JSON") {
 		t.Errorf("stderr = %q; want the decode failure reported", stderr.String())
+	}
+}
+
+// The flags are what an owner uses to open each gate, so each must reach the
+// node as the field it names — and the ones not passed must stay closed.
+func TestAudienceFlagsReachTheNode(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want map[string]bool
+	}{
+		{"no flags", nil, map[string]bool{"exportCwd": false, "acceptMessages": false, "allowOutbound": false}},
+		{"outbound only", []string{"--outbound"}, map[string]bool{"exportCwd": false, "acceptMessages": false, "allowOutbound": true}},
+		{"all three", []string{"--cwd", "--messages", "--outbound"}, map[string]bool{"exportCwd": true, "acceptMessages": true, "allowOutbound": true}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"claude:abc"}`))
+			}))
+			defer server.Close()
+
+			args := append([]string{"--url", server.URL, "audience", "claude:abc", "none"}, testCase.args...)
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			for field, want := range testCase.want {
+				got, present := body[field]
+				if !present {
+					t.Errorf("%s is absent from the request body: %v", field, body)
+					continue
+				}
+				if got != want {
+					t.Errorf("%s = %v, want %v", field, got, want)
+				}
+			}
+		})
+	}
+}
+
+// An unknown flag must be refused rather than treated as a node id, or a typo
+// would silently grant a session to a node called "--outbund".
+func TestAnUnknownAudienceFlagIsRefused(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(),
+		[]string{"--url", "http://127.0.0.1:1", "audience", "claude:abc", "none", "--outbund"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("a misspelled flag was accepted")
+	}
+	if !strings.Contains(stderr.String(), "--outbound") {
+		t.Errorf("the error does not list the real flag: %q", stderr.String())
 	}
 }

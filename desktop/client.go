@@ -20,6 +20,7 @@ type Audience struct {
 	Nodes          []string `json:"nodes,omitempty"`
 	ExportCWD      bool     `json:"exportCwd"`
 	AcceptMessages bool     `json:"acceptMessages"`
+	AllowOutbound  bool     `json:"allowOutbound"`
 }
 
 type Session struct {
