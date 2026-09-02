@@ -316,3 +316,79 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 	}
 	return peers, nil
 }
+
+// TrustedNode is a paired node's identity as this node recorded it at pairing.
+type TrustedNode struct {
+	NodeID      string `json:"nodeId"`
+	DisplayName string `json:"displayName"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// TrustedNodes returns the pairing records, which carry the fingerprints.
+//
+// A message's sender is established by the envelope's signature, so the node id
+// on a stored message is already proven. The fingerprint is what a person can
+// compare out of band, and it is the only part of a sender's identity a reader
+// can check for themselves.
+func (c *Client) TrustedNodes(ctx context.Context) (map[string]TrustedNode, error) {
+	status, body, err := c.get(ctx, "/v1/nodes")
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("node answered %s listing paired nodes", describe(status, body))
+	}
+	var decoded struct {
+		Nodes []TrustedNode `json:"nodes"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode paired nodes: %w", err)
+	}
+	byID := make(map[string]TrustedNode, len(decoded.Nodes))
+	for _, node := range decoded.Nodes {
+		byID[node.NodeID] = node
+	}
+	return byID, nil
+}
+
+// StoredMessage is one message as the node holds it.
+type StoredMessage struct {
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Inbox reads the messages held for one local session.
+type Inbox struct {
+	Messages []StoredMessage
+	Held     int
+	Capacity int
+	Full     bool
+}
+
+// ReadInbox returns what the node holds for a session.
+func (c *Client) ReadInbox(ctx context.Context, sessionID string, limit int) (Inbox, error) {
+	path := fmt.Sprintf("/v1/inbox/%s?limit=%d", url.PathEscape(sessionID), limit)
+	status, body, err := c.get(ctx, path)
+	if err != nil {
+		return Inbox{}, err
+	}
+	if status != http.StatusOK {
+		return Inbox{}, fmt.Errorf("node answered %s reading the inbox", describe(status, body))
+	}
+	var decoded struct {
+		Messages []StoredMessage `json:"messages"`
+		Held     int             `json:"held"`
+		Capacity int             `json:"capacity"`
+		Full     bool            `json:"full"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return Inbox{}, fmt.Errorf("decode inbox: %w", err)
+	}
+	return Inbox{
+		Messages: decoded.Messages, Held: decoded.Held,
+		Capacity: decoded.Capacity, Full: decoded.Full,
+	}, nil
+}
