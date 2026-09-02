@@ -96,8 +96,9 @@ The node listens on `127.0.0.1:7462` by default. Set `AGENTHUB_URL` for the CLI 
 The owner's API remains loopback-only and stays there; peer traffic uses a
 separate TLS listener on `127.0.0.1:7463` by default. Trust records are created
 by hand, and the receiving side authenticates every envelope against them:
-signature, recipient binding, expiry, and sequence. Session list responses are
-paginated; `ah list` follows every page automatically.
+signature and recipient binding on all of them, plus expiry and a strictly
+advancing sequence on heartbeats, and message-id deduplication on messages.
+Session list responses are paginated; `ah list` follows every page automatically.
 
 ## Desktop app
 
@@ -118,8 +119,8 @@ The app requires a running node and talks to it over the same local HTTP API as 
 
 ## Privacy model
 
-`ah list` is an owner-local view and can show private sessions. In the current
-single-node build, publishing controls a local export preview only:
+`ah list` is an owner-local view and can show private sessions. Publishing
+decides which paired nodes receive a session in the heartbeat built for them:
 
 ```text
 discovered session -> audience: none -> absent from every export view
