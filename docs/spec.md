@@ -18,7 +18,7 @@ unresolved implementation gaps made explicit.
 3. Managed sessions will report lifecycle state directly to the registry; launching and supervising providers is outside this increment.
 4. All discovered sessions default to audience `none`. Re-discovery must never reset audience or export flags. An audience by itself sends nothing off this host: delivery also needs a paired node with a recorded address, and without `-allow-lan` the delivery policy is loopback-only, so two nodes on one machine still exchange real per-peer heartbeats while nothing reaches the network.
 5. Transcript and prompt bodies are out of scope and must not be persisted.
-6. The owner's API binds to loopback. A separate peer listener carries signed envelopes between paired nodes over pinned TLS when `-allow-lan` is set; there is no central host. The automated `pair.*` exchange is not implemented, so pairing is still manual.
+6. The owner's API binds to loopback. A separate peer listener carries signed envelopes between paired nodes over pinned TLS, on loopback by default and on a private address when `-allow-lan` is set; there is no central host. The automated `pair.*` exchange is not implemented, so pairing is still manual.
 
 ## Tech stack
 

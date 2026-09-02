@@ -19,7 +19,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Message inbox, bounded and deduplicated, reachable from paired nodes
 - Per-session audience, working-directory export, and inbound-message policy
 - Manual fingerprint pairing, trust storage, revocation, and desktop management
-- Draft broker protocol and MCP tool schemas
+- Broker envelope schema, in use on the wire, and draft MCP tool schemas
 - Architecture and issue plan for authenticated multi-node operation
 - No MCP server: the four tools in `mcp-tools.json` are contract drafts, so no agent can reach any of the above (Step 7, issue #56)
 - No wake-up: messages sit in the inbox until a person reads them (Step 8, issue #60)
@@ -83,6 +83,12 @@ go run ./cmd/ah audience <session-id> all-paired --cwd
 go run ./cmd/ah audience <session-id> selected node_laptop00000000 node_build000000000 --cwd --messages
 go run ./cmd/ah nodes
 go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
+
+# Pairing alone does not make delivery happen: a peer with no recorded address
+# is skipped. There is no `ah` subcommand for this yet, so it is a raw call.
+curl -X PUT http://127.0.0.1:7462/v1/nodes/<node-id>/address \
+  -H 'Content-Type: application/json' -d '{"address":"192.168.1.20:7463"}'
+
 go run ./cmd/ah revoke <node-id>
 go run ./cmd/ah send <session-id> "please review the schema"
 go run ./cmd/ah inbox <session-id>
@@ -157,7 +163,7 @@ at audience `none`, including rows previously marked public: that flag controlle
 a local preview at a time when no remote peer existed, so it was never consent to
 share with one.
 
-Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued—not delivered or read.
+Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
 
 See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool draft](docs/mcp-tools.json).
 
@@ -178,7 +184,15 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/nodes` | List paired nodes |
 | `POST` | `/v1/nodes` | Manually trust a node whose full fingerprint the owner compared |
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
-| `POST` | `/v1/messages` | Queue a local message |
+| `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, and there is no `ah` subcommand for it yet |
+| `GET` | `/v1/node` | This node's own identity and fingerprint |
+| `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node |
+| `POST` | `/v1/messages` | Queue a message for a local session, or for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
+| `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
+| `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |
+| `GET` | `/v1/outbound/{id}` | What became of one queued message |
+
+The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, and `POST /v1/messages`. It is never the owner's API.
 
 See [verification notes](docs/verification.md) for the tested platform matrix and remaining runtime checks.
