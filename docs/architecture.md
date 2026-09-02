@@ -1,81 +1,132 @@
 # Architecture
+## Topology
 
-## Target topology
+Every installation runs the same components. There is no central server: nodes
+deliver to each other directly over TLS. "Broker" survives as the name of the
+envelope format in `broker-protocol.schema.json` and as a logical role each node
+performs for itself; no such host is deployed, and none is planned.
+
+### Inside one node
+
+```mermaid
+flowchart TB
+    subgraph Agent["Agent - has its own Read/Bash tools"]
+        Claude[Claude Code]
+        Codex[Codex]
+    end
+
+    subgraph Client["Owner surfaces"]
+        Desktop[Desktop app]
+        CLI[ah CLI]
+    end
+
+    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools<br/>Step 7 - not built"]
+
+    API["Loopback HTTP API<br/>127.0.0.1:7462"]
+
+    subgraph Node["agenthub-node"]
+        Registry[("SQLite<br/>sessions · audience · trust<br/>inbox · outbox")]
+        Key[["node.key - Ed25519<br/>DPAPI-protected on Windows"]]
+        Scan["Filesystem discovery<br/>~/.claude · ~/.codex - read only"]
+    end
+
+    Peer["Peer listener<br/>:7463 TLS 1.3<br/>the only surface that leaves the host"]
+
+    Claude -- stdio --> MCP
+    Codex -- stdio --> MCP
+    MCP --> API
+    Desktop --> API
+    CLI --> API
+    API --> Node
+    Scan --> Registry
+    Node --> Peer
+```
+
+The agent starts `agenthub-mcp` as its own child process, which is why that
+process cannot know which session called it unless it is told at startup — hence
+the `--as` binding in #50. It reaches the registry through the same loopback API
+the desktop app and CLI use, never through SQLite directly, so `agenthub-node`
+remains the only writer and the MCP surface cannot bypass audience filtering.
+
+### Between two nodes
 
 ```mermaid
 flowchart LR
-    Owner[Owner] --> CLI[ah CLI]
-    Owner --> Desktop[Desktop app]
-
-    subgraph ClientA[Client node A]
-        ClaudeA[Claude sessions] --> ClaudeAdapter[Claude adapter]
-        CodexA[Codex sessions] --> CodexAdapter[Codex adapter]
-        ClaudeAdapter --> RegistryA[(Owner-local SQLite registry)]
-        CodexAdapter --> RegistryA
-        CLI --> LocalAPI[Loopback HTTP API]
-        Desktop --> LocalAPI
-        LocalMCP[Local MCP server - planned] --> LocalAPI
-        LocalAPI --> NodeA[agenthub-node]
-        NodeA <--> RegistryA
-        RegistryA --> PolicyA[Audience and export policy]
-        PolicyA --> ExportA[Allowlisted export view]
-        InboxA[(Local inbox)] <--> NodeA
+    subgraph A["Node A"]
+        NodeA[agenthub-node]
+        OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
     end
 
-    subgraph Server[AgentHub broker server - planned]
-        Auth[Node authentication and pairing]
-        Presence[Authorized presence directory]
-        Router[Message router]
-        Audit[Delivery audit without transcript storage]
-        Auth --> Presence
-        Presence --> Router
-        Router --> Audit
+    subgraph B["Node B"]
+        InB{{"acceptMessages<br/>implemented<br/>per session"}}
+        InboxB[("inbox")]
+        WakeB{{"autoWake<br/>Step 8 - issue 59<br/>default off"}}
+        AgentB[Agent on B]
     end
 
-    subgraph ClientB[Client node B]
-        NodeB[agenthub-node]
-        RegistryB[(Owner-local SQLite registry)]
-        PolicyB[Audience and export policy]
-        InboxB[(Local inbox)]
-        AgentsB[Claude and Codex sessions]
-        NodeB <--> RegistryB
-        RegistryB --> PolicyB
-        NodeB <--> InboxB
-        AgentsB --> RegistryB
-        InboxB -. managed delivery or unmanaged queue .-> AgentsB
-    end
-
-    ExportA -. authenticated heartbeat .-> Presence
-    NodeA -. routed message .-> Router
-    Router -. authorized delivery .-> NodeB
-    PolicyB -. authenticated heartbeat .-> Presence
+    NodeA -- "heartbeat every 15s<br/>only audience-authorised sessions" --> InB
+    NodeA --> OutA
+    OutA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
+    InB --> InboxB
+    InboxB -- "Step 7: a person asks the agent to look" --> AgentB
+    InboxB --> WakeB
+    WakeB -- "Step 8: arrives on its own" --> AgentB
 ```
 
-The Client A solid path exists in the local MVP. Client B represents another
-installation of the same local components; all cross-client/server and
-provider-delivery edges are planned. The broker is a logical server role;
-deployment and transport are intentionally deferred until the identity,
-pairing, and export contracts are implemented.
+Three gates sit on that path and are independent of each other, because willing
+to receive is not willing to send, and neither is willing to act unattended:
+
+| Gate | Where | State |
+|---|---|---|
+| `acceptMessages` | on the recipient | implemented |
+| `allowOutbound` | on the sender | Step 7, #53, default off |
+| `autoWake` | on the recipient | Step 8, #59, default off |
+
+TLS is pinned to the public key recorded when the two nodes paired, verified
+through `VerifyConnection` so a resumed TLS 1.3 handshake is checked too. A
+middlebox that substitutes its own certificate cannot complete the connection.
+
+### How a message reaches an agent
+
+Delivery to the inbox works today and has been exercised between two machines.
+What does not exist yet is anything an agent can call, and anything that hands a
+message to an agent without a person asking.
+
+| Leg | Mechanism | State |
+|---|---|---|
+| Agent sends | `agent_send` over MCP | Step 7, #53 |
+| Node to node | signed envelope over pinned TLS | implemented |
+| Into the inbox | `acceptMessages`, deduplicated, bounded at 500 | implemented |
+| Agent reads on request | `agent_inbox` over MCP | Step 7, #52 |
+| Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | Step 8, #57 |
+| Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | Step 8, #58 |
+
+The two wake-up paths are asymmetric, and the difference is worth knowing before
+relying on either. The Claude Code path runs through `agenthub-mcp`, which the
+agent itself launched, so nothing can be pushed unless that session is already
+running. The Codex path has `agenthub-node` connect outwards to the Codex App
+Server, so it does not depend on an agent having started anything first.
+
+For Claude Code, a channel is the only mechanism that works: MCP
+`sampling/createMessage` and `notifications/resources/updated` are not
+implemented by Claude Code, no hook fires on a timer, and hooks cannot raise a
+turn on their own.
+
+Neither path injects text into a provider's files or process. `#16`'s boundary
+holds: the Codex path calls Codex's own API, and the Claude Code path uses a
+documented MCP capability.
 
 ## Current implementation boundary
 
 | Boundary | Current state |
 |---|---|
-| Provider session -> client node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
-| Owner -> client node | `ah`, desktop app, and loopback HTTP API are implemented |
-| Client node -> broker server | Not implemented; non-loopback bind is rejected. Node identity, recipient-bound signed envelopes, a persisted outbound sequence, the trust store and the pairing schema exist; no transport carries them and no receiver consumes them |
-| MCP client -> client node | Tool contracts are drafted; no MCP transport is running |
-| Node -> AI agent message delivery | Local messages are queued only; no provider injection or wake-up |
-
-`agenthub-node` owns the local registry and is the only component intended to write it. Adapters translate provider-specific metadata into one `Session` model. The CLI and the desktop app talk to the node rather than reading provider files or SQLite directly.
-
-The desktop app is the owner's audience management surface: it lists every
-local session, filters them by provider, status, audience, and working
-directory, and applies an audience policy to a selection. It holds no state of
-its own and lives in a separate Go module so that Wails' CGo requirement never
-reaches the node or the CLI.
-
-Codex has two discovery foundations: rollout metadata scanning, which is the enabled MVP path, and a JSON-RPC App Server client for `initialize` plus `thread/list`. The live client requests `useStateDbOnly: true`, decodes only identity/path/status fields, and maps `active`, `idle`, `notLoaded`, and `systemError` into AgentHub status. It is intentionally not wired into the daemon until transport lifecycle and reconnect behavior are specified.
+| Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
+| Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
+| Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` names a private address |
+| MCP client -> node | Tool contracts are drafted in `mcp-tools.json`; no server exists. Step 7, #56 |
+| Node -> agent | Messages are queued in the inbox and nothing hands them to an agent. Step 8, #60 |
+| Pairing | Manual: five arguments including a base64 public key. Discovery fills addresses for already-paired nodes only. Step 9, #63 |
+| Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |
 
 ## Platform boundary
 
