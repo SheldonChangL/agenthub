@@ -2,10 +2,7 @@ package mcpserver_test
 
 import (
 	"go/build"
-	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,16 +24,12 @@ import (
 func TestTheDatabaseIsNotLinkedIntoTheServer(t *testing.T) {
 	// The full import path, not a relative one: the test's working directory is
 	// this package, not the module root.
-	// GOROOT-relative rather than $PATH: this test is the boundary, and it
-	// should not silently stop enforcing it under a trimmed environment.
-	// go/build resolves the toolchain the same way.
-	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
-	if _, err := os.Stat(goTool); err != nil {
-		found, lookErr := exec.LookPath("go")
-		if lookErr != nil {
-			t.Fatalf("no go toolchain: %v / %v", err, lookErr)
-		}
-		goTool = found
+	// Found on PATH, which is what Go itself recommends since 1.24 deprecated
+	// runtime.GOROOT(). A missing toolchain fails this test rather than skipping
+	// it: a boundary that cannot be checked has not been satisfied.
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatalf("no go toolchain on PATH, so this boundary cannot be checked: %v", err)
 	}
 	command := exec.Command(goTool, "list", "-deps", "agenthub.local/agenthub/cmd/agenthub-mcp")
 	var stderr strings.Builder

@@ -60,7 +60,7 @@ func TestTheSurfaceIsFourToolsAndNothingElse(t *testing.T) {
 	// four while introducing exactly the reach this server must not have. The
 	// exact-set assertion above is the real guard; this one catches a rename
 	// that slips a capability in under a familiar count.
-	forbidden := []string{"file", "shell", "bash", "exec", "command", "process", "sql", "query", "open", "fetch"}
+	forbidden := []string{"read", "write", "file", "shell", "bash", "exec", "command", "process", "sql", "query", "open", "fetch"}
 	for _, tool := range result.Tools {
 		name := strings.ToLower(tool.Name)
 		for _, word := range forbidden {

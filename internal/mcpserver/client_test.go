@@ -16,11 +16,19 @@ func TestOnlyALoopbackNodeIsAccepted(t *testing.T) {
 		"http://example.com:7462",
 		"https://node.internal:7462",
 		"http://0.0.0.0:7462",
-		"http://[::1%25eth0]:7462",
 	} {
 		if _, err := mcpserver.NewClient(raw); err == nil {
 			t.Errorf("NewClient(%q) succeeded; only loopback may be used", raw)
 		}
+	}
+
+	// A zoned ::1 IS loopback. It is refused only because net.ParseIP cannot
+	// read a zone, so this is a conservative rejection, not a security one.
+	// Recorded separately so that hardening the check with netip.ParseAddr —
+	// which does read zones and would call this loopback — reads as the
+	// deliberate change it would be, rather than as a test regression.
+	if _, err := mcpserver.NewClient("http://[::1%25eth0]:7462"); err == nil {
+		t.Error("NewClient with a zoned ::1 succeeded; today it is conservatively refused")
 	}
 	for _, raw := range []string{
 		"http://127.0.0.1:7462",
