@@ -96,10 +96,11 @@ func call(t *testing.T, s *mcp.ClientSession, tool string, args map[string]any) 
 	return text, result.IsError
 }
 
-// The node already applied each peer's audience when it accepted that peer's
-// heartbeat, so presence IS the authorised view. A session an owner did not
-// publish never reaches presence, and so must never reach an agent.
-func TestOnlyAuthorisedRemoteSessionsAreVisible(t *testing.T) {
+// A smoke test: an authorised remote session and a local one both arrive, in
+// the shape an agent will read. The negative half — that nothing else arrives —
+// is TestNothingAppearsForAPeerThatAuthorisedNothing, which is where the
+// guarantee actually lives.
+func TestBothLocalAndAuthorisedRemoteSessionsArrive(t *testing.T) {
 	node := &fakeNode{
 		local: []map[string]any{session("codex:mine", "codex", "active", "/home/me")},
 		peers: []map[string]any{{
@@ -147,19 +148,6 @@ func TestNothingAppearsForAPeerThatAuthorisedNothing(t *testing.T) {
 	}
 }
 
-// An unpaired node is absent from presence entirely, so nothing it runs can
-// appear.
-func TestSessionsOfUnpairedNodesNeverAppear(t *testing.T) {
-	node := &fakeNode{
-		local: []map[string]any{session("codex:mine", "codex", "active", "")},
-		peers: []map[string]any{},
-	}
-	text, _ := call(t, connectTo(t, node), "agent_list", map[string]any{})
-	if strings.Contains(text, "node_") {
-		t.Errorf("a session from an unpaired node appeared: %s", text)
-	}
-}
-
 // The working directory is a separate opt-in from publishing the session. A
 // remote summary carries it only where its owner chose to.
 func TestARemoteWorkingDirectoryAppearsOnlyWhenExported(t *testing.T) {
@@ -182,9 +170,14 @@ func TestARemoteWorkingDirectoryAppearsOnlyWhenExported(t *testing.T) {
 	}
 }
 
-// Revocation removes the node from the trust store, and /v1/peers iterates
-// trusted nodes, so the sessions go with it on the next call — no restart.
-func TestRevokingAPeerRemovesItsSessionsImmediately(t *testing.T) {
+// The view is read fresh on every call, never cached.
+//
+// This is what makes revocation take effect without a restart — /v1/peers
+// iterates the trust store, so a revoked node's sessions are gone from the next
+// answer — but the revocation itself belongs to internal/api and is tested
+// there. What is asserted here is only the absence of caching, which is the
+// part this package owns.
+func TestTheViewIsNotCachedBetweenCalls(t *testing.T) {
 	node := &fakeNode{peers: []map[string]any{{
 		"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
 		"sessions": []map[string]any{session("node_peer000000000000/claude:a", "claude", "idle", "")},
@@ -196,7 +189,7 @@ func TestRevokingAPeerRemovesItsSessionsImmediately(t *testing.T) {
 	node.peers = []map[string]any{}
 	text, _ := call(t, session, "agent_list", map[string]any{})
 	if strings.Contains(text, "claude:a") {
-		t.Errorf("a revoked peer's session survived on the same connection: %s", text)
+		t.Errorf("a session survived on the same connection after the node stopped serving it: %s", text)
 	}
 }
 
@@ -295,5 +288,116 @@ func TestRemoteSessionsHaveNoSourceButPresence(t *testing.T) {
 	// And the failure must say what went wrong, not silently degrade to local.
 	if !strings.Contains(text, "presence") {
 		t.Errorf("the error does not name presence: %s", text)
+	}
+}
+
+// A peer describes its own sessions and nothing else.
+//
+// The node authenticates who sent a heartbeat but does not check that the ids
+// inside name that sender, so a paired peer can claim any id it likes. Believed,
+// that lets it attribute a session to a third node which authorised nothing —
+// and, worse, send a bare local-form id that collides with one of this machine's
+// own sessions, after which asking about that session could return the peer's
+// fabrication instead of the truth.
+func TestAPeerCannotClaimSessionsItDoesNotOwn(t *testing.T) {
+	cases := map[string]string{
+		"a session attributed to another node": "node_other00000000000/claude:x",
+		"a bare id colliding with a local one": "codex:mine",
+		"a bare id of its own":                 "claude:whatever",
+		"an id with no provider":               "node_peer000000000000/nonsense",
+	}
+	for name, claimed := range cases {
+		t.Run(name, func(t *testing.T) {
+			node := &fakeNode{
+				local: []map[string]any{session("codex:mine", "codex", "active", "/real/path")},
+				peers: []map[string]any{{
+					"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
+					"sessions": []map[string]any{session(claimed, "claude", "idle", "/peer/fabricated")},
+				}},
+			}
+			text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
+			if !isErr {
+				t.Fatalf("the claim %q was accepted: %s", claimed, text)
+			}
+			if !strings.Contains(text, "does not own") {
+				t.Errorf("refused, but not for the claim: %s", text)
+			}
+		})
+	}
+}
+
+// The refusal must not be quietly partial: a snapshot with one bad row is
+// refused whole, rather than serving the rows that happened to be well-formed
+// alongside a peer that has just been caught lying.
+func TestOneBadRowRefusesTheWholeSnapshot(t *testing.T) {
+	node := &fakeNode{
+		peers: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
+			"sessions": []map[string]any{
+				session("node_peer000000000000/claude:honest", "claude", "idle", ""),
+				session("node_other00000000000/claude:stolen", "claude", "idle", ""),
+			},
+		}},
+	}
+	text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
+	if !isErr {
+		t.Fatalf("a snapshot with a stolen row was served: %s", text)
+	}
+	if strings.Contains(text, "claude:honest") {
+		t.Errorf("the well-formed row was served alongside the refusal: %s", text)
+	}
+}
+
+// The filters narrow the visible set and nothing more. In particular, naming
+// this node must select its local sessions: local rows carry no Node, so
+// without translating the caller's id there was no way to ask for them at all.
+func TestFiltersNarrowTheVisibleSet(t *testing.T) {
+	node := &fakeNode{
+		local: []map[string]any{
+			session("codex:mine", "codex", "active", ""),
+			session("claude:also-mine", "claude", "idle", ""),
+		},
+		peers: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
+			"sessions": []map[string]any{
+				session("node_peer000000000000/claude:theirs", "claude", "active", ""),
+			},
+		}},
+	}
+	session := connectTo(t, node)
+	cases := []struct {
+		name  string
+		args  map[string]any
+		want  []string
+		avoid []string
+	}{
+		{"provider", map[string]any{"provider": "codex"}, []string{"codex:mine"}, []string{"claude:also-mine", "claude:theirs"}},
+		{"status", map[string]any{"status": "idle"}, []string{"claude:also-mine"}, []string{"codex:mine", "claude:theirs"}},
+		{"remote node", map[string]any{"node": "node_peer000000000000"}, []string{"claude:theirs"}, []string{"codex:mine", "claude:also-mine"}},
+		{"this node", map[string]any{"node": localNode}, []string{"codex:mine", "claude:also-mine"}, []string{"claude:theirs"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			text, isErr := call(t, session, "agent_list", c.args)
+			if isErr {
+				t.Fatalf("errored: %s", text)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("missing %s: %s", want, text)
+				}
+			}
+			for _, avoid := range c.avoid {
+				if strings.Contains(text, avoid) {
+					t.Errorf("should not contain %s: %s", avoid, text)
+				}
+			}
+			// Total is the visible set before filtering, so an agent that
+			// narrowed too far can tell "nothing matched" from "nothing is
+			// visible" without a second call.
+			if !strings.Contains(text, `"total":3`) {
+				t.Errorf("total should stay 3 regardless of the filter: %s", text)
+			}
+		})
 	}
 }

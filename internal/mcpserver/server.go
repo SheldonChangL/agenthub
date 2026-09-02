@@ -110,7 +110,7 @@ func (s *server) MCPServer() *mcp.Server {
 		if err != nil {
 			return nil, nil, err
 		}
-		matched := filter(sessions, args.Provider, args.Status, args.Node)
+		matched := filter(sessions, args.Provider, args.Status, args.Node, s.nodeID)
 		return nil, listResult{Sessions: matched, Count: len(matched), Total: len(sessions)}, nil
 	})
 
