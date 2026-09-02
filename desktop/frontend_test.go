@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -112,5 +113,49 @@ func TestFrontendRendersHostilePeerMetadataAsText(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("network view render check failed: %v\n%s", err, output)
+	}
+}
+
+// Every element the frontend looks up by a literal id must exist in the page.
+//
+// el() is document.getElementById, which returns null for an id that is not
+// there. Most of these lookups run at module top level, where assigning to a
+// property of null throws and abandons the rest of the module - including the
+// load() call on the last line. The window then renders its static placeholder
+// text forever and never asks the node for anything, which looks like the node
+// being unreachable rather than like a broken build.
+//
+// This is not hypothetical: index.html was missing btn-audience while main.js
+// wired a click handler to it, so the desktop app silently displayed no
+// sessions at all while every test here passed.
+func TestFrontendEveryElementLookupHasAnElement(t *testing.T) {
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	present := map[string]bool{}
+	for _, match := range regexp.MustCompile(`(?:^|[\s<])id="([^"]+)"`).FindAllStringSubmatch(string(markup), -1) {
+		present[match[1]] = true
+	}
+	if len(present) == 0 {
+		t.Fatal("index.html declares no ids; this test would pass vacuously")
+	}
+
+	// Double-quoted literals only. el() over a variable (main.js passes an array
+	// of ids in one place) is not covered; those ids are exercised by the render
+	// tests instead.
+	lookup := regexp.MustCompile(`\bel\(\s*"([^"]+)"\s*\)`)
+	found := 0
+	for path, source := range frontendSources(t) {
+		for _, match := range lookup.FindAllStringSubmatch(source, -1) {
+			found++
+			if !present[match[1]] {
+				t.Errorf("%s looks up el(%q), which index.html does not define; "+
+					"at module scope this throws and stops the frontend from ever loading", path, match[1])
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no el(\"...\") lookups found; this test would pass vacuously")
 	}
 }

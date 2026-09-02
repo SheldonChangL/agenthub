@@ -234,11 +234,16 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
-      # Scoped to what this change introduces, not the whole history. Wails
-      # generates desktop/frontend/wailsjs and vendors a font licence, all of
-      # which carry trailing whitespace; checking every commit ever made would
-      # fail on files this project does not author and cannot reformat without
-      # fighting the generator on the next run.
+      # Scoped to what this change introduces, not the whole history, and with
+      # the generated tree excluded by path. Wails generates
+      # desktop/frontend/wailsjs and vendors a font licence, all of which carry
+      # trailing whitespace; checking every commit ever made would fail on files
+      # this project does not author and cannot reformat without fighting the
+      # generator on the next run.
+      #
+      # Narrowing the range was not enough on its own: any change that actually
+      # regenerates the bindings puts those lines inside the range and fails,
+      # which is what happened when Overview's Peer type was first generated.
       - name: git diff --check (this change only)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -252,7 +257,7 @@ jobs:
             exit 0
           fi
           echo "checking ${range}"
-          git diff --check ${range}
+          git diff --check ${range} -- . ':(exclude)desktop/frontend/wailsjs'
       # The broker and MCP contracts are consumed by other implementations. A
       # JSON file that no longer parses breaks them before any Go test notices.
       - name: broker and MCP contracts parse
