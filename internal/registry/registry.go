@@ -441,9 +441,11 @@ func (r *Registry) CountSessions(ctx context.Context, publicOnly bool) (int, err
 func (r *Registry) SetVisibility(ctx context.Context, id string, visibility model.Visibility) error {
 	switch visibility {
 	case model.VisibilityPublic:
-		// The export flags stay closed. Publishing through the old call says
-		// who may see the session, not how much of it; the working directory
-		// names the account and the project and needs its own opt-in.
+		// Every other flag stays closed, including allowOutbound. Publishing
+		// through the old call says who may SEE the session, not how much of it
+		// and not what it may do: the working directory names the account and
+		// the project, and sending is a separate decision again. A call that
+		// cannot express those choices must not make them.
 		return r.SetAudience(ctx, id, model.Audience{Mode: model.AudienceAllPaired})
 	case model.VisibilityPrivate:
 		return r.SetAudience(ctx, id, model.Audience{Mode: model.AudienceNone})

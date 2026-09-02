@@ -123,3 +123,47 @@ INSERT INTO sessions VALUES
 		t.Errorf("the upgrade lost the audience mode: %v", audience.Mode)
 	}
 }
+
+// Publishing says who may see a session. It must not also decide what that
+// session may do — and in particular must never open the outbound gate, which
+// the caller of this endpoint has no way to express a choice about.
+func TestPublishingDoesNotOpenOutbound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := sessionFixture("publish-me")
+	if _, err := store.UpsertSession(ctx, session); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVisibility(ctx, session.ID, model.VisibilityPublic); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	audience, err := store.GetAudience(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audience.AllowOutbound {
+		t.Error("publishing opened the outbound gate")
+	}
+	if audience.Mode != model.AudienceAllPaired {
+		t.Errorf("mode = %q, want all_paired", audience.Mode)
+	}
+
+	// And the reverse: an owner who opened outbound, then published, finds it
+	// closed. That is the safe direction, and it is asserted so the behaviour is
+	// a decision rather than an accident.
+	if err := store.SetAudience(ctx, session.ID, model.Audience{
+		Mode: model.AudienceNone, AllowOutbound: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetVisibility(ctx, session.ID, model.VisibilityPublic); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.GetAudience(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.AllowOutbound {
+		t.Error("publishing left an already-open outbound gate open; it must reset to closed")
+	}
+}
