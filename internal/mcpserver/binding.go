@@ -46,6 +46,9 @@ func (b Binding) valid() bool { return b.sessionID != "" }
 // looks healthy and answers every call with an empty result, which reads as "no
 // messages" rather than "you pointed this at nothing".
 func Bind(ctx context.Context, client *Client, raw string) (Binding, error) {
+	if client == nil {
+		return Binding{}, errors.New("binding needs a node client to confirm the session against")
+	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return Binding{}, ErrNoBinding

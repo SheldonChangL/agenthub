@@ -46,11 +46,13 @@ func NewClient(baseURL string) (*Client, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
 		return nil, fmt.Errorf("node URL %q must be a bare scheme://host:port", baseURL)
 	}
-	// Loopback only, and not merely because the owner's API binds there.
-	// This process writes message bodies authored on other machines into an
-	// agent's reasoning context. Pointing it at a node someone else controls
-	// would let that party choose what the agent reads, and the instructions
-	// this server sends at initialize would stop being true.
+	// Loopback only. This is a guardrail against misconfiguration, not a trust
+	// boundary — any local port-forward defeats it, and legitimately: the
+	// project's own two-host testing reached a remote node through an SSH
+	// tunnel whose local end is loopback. What it prevents is pointing this
+	// process at a remote node by accident, which matters because the node's
+	// owner API is loopback-only anyway and the attempt would otherwise fail
+	// far from its cause.
 	if err := requireLoopback(parsed.Hostname()); err != nil {
 		return nil, fmt.Errorf("node URL %q: %w", baseURL, err)
 	}
@@ -99,7 +101,10 @@ func (c *Client) NodeID(ctx context.Context) (string, error) {
 
 // requireLoopback accepts only names that cannot leave this machine.
 func requireLoopback(host string) error {
-	if host == "localhost" {
+	// DNS is case-insensitive, and "localhost" is accepted on trust: Go does not
+	// pin it to loopback, it goes through the resolver like any other name.
+	// Consistent with the guardrail this is, not with a boundary it is not.
+	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
 	ip := net.ParseIP(host)
@@ -120,7 +125,12 @@ func describe(status int, body []byte) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
-		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, envelope.Error.Message)
+		message := envelope.Error.Message
+		// Bounded: get() allows 8 MB, and none of it belongs in one error line.
+		if runes := []rune(message); len(runes) > 200 {
+			message = string(runes[:200]) + "…"
+		}
+		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, message)
 	}
 	return fmt.Sprintf("%d", status)
 }
