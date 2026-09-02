@@ -2,22 +2,23 @@
 
 ## Objective
 
-Build an executable, privacy-first local foundation that inventories Claude Code and Codex sessions and can later route authorized metadata and messages across providers and LAN hosts.
+Build an executable, privacy-first local foundation that inventories Claude Code and Codex sessions and routes authorized metadata and messages across providers and LAN hosts between paired nodes.
 
 Success means a user can start one node, discover local sessions while decoding
 and persisting metadata fields only, inspect normalized status, explicitly add
 or remove individual sessions from a local export preview, and exchange queued
-messages through the local API. Future broker and MCP contracts are documented
-as drafts with their unresolved implementation gaps made explicit.
+messages through the local API, and exchange them with a paired node over an
+authenticated transport. The MCP contract is documented as a draft with its
+unresolved implementation gaps made explicit.
 
 ## Assumptions
 
 1. The first supported AgentHub hosts are Windows, macOS, and Ubuntu. Provider support may differ: Claude Code documents Windows 10+ through WSL or Git for Windows; native provider runtime acceptance remains separate from AgentHub compatibility.
 2. Existing provider sessions are unmanaged. Their activity is inferred conservatively from metadata recency and provider process presence.
 3. Managed sessions will report lifecycle state directly to the registry; launching and supervising providers is outside this increment.
-4. All discovered sessions default to audience `none`. Re-discovery must never reset audience or export flags. An audience prepared before LAN transport exists sends no data by itself.
+4. All discovered sessions default to audience `none`. Re-discovery must never reset audience or export flags. An audience by itself sends nothing off this host: delivery also needs a paired node with a recorded address, and without `-allow-lan` the delivery policy is loopback-only, so two nodes on one machine still exchange real per-peer heartbeats while nothing reaches the network.
 5. Transcript and prompt bodies are out of scope and must not be persisted.
-6. The MVP node binds to loopback. Signed envelope and pairing schemas exist, together with a manual trust workflow, but a network broker and automated pairing exchange are not implemented yet.
+6. The owner's API binds to loopback. A separate peer listener carries signed envelopes between paired nodes over pinned TLS, on loopback by default and on a private address when `-allow-lan` is set; there is no central host. The automated `pair.*` exchange is not implemented, so pairing is still manual.
 
 ## Tech stack
 
@@ -80,7 +81,7 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 ## Boundaries
 
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
-- Planned but gated: authenticate and consume signed envelopes, enforce expiry/replay protection, and only then add a non-loopback transport separate from the owner-local API.
+- Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
 - Ask first: inject prompts into provider sessions, weaken an export default, or expand the remote metadata allowlist.
 - Never: store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
 
@@ -101,10 +102,10 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 The multi-node items below are planned in [multinode-plan.md](multinode-plan.md)
 and tracked from issue #1.
 
-- Automated pairing exchange, authenticated LAN transport, and broker presence state
+- Automated pairing exchange (issue #63); LAN transport and presence are implemented
 - Remote presence subscriptions and retries
 - Provider-specific live APIs and message injection
 - Session launch/supervision and wake-up
-- Full MCP server transport implementation
+- Full MCP server transport implementation (issue #56), and wake-up (issue #60)
 - Policy groups and aliases
-- Windows and Ubuntu real-host acceptance runs (cross-compilation is complete)
+- Windows real-host acceptance (issue #21); a two-host macOS/Ubuntu run is recorded in [verification.md](verification.md)
