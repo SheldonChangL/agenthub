@@ -37,6 +37,12 @@ func (s *server) visible(ctx context.Context) ([]Session, error) {
 	sessions := make([]Session, 0, len(local))
 	sessions = append(sessions, local...)
 	for _, peer := range peers {
+		// A peer claiming to be this node would produce rows that shadow local
+		// ones under a qualified id. Pairing already refuses this node's own id,
+		// so this only closes the case where the trust store is wrong.
+		if peer.NodeID == s.nodeID {
+			continue
+		}
 		sessions = append(sessions, peer.Sessions...)
 	}
 	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })

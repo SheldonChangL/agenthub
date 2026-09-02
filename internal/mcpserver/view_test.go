@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -30,9 +31,30 @@ func (f *fakeNode) client(t *testing.T) *mcpserver.Client {
 		case r.URL.Path == "/v1/peers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"peers": f.peers})
 		case r.URL.Path == "/v1/sessions":
+			// Paged, so LocalSessions' loop is exercised rather than assumed.
+			// A client that ignored totalPages would return only the first page.
+			perPage := 1
+			pages := len(f.local)
+			if pages == 0 {
+				pages = 1
+			}
+			page := 1
+			if v := r.URL.Query().Get("page"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil {
+					page = n
+				}
+			}
+			var window []map[string]any
+			if start := (page - 1) * perPage; start < len(f.local) {
+				end := start + perPage
+				if end > len(f.local) {
+					end = len(f.local)
+				}
+				window = f.local[start:end]
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"sessions":   f.local,
-				"pagination": map[string]int{"totalPages": 1},
+				"sessions":   window,
+				"pagination": map[string]int{"totalPages": pages},
 			})
 		case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "x"})
@@ -305,6 +327,10 @@ func TestAPeerCannotClaimSessionsItDoesNotOwn(t *testing.T) {
 		"a bare id colliding with a local one": "codex:mine",
 		"a bare id of its own":                 "claude:whatever",
 		"an id with no provider":               "node_peer000000000000/nonsense",
+		"a nested separator":                   "node_peer000000000000/node_other00000000000/claude:x",
+		"its own id nested inside another":     "node_other00000000000/node_peer000000000000/claude:x",
+		"an empty id":                          "",
+		"a session id containing a separator":  "node_peer000000000000/claude:a/extra",
 	}
 	for name, claimed := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -316,35 +342,63 @@ func TestAPeerCannotClaimSessionsItDoesNotOwn(t *testing.T) {
 				}},
 			}
 			text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
-			if !isErr {
-				t.Fatalf("the claim %q was accepted: %s", claimed, text)
+			if isErr {
+				t.Fatalf("the call failed instead of ignoring the peer: %s", text)
 			}
-			if !strings.Contains(text, "does not own") {
-				t.Errorf("refused, but not for the claim: %s", text)
+			if strings.Contains(text, "/peer/fabricated") {
+				t.Errorf("the claim %q was served: %s", claimed, text)
+			}
+			// The lying peer costs the caller nothing else: their own machine
+			// is still visible. A peer that can blank the owner's view of their
+			// own sessions has been given more power than withholding its rows.
+			if !strings.Contains(text, "/real/path") {
+				t.Errorf("the caller's own session went missing too: %s", text)
 			}
 		})
 	}
 }
 
-// The refusal must not be quietly partial: a snapshot with one bad row is
-// refused whole, rather than serving the rows that happened to be well-formed
-// alongside a peer that has just been caught lying.
-func TestOneBadRowRefusesTheWholeSnapshot(t *testing.T) {
+// One bad row costs that peer its whole snapshot, and costs nobody else
+// anything.
+//
+// Refusing only the bad row would keep serving a peer that has just been caught
+// claiming other people's sessions. Refusing the entire call would let any
+// single paired peer blank the owner's view of their own machine, which is a
+// larger loss than the rows being withheld.
+func TestOneBadRowCostsThatPeerItsSnapshotAndNoOneElseTheirs(t *testing.T) {
 	node := &fakeNode{
-		peers: []map[string]any{{
-			"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
-			"sessions": []map[string]any{
-				session("node_peer000000000000/claude:honest", "claude", "idle", ""),
-				session("node_other00000000000/claude:stolen", "claude", "idle", ""),
+		local: []map[string]any{session("codex:mine", "codex", "active", "/real/path")},
+		peers: []map[string]any{
+			{
+				"nodeId": "node_liar00000000000", "displayName": "liar", "online": true,
+				"sessions": []map[string]any{
+					session("node_liar00000000000/claude:honest", "claude", "idle", ""),
+					session("node_other00000000000/claude:stolen", "claude", "idle", ""),
+				},
 			},
-		}},
+			{
+				"nodeId": "node_good00000000000", "displayName": "good", "online": true,
+				"sessions": []map[string]any{
+					session("node_good00000000000/claude:fine", "claude", "idle", ""),
+				},
+			},
+		},
 	}
 	text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
-	if !isErr {
-		t.Fatalf("a snapshot with a stolen row was served: %s", text)
+	if isErr {
+		t.Fatalf("the call failed: %s", text)
+	}
+	if strings.Contains(text, "claude:stolen") {
+		t.Error("the stolen row was served")
 	}
 	if strings.Contains(text, "claude:honest") {
-		t.Errorf("the well-formed row was served alongside the refusal: %s", text)
+		t.Error("the liar's other row was served; its whole snapshot should go")
+	}
+	if !strings.Contains(text, "claude:fine") {
+		t.Errorf("the honest peer's session went with it: %s", text)
+	}
+	if !strings.Contains(text, "codex:mine") {
+		t.Errorf("the caller's own session went with it: %s", text)
 	}
 }
 
@@ -399,5 +453,49 @@ func TestFiltersNarrowTheVisibleSet(t *testing.T) {
 				t.Errorf("total should stay 3 regardless of the filter: %s", text)
 			}
 		})
+	}
+}
+
+// The provider a caller filters on is derived from the validated id, not copied
+// from the peer's own field, so the two cannot disagree.
+func TestAPeersProviderFieldCannotContradictItsID(t *testing.T) {
+	node := &fakeNode{peers: []map[string]any{{
+		"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
+		"sessions": []map[string]any{
+			session("node_peer000000000000/claude:x", "codex", "idle", ""),
+		},
+	}}}
+	text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{"provider": "codex"})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	if strings.Contains(text, "claude:x") {
+		t.Errorf("a row whose id says claude matched a codex filter: %s", text)
+	}
+	text, _ = call(t, connectTo(t, node), "agent_list", map[string]any{"provider": "claude"})
+	if !strings.Contains(text, "claude:x") {
+		t.Errorf("the row should match the provider its id names: %s", text)
+	}
+}
+
+// A peer claiming this node's own id would produce rows shadowing local ones.
+// Pairing refuses it, so this covers a trust store that is already wrong.
+func TestAPeerClaimingToBeThisNodeIsIgnored(t *testing.T) {
+	node := &fakeNode{
+		local: []map[string]any{session("codex:mine", "codex", "active", "/real/path")},
+		peers: []map[string]any{{
+			"nodeId": localNode, "displayName": "impostor", "online": true,
+			"sessions": []map[string]any{session(localNode+"/codex:mine", "codex", "idle", "/fabricated")},
+		}},
+	}
+	text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	if strings.Contains(text, "/fabricated") {
+		t.Errorf("a peer claiming to be this node was served: %s", text)
+	}
+	if !strings.Contains(text, "/real/path") {
+		t.Errorf("the real local session went missing: %s", text)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -116,6 +117,16 @@ func requireLoopback(host string) error {
 	return nil
 }
 
+// truncate bounds a string that came from somewhere else. A heartbeat body may
+// be a megabyte, and none of it belongs in one line an operator or an agent
+// reads.
+func truncate(value string, limit int) string {
+	if runes := []rune(value); len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return value
+}
+
 // describe turns the node's error envelope into something an operator can act
 // on. Reporting only the status code makes them guess at a message the node
 // already wrote down.
@@ -127,12 +138,7 @@ func describe(status int, body []byte) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
-		message := envelope.Error.Message
-		// Bounded: get() allows 8 MB, and none of it belongs in one error line.
-		if runes := []rune(message); len(runes) > 200 {
-			message = string(runes[:200]) + "…"
-		}
-		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, message)
+		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, truncate(envelope.Error.Message, 200))
 	}
 	return fmt.Sprintf("%d", status)
 }
@@ -263,28 +269,48 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 	peers := make([]Peer, 0, len(decoded.Peers))
 	for _, p := range decoded.Peers {
 		peer := Peer{NodeID: p.NodeID, DisplayName: p.DisplayName, Online: p.Online}
+		refused := ""
 		for _, s := range p.Sessions {
 			// A peer says what its own sessions are called, and nothing more.
 			// The node authenticates the sender of a heartbeat but does not
-			// check that the ids inside name that sender, so a paired peer can
-			// currently claim any id it likes. Two consequences if believed:
-			// it could attribute a session to a third node that authorised
-			// nothing, and it could send a bare local-form id that collides
-			// with one of this machine's own sessions — after which asking for
-			// that session could return the peer's fabricated status.
+			// check that the ids inside name that sender (#72), so a paired
+			// peer can currently claim any id it likes. Two consequences if
+			// believed: it could attribute a session to a third node that
+			// authorised nothing, and it could send a bare local-form id that
+			// collides with one of this machine's own sessions — after which
+			// asking about that session could return the peer's fabrication.
 			//
 			// Checked here rather than assumed of the node: this is the layer
 			// that hands the answer to an agent.
 			nodeID, sessionID, qualified := address.SplitQualifiedID(s.ID)
 			if !qualified || nodeID != p.NodeID || address.ValidateLocalSessionID(sessionID) != nil {
-				return nil, fmt.Errorf(
-					"peer %s sent a session id it does not own (%q); refusing the whole snapshot", p.NodeID, s.ID)
+				refused = s.ID
+				break
 			}
 			peer.Sessions = append(peer.Sessions, Session{
-				ID: s.ID, Node: p.NodeID, Provider: s.Provider, Status: s.Status,
-				CWD: s.CWD, Management: s.Management, Visibility: s.Visibility,
+				ID: s.ID, Node: p.NodeID,
+				// Derived from the validated id, not copied from the peer's own
+				// field, so the provider a caller filters on cannot disagree
+				// with the provider the id names.
+				Provider:   sessionID[:strings.Index(sessionID, ":")],
+				Status:     s.Status,
+				CWD:        s.CWD,
+				Management: s.Management,
+				Visibility: s.Visibility,
 				LastSeenAt: s.LastSeenAt,
 			})
+		}
+		if refused != "" {
+			// This peer's whole snapshot goes, not just the bad row: one that
+			// has started claiming other people's sessions is not a source
+			// whose remaining rows are worth serving.
+			//
+			// But only this peer's. Failing the entire call would let any
+			// single paired peer blank the owner's view of their own machine,
+			// which is a bigger loss than the rows being withheld.
+			log.Printf("ignoring presence from %s: it claimed a session id it does not own (%s)",
+				p.NodeID, truncate(refused, 200))
+			continue
 		}
 		peers = append(peers, peer)
 	}
