@@ -43,7 +43,13 @@ func (n *sendNode) connect(t *testing.T) *mcp.ClientSession {
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "msg_new", "state": "pending"})
 		case strings.HasSuffix(r.URL.Path, "/audience"):
-			bound := strings.Contains(r.URL.Path, "codex:mine")
+			// Exact, so a check against the wrong session id 404s instead of
+			// quietly matching a prefix of the right one.
+			bound := r.URL.Path == "/v1/sessions/codex:mine/audience"
+			if !bound && r.URL.Path != "/v1/sessions/claude:neighbour/audience" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"mode":           "none",
 				"allowOutbound":  bound && n.outbound,
@@ -113,6 +119,7 @@ func TestNothingIsSentUntilTheOwnerOpensOutbound(t *testing.T) {
 func TestAClosedSessionCannotProbeForDestinations(t *testing.T) {
 	node := &sendNode{outbound: false, peers: peerWith("claude:real")}
 	session := node.connect(t)
+	node.seen = nil // discard what binding did
 	answers := map[string]string{}
 	for _, target := range []string{
 		"node_peer000000000000/claude:real",    // exists and is visible
@@ -133,6 +140,17 @@ func TestAClosedSessionCannotProbeForDestinations(t *testing.T) {
 		t.Errorf("a closed session got %d different answers, which distinguishes destinations: %v",
 			len(distinct), answers)
 	}
+	// Identical answers are not enough on their own: resolving the destination
+	// and discarding the result would still be a lookup a closed session caused.
+	// The visible set is never fetched.
+	// The gate check itself (the bound session's own audience) is expected. What
+	// must not appear is presence or the session list — the two things visible()
+	// fetches.
+	for _, request := range node.seen {
+		if request == "GET /v1/peers" || request == "GET /v1/sessions" {
+			t.Errorf("a closed session caused a lookup of the visible set: %q (all: %v)", request, node.seen)
+		}
+	}
 }
 
 // With the gate open, a visible destination is queued — and the answer says
@@ -151,13 +169,18 @@ func TestAnOpenSessionQueuesToAVisibleDestination(t *testing.T) {
 	if got := node.posted[0]["to"]; got != "node_peer000000000000/claude:theirs" {
 		t.Errorf("sent to %q", got)
 	}
-	// The sender is this node's bound session, qualified, so the recipient can
-	// tell who it was without trusting a self-chosen label.
-	if got := node.posted[0]["from"]; got != localNode+"/codex:mine" {
-		t.Errorf("from = %q, want the bound session qualified by this node", got)
+	// The bare session id: the node reduces a self-qualified from to this same
+	// value, and a recipient learns the sending node from the envelope's
+	// signature, not from this field.
+	if got := node.posted[0]["from"]; got != "codex:mine" {
+		t.Errorf("from = %q, want the bare bound session", got)
 	}
 	if !strings.Contains(text, "not mean delivered") {
 		t.Errorf("the answer does not say queued is not delivered: %s", text)
+	}
+	// A remote message is the one ah outbound knows about.
+	if !strings.Contains(text, "ah outbound") {
+		t.Errorf("a remote send should point at ah outbound: %s", text)
 	}
 }
 
@@ -202,9 +225,16 @@ func TestALocalDestinationMustAcceptMessages(t *testing.T) {
 	if isErr {
 		t.Fatalf("a local send was refused: %s", text)
 	}
-	// A local message names a local sender: the node refuses a `from` claiming
-	// another node for a local destination.
 	if got := open.posted[0]["from"]; got != "codex:mine" {
 		t.Errorf("from = %q, want the bare local session", got)
+	}
+	// A local message never reaches the outbound table, so `ah outbound` would
+	// answer 404. Telling an agent to have its user run it sends them to a dead
+	// end.
+	if strings.Contains(text, "ah outbound") {
+		t.Errorf("a local send points at ah outbound, which cannot see it: %s", text)
+	}
+	if !strings.Contains(text, "ah inbox") {
+		t.Errorf("a local send should say where the message actually went: %s", text)
 	}
 }

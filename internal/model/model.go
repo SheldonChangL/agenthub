@@ -78,10 +78,13 @@ type Audience struct {
 	// nodes.
 	//
 	// Separate from AcceptMessages because willing to receive is not willing to
-	// send. It is the only gate between a message written on another machine —
-	// which reaches the agent's reasoning through agent_inbox — and that agent
-	// putting this machine's data on the wire. Without it, an agent talked into
-	// reading something has an unobstructed path to sending it back.
+	// send. It bounds what an agent can do after reading a message written on
+	// another machine, which reaches its context through agent_inbox.
+	//
+	// Enforced today by agenthub-mcp, which is a client of this node rather than
+	// the node itself (#75). That closes the path an agent takes by following an
+	// instruction it read; it does not stop a process that posts to the owner's
+	// API directly.
 	AllowOutbound bool `json:"allowOutbound"`
 }
 
