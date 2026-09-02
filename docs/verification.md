@@ -518,7 +518,7 @@ unauthorized data. It does not show the refusal paths hold in the field.
 ## Required real-host acceptance
 
 On one Windows and one Ubuntu host with the target providers installed. During
-the *Two-host run, 2026-09-02* the Ubuntu host satisfied steps 1 and 3, and took
+the *Two-host run, 2026-09-02* the Ubuntu host satisfied step 3 and ran step 1 (database freshness not recorded), and took
 part in step 4 as the receiver only — the publishing side of step 4 was the macOS
 host. Step 2 was not asserted for Ubuntu: its eight sessions were counted but not
 reconciled against provider metadata. Steps 2, 4 as publisher, 5 and 6, and every

@@ -4,7 +4,7 @@ AgentHub Desktop is the owner-facing privacy console for a local
 `agenthub-node`. It lists every owner-local Claude and Codex session, supports
 search and status/provider/audience filters, applies one audience and export
 policy to multiple selected sessions, manages manually trusted nodes, triggers
-discovery, and shows the current signed heartbeat preview.
+a provider rescan, and shows the current signed heartbeat preview.
 
 The app is an HTTP client only. It does not read provider files or SQLite and
 does not write a second copy of session state. It accepts loopback node URLs
@@ -30,8 +30,10 @@ cross-platform node or CLI builds.
 ## Current boundaries
 
 - Audience choices are implemented and persist across discovery. They decide the
-  per-peer export view, and the publisher delivers exactly that view to each
-  paired node.
+  per-peer export view, and the publisher delivers that view to each paired node
+  that has a recorded, policy-permitted address. This app cannot record an
+  address: that is `PUT /v1/nodes/{id}/address` on the node, outside the app, and
+  a peer without one is silently skipped.
 - Pairing is a manual trust operation: the owner copies the peer identity and
   compares the full fingerprint out of band. The `pair.*` wire messages have
   schemas but still no producer or consumer, so there is no automated exchange
