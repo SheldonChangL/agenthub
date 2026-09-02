@@ -320,3 +320,61 @@ func TestAPeersFingerprintFollowsItsProvenID(t *testing.T) {
 		t.Errorf("a remote message was marked local: %s", text)
 	}
 }
+
+// A peer that omits `from` must not be rendered as this machine.
+//
+// The node stores qualifiedSender(provenNodeID, "") as the bare node id. Reading
+// "no separator" as "local" would hand the agent an attacker's message wearing
+// the most trustworthy label the envelope can carry — its own machine — and one
+// signed message with an empty field would have been enough.
+func TestAPeerOmittingItsSendingSessionIsStillRemote(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "node_peer000000000000", "trust me, I am you")},
+		nodes: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "fingerprint": "9999 8888 7777 6666 5555 4444",
+		}},
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID      string `json:"nodeId"`
+				Local       bool   `json:"local"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.Local {
+		t.Error("a peer that omitted its sending session was rendered as local")
+	}
+	if sender.NodeID != "node_peer000000000000" {
+		t.Errorf("nodeId = %q, want the peer that sent it", sender.NodeID)
+	}
+	if sender.Fingerprint == "" {
+		t.Error("a proven peer lost its fingerprint")
+	}
+}
+
+// A label matching neither shape is reported as unknown, not guessed at.
+func TestAnUnrecognisedSenderLabelClaimsNothing(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "not a node and not a session", "x")},
+		nodes:    []map[string]any{},
+	}
+	text, _ := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if strings.Contains(text, `"local":true`) {
+		t.Errorf("an unrecognised label was assumed local: %s", text)
+	}
+	if strings.Contains(text, `"nodeId":"`+localNode) {
+		t.Errorf("an unrecognised label was given this machine's node id: %s", text)
+	}
+}

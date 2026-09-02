@@ -20,7 +20,7 @@ flowchart TB
         CLI[ah CLI]
     end
 
-    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools<br/>Step 7 - not built"]
+    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools"]
 
     API["Loopback HTTP API<br/>127.0.0.1:7462"]
 
@@ -32,9 +32,9 @@ flowchart TB
 
     Peer["Peer listener<br/>:7463 TLS 1.3<br/>the only surface that leaves the host"]
 
-    Claude -. stdio .-> MCP
-    Codex -. stdio .-> MCP
-    MCP -. Step 7 .-> API
+    Claude -- stdio --> MCP
+    Codex -- stdio --> MCP
+    MCP --> API
     Desktop --> API
     CLI --> API
     API --> Node
@@ -42,16 +42,16 @@ flowchart TB
     Node --> Peer
 ```
 
-None of the MCP layer exists yet; the dashed edges are Step 7 (#56).
+The MCP layer exists as of Step 7 (#56); only the wake-up edges are still
+dashed.
 
-The agent will start `agenthub-mcp` as its own child process, which is why that
+The agent starts `agenthub-mcp` as its own child process, which is why that
 process cannot know which session called it unless it is told at startup — hence
-the `--as` binding required by #50. Two acceptance criteria in #50 and #51, not
-properties of any current code: it must reach the registry only through the same
-loopback API the desktop app and CLI use, never SQLite directly, so
-`agenthub-node` stays the only writer; and `agent_list` must read presence rather
-than the registry, so the MCP surface cannot become a second path around audience
-filtering.
+the `-as` binding. It reaches the registry only through the same loopback API the
+desktop app and CLI use, never SQLite directly, so `agenthub-node` stays the only
+writer; a test asserts the registry and every SQLite package are absent from the
+command's dependency closure. `agent_list` reads presence rather than the
+registry, so the MCP surface is not a second path around audience filtering.
 
 ### Between two nodes
 
@@ -60,7 +60,7 @@ flowchart LR
     subgraph A["Node A"]
         OwnerA["Owner: ah send / desktop"]
         AgentA[Agent on A]
-        OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
+        OutA{{"allowOutbound<br/>default off"}}
         NodeA[agenthub-node]
     end
 
@@ -74,11 +74,11 @@ flowchart LR
 
     NodeA -- "heartbeat, 15s by default<br/>only audience-authorised sessions<br/>not gated by acceptMessages" --> PresB
     OwnerA --> NodeA
-    AgentA -. "agent_send, Step 7" .-> OutA
-    OutA -.-> NodeA
+    AgentA -- "agent_send" --> OutA
+    OutA --> NodeA
     NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
     InB --> InboxB
-    InboxB -. "Step 7 - a person asks the agent to look" .-> AgentB
+    InboxB -- "a person asks the agent to look" --> AgentB
     InboxB -.-> WakeB
     WakeB -. "Step 8 - arrives on its own" .-> AgentB
 ```
