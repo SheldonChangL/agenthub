@@ -62,5 +62,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	return mcpserver.New(client, binding, nodeID).Run(ctx)
+	server, err := mcpserver.New(client, binding, nodeID)
+	if err != nil {
+		return err
+	}
+	return server.Run(ctx)
 }

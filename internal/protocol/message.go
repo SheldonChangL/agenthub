@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"agenthub.local/agenthub/internal/address"
 	"fmt"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func (p MessagePayload) Validate() error {
 	if len(p.MessageID) > 128 {
 		return fmt.Errorf("message id is too long")
 	}
-	if err := validateLocalSessionID(p.To); err != nil {
+	if err := address.ValidateLocalSessionID(p.To); err != nil {
 		return fmt.Errorf("recipient session: %w", err)
 	}
 	if strings.TrimSpace(p.Body) == "" {
@@ -65,7 +66,7 @@ func (p MessagePayload) Validate() error {
 		return fmt.Errorf("message body is %d bytes, over the %d byte limit", len(p.Body), maxMessageBody)
 	}
 	if p.From != "" {
-		if _, err := ParseAddress(p.From, ""); err != nil {
+		if _, err := address.ParseAddress(p.From, ""); err != nil {
 			return fmt.Errorf("sender address: %w", err)
 		}
 	}

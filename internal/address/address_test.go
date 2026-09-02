@@ -1,10 +1,10 @@
-package protocol_test
+package address_test
 
 import (
 	"errors"
 	"testing"
 
-	"agenthub.local/agenthub/internal/protocol"
+	"agenthub.local/agenthub/internal/address"
 )
 
 const localNode = "node_0123456789abcdef0123"
@@ -22,15 +22,15 @@ func TestParseAddressAcceptsBothForms(t *testing.T) {
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {
-			address, err := protocol.ParseAddress(testCase.raw, localNode)
+			parsed, err := address.ParseAddress(testCase.raw, localNode)
 			if err != nil {
 				t.Fatalf("ParseAddress(%q) = %v", testCase.raw, err)
 			}
-			if address.NodeID != testCase.wantNode || address.SessionID != testCase.wantLocal {
-				t.Errorf("ParseAddress(%q) = %+v", testCase.raw, address)
+			if parsed.NodeID != testCase.wantNode || parsed.SessionID != testCase.wantLocal {
+				t.Errorf("ParseAddress(%q) = %+v", testCase.raw, parsed)
 			}
-			if address.Local() != (testCase.wantNode == "") {
-				t.Errorf("Local() = %v for %+v", address.Local(), address)
+			if parsed.Local() != (testCase.wantNode == "") {
+				t.Errorf("Local() = %v for %+v", parsed.Local(), parsed)
 			}
 		})
 	}
@@ -39,11 +39,11 @@ func TestParseAddressAcceptsBothForms(t *testing.T) {
 // A well-formed address for a machine we have not paired with is a routing
 // answer, not a syntax error: the user needs to hear "unknown node".
 func TestParseAddressSeparatesRoutingFromSyntax(t *testing.T) {
-	address, err := protocol.ParseAddress("node_peer000000000000/claude:abc", localNode)
+	parsed, err := address.ParseAddress("node_peer000000000000/claude:abc", localNode)
 	if err != nil {
 		t.Fatalf("a qualified remote address must parse: %v", err)
 	}
-	if address.Local() {
+	if parsed.Local() {
 		t.Error("a remote address resolved as local")
 	}
 
@@ -60,9 +60,9 @@ func TestParseAddressSeparatesRoutingFromSyntax(t *testing.T) {
 	}
 	for name, raw := range malformed {
 		t.Run(name, func(t *testing.T) {
-			if _, err := protocol.ParseAddress(raw, localNode); err == nil {
+			if _, err := address.ParseAddress(raw, localNode); err == nil {
 				t.Errorf("ParseAddress(%q) succeeded", raw)
-			} else if errors.Is(err, protocol.ErrUnknownNode) {
+			} else if errors.Is(err, address.ErrUnknownNode) {
 				t.Errorf("ParseAddress(%q) reported a routing failure for malformed input", raw)
 			}
 		})

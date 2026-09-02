@@ -1,12 +1,11 @@
 package mcpserver
 
 import (
+	"agenthub.local/agenthub/internal/address"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
-
-	"agenthub.local/agenthub/internal/protocol"
 )
 
 // ErrNoBinding marks a server started without being told which session it acts
@@ -25,8 +24,19 @@ var ErrNoBinding = errors.New("this server must be told which session it acts fo
 // So the identity is fixed once, at startup, from a flag the owner sets when
 // wiring the server into the agent. One process serves one session.
 type Binding struct {
-	SessionID string
+	// Unexported so that Bind is the only way to obtain a non-zero Binding.
+	// With an exported field, mcpserver.New(client, Binding{SessionID: "anyone"})
+	// would compile and run, and every later tool would trust it — which is the
+	// same bypass -as exists to prevent, reached from inside the process
+	// instead of from the command line.
+	sessionID string
 }
+
+// SessionID is the session this server may act for.
+func (b Binding) SessionID() string { return b.sessionID }
+
+// valid reports whether this Binding came from Bind.
+func (b Binding) valid() bool { return b.sessionID != "" }
 
 // Bind validates what the owner passed to -as and confirms the node knows it.
 //
@@ -44,16 +54,16 @@ func Bind(ctx context.Context, client *Client, raw string) (Binding, error) {
 	// node-id prefix is wrong even when it names that same node. Passing an
 	// empty local id makes every qualified form parse as remote, which is the
 	// answer we want.
-	address, err := protocol.ParseAddress(raw, "")
+	parsed, err := address.ParseAddress(raw, "")
 	if err != nil {
 		return Binding{}, fmt.Errorf("-as %q: %w", raw, err)
 	}
-	if !address.Local() {
+	if !parsed.Local() {
 		return Binding{}, fmt.Errorf(
 			"-as %q names another node; this server can only act for a session on the node it connects to", raw)
 	}
-	if err := client.SessionExists(ctx, address.SessionID); err != nil {
+	if err := client.SessionExists(ctx, parsed.SessionID); err != nil {
 		return Binding{}, fmt.Errorf("-as %q: %w", raw, err)
 	}
-	return Binding{SessionID: address.SessionID}, nil
+	return Binding{sessionID: parsed.SessionID}, nil
 }

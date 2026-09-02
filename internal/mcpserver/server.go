@@ -8,6 +8,7 @@ package mcpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -23,9 +24,19 @@ type Server struct {
 	nodeID  string
 }
 
+// ErrUnboundServer marks a server built without a validated binding.
+var ErrUnboundServer = errors.New("this server was not given a validated session binding")
+
 // New builds the MCP server for one already-validated binding.
-func New(client *Client, binding Binding, nodeID string) *Server {
-	return &Server{client: client, binding: binding, nodeID: nodeID}
+//
+// It refuses a zero Binding rather than serving a session named "": a forgotten
+// Bind would otherwise produce a running server bound to nothing, which is the
+// failure -as exists to prevent.
+func New(client *Client, binding Binding, nodeID string) (*Server, error) {
+	if !binding.valid() {
+		return nil, ErrUnboundServer
+	}
+	return &Server{client: client, binding: binding, nodeID: nodeID}, nil
 }
 
 type listArgs struct {

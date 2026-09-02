@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"agenthub.local/agenthub/internal/address"
 	"context"
 	"crypto/ed25519"
 	"path/filepath"
@@ -53,7 +54,7 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := QualifiedID(node.ID, "codex:public")
+	want := address.QualifiedID(node.ID, "codex:public")
 	if len(got.Sessions) != 1 || got.Sessions[0].ID != want {
 		t.Fatalf("heartbeat sessions = %#v; want only %q", got.Sessions, want)
 	}

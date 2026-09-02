@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"agenthub.local/agenthub/internal/address"
 	"strings"
 	"testing"
 	"time"
@@ -76,24 +77,24 @@ func TestSummarizeRequiresStatusSourceAndNode(t *testing.T) {
 }
 
 func TestQualifiedAddressRoundTrip(t *testing.T) {
-	qualified := protocol.QualifiedID("node_abc", "claude:xyz")
-	nodeID, sessionID, ok := protocol.SplitQualifiedID(qualified)
+	qualified := address.QualifiedID("node_abc", "claude:xyz")
+	nodeID, sessionID, ok := address.SplitQualifiedID(qualified)
 	if !ok || nodeID != "node_abc" || sessionID != "claude:xyz" {
 		t.Fatalf("SplitQualifiedID(%q) = %q, %q, %v", qualified, nodeID, sessionID, ok)
 	}
 
 	// A bare local ID is not a qualified address and must not be guessed at.
-	if _, _, ok := protocol.SplitQualifiedID("claude:xyz"); ok {
+	if _, _, ok := address.SplitQualifiedID("claude:xyz"); ok {
 		t.Error("SplitQualifiedID accepted an unqualified id")
 	}
 	for _, malformed := range []string{"", "/", "node_only/", "/claude:x"} {
-		if _, _, ok := protocol.SplitQualifiedID(malformed); ok {
+		if _, _, ok := address.SplitQualifiedID(malformed); ok {
 			t.Errorf("SplitQualifiedID(%q) reported success", malformed)
 		}
 	}
 
 	// The left-most separator wins, so a session ID cannot impersonate a node.
-	nodeID, sessionID, ok = protocol.SplitQualifiedID("evil/node_b/claude:x")
+	nodeID, sessionID, ok = address.SplitQualifiedID("evil/node_b/claude:x")
 	if !ok || nodeID != "evil" || sessionID != "node_b/claude:x" {
 		t.Errorf("SplitQualifiedID resolved a spoofed address to %q, %q", nodeID, sessionID)
 	}
