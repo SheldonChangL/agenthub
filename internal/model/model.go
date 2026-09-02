@@ -184,6 +184,24 @@ func ValidateNodeID(nodeID string) error {
 			return fmt.Errorf("node id %q contains a character outside printable ASCII", nodeID)
 		}
 	}
+	// A node id must not also be readable as a session id.
+	//
+	// Every local session id of sixteen characters or more otherwise satisfies
+	// every rule above, so the two namespaces overlap — and a reader holding one
+	// bare string cannot tell which it has. That is not hypothetical: a message
+	// whose sender named no session is stored as the bare sender node id, and a
+	// peer that chose `claude:0123456789abcdef` at pairing time would have its
+	// messages read as though they had been queued on this machine.
+	//
+	// Enforced here, at the edge where an id is admitted, so every reader gets
+	// the guarantee rather than each having to re-derive it.
+	if provider, _, found := strings.Cut(nodeID, ":"); found {
+		switch Provider(provider) {
+		case ProviderClaude, ProviderCodex:
+			return fmt.Errorf(
+				"node id %q begins with a provider name, which would make it readable as a session id", nodeID)
+		}
+	}
 	return nil
 }
 

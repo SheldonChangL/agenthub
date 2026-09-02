@@ -378,3 +378,45 @@ func TestAnUnrecognisedSenderLabelClaimsNothing(t *testing.T) {
 		t.Errorf("an unrecognised label was given this machine's node id: %s", text)
 	}
 }
+
+// A peer whose node id is session-shaped must still be remote.
+//
+// Shape alone cannot separate the two namespaces: every local session id of
+// sixteen characters or more is also a valid node id. A peer that chose
+// `claude:...` at pairing time would otherwise have its messages rendered with
+// this machine's node id and local: true — the same forgery as omitting `from`,
+// one step further along.
+func TestAPeerWithASessionShapedNodeIDIsStillRemote(t *testing.T) {
+	const hostile = "claude:0123456789abcdef"
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", hostile, "still not you")},
+		nodes:    []map[string]any{{"nodeId": hostile, "displayName": "impostor", "fingerprint": "DEAD BEEF CAFE BABE 1234 5678"}},
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID      string `json:"nodeId"`
+				Local       bool   `json:"local"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.Local {
+		t.Error("a peer with a session-shaped node id was rendered as local")
+	}
+	if sender.NodeID != hostile {
+		t.Errorf("nodeId = %q, want the peer's own id %q", sender.NodeID, hostile)
+	}
+	if sender.Fingerprint == "" {
+		t.Error("a paired peer lost its fingerprint")
+	}
+}

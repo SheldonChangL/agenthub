@@ -26,3 +26,31 @@ func TestValidateNodeIDRejectsLookalikes(t *testing.T) {
 		})
 	}
 }
+
+// A node id must not also be readable as a session id.
+//
+// Every local session id of sixteen characters or more otherwise satisfies every
+// other rule, so a reader holding one bare string cannot tell which namespace it
+// belongs to — and a message whose sender named no session is stored as exactly
+// that bare string.
+func TestANodeIDMayNotReadAsASessionID(t *testing.T) {
+	for _, id := range []string{
+		"claude:0123456789abcdef",
+		"codex:some-local-session",
+		"claude:aaaaaaaaaaaaaaaaaaaa",
+	} {
+		if err := ValidateNodeID(id); err == nil {
+			t.Errorf("ValidateNodeID(%q) accepted an id that reads as a session", id)
+		}
+	}
+	// Ids that merely contain a colon are fine; only a provider prefix collides.
+	for _, id := range []string{
+		"node_0123456789abcdef0123",
+		"host:0123456789abcdef",
+		"claudex:0123456789abcdef",
+	} {
+		if err := ValidateNodeID(id); err != nil {
+			t.Errorf("ValidateNodeID(%q) = %v, want accepted", id, err)
+		}
+	}
+}

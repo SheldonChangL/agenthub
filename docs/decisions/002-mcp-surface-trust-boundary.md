@@ -132,7 +132,9 @@ advertisement.
 - **A compromised peer, within what its audience authorised.** It can send
   messages to sessions that accept them, and it sees the sessions its owner
   published to it. Nothing here reduces that; revocation is the answer, and it
-  is immediate.
+  is immediate for anything not yet delivered — trust is looked up per request,
+  and revoking drops the peer's presence in the same transaction. What is already
+  in an inbox stays, and is shown without a fingerprint.
 - **An agent that decides to comply.** Presentation makes the provenance of a
   message unmistakable. It cannot make a model refuse.
 - **An agent that works around the gate.** Until #75, `allowOutbound` is
