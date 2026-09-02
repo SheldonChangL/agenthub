@@ -128,19 +128,22 @@ func TestFrontendRendersHostilePeerMetadataAsText(t *testing.T) {
 // This is not hypothetical: index.html was missing btn-audience while main.js
 // wired a click handler to it, so the desktop app silently displayed no
 // sessions at all while every test here passed.
-func TestEveryElementLookupHasAnElement(t *testing.T) {
+func TestFrontendEveryElementLookupHasAnElement(t *testing.T) {
 	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
 	if err != nil {
 		t.Fatalf("read index.html: %v", err)
 	}
 	present := map[string]bool{}
-	for _, match := range regexp.MustCompile(`id="([^"]+)"`).FindAllStringSubmatch(string(markup), -1) {
+	for _, match := range regexp.MustCompile(`(?:^|[\s<])id="([^"]+)"`).FindAllStringSubmatch(string(markup), -1) {
 		present[match[1]] = true
 	}
 	if len(present) == 0 {
 		t.Fatal("index.html declares no ids; this test would pass vacuously")
 	}
 
+	// Double-quoted literals only. el() over a variable (main.js passes an array
+	// of ids in one place) is not covered; those ids are exercised by the render
+	// tests instead.
 	lookup := regexp.MustCompile(`\bel\(\s*"([^"]+)"\s*\)`)
 	found := 0
 	for path, source := range frontendSources(t) {
