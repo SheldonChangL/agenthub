@@ -70,10 +70,19 @@ func ValidAudienceMode(mode AudienceMode) bool {
 type Audience struct {
 	Mode  AudienceMode `json:"mode"`
 	Nodes []string     `json:"nodes,omitempty"`
-	// ExportCWD and AcceptMessages default to false. An export view says as
-	// little as it can until the owner says otherwise.
+	// ExportCWD, AcceptMessages and AllowOutbound default to false. An export
+	// view says as little as it can until the owner says otherwise.
 	ExportCWD      bool `json:"exportCwd"`
 	AcceptMessages bool `json:"acceptMessages"`
+	// AllowOutbound lets an agent bound to this session send messages to other
+	// nodes.
+	//
+	// Separate from AcceptMessages because willing to receive is not willing to
+	// send. It is the only gate between a message written on another machine —
+	// which reaches the agent's reasoning through agent_inbox — and that agent
+	// putting this machine's data on the wire. Without it, an agent talked into
+	// reading something has an unobstructed path to sending it back.
+	AllowOutbound bool `json:"allowOutbound"`
 }
 
 // PublishesTo reports whether a peer may see the session.

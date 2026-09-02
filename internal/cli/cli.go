@@ -161,7 +161,7 @@ func (r runner) pair(ctx context.Context, args []string) error {
 //	ah audience <session-id> selected <node-id>... [--cwd] [--messages]
 func (r runner) audience(ctx context.Context, args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
+		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	}
 	path := "/v1/sessions/" + url.PathEscape(args[1]) + "/audience"
 	if len(args) == 2 {
@@ -181,15 +181,18 @@ func (r runner) audience(ctx context.Context, args []string) error {
 	nodes := make([]string, 0)
 	exportCWD := false
 	acceptMessages := false
+	allowOutbound := false
 	for _, argument := range args[3:] {
 		switch argument {
 		case "--cwd":
 			exportCWD = true
 		case "--messages":
 			acceptMessages = true
+		case "--outbound":
+			allowOutbound = true
 		default:
 			if strings.HasPrefix(argument, "-") {
-				return fmt.Errorf("unknown flag %q; want --cwd or --messages", argument)
+				return fmt.Errorf("unknown flag %q; want --cwd, --messages or --outbound", argument)
 			}
 			nodes = append(nodes, argument)
 		}
@@ -206,6 +209,7 @@ func (r runner) audience(ctx context.Context, args []string) error {
 		"nodes":          nodes,
 		"exportCwd":      exportCWD,
 		"acceptMessages": acceptMessages,
+		"allowOutbound":  allowOutbound,
 	})
 }
 
@@ -342,7 +346,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
-	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages]")
+	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send <node-id>/<provider>:<id> <message>   queues for a paired node")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
