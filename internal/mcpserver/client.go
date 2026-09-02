@@ -270,7 +270,7 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 	peers := make([]Peer, 0, len(decoded.Peers))
 	for _, p := range decoded.Peers {
 		peer := Peer{NodeID: p.NodeID, DisplayName: p.DisplayName, Online: p.Online}
-		refused := ""
+		refused, refusedID := false, ""
 		for _, s := range p.Sessions {
 			// A peer says what its own sessions are called, and nothing more.
 			// The node authenticates the sender of a heartbeat but does not
@@ -285,7 +285,10 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 			// that hands the answer to an agent.
 			nodeID, sessionID, qualified := address.SplitQualifiedID(s.ID)
 			if !qualified || nodeID != p.NodeID || address.ValidateLocalSessionID(sessionID) != nil {
-				refused = s.ID
+				// A bool, not the id itself: an empty claimed id would set a
+				// string sentinel to "" and slip past the guard below, keeping
+				// the peer with a silently truncated snapshot and no log line.
+				refused, refusedID = true, s.ID
 				break
 			}
 			peer.Sessions = append(peer.Sessions, Session{
@@ -293,7 +296,7 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 				// Derived from the validated id, not copied from the peer's own
 				// field, so the provider a caller filters on cannot disagree
 				// with the provider the id names.
-				Provider:   sessionID[:strings.Index(sessionID, ":")],
+				Provider:   providerOf(sessionID),
 				Status:     s.Status,
 				CWD:        s.CWD,
 				Management: s.Management,
@@ -301,7 +304,7 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 				LastSeenAt: s.LastSeenAt,
 			})
 		}
-		if refused != "" {
+		if refused {
 			// This peer's whole snapshot goes, not just the bad row: one that
 			// has started claiming other people's sessions is not a source
 			// whose remaining rows are worth serving.
@@ -310,7 +313,7 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 			// single paired peer blank the owner's view of their own machine,
 			// which is a bigger loss than the rows being withheld.
 			log.Printf("ignoring presence from %s: it claimed a session id it does not own (%s)",
-				p.NodeID, truncate(refused, 200))
+				p.NodeID, truncate(refusedID, 200))
 			continue
 		}
 		peers = append(peers, peer)
@@ -465,4 +468,14 @@ func (c *Client) post(ctx context.Context, path string, body []byte) (int, []byt
 		return response.StatusCode, nil, err
 	}
 	return response.StatusCode, answer, nil
+}
+
+// providerOf reads the provider from a validated session id.
+//
+// Cut rather than Index-and-slice: the validation two lines above guarantees a
+// colon today, and a panic on peer-controlled input is too high a price for
+// that guarantee ever being reordered or relaxed.
+func providerOf(sessionID string) string {
+	provider, _, _ := strings.Cut(sessionID, ":")
+	return provider
 }

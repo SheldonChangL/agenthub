@@ -4,15 +4,18 @@ import (
 	"context"
 
 	"agenthub.local/agenthub/internal/address"
+	"agenthub.local/agenthub/internal/model"
 )
 
-// The inbox is the one place in this server where content authored by someone
-// else reaches an agent's reasoning.
+// The inbox is where content authored by someone else reaches an agent's
+// reasoning most obviously — but it is not the only place, and saying so would
+// be the more dangerous mistake.
 //
-// Everything else here is metadata this installation observed: session ids,
-// statuses, working directories the owner chose to export. A message body is a
-// person on another machine writing whatever they like, and it arrives in the
-// same context window as the agent's instructions.
+// A peer's session summaries are also written by that peer. Its cwd, status and
+// session ids arrive over the wire and are served by agent_list with no notice
+// and no sender attribution, which makes them a quieter channel than this one
+// (#76). What distinguishes the inbox is that its content is unmistakably a
+// message from a person, so it is the place where framing can be applied at all.
 //
 // The MCP tools cannot read files or run commands, but that is not the defence
 // it looks like: the agent on the other end of this connection has Read and Bash
@@ -118,20 +121,13 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 		Full:     inbox.Full,
 	}
 	for _, stored := range inbox.Messages {
-		nodeID, sessionID, qualified := address.SplitQualifiedID(stored.From)
-		// A sender absent from the trust store gets no fingerprint but is still
-		// shown: a message from a node since revoked is what an owner
-		// investigating that peer is looking for.
-		sender := Sender{NodeID: nodeID, Session: sessionID}
-		if !qualified {
-			// Unqualified means the message was queued here, so the sender is
-			// this node and stored.From is at most a session label. Putting
-			// that label in nodeId — or leaving nodeId empty — would render a
-			// local message as though it came from an unidentifiable peer.
-			sender = Sender{NodeID: s.nodeID, Session: stored.From, Local: true}
-		} else if record, ok := trusted[nodeID]; ok {
-			// A fingerprint only means something for a peer, and only one this
-			// node paired with. It is looked up by the id the signature proved.
+		sender := describeSender(stored.From, s.nodeID)
+		// A fingerprint only means something for a peer, and only one this node
+		// paired with. It is looked up by the id the signature proved. A sender
+		// absent from the trust store gets none but is still shown: a message
+		// from a node since revoked is what an owner investigating that peer is
+		// looking for.
+		if record, ok := trusted[sender.NodeID]; ok && !sender.Local {
 			sender.DisplayName = record.DisplayName
 			sender.Fingerprint = record.Fingerprint
 		}
@@ -143,4 +139,48 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 		})
 	}
 	return result, nil
+}
+
+// describeSender works out who a stored From names, without inferring anything
+// from the absence of a separator.
+//
+// The node writes this field as qualifiedSender(provenNodeID, claimed), which
+// produces three shapes — and the one that matters is the third:
+//
+//   - <nodeID>/<provider>:<id>   a peer that named a sending session
+//   - <nodeID>                   a peer that named none, so only the proven
+//     node id was stored
+//   - <provider>:<id>            a message queued through the owner's own API
+//
+// Reading "no separator" as "local" collapses the last two, and the collapse
+// runs the wrong way: a peer that simply omits `from` would be rendered with
+// local: true and this machine's own node id, which is the most trustworthy
+// label the envelope can carry. One signed message with an empty field would
+// have been enough. So each shape is identified for what it is, and anything
+// that matches none of them is reported as unknown rather than assumed to be
+// either.
+func describeSender(from, localNodeID string) Sender {
+	if nodeID, sessionID, qualified := address.SplitQualifiedID(from); qualified {
+		return Sender{NodeID: nodeID, Session: sessionID}
+	}
+	// The session shape is tested first because it is the narrower one: it
+	// requires a provider from a fixed list, while ValidateNodeID accepts any
+	// printable string of the right length — including "codex:something".
+	// Testing node first would classify every locally queued message as a peer.
+	if address.ValidateLocalSessionID(from) == nil {
+		return Sender{NodeID: localNodeID, Session: from, Local: true}
+	}
+	if model.ValidateNodeID(from) == nil {
+		// A peer that named no sending session. Remote, and not local.
+		return Sender{NodeID: from}
+	}
+	if from == "" {
+		// qualifiedSender never yields an empty string for a peer: it falls back
+		// to the proven node id. So empty means the owner's own API queued this
+		// without naming a sender.
+		return Sender{NodeID: localNodeID, Local: true}
+	}
+	// Neither shape. Say so rather than guessing: an unrecognised label is not
+	// evidence of anything, least of all of being local.
+	return Sender{Session: from}
 }
