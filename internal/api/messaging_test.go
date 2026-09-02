@@ -497,3 +497,35 @@ func TestDeletingOneMessageLeavesTheRest(t *testing.T) {
 		t.Errorf("deleting an absent message = %d; want 404", missing.Code)
 	}
 }
+
+// A message on the owner's API has nothing behind its `from` — no signature, no
+// envelope. Letting it name another node would put an unverifiable claim in a
+// local inbox, where a reader looks the fingerprint up by node id and would find
+// the real one belonging to the node that was named.
+func TestALocalSenderCannotClaimAnotherNode(t *testing.T) {
+	store, owner := testServer(t)
+	id := seedSession(t, store, "target")
+	if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatalf("opt in = %d %s", response.Code, response.Body.String())
+	}
+
+	response := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": id, "from": peerNodeID + "/claude:x", "body": "hello",
+	})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s; a local caller must not claim another node",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "verify") {
+		t.Errorf("the refusal does not say why: %s", response.Body.String())
+	}
+
+	// A local sender label is still fine.
+	ok := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": id, "from": id, "body": "hello",
+	})
+	if ok.Code != http.StatusOK && ok.Code != http.StatusAccepted && ok.Code != http.StatusCreated {
+		t.Errorf("a local from was refused: %d %s", ok.Code, ok.Body.String())
+	}
+}

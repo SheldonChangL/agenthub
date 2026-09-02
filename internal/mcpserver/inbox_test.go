@@ -21,8 +21,9 @@ type inboxNode struct {
 	capacity int
 	// lastLimit records what the tool asked for.
 	lastLimit string
-	// writes counts anything that would change state.
-	writes int
+	// seen records every request, so a read that reached for a side effect
+	// through a GET is caught too.
+	seen []string
 }
 
 func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
@@ -31,9 +32,7 @@ func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
 		n.capacity = 500
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			n.writes++
-		}
+		n.seen = append(n.seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 		switch {
 		case r.URL.Path == "/v1/node":
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": localNode})
@@ -157,6 +156,10 @@ func TestAMessageBodyIsNeverJoinedToTheServersOwnProse(t *testing.T) {
 
 // Reading is reading. A tool that marked, acknowledged, replied or woke anything
 // would make the inbox impossible to inspect without consuming it.
+//
+// Asserted as an exact set rather than a count of non-GET requests: a side
+// effect reached through GET /v1/inbox/{id}/ack, or a ?consume=1, would pass a
+// count and fail this.
 func TestReadingTheInboxChangesNothing(t *testing.T) {
 	node := &inboxNode{
 		held:     2,
@@ -164,13 +167,27 @@ func TestReadingTheInboxChangesNothing(t *testing.T) {
 		nodes:    []map[string]any{{"nodeId": "node_peer000000000000", "fingerprint": "F"}},
 	}
 	session := node.connect(t)
+	node.seen = nil // discard what binding did
 	for i := 0; i < 3; i++ {
 		if _, isErr := call(t, session, "agent_inbox", map[string]any{}); isErr {
 			t.Fatal("agent_inbox errored")
 		}
 	}
-	if node.writes != 0 {
-		t.Errorf("agent_inbox made %d non-GET requests; reading must not change state", node.writes)
+	want := map[string]int{
+		"GET /v1/inbox/codex:mine?limit=50": 3,
+		"GET /v1/nodes?":                    3,
+	}
+	got := map[string]int{}
+	for _, request := range node.seen {
+		got[request]++
+	}
+	if len(got) != len(want) {
+		t.Fatalf("agent_inbox made requests beyond reading:\n got %v\nwant %v", got, want)
+	}
+	for request, count := range want {
+		if got[request] != count {
+			t.Errorf("%q happened %d times, want %d (all of: %v)", request, got[request], count, got)
+		}
 	}
 }
 
@@ -230,5 +247,76 @@ func TestTheLimitIsBounded(t *testing.T) {
 		if node.lastLimit != c.want {
 			t.Errorf("asked %q, node saw %q, want %q", c.asked, node.lastLimit, c.want)
 		}
+	}
+}
+
+// A message queued on this machine has no signature behind it, because it never
+// crossed a network. It must not render as a peer whose fingerprint is merely
+// missing — that is what a revoked node looks like.
+func TestALocallyQueuedMessageIsMarkedLocal(t *testing.T) {
+	node := &inboxNode{
+		held: 2,
+		messages: []map[string]any{
+			message("msg_local", "codex:some-local-session", "from this machine"),
+			message("msg_bare", "", "no sender named"),
+		},
+		nodes: []map[string]any{{"nodeId": "node_peer000000000000", "fingerprint": "AAAA"}},
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID      string `json:"nodeId"`
+				Session     string `json:"session"`
+				Local       bool   `json:"local"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(decoded.Messages) != 2 {
+		t.Fatalf("want 2 messages, got %d", len(decoded.Messages))
+	}
+	for i, m := range decoded.Messages {
+		if !m.Sender.Local {
+			t.Errorf("message %d is not marked local", i)
+		}
+		if m.Sender.NodeID != localNode {
+			t.Errorf("message %d nodeId = %q, want this node %q", i, m.Sender.NodeID, localNode)
+		}
+		if m.Sender.Fingerprint != "" {
+			t.Errorf("message %d carries a fingerprint for a local sender: %q", i, m.Sender.Fingerprint)
+		}
+	}
+	if decoded.Messages[0].Sender.Session != "codex:some-local-session" {
+		t.Errorf("the local session label was lost: %q", decoded.Messages[0].Sender.Session)
+	}
+}
+
+// The fingerprint is looked up by the node id the signature proved, so a
+// message that names a peer must really have come from it. The API refuses a
+// local caller claiming otherwise (see TestALocalSenderCannotClaimAnotherNode
+// in internal/api); this asserts the rendering side: a claimed peer id does get
+// that peer's fingerprint, which is exactly why the claim must be refused
+// upstream.
+func TestAPeersFingerprintFollowsItsProvenID(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "node_peer000000000000/claude:x", "hi")},
+		nodes: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "fingerprint": "1111 2222 3333 4444 5555 6666",
+		}},
+	}
+	text, _ := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if !strings.Contains(text, "1111 2222 3333 4444 5555 6666") {
+		t.Errorf("a proven peer lost its fingerprint: %s", text)
+	}
+	if strings.Contains(text, `"local":true`) {
+		t.Errorf("a remote message was marked local: %s", text)
 	}
 }
