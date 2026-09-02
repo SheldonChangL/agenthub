@@ -89,7 +89,7 @@ to receive is not willing to send, and neither is willing to act unattended:
 | Gate | Where | State |
 |---|---|---|
 | `acceptMessages` | on the recipient | implemented |
-| `allowOutbound` | on the sender | Step 7, #53, default off |
+| `allowOutbound` | on the sender | implemented, default off, enforced in `agenthub-mcp` rather than the node (#75) |
 | `autoWake` | on the recipient | Step 8, #59, default off |
 
 TLS is pinned to the public key recorded when the two nodes paired, verified
@@ -98,16 +98,16 @@ middlebox that substitutes its own certificate cannot complete the connection.
 
 ### How a message reaches an agent
 
-Delivery to the inbox works today and has been exercised between two machines.
-What does not exist yet is anything an agent can call, and anything that hands a
-message to an agent without a person asking.
+Delivery to the inbox works today and has been exercised between two machines,
+and an agent can now read and send through `agenthub-mcp`. What does not exist
+is anything that hands a message to an agent without a person asking.
 
 | Leg | Mechanism | State |
 |---|---|---|
-| Agent sends | `agent_send` over MCP | Step 7, #53 |
+| Agent sends | `agent_send` over MCP | implemented |
 | Node to node | signed envelope over pinned TLS | implemented; a two-host run is described in PR #40/#41 and recorded in verification.md |
 | Into the inbox | `acceptMessages`, deduplicated, bounded at 500 | implemented |
-| Agent reads on request | `agent_inbox` over MCP | Step 7, #52 |
+| Agent reads on request | `agent_inbox` over MCP | implemented |
 | Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | Step 8, #57 |
 | Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | Step 8, #58 |
 
@@ -210,8 +210,9 @@ recipient it names is not that peer. There is no way to produce an undirected
 
 The local inbox accepts local destinations and parses both local and qualified
 addresses. A qualified remote address is routed to that node; an unpaired one is
-answered `UNKNOWN_NODE`. Remote `agent_send` (Step 7, #53) must also require both
-an authorized view and the destination session's `acceptMessages` flag.
+answered `UNKNOWN_NODE`. Remote `agent_send` requires an authorized view of the
+destination, resolved against the same set `agent_status` uses; the destination's
+`acceptMessages` is the receiving node's decision, made when it answers.
 
 The heartbeat builder projects each published session into `protocol.SessionSummary`,
 a type separate from the owner-local `model.Session`. The projection copies field

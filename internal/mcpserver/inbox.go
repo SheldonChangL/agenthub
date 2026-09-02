@@ -121,7 +121,7 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 		Full:     inbox.Full,
 	}
 	for _, stored := range inbox.Messages {
-		sender := describeSender(stored.From, s.nodeID)
+		sender := describeSender(stored.From, s.nodeID, trusted)
 		// A fingerprint only means something for a peer, and only one this node
 		// paired with. It is looked up by the id the signature proved. A sender
 		// absent from the trust store gets none but is still shown: a message
@@ -152,6 +152,10 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 //     node id was stored
 //   - <provider>:<id>            a message queued through the owner's own API
 //
+// The last two overlap by shape alone — every session id long enough is also a
+// valid node id — so the trust store is consulted first, and ValidateNodeID
+// refuses new ids that read as sessions.
+//
 // Reading "no separator" as "local" collapses the last two, and the collapse
 // runs the wrong way: a peer that simply omits `from` would be rendered with
 // local: true and this machine's own node id, which is the most trustworthy
@@ -159,9 +163,16 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 // have been enough. So each shape is identified for what it is, and anything
 // that matches none of them is reported as unknown rather than assumed to be
 // either.
-func describeSender(from, localNodeID string) Sender {
+func describeSender(from, localNodeID string, trusted map[string]TrustedNode) Sender {
 	if nodeID, sessionID, qualified := address.SplitQualifiedID(from); qualified {
 		return Sender{NodeID: nodeID, Session: sessionID}
+	}
+	// A paired node's own id settles it, whatever shape that id has. Shape is
+	// the fallback, not the first answer: ValidateNodeID now refuses an id that
+	// reads as a session, but a peer paired before that rule cannot be
+	// un-paired retroactively, and its stored rows are still here.
+	if _, paired := trusted[from]; paired {
+		return Sender{NodeID: from}
 	}
 	// The session shape is tested first because it is the narrower one: it
 	// requires a provider from a fixed list, while ValidateNodeID accepts any

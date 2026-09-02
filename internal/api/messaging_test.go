@@ -529,3 +529,20 @@ func TestALocalSenderCannotClaimAnotherNode(t *testing.T) {
 		t.Errorf("a local from was refused: %d %s", ok.Code, ok.Body.String())
 	}
 }
+
+// The whole sender-rendering fix rests on this storage shape: a peer that names
+// no sending session is stored as the bare proven node id, not as an empty
+// string and not as anything the sender chose.
+func TestASenderNamingNoSessionIsStoredAsItsProvenNodeID(t *testing.T) {
+	if got := qualifiedSender(peerNodeID, ""); got != peerNodeID {
+		t.Errorf("qualifiedSender(%q, \"\") = %q, want the bare node id", peerNodeID, got)
+	}
+	// A claimed session is kept, qualified by the proven node.
+	if got := qualifiedSender(peerNodeID, "claude:theirs"); got != peerNodeID+"/claude:theirs" {
+		t.Errorf("qualifiedSender with a claim = %q", got)
+	}
+	// A claim naming another node is ignored: only the proven id is used.
+	if got := qualifiedSender(peerNodeID, "node_other00000000000/claude:x"); got != peerNodeID+"/claude:x" {
+		t.Errorf("a cross-node claim survived: %q", got)
+	}
+}
