@@ -2,7 +2,7 @@ package mcpserver
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sort"
 	"strings"
 
@@ -16,7 +16,7 @@ import (
 // Distinguishing them would turn this tool into a way to find out what another
 // machine is running, and what its owner has chosen to keep private, without
 // ever being authorised to see it.
-var ErrNotVisible = fmt.Errorf("unknown node or session")
+var ErrNotVisible = errors.New("unknown node or session")
 
 // visible returns every session this caller may see.
 //
@@ -39,7 +39,7 @@ func (s *server) visible(ctx context.Context) ([]Session, error) {
 	for _, peer := range peers {
 		sessions = append(sessions, peer.Sessions...)
 	}
-	sort.Slice(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
+	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].ID < sessions[j].ID })
 	return sessions, nil
 }
 
@@ -66,7 +66,11 @@ func (s *server) find(ctx context.Context, raw string) (Session, error) {
 }
 
 // filter applies the optional narrowing agent_list accepts.
-func filter(sessions []Session, provider, status, node string) []Session {
+// localNodeID is the id callers use to mean "this node". Local rows carry an
+// empty Node — they are not addressed through a node — so without this, asking
+// for this node by name returned nothing and there was no way to ask for local
+// sessions at all.
+func filter(sessions []Session, provider, status, node, localNodeID string) []Session {
 	out := make([]Session, 0, len(sessions))
 	for _, session := range sessions {
 		if provider != "" && !strings.EqualFold(session.Provider, provider) {
@@ -75,8 +79,14 @@ func filter(sessions []Session, provider, status, node string) []Session {
 		if status != "" && !strings.EqualFold(session.Status, status) {
 			continue
 		}
-		if node != "" && session.Node != node {
-			continue
+		if node != "" {
+			owner := session.Node
+			if owner == "" {
+				owner = localNodeID
+			}
+			if owner != node {
+				continue
+			}
 		}
 		out = append(out, session)
 	}
