@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"agenthub.local/agenthub/internal/address"
 )
 
 // ErrSessionNotFound marks an address the node does not have.
@@ -114,6 +117,16 @@ func requireLoopback(host string) error {
 	return nil
 }
 
+// truncate bounds a string that came from somewhere else. A heartbeat body may
+// be a megabyte, and none of it belongs in one line an operator or an agent
+// reads.
+func truncate(value string, limit int) string {
+	if runes := []rune(value); len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return value
+}
+
 // describe turns the node's error envelope into something an operator can act
 // on. Reporting only the status code makes them guess at a message the node
 // already wrote down.
@@ -125,12 +138,7 @@ func describe(status int, body []byte) string {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Message != "" {
-		message := envelope.Error.Message
-		// Bounded: get() allows 8 MB, and none of it belongs in one error line.
-		if runes := []rune(message); len(runes) > 200 {
-			message = string(runes[:200]) + "…"
-		}
-		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, message)
+		return fmt.Sprintf("%d %s: %s", status, envelope.Error.Code, truncate(envelope.Error.Message, 200))
 	}
 	return fmt.Sprintf("%d", status)
 }
@@ -152,4 +160,159 @@ func (c *Client) get(ctx context.Context, path string) (int, []byte, error) {
 		return response.StatusCode, nil, err
 	}
 	return response.StatusCode, body, nil
+}
+
+// Session is one entry in the view an agent may see.
+//
+// Local and remote sessions are the same shape on purpose: an agent asking
+// "what is running" should not have to know which side of the network a session
+// is on to read the answer. Node distinguishes them.
+type Session struct {
+	// ID is bare <provider>:<id> for a local session and
+	// <node-id>/<provider>:<id> for one on a paired node.
+	ID       string `json:"id"`
+	Node     string `json:"node,omitempty"`
+	Provider string `json:"provider"`
+	Status   string `json:"status"`
+	// CWD is present for a remote session only where its owner opted in.
+	CWD        string    `json:"cwd,omitempty"`
+	Management string    `json:"management,omitempty"`
+	Visibility string    `json:"visibility,omitempty"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+}
+
+// LocalSessions returns every session on this node, including private ones.
+//
+// The caller is an agent running on this machine, on the owner's behalf. Hiding
+// local sessions from it would protect nothing: it can already read the
+// provider's files directly.
+func (c *Client) LocalSessions(ctx context.Context) ([]Session, error) {
+	var all []Session
+	for page := 1; ; page++ {
+		status, body, err := c.get(ctx, fmt.Sprintf("/v1/sessions?page=%d&pageSize=200", page))
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("node answered %s listing sessions", describe(status, body))
+		}
+		var decoded struct {
+			Sessions []struct {
+				ID         string    `json:"id"`
+				Provider   string    `json:"provider"`
+				Status     string    `json:"status"`
+				CWD        string    `json:"cwd"`
+				Management string    `json:"management"`
+				Visibility string    `json:"visibility"`
+				LastSeenAt time.Time `json:"lastSeenAt"`
+			} `json:"sessions"`
+			Pagination struct {
+				TotalPages int `json:"totalPages"`
+			} `json:"pagination"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			return nil, fmt.Errorf("decode session list: %w", err)
+		}
+		for _, s := range decoded.Sessions {
+			all = append(all, Session{
+				ID: s.ID, Provider: s.Provider, Status: s.Status, CWD: s.CWD,
+				Management: s.Management, Visibility: s.Visibility, LastSeenAt: s.LastSeenAt,
+			})
+		}
+		if decoded.Pagination.TotalPages == 0 || page >= decoded.Pagination.TotalPages {
+			return all, nil
+		}
+	}
+}
+
+// Peer is a paired node and what it has authorised this node to see.
+type Peer struct {
+	NodeID      string
+	DisplayName string
+	Online      bool
+	Sessions    []Session
+}
+
+// Peers returns presence: the paired nodes and their authorised sessions.
+//
+// This is the only source for remote sessions, and deliberately so. The node
+// already applied each peer's audience when it accepted that peer's heartbeat;
+// reading anything else here would be a second implementation of that filter,
+// free to disagree with the first.
+func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
+	status, body, err := c.get(ctx, "/v1/peers")
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("node answered %s reading presence", describe(status, body))
+	}
+	var decoded struct {
+		Peers []struct {
+			NodeID      string `json:"nodeId"`
+			DisplayName string `json:"displayName"`
+			Online      bool   `json:"online"`
+			Sessions    []struct {
+				ID         string    `json:"id"`
+				Provider   string    `json:"provider"`
+				Status     string    `json:"status"`
+				CWD        string    `json:"cwd"`
+				Management string    `json:"management"`
+				Visibility string    `json:"visibility"`
+				LastSeenAt time.Time `json:"lastSeenAt"`
+			} `json:"sessions"`
+		} `json:"peers"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode presence: %w", err)
+	}
+	peers := make([]Peer, 0, len(decoded.Peers))
+	for _, p := range decoded.Peers {
+		peer := Peer{NodeID: p.NodeID, DisplayName: p.DisplayName, Online: p.Online}
+		refused := ""
+		for _, s := range p.Sessions {
+			// A peer says what its own sessions are called, and nothing more.
+			// The node authenticates the sender of a heartbeat but does not
+			// check that the ids inside name that sender (#72), so a paired
+			// peer can currently claim any id it likes. Two consequences if
+			// believed: it could attribute a session to a third node that
+			// authorised nothing, and it could send a bare local-form id that
+			// collides with one of this machine's own sessions — after which
+			// asking about that session could return the peer's fabrication.
+			//
+			// Checked here rather than assumed of the node: this is the layer
+			// that hands the answer to an agent.
+			nodeID, sessionID, qualified := address.SplitQualifiedID(s.ID)
+			if !qualified || nodeID != p.NodeID || address.ValidateLocalSessionID(sessionID) != nil {
+				refused = s.ID
+				break
+			}
+			peer.Sessions = append(peer.Sessions, Session{
+				ID: s.ID, Node: p.NodeID,
+				// Derived from the validated id, not copied from the peer's own
+				// field, so the provider a caller filters on cannot disagree
+				// with the provider the id names.
+				Provider:   sessionID[:strings.Index(sessionID, ":")],
+				Status:     s.Status,
+				CWD:        s.CWD,
+				Management: s.Management,
+				Visibility: s.Visibility,
+				LastSeenAt: s.LastSeenAt,
+			})
+		}
+		if refused != "" {
+			// This peer's whole snapshot goes, not just the bad row: one that
+			// has started claiming other people's sessions is not a source
+			// whose remaining rows are worth serving.
+			//
+			// But only this peer's. Failing the entire call would let any
+			// single paired peer blank the owner's view of their own machine,
+			// which is a bigger loss than the rows being withheld.
+			log.Printf("ignoring presence from %s: it claimed a session id it does not own (%s)",
+				p.NodeID, truncate(refused, 200))
+			continue
+		}
+		peers = append(peers, peer)
+	}
+	return peers, nil
 }
