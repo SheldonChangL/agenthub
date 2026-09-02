@@ -47,8 +47,8 @@ the runtime tests:
 - Every heartbeat names its recipient in a signed `recipientNodeId`, so a
   snapshot built for one peer cannot be replayed to another, and the owner
   preview is addressed to the local node. The outbound sequence is persisted in
-  SQLite and stays monotonic across restarts. Both are producer-side properties;
-  nothing verifies or consumes them yet.
+  SQLite and stays monotonic across restarts. `receiveHeartbeat` verifies both:
+  the recipient binding, and a strictly advancing sequence.
 - Every session-addressed API accepts a bare local or qualified address. Remote
   routing and a destination-node column in the message store remain in #7.
 - Audience, `export_cwd`, and `accept_messages` are persisted with safe defaults
@@ -60,16 +60,16 @@ the runtime tests:
 
 ## Remaining protocol gaps
 
-1. There is no transport or presence consumer. `Envelope.VerifyDirected` is the
-   call a receiver would use — sender signature plus exact recipient — but it
-   has no caller: nothing receives a heartbeat, rejects replay/expiry, or
-   replaces stored presence state.
+1. Done. `Envelope.VerifyDirected` is called by `receiveHeartbeat` and
+   `receiveMessage`; presence is stored with expiry and replaced as a full
+   snapshot. Remaining here: the `pair.*` envelopes still have no producer or
+   consumer, so pairing is manual (issue #63).
 2. Manual trust is not the automated `pair.request` / `pair.approve` exchange.
    The wire types are reserved and tested, but not sent.
-3. `agent.message` and `agent.ack` payloads and delivery semantics remain
-   undefined until #16.
-4. The desktop Network view lists trust records only. It cannot show remote
-   sessions, pending peers, or real online/offline state without #14.
+3. Done in #16. `agent.message` and `agent.ack` are defined in
+   `protocol/message.go` with delivery, ack, and duplicate semantics.
+4. Done. The desktop Network view shows remote sessions and online/offline
+   state from presence. Pending peers arrive with automated pairing (issue #63).
 5. `sessionSummary` retains a derived `visibility: public` compatibility field.
    Audience authorization is enforced before projection; consumers must not
    interpret this constant as a global audience.
@@ -85,9 +85,11 @@ the schema half of #8 in one change rather than two breaking ones.
 
 ## Increment order
 
-Each step ends with something verifiable. The broker is a logical server role;
-no client-to-server LAN traffic is allowed until the identity and pairing gates
-are complete.
+Each step ends with something verifiable. "Broker" is the name of the envelope
+format, not a host: nodes deliver directly to each other, and each performs the
+role for itself. No LAN traffic was allowed until the identity gates were
+complete; they are, and `-allow-lan` now opens the peer listener on a private
+address.
 
 0. **Export contract alignment** (#18) — done. Separate the owner-local model from the
    allowlisted remote summary and validate generated payloads against the draft
@@ -115,16 +117,22 @@ are complete.
    Verifiable today: a fingerprint mismatch is refused and revocation removes
    all grants. Two nodes cannot complete an automated exchange until transport
    exists.
-5. **Presence** (#14, #15, #17). Authenticated heartbeat exchange between
-   paired nodes, export view enforced per peer. Verifiable: a session published
-   to node A only is absent from node B's view.
-6. **Cross-host messaging** (#16). Route `agent.message` to a paired node's
-   inbox. Verifiable: queued on the destination node, still not injected into
-   any provider.
+5. **Presence** (#14, #15, #17) — done. Authenticated heartbeat exchange between
+   paired nodes, export view enforced per peer. Verified between two hosts on
+   2026-09-02: with nothing published each node saw zero of the other's
+   sessions, and publishing exactly one made exactly that one appear
+   (verification.md).
+6. **Cross-host messaging** (#16) — done. Route `agent.message` to a paired
+   node's inbox. Verified between two hosts on 2026-09-02: delivered and queued
+   on the destination node, and the destination provider's session file was
+   confirmed unmodified — still not injected into any provider.
+
+Steps 7 to 10 continue in issues #56 (MCP server), #60 (wake-up), #63 (pairing),
+and #67 (distribution).
 
 ## Boundaries for this increment
 
-- Never widen the bind address before step 4 lands.
+- The bind address was not widened before step 4 landed. It now requires `-allow-lan` plus a private `-peer-listen` address.
   `nodeconfig.ValidateLoopback` stays as the guard.
 - Never let a rescan alter audience, exactly as it must not alter visibility
   today.
@@ -134,9 +142,10 @@ are complete.
   nodes" is an explicit choice and must stay distinguishable from a per-node
   grant, because the two differ for nodes paired later.
 - Transcript and prompt bodies remain out of scope.
-- The broker may see metadata already authorized for routing, but never private
-  registry rows. Message bodies may transit the router in step 6 but are not
-  persisted there. End-to-end encryption is not claimed by this increment.
+- A paired node receives only the metadata its audience authorizes, never
+  private registry rows. There is no router in between: message bodies go
+  directly to the recipient and are persisted in the recipient's own inbox,
+  which is who they are for.
 
 ## Deliberately deferred
 

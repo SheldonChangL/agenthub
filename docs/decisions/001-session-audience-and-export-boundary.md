@@ -82,5 +82,9 @@ of truth for owner consent.
 - The UI must preview exactly what each selected peer will receive.
 - A centralized broker is trusted with routed, authorized metadata unless a
   later end-to-end encryption design changes that boundary.
+  **Amended 2026-09-02:** no centralized broker was built. Nodes deliver
+  directly to each other over TLS pinned to the key recorded at pairing, so
+  there is no third party in the path and this consequence no longer applies.
+  The rest of this ADR stands.
 - Revocation is represented by omission from the next full heartbeat snapshot;
   consumers replace a node's prior snapshot rather than merge it.

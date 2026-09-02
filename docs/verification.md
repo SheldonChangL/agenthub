@@ -460,6 +460,44 @@ CI does not yet pin the toolchain. That is tracked in
 [issue #22](https://github.com/SheldonChangL/agenthub/issues/22); until it
 lands, the floor is enforced by the go command on each contributor's machine.
 
+## Two-host run, 2026-09-02
+
+The first end-to-end exercise of the peer transport between two physical
+machines, on a direct ethernet segment.
+
+| | Host A | Host B |
+|---|---|---|
+| Platform | darwin/arm64, `sheldonchang-mac.local` | linux/amd64, `user-HP-ProBook` |
+| Address | 122.122.122.1 | 122.122.122.2 |
+| Fingerprint | `05A5 C549 4CF1 7846 6513 701C` | `1223 03EA 5E96 543A 2DD8 BFEA` |
+
+Both nodes ran with `-allow-lan -treat-as-private 122.122.0.0/16`. The segment is
+a direct cable between the two machines, so its addresses are not in any private
+range by definition; `-treat-as-private` is the owner declaring it private, which
+is why that flag exists.
+
+Observed:
+
+- A discovered 1,036 local sessions (241 Claude, 795 Codex); B discovered 8
+- both nodes recorded `lastSeenAt` for the other, and presence reported
+  `online: true` with a sequence advancing past 37
+- with nothing published, each node's view of the other carried **zero**
+  sessions, though both had discovered sessions locally
+- publishing one session on A with `audience selected <B> --cwd` made exactly
+  that one session appear in B's view of A. The other 1,035 did not appear
+- `ah unpublish` on A removed it from B's view within one heartbeat interval
+- with `--messages` set on a published Codex session, `ah send` from B reached
+  A: B reported `state: delivered`, A's inbox held the message with `from` naming
+  B's node id
+- the message did **not** reach the Codex session itself. The session's file
+  (`~/.codex/sessions/2026/03/09/rollout-...jsonl`) was unmodified, its mtime
+  unchanged, and it contained no trace of the message id. This is the documented
+  boundary from #16, confirmed rather than assumed
+
+What this run did not cover: the automated `pair.*` handshake (pairing was done
+by hand with `ah pair` and a `PUT /v1/nodes/{id}/address`), and anything on
+Windows.
+
 ## Required real-host acceptance
 
 On one Windows and one Ubuntu host with the target providers installed:
