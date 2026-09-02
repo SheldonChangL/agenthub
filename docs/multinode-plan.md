@@ -113,7 +113,7 @@ address.
    pairs by entering the peer's details. The `pair.request` / `approve` /
    `reject` / `revoke` envelope types are defined and schema-tested but still
    have no producer or consumer, so two nodes cannot complete an automated
-   exchange. That is the remaining gap, tracked in #62; the transport it would
+   exchange. That is the remaining gap, tracked in #62 under Step 9 (#63); the transport it would
    ride on landed in step 5. Verifiable today: a fingerprint mismatch is refused
    and revocation removes all grants.
 5. **Presence** (#14, #15, #17) — done. Authenticated heartbeat exchange between
@@ -131,7 +131,7 @@ and #67 (distribution).
 
 ## Boundaries for this increment
 
-- The bind address was not widened before step 4 landed. It now requires `-allow-lan` plus a private `-peer-listen` address.
+- The bind address was not widened before the identity gates in steps 3 and 5 landed. It now requires `-allow-lan` plus a private `-peer-listen` address.
   `nodeconfig.ValidatePeerListen` guards the peer listener and `ValidateLoopback` the owner API.
 - Never let a rescan alter audience, exactly as it must not alter visibility
   today.

@@ -58,6 +58,7 @@ filtering.
 ```mermaid
 flowchart LR
     subgraph A["Node A"]
+        OwnerA["Owner: ah send / desktop"]
         AgentA[Agent on A]
         OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
         NodeA[agenthub-node]
@@ -72,6 +73,7 @@ flowchart LR
     end
 
     NodeA -- "heartbeat, 15s by default<br/>only audience-authorised sessions<br/>not gated by acceptMessages" --> PresB
+    OwnerA --> NodeA
     AgentA -. "agent_send, Step 7" .-> OutA
     OutA -.-> NodeA
     NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB

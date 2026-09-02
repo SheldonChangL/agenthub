@@ -1,7 +1,8 @@
 # Verification
 
-Verified on 2026-08-28, except where a later date is given. Sections below the
-*Two-host run, 2026-09-02* heading, and that section itself, are later.
+Verified on 2026-08-28, except where a later date is given. The *Two-host run,
+2026-09-02* section is later, and passages annotated "(annotated 2026-09-02)"
+were corrected then because the transport they said was missing had landed.
 
 ## Planning and contract audit
 
@@ -166,11 +167,11 @@ a message is parsed rather than stored as free text.
 
 Payload schemas exist for `node.heartbeat`, `node.hello` and the four `pair.*`
 types. `agent.message` and `agent.ack` were reserved names here; #16 has since
-defined both in `protocol/message.go`.
+defined both in `protocol/message.go` (annotated 2026-09-02).
 
 At the time of this section only `node.heartbeat` had a producer. `agent.message`
 gained one in #16. The four `pair.*` types are still defined and schema-tested
-with no producer or consumer (#62).
+with no producer or consumer (#62). (annotated 2026-09-02)
 
 ### Review of the identity work: three further findings
 
@@ -245,7 +246,8 @@ TypeScript, so nothing about the generated output changes. The check passes.
 
 Two properties a receiver would otherwise have had to work around are producer
 invariants. Neither added a receiver or a transport at the time; both arrived in
-#14, and the result is recorded under *Two-host run, 2026-09-02*.
+#14, and the result is recorded under *Two-host run, 2026-09-02*. (annotated
+2026-09-02)
 
 **A heartbeat is bound to the node it was built for.** The envelope carries a
 signed `recipientNodeId`, included in the length-prefixed signable bytes between
@@ -367,7 +369,7 @@ Not verified at the time: no Windows or Linux host ran this build; no second
 implementation has reproduced the new signable bytes; and no receiver existed, so
 `VerifyDirected` was exercised only by tests. A Linux host and a real receiver
 are covered under *Two-host run, 2026-09-02*; Windows and a second implementation
-remain unverified.
+remain unverified. (annotated 2026-09-02)
 
 ## Automated checks
 
@@ -383,7 +385,7 @@ export-flag preservation, allowlisted/signed heartbeat output, per-peer export
 filtering, recipient-bound heartbeats and their signable bytes, persisted
 outbound sequence monotonicity and exhaustion, node identity and trust
 invariants, message inbox policy, HTTP origin rejection, pagination, qualified
-addressing, CLI calls, and loopback-only binding.
+addressing, CLI calls, and listener address validation.
 
 ## Build matrix
 
@@ -515,9 +517,12 @@ unauthorized data. It does not show the refusal paths hold in the field.
 
 ## Required real-host acceptance
 
-On one Windows and one Ubuntu host with the target providers installed. Steps 1
-to 4 were satisfied on the Ubuntu host during the *Two-host run, 2026-09-02*;
-steps 5 and 6, and every step on Windows, remain outstanding (#21):
+On one Windows and one Ubuntu host with the target providers installed. During
+the *Two-host run, 2026-09-02* the Ubuntu host satisfied steps 1 and 3, and took
+part in step 4 as the receiver only — the publishing side of step 4 was the macOS
+host. Step 2 was not asserted for Ubuntu: its eight sessions were counted but not
+reconciled against provider metadata. Steps 2, 4 as publisher, 5 and 6, and every
+step on Windows, remain outstanding (#21):
 
 1. Start `agenthub-node` with a temporary database.
 2. Confirm discovery counts match provider session metadata on that host.
