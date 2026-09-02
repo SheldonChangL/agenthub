@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,5 +209,37 @@ func TestMessagesRequireInboxOptIn(t *testing.T) {
 		map[string]string{"to": id, "body": "hello"})
 	if accepted.Code != http.StatusCreated {
 		t.Fatalf("response = %d %s, want 201", accepted.Code, accepted.Body.String())
+	}
+}
+
+// The flag has to survive the round trip, or the desktop and CLI would appear
+// to set something the node never stored.
+func TestOutboundRoundTripsThroughTheAPI(t *testing.T) {
+	store, handler := testServer(t)
+	id := seedSession(t, store, "round-trip")
+
+	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "allowOutbound": true}); response.Code != http.StatusOK {
+		t.Fatalf("set = %d %s", response.Code, response.Body.String())
+	}
+	read := perform(t, handler, http.MethodGet, "/v1/sessions/"+id+"/audience", nil)
+	if read.Code != http.StatusOK {
+		t.Fatalf("read = %d %s", read.Code, read.Body.String())
+	}
+	if !strings.Contains(read.Body.String(), `"allowOutbound":true`) {
+		t.Errorf("allowOutbound did not survive: %s", read.Body.String())
+	}
+
+	// And the batch endpoint, which uses the same input type.
+	other := seedSession(t, store, "round-trip-batch")
+	if response := perform(t, handler, http.MethodPost, "/v1/sessions/audience", map[string]any{
+		"ids":      []string{other},
+		"audience": map[string]any{"mode": "none", "allowOutbound": true},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("batch = %d %s", response.Code, response.Body.String())
+	}
+	readOther := perform(t, handler, http.MethodGet, "/v1/sessions/"+other+"/audience", nil)
+	if !strings.Contains(readOther.Body.String(), `"allowOutbound":true`) {
+		t.Errorf("the batch endpoint dropped allowOutbound: %s", readOther.Body.String())
 	}
 }

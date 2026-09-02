@@ -9,7 +9,6 @@ package mcpserver
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -78,15 +77,6 @@ type listResult struct {
 	Total    int       `json:"total"`
 }
 
-// notYet is what an unimplemented tool answers.
-//
-// It names the issue rather than failing vaguely, so an agent that calls the
-// tool early gets an answer a person can act on instead of an empty result that
-// looks like "there is nothing here".
-func notYet(tool, issue string) error {
-	return fmt.Errorf("%s is not implemented yet; it lands in %s", tool, issue)
-}
-
 // MCPServer builds the SDK server with this surface registered.
 func (s *server) MCPServer() *mcp.Server {
 	capabilities := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
@@ -143,12 +133,18 @@ func (s *server) MCPServer() *mcp.Server {
 	})
 
 	mcp.AddTool(sdk, &mcp.Tool{
-		Name:        "agent_send",
-		Title:       "Send a message to an agent",
-		Description: "Queue a message for a visible destination whose owner accepts messages. Queuing is not delivery and not reading.",
+		Name:  "agent_send",
+		Title: "Send a message to an agent",
+		Description: "Queue a message for a visible destination whose owner accepts messages. " +
+			"Requires the owner to have opened this session's outbound gate. Queuing is not " +
+			"delivery and not reading.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ sendArgs) (*mcp.CallToolResult, any, error) {
-		return nil, nil, notYet("agent_send", "issue #53")
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args sendArgs) (*mcp.CallToolResult, any, error) {
+		result, err := s.send(ctx, args.AgentID, args.Message)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, result, nil
 	})
 
 	return sdk

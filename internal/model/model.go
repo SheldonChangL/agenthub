@@ -70,10 +70,22 @@ func ValidAudienceMode(mode AudienceMode) bool {
 type Audience struct {
 	Mode  AudienceMode `json:"mode"`
 	Nodes []string     `json:"nodes,omitempty"`
-	// ExportCWD and AcceptMessages default to false. An export view says as
-	// little as it can until the owner says otherwise.
+	// ExportCWD, AcceptMessages and AllowOutbound default to false. An export
+	// view says as little as it can until the owner says otherwise.
 	ExportCWD      bool `json:"exportCwd"`
 	AcceptMessages bool `json:"acceptMessages"`
+	// AllowOutbound lets an agent bound to this session send messages to other
+	// nodes.
+	//
+	// Separate from AcceptMessages because willing to receive is not willing to
+	// send. It bounds what an agent can do after reading a message written on
+	// another machine, which reaches its context through agent_inbox.
+	//
+	// Enforced today by agenthub-mcp, which is a client of this node rather than
+	// the node itself (#75). That closes the path an agent takes by following an
+	// instruction it read; it does not stop a process that posts to the owner's
+	// API directly.
+	AllowOutbound bool `json:"allowOutbound"`
 }
 
 // PublishesTo reports whether a peer may see the session.
