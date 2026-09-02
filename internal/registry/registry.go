@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     audience_mode TEXT NOT NULL DEFAULT 'none' CHECK (audience_mode IN ('none', 'all_paired', 'selected')),
     export_cwd INTEGER NOT NULL DEFAULT 0 CHECK (export_cwd IN (0, 1)),
     accept_messages INTEGER NOT NULL DEFAULT 0 CHECK (accept_messages IN (0, 1)),
+    allow_outbound INTEGER NOT NULL DEFAULT 0 CHECK (allow_outbound IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'inactive', 'unknown')),
     status_source TEXT NOT NULL,
     cwd TEXT NOT NULL DEFAULT '',
@@ -177,6 +178,10 @@ func (r *Registry) addSessionPolicyColumns(ctx context.Context) error {
 		{"audience_mode", "TEXT NOT NULL DEFAULT 'none' CHECK (audience_mode IN ('none', 'all_paired', 'selected'))"},
 		{"export_cwd", "INTEGER NOT NULL DEFAULT 0 CHECK (export_cwd IN (0, 1))"},
 		{"accept_messages", "INTEGER NOT NULL DEFAULT 0 CHECK (accept_messages IN (0, 1))"},
+		// Added after the first release of the audience model. Existing rows
+		// take the default, which is closed: an upgrade must not silently grant
+		// a session the ability to send.
+		{"allow_outbound", "INTEGER NOT NULL DEFAULT 0 CHECK (allow_outbound IN (0, 1))"},
 	}
 
 	existing := map[string]bool{}
@@ -359,7 +364,7 @@ func (r *Registry) GetSession(ctx context.Context, id string) (model.Session, er
 	const query = `
 SELECT id, provider, provider_session_id, management, status,
        status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
-       audience_mode, export_cwd, accept_messages,
+       audience_mode, export_cwd, accept_messages, allow_outbound,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
             AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
@@ -380,7 +385,7 @@ func (r *Registry) ListSessions(ctx context.Context, options ListOptions) ([]mod
 	query := `
 SELECT id, provider, provider_session_id, management, status,
        status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
-       audience_mode, export_cwd, accept_messages,
+       audience_mode, export_cwd, accept_messages, allow_outbound,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
             AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
@@ -494,8 +499,9 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 	}
 
 	result, err := transaction.ExecContext(ctx,
-		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, updated_at_ms = ? WHERE id = ?`,
+		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, allow_outbound = ?, updated_at_ms = ? WHERE id = ?`,
 		audience.Mode, boolToInt(audience.ExportCWD), boolToInt(audience.AcceptMessages),
+		boolToInt(audience.AllowOutbound),
 		time.Now().UTC().UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("set audience for %q: %w", id, err)
@@ -531,10 +537,10 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 // GetAudience reads a session's export policy including its grants.
 func (r *Registry) GetAudience(ctx context.Context, id string) (model.Audience, error) {
 	var audience model.Audience
-	var exportCWD, acceptMessages int
+	var exportCWD, acceptMessages, allowOutbound int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT audience_mode, export_cwd, accept_messages FROM sessions WHERE id = ?`, id).
-		Scan(&audience.Mode, &exportCWD, &acceptMessages)
+		`SELECT audience_mode, export_cwd, accept_messages, allow_outbound FROM sessions WHERE id = ?`, id).
+		Scan(&audience.Mode, &exportCWD, &acceptMessages, &allowOutbound)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Audience{}, fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
@@ -543,6 +549,7 @@ func (r *Registry) GetAudience(ctx context.Context, id string) (model.Audience, 
 	}
 	audience.ExportCWD = exportCWD == 1
 	audience.AcceptMessages = acceptMessages == 1
+	audience.AllowOutbound = allowOutbound == 1
 
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT node_id FROM session_audience WHERE session_id = ? ORDER BY node_id`, id)
@@ -589,19 +596,20 @@ const publishedPredicate = `WHERE (
 func scanSession(row rowScanner) (model.Session, error) {
 	var session model.Session
 	var lastSeenMS, updatedMS int64
-	var exportCWD, acceptMessages, published int
+	var exportCWD, acceptMessages, allowOutbound, published int
 	var grants string
 	err := row.Scan(
 		&session.ID, &session.Provider, &session.ProviderSessionID, &session.Management,
 		&session.Status, &session.StatusSource, &session.CWD,
 		&session.Source, &session.MetadataPath, &lastSeenMS, &updatedMS,
-		&session.Audience.Mode, &exportCWD, &acceptMessages, &published, &grants,
+		&session.Audience.Mode, &exportCWD, &acceptMessages, &allowOutbound, &published, &grants,
 	)
 	if err != nil {
 		return model.Session{}, err
 	}
 	session.Audience.ExportCWD = exportCWD == 1
 	session.Audience.AcceptMessages = acceptMessages == 1
+	session.Audience.AllowOutbound = allowOutbound == 1
 	session.LastSeenAt = time.UnixMilli(lastSeenMS).UTC()
 	session.UpdatedAt = time.UnixMilli(updatedMS).UTC()
 	// Visibility is derived, never stored: one source of truth for "who may

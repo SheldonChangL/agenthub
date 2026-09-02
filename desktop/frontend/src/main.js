@@ -515,6 +515,7 @@ function readAudienceForm() {
     nodes,
     exportCwd: el("audience-cwd").checked,
     acceptMessages: el("audience-messages").checked,
+    allowOutbound: el("audience-outbound").checked,
   };
 }
 
@@ -578,7 +579,7 @@ el("audience-apply").onclick = () => {
   applyAudience(audience, noun);
 };
 
-el("btn-unpublish").onclick = () => applyAudience({ mode: "none", nodes: [], exportCwd: false, acceptMessages: false }, "收回");
+el("btn-unpublish").onclick = () => applyAudience({ mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false }, "收回");
 
 el("btn-reload").onclick = () => withBusy("重新整理", load);
 

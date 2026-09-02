@@ -304,6 +304,7 @@ type audienceInput struct {
 	Nodes          []string           `json:"nodes"`
 	ExportCWD      bool               `json:"exportCwd"`
 	AcceptMessages bool               `json:"acceptMessages"`
+	AllowOutbound  bool               `json:"allowOutbound"`
 }
 
 func (i audienceInput) audience() model.Audience {
@@ -312,6 +313,7 @@ func (i audienceInput) audience() model.Audience {
 		Nodes:          i.Nodes,
 		ExportCWD:      i.ExportCWD,
 		AcceptMessages: i.AcceptMessages,
+		AllowOutbound:  i.AllowOutbound,
 	}
 }
 
