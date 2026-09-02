@@ -1,0 +1,6 @@
+# PowerShell is delivered to Windows machines, where CRLF is the convention.
+# Storing CRLF in the repository instead would make every line of the file look
+# like trailing whitespace to `git diff --check`, because the \r is exactly
+# that. Declaring the ending here keeps the repository copy LF, hands Windows a
+# CRLF working copy, and leaves the whitespace check meaningful.
+*.ps1 text eol=crlf
