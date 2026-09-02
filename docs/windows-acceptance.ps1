@@ -86,6 +86,11 @@ function Invoke-Native {
     param([scriptblock]$Command)
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # Cleared first: a command that does not exist raises a non-terminating
+    # error and never touches $LASTEXITCODE, so without this the PREVIOUS
+    # command's exit code comes back as though this one had succeeded - and a
+    # machine with no git would fail later, confusingly, at Set-Location.
+    $global:LASTEXITCODE = $null
     try {
         $output = & $Command 2>&1 | ForEach-Object { "$_" }
         return @{ Output = ($output -join "`n"); Code = $LASTEXITCODE }
@@ -112,14 +117,14 @@ Write-Host "  User       : $env:USERNAME"
 Write-Host "  Machine    : $env:COMPUTERNAME"
 
 $go = Invoke-Native { go version }
-if ($go.Code -ne 0 -or -not $go.Output) {
+if ($null -eq $go.Code -or $go.Code -ne 0 -or -not $go.Output) {
     Write-Host "`nGo is not on PATH. Install Go 1.27+ from https://go.dev/dl/ and run this again." -ForegroundColor Red
     exit 1
 }
 Write-Host "  Go         : $($go.Output)"
 
 $git = Invoke-Native { git --version }
-if ($git.Code -ne 0) {
+if ($null -eq $git.Code -or $git.Code -ne 0) {
     Write-Host "`ngit is not on PATH. Install it from https://git-scm.com/download/win and run this again." -ForegroundColor Red
     exit 1
 }
@@ -157,7 +162,7 @@ try {
 Section 'Build from source'
 Push-Location $work
 $clone = Invoke-Native { git clone --depth 1 https://github.com/SheldonChangL/agenthub.git repo }
-if ($clone.Code -ne 0) {
+if ($null -eq $clone.Code -or $clone.Code -ne 0) {
     Report 'clone the repository' 'FAIL'
     Show-Tail $clone.Output
     throw 'clone failed; nothing further can run'
@@ -190,7 +195,7 @@ if ($race.Code -eq 0) {
 
 $exe = Join-Path $work 'agenthub-node.exe'
 $buildNode = Invoke-Native { go build -o $exe ./cmd/agenthub-node }
-if ($buildNode.Code -ne 0) {
+if ($null -eq $buildNode.Code -or $buildNode.Code -ne 0) {
     Report 'build agenthub-node.exe' 'FAIL'
     Show-Tail $buildNode.Output
     throw 'cannot build the node; nothing further can run'
@@ -324,15 +329,21 @@ if ($declaredLength -eq $payload.Length) {
 # Windows to undo it, with the same entropy the Go code uses.
 
 Section 'The payload is a real DPAPI blob'
+# PowerShell 7 ships this class under its own assembly name; 5.1 has it in
+# System.Security. Try both, so the most important check in this script runs
+# under either host instead of skipping.
 $haveProtectedData = $false
-try {
-    Add-Type -AssemblyName System.Security -ErrorAction Stop
-    $null = [System.Security.Cryptography.ProtectedData]
-    $haveProtectedData = $true
-} catch { $haveProtectedData = $false }
+foreach ($assembly in 'System.Security.Cryptography.ProtectedData', 'System.Security') {
+    if ($haveProtectedData) { continue }
+    try {
+        Add-Type -AssemblyName $assembly -ErrorAction Stop
+        $null = [System.Security.Cryptography.ProtectedData]
+        $haveProtectedData = $true
+    } catch { }
+}
 
 if (-not $haveProtectedData) {
-    Report 'Windows can decrypt the payload as the current user' 'SKIP' `
+    Report 'Windows can decrypt the payload' 'SKIP' `
         'System.Security.Cryptography.ProtectedData is unavailable here; please re-run under powershell.exe (5.1)'
     Report 'the plaintext seed is absent from the file' 'SKIP' 'depends on the check above'
     Report 'the blob is bound to AgentHub-specific entropy' 'SKIP' 'depends on the check above'
@@ -348,20 +359,26 @@ if (-not $haveProtectedData) {
         $unprotectError = $_.Exception.Message
     }
 
+    # CryptUnprotectData ignores the scope flag, so a blob protected for the
+    # LOCAL_MACHINE scope would decrypt here too. What this proves is that the
+    # payload is a genuine DPAPI blob carrying AgentHub's entropy - that it is
+    # bound to the USER is what manual check (a) at the end proves.
+    $decrypted = $false
     if ($null -eq $seed) {
-        Report 'Windows can decrypt the payload as the current user' 'FAIL' `
+        Report 'Windows can decrypt the payload' 'FAIL' `
             "DPAPI refused the payload this machine just wrote: $unprotectError"
     } elseif ($seed.Length -ne 32) {
-        Report 'Windows can decrypt the payload as the current user' 'FAIL' `
+        Report 'Windows can decrypt the payload' 'FAIL' `
             "DPAPI returned $($seed.Length) bytes, expected a 32-byte Ed25519 seed"
     } else {
-        Report 'Windows can decrypt the payload as the current user' 'PASS' `
-            'DPAPI returned exactly 32 bytes, so the payload really is a user-bound blob'
+        $decrypted = $true
+        Report 'Windows can decrypt the payload' 'PASS' `
+            'DPAPI returned exactly 32 bytes, so the payload is a real DPAPI blob'
     }
 
     # The seed must not also be sitting in the file in the clear. This is the
     # check that a no-op "encryption" cannot survive.
-    if ($seed -and $seed.Length -eq 32) {
+    if ($decrypted) {
         $fileHex = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
         $seedHex = ($seed | ForEach-Object { $_.ToString('x2') }) -join ''
         if ($fileHex.Contains($seedHex)) {
@@ -378,14 +395,23 @@ if (-not $haveProtectedData) {
 
     # Entropy is what stops a blob lifted from this file being decrypted by a
     # caller who does not know it came from AgentHub.
-    $withoutEntropy = $null
-    try { $withoutEntropy = [System.Security.Cryptography.ProtectedData]::Unprotect($payload, $null, $scope) } catch { }
-    if ($null -eq $withoutEntropy) {
-        Report 'the blob is bound to AgentHub-specific entropy' 'PASS' 'decryption without the entropy is refused'
+    #
+    # Gated on the decryption above having worked: if the payload is not a DPAPI
+    # blob at all then decrypting it WITHOUT the entropy fails too, and an
+    # ungated check would report that failure as a pass.
+    if (-not $decrypted) {
+        Report 'the blob is bound to AgentHub-specific entropy' 'SKIP' `
+            'nothing decrypted with the entropy, so binding to it cannot be tested'
     } else {
-        Report 'the blob is bound to AgentHub-specific entropy' 'FAIL' `
-            'the payload decrypts with no entropy, so any process could read it'
-        [Array]::Clear($withoutEntropy, 0, $withoutEntropy.Length)
+        $withoutEntropy = $null
+        try { $withoutEntropy = [System.Security.Cryptography.ProtectedData]::Unprotect($payload, $null, $scope) } catch { }
+        if ($null -eq $withoutEntropy) {
+            Report 'the blob is bound to AgentHub-specific entropy' 'PASS' 'decryption without the entropy is refused'
+        } else {
+            Report 'the blob is bound to AgentHub-specific entropy' 'FAIL' `
+                'the payload decrypts with no entropy, so any process could read it'
+            [Array]::Clear($withoutEntropy, 0, $withoutEntropy.Length)
+        }
     }
 }
 
@@ -468,37 +494,63 @@ $corrupt[$corrupt.Length - 1] = [byte](($corrupt[$corrupt.Length - 1] -bxor 0xFF
 Test-Damaged 'a corrupted blob is refused by DPAPI' $corrupt $dpapiRefusal `
     'a flipped bit must not silently produce a new identity'
 
-# A reparse point where the key should be: the loader Lstats before opening, so
-# a link must be refused rather than followed somewhere else.
+# A reparse point where the key should be.
+#
+# readKeyFile Lstats before opening, so a link is refused rather than followed.
+# The case that actually exercises that is a SYMLINK TO A VALID KEY: following
+# it would succeed and the node would start happily, so only the Lstat can
+# refuse it. A junction to a directory is a weaker test - a plain Stat would
+# reject a directory too - so it is the fallback, and the result says which one
+# ran. Creating a file symlink needs Developer Mode or elevation; a junction
+# needs neither.
 Section 'A reparse point in place of the key'
+$linkKind = ''
+$symlinkTarget = Join-Path $work 'real-node.key'
+[System.IO.File]::WriteAllBytes($symlinkTarget, $goodKey)
 $junctionTarget = Join-Path $work 'junction-target'
 New-Item -ItemType Directory -Path $junctionTarget -Force | Out-Null
-$madeJunction = $false
-try {
-    Remove-Item $keyPath -Force
-    New-Item -ItemType Junction -Path $keyPath -Target $junctionTarget -ErrorAction Stop | Out-Null
-    $madeJunction = $true
-} catch { $madeJunction = $false }
 
-if (-not $madeJunction) {
-    Report 'a reparse point in place of node.key is refused' 'SKIP' 'this machine would not let the script create a junction'
-    if (-not (Test-Path $keyPath)) { [System.IO.File]::WriteAllBytes($keyPath, $goodKey) }
+Remove-Item $keyPath -Force -ErrorAction SilentlyContinue
+try {
+    New-Item -ItemType SymbolicLink -Path $keyPath -Target $symlinkTarget -ErrorAction Stop | Out-Null
+    $linkKind = 'a symlink to a valid key'
+} catch {
+    try {
+        New-Item -ItemType Junction -Path $keyPath -Target $junctionTarget -ErrorAction Stop | Out-Null
+        $linkKind = 'a junction to a directory (weaker: no Developer Mode for a file symlink)'
+    } catch { $linkKind = '' }
+}
+
+$reparseName = 'a reparse point in place of node.key is refused'
+if (-not $linkKind) {
+    Report $reparseName 'SKIP' 'this machine allowed neither a file symlink nor a junction'
 } else {
     $node = New-Node -Db $dbPath -Port 17486
     $started = Wait-Node $node -Seconds 20
     $log = Stop-Node $node
+    # Only the Lstat refusal counts. main.go wraps every key error as
+    # "load node key: ...", so matching on "node key" would also accept a
+    # loader that followed the link and merely failed to open or read it.
+    $expected = 'is not a regular file'
     if ($started) {
-        Report 'a reparse point in place of node.key is refused' 'FAIL' 'the node started with a link where the key should be'
-    } elseif ($log -match 'not a regular file|node key') {
-        $line = ($log -split "`n" | Where-Object { $_ -match 'not a regular file|node key' } | Select-Object -First 1)
-        Report 'a reparse point in place of node.key is refused' 'PASS' (($line -replace '\s+', ' ').Trim())
+        Report $reparseName 'FAIL' "the node started with $linkKind where the key should be"
+    } elseif ($node.Process.ExitCode -eq 0) {
+        Report $reparseName 'FAIL' 'the node exited 0 rather than refusing'
+    } elseif ($log -match [regex]::Escape($expected)) {
+        $line = ($log -split "`n" | Where-Object { $_ -match [regex]::Escape($expected) } | Select-Object -First 1)
+        Report $reparseName 'PASS' "tested with $linkKind - $(($line -replace '\s+', ' ').Trim())"
     } else {
-        Report 'a reparse point in place of node.key is refused' 'FAIL' `
-            "it refused, but said nothing about the key: $((($log -split "`n" | Select-Object -Last 2) -join ' | ').Trim())"
+        Report $reparseName 'FAIL' `
+            "it refused, but not via the Lstat check. Wanted '$expected', got: $((($log -split "`n" | Select-Object -Last 2) -join ' | ').Trim())"
     }
-    Remove-Item $keyPath -Force -Recurse -ErrorAction SilentlyContinue
-    [System.IO.File]::WriteAllBytes($keyPath, $goodKey)
 }
+
+# Remove-Item follows or mishandles reparse points; Delete removes the link
+# itself. Directory::Delete covers a junction, File::Delete a file symlink.
+try { [System.IO.Directory]::Delete($keyPath) } catch { }
+try { [System.IO.File]::Delete($keyPath) } catch { }
+if (Test-Path $keyPath) { Remove-Item $keyPath -Force -Recurse -ErrorAction SilentlyContinue }
+[System.IO.File]::WriteAllBytes($keyPath, $goodKey)
 
 # ------------------------------------------------------- concurrent starts
 
@@ -557,6 +609,8 @@ if (-not $ScanRealProviders) {
 } elseif (-not $haveClaude -and -not $haveCodex) {
     Report 'discovery against installed providers' 'SKIP' 'neither ~/.claude nor ~/.codex is present on this machine'
 } else {
+    Report 'about to read your real provider data' 'INFO' `
+        "reading session metadata from $claudeRoot and $codexRoot (titles, working directories; no conversation content)"
     $scanDir = Join-Path $work 'scan'
     New-Item -ItemType Directory -Path $scanDir -Force | Out-Null
     $node = Start-NodeAndWait -Db (Join-Path $scanDir 'agenthub.db') -Port 17502 `
@@ -614,7 +668,8 @@ Write-Host @"
             - EXPECTED: it refuses to start, with a message containing
               "could not be decrypted for the current Windows user".
               If it starts and prints a fingerprint, that is a FAIL - please
-              say so.
+              say so, and press Ctrl+C to stop it (a node that started will
+              keep running and hold the console).
 
         (b) ANOTHER WINDOWS MACHINE
             - copy the same folder to a different computer and run the same
