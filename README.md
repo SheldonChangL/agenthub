@@ -4,7 +4,7 @@ AgentHub is a privacy-first, local control plane for coding-agent sessions. The 
 
 AgentHub targets Windows, macOS, and Ubuntu. The shared core is pure Go; provider process discovery is platform-specific. Cross-compilation is part of verification, while each provider must still be installed and supported on the target host.
 
-Privacy is the default: discovered sessions start with audience `none`. The current build has no LAN transport, so no session data leaves the host. Owners can already prepare an explicit `all_paired` or `selected` audience, but that policy is only exercised by local, signed heartbeat previews until authenticated transport exists.
+Privacy is the default: discovered sessions start with audience `none`, and the peer listener stays on loopback unless the owner passes `-allow-lan` and names a private address. With that set, paired nodes exchange signed heartbeats and messages over TLS pinned to the key recorded at pairing, carrying only what each session's audience authorizes for that peer.
 
 ## MVP status
 
@@ -16,18 +16,23 @@ Privacy is the default: discovered sessions start with audience `none`. The curr
 - Persistent Ed25519 node identity, signed envelopes, and a schema-validated heartbeat preview
 - Heartbeats bound to their recipient and a heartbeat sequence that survives restarts
 - Local HTTP API and `ah` CLI
-- Local message inbox for the future broker path
+- Message inbox, bounded and deduplicated, reachable from paired nodes
 - Per-session audience, working-directory export, and inbound-message policy
 - Manual fingerprint pairing, trust storage, revocation, and desktop management
 - Draft broker protocol and MCP tool schemas
 - Architecture and issue plan for authenticated multi-node operation
-- No complete LAN broker, remote wake-up, or provider message injection yet
-- No runnable MCP server transport yet; the four tools are contract drafts
+- No MCP server: the four tools in `mcp-tools.json` are contract drafts, so no agent can reach any of the above (Step 7, issue #56)
+- No wake-up: messages sit in the inbox until a person reads them (Step 8, issue #60)
+- No provider message injection, by design
+- Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
+- No release, installer, or version number (Step 10, issue #67)
 
-The remote export contract, per-node audience model, signing identity, and
-manual trust workflow are implemented. The next increment is authenticated
-heartbeat transport and presence consumption between nodes. It is planned in
-[multinode-plan.md](docs/multinode-plan.md) and tracked from
+The remote export contract, per-node audience model, signing identity, manual
+trust workflow, and the authenticated peer transport between nodes are all
+implemented and have been exercised between two machines
+([verification.md](docs/verification.md)). What is missing is the layer an agent
+can actually call, and everything needed for someone else to install this. Those
+are planned as Steps 7 to 10 and tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
 ## Roadmap and release gates
@@ -36,7 +41,8 @@ heartbeat transport and presence consumption between nodes. It is planned in
 |---|---|---|
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
-| Per-node privacy and manual pairing | Implemented; network exchange still planned | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [multi-node plan](docs/multinode-plan.md) |
+| Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
+| Automated pairing, MCP server, wake-up, distribution | Planned | issues [#56](https://github.com/SheldonChangL/agenthub/issues/56), [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
 
@@ -87,9 +93,11 @@ unknown node is a separate, explicit owner action.
 
 The node listens on `127.0.0.1:7462` by default. Set `AGENTHUB_URL` for the CLI or pass `--url`.
 
-The local API remains loopback-only. Manual trust records and signed envelopes
-exist, but no network receiver yet authenticates them. Session list responses
-are paginated; `ah list` follows every page automatically.
+The owner's API remains loopback-only and stays there; peer traffic uses a
+separate TLS listener on `127.0.0.1:7463` by default. Trust records are created
+by hand, and the receiving side authenticates every envelope against them:
+signature, recipient binding, expiry, and sequence. Session list responses are
+paginated; `ah list` follows every page automatically.
 
 ## Desktop app
 
