@@ -76,7 +76,7 @@ func TestTheSurfaceIsFourToolsAndNothingElse(t *testing.T) {
 // reads as "there is nothing here".
 //
 // This is a tripwire, not a permanent assertion: each entry is deleted as its
-// issue lands. agent_list and agent_status went with #51.
+// issue lands. agent_list and agent_status went with #51, agent_inbox with #52.
 func TestUnimplementedToolsNameTheirIssue(t *testing.T) {
 	session := connect(t)
 	cases := []struct {
@@ -84,7 +84,6 @@ func TestUnimplementedToolsNameTheirIssue(t *testing.T) {
 		args  map[string]any
 		issue string
 	}{
-		{"agent_inbox", map[string]any{}, "#52"},
 		{"agent_send", map[string]any{"agentId": "codex:demo", "message": "x"}, "#53"},
 	}
 	for _, c := range cases {
