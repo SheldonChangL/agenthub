@@ -132,6 +132,10 @@ Neither path is intended to inject text into a provider's files or process, so
 `#16`'s boundary is intended to hold: the Codex path calls Codex's own API, and
 the Claude Code path uses a documented MCP capability.
 
+The trust boundary this surface creates, what each defence does, and what none
+of them do, is recorded in
+[ADR-002](decisions/002-mcp-surface-trust-boundary.md).
+
 ## Current implementation boundary
 
 | Boundary | Current state |
@@ -139,8 +143,8 @@ the Claude Code path uses a documented MCP capability.
 | Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
 | Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
 | Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
-| MCP client -> node | Tool contracts are drafted in `mcp-tools.json`; no server exists. Step 7, #56 |
-| Node -> agent | Messages are queued in the inbox and nothing hands them to an agent. Step 8, #60 |
+| MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced in this process rather than the node (#75) |
+| Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
 | Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
 | Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |
 
