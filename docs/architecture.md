@@ -1,81 +1,148 @@
 # Architecture
+## Topology
 
-## Target topology
+Every installation runs the same components. There is no central server: nodes
+deliver to each other directly over TLS. "Broker" survives as the name of the
+envelope format in `broker-protocol.schema.json` and as a logical role each node
+performs for itself; no such host is deployed, and none is planned.
+
+### Inside one node
+
+```mermaid
+flowchart TB
+    subgraph Agent["Agent - has its own Read/Bash tools"]
+        Claude[Claude Code]
+        Codex[Codex]
+    end
+
+    subgraph Client["Owner surfaces"]
+        Desktop[Desktop app]
+        CLI[ah CLI]
+    end
+
+    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools<br/>Step 7 - not built"]
+
+    API["Loopback HTTP API<br/>127.0.0.1:7462"]
+
+    subgraph Node["agenthub-node"]
+        Registry[("SQLite<br/>sessions · audience · trust<br/>inbox · outbox")]
+        Key[["node.key - Ed25519<br/>DPAPI-protected on Windows"]]
+        Scan["Filesystem discovery<br/>~/.claude · ~/.codex - read only"]
+    end
+
+    Peer["Peer listener<br/>:7463 TLS 1.3<br/>the only surface that leaves the host"]
+
+    Claude -. stdio .-> MCP
+    Codex -. stdio .-> MCP
+    MCP -. Step 7 .-> API
+    Desktop --> API
+    CLI --> API
+    API --> Node
+    Scan --> Registry
+    Node --> Peer
+```
+
+None of the MCP layer exists yet; the dashed edges are Step 7 (#56).
+
+The agent will start `agenthub-mcp` as its own child process, which is why that
+process cannot know which session called it unless it is told at startup — hence
+the `--as` binding required by #50. Two acceptance criteria in #50 and #51, not
+properties of any current code: it must reach the registry only through the same
+loopback API the desktop app and CLI use, never SQLite directly, so
+`agenthub-node` stays the only writer; and `agent_list` must read presence rather
+than the registry, so the MCP surface cannot become a second path around audience
+filtering.
+
+### Between two nodes
 
 ```mermaid
 flowchart LR
-    Owner[Owner] --> CLI[ah CLI]
-    Owner --> Desktop[Desktop app]
-
-    subgraph ClientA[Client node A]
-        ClaudeA[Claude sessions] --> ClaudeAdapter[Claude adapter]
-        CodexA[Codex sessions] --> CodexAdapter[Codex adapter]
-        ClaudeAdapter --> RegistryA[(Owner-local SQLite registry)]
-        CodexAdapter --> RegistryA
-        CLI --> LocalAPI[Loopback HTTP API]
-        Desktop --> LocalAPI
-        LocalMCP[Local MCP server - planned] --> LocalAPI
-        LocalAPI --> NodeA[agenthub-node]
-        NodeA <--> RegistryA
-        RegistryA --> PolicyA[Audience and export policy]
-        PolicyA --> ExportA[Allowlisted export view]
-        InboxA[(Local inbox)] <--> NodeA
+    subgraph A["Node A"]
+        OwnerA["Owner: ah send / desktop"]
+        AgentA[Agent on A]
+        OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
+        NodeA[agenthub-node]
     end
 
-    subgraph Server[AgentHub broker server - planned]
-        Auth[Node authentication and pairing]
-        Presence[Authorized presence directory]
-        Router[Message router]
-        Audit[Delivery audit without transcript storage]
-        Auth --> Presence
-        Presence --> Router
-        Router --> Audit
+    subgraph B["Node B"]
+        PresB[("presence<br/>sequence and expiry checked")]
+        InB{{"acceptMessages<br/>implemented<br/>per session"}}
+        InboxB[("inbox")]
+        WakeB{{"autoWake<br/>Step 8 - issue 59<br/>default off"}}
+        AgentB[Agent on B]
     end
 
-    subgraph ClientB[Client node B]
-        NodeB[agenthub-node]
-        RegistryB[(Owner-local SQLite registry)]
-        PolicyB[Audience and export policy]
-        InboxB[(Local inbox)]
-        AgentsB[Claude and Codex sessions]
-        NodeB <--> RegistryB
-        RegistryB --> PolicyB
-        NodeB <--> InboxB
-        AgentsB --> RegistryB
-        InboxB -. managed delivery or unmanaged queue .-> AgentsB
-    end
-
-    ExportA -. authenticated heartbeat .-> Presence
-    NodeA -. routed message .-> Router
-    Router -. authorized delivery .-> NodeB
-    PolicyB -. authenticated heartbeat .-> Presence
+    NodeA -- "heartbeat, 15s by default<br/>only audience-authorised sessions<br/>not gated by acceptMessages" --> PresB
+    OwnerA --> NodeA
+    AgentA -. "agent_send, Step 7" .-> OutA
+    OutA -.-> NodeA
+    NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
+    InB --> InboxB
+    InboxB -. "Step 7 - a person asks the agent to look" .-> AgentB
+    InboxB -.-> WakeB
+    WakeB -. "Step 8 - arrives on its own" .-> AgentB
 ```
 
-The Client A solid path exists in the local MVP. Client B represents another
-installation of the same local components; all cross-client/server and
-provider-delivery edges are planned. The broker is a logical server role;
-deployment and transport are intentionally deferred until the identity,
-pairing, and export contracts are implemented.
+Three gates sit on that path and are independent of each other, because willing
+to receive is not willing to send, and neither is willing to act unattended:
+
+| Gate | Where | State |
+|---|---|---|
+| `acceptMessages` | on the recipient | implemented |
+| `allowOutbound` | on the sender | Step 7, #53, default off |
+| `autoWake` | on the recipient | Step 8, #59, default off |
+
+TLS is pinned to the public key recorded when the two nodes paired, verified
+through `VerifyConnection` so a resumed TLS 1.3 handshake is checked too. A
+middlebox that substitutes its own certificate cannot complete the connection.
+
+### How a message reaches an agent
+
+Delivery to the inbox works today and has been exercised between two machines.
+What does not exist yet is anything an agent can call, and anything that hands a
+message to an agent without a person asking.
+
+| Leg | Mechanism | State |
+|---|---|---|
+| Agent sends | `agent_send` over MCP | Step 7, #53 |
+| Node to node | signed envelope over pinned TLS | implemented; a two-host run is described in PR #40/#41 and recorded in verification.md |
+| Into the inbox | `acceptMessages`, deduplicated, bounded at 500 | implemented |
+| Agent reads on request | `agent_inbox` over MCP | Step 7, #52 |
+| Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | Step 8, #57 |
+| Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | Step 8, #58 |
+
+The rest of this section records findings from planning Step 8 (#57, #58),
+checked in 2026-09 against Claude Code's published documentation and
+`codex-cli 0.147.0`. Both providers change often; re-check before relying on any
+of it.
+
+The two intended wake-up paths are asymmetric. The Claude Code path would run
+through `agenthub-mcp`, which the agent itself launched, so nothing can be pushed
+unless that session is already running. The Codex path would have
+`agenthub-node` connect outwards to the Codex App Server — though #58 has not yet
+chosen the transport, and a supervised-stdio choice would mean the node spawns
+the App Server itself rather than attaching to one.
+
+For Claude Code a channel appears to be the only workable mechanism: MCP
+`sampling/createMessage` and `notifications/resources/updated` are not documented
+as implemented, no hook fires on a timer, and hooks cannot raise a turn on their
+own.
+
+Neither path is intended to inject text into a provider's files or process, so
+`#16`'s boundary is intended to hold: the Codex path calls Codex's own API, and
+the Claude Code path uses a documented MCP capability.
 
 ## Current implementation boundary
 
 | Boundary | Current state |
 |---|---|
-| Provider session -> client node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
-| Owner -> client node | `ah`, desktop app, and loopback HTTP API are implemented |
-| Client node -> broker server | Not implemented; non-loopback bind is rejected. Node identity, recipient-bound signed envelopes, a persisted outbound sequence, the trust store and the pairing schema exist; no transport carries them and no receiver consumes them |
-| MCP client -> client node | Tool contracts are drafted; no MCP transport is running |
-| Node -> AI agent message delivery | Local messages are queued only; no provider injection or wake-up |
-
-`agenthub-node` owns the local registry and is the only component intended to write it. Adapters translate provider-specific metadata into one `Session` model. The CLI and the desktop app talk to the node rather than reading provider files or SQLite directly.
-
-The desktop app is the owner's audience management surface: it lists every
-local session, filters them by provider, status, audience, and working
-directory, and applies an audience policy to a selection. It holds no state of
-its own and lives in a separate Go module so that Wails' CGo requirement never
-reaches the node or the CLI.
-
-Codex has two discovery foundations: rollout metadata scanning, which is the enabled MVP path, and a JSON-RPC App Server client for `initialize` plus `thread/list`. The live client requests `useStateDbOnly: true`, decodes only identity/path/status fields, and maps `active`, `idle`, `notLoaded`, and `systemError` into AgentHub status. It is intentionally not wired into the daemon until transport lifecycle and reconnect behavior are specified.
+| Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
+| Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
+| Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
+| MCP client -> node | Tool contracts are drafted in `mcp-tools.json`; no server exists. Step 7, #56 |
+| Node -> agent | Messages are queued in the inbox and nothing hands them to an agent. Step 8, #60 |
+| Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
+| Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |
 
 ## Platform boundary
 
@@ -85,7 +152,7 @@ Cross-compilation proves source portability, not provider runtime behavior. Rele
 
 ## Session identity
 
-The stable local key is `<provider>:<provider-session-id>`. A separate random node ID identifies the host installation. A future broker address is therefore `<node-id>/<provider>:<provider-session-id>`.
+The stable local key is `<provider>:<provider-session-id>`. A separate random node ID identifies the host installation. A qualified address is therefore `<node-id>/<provider>:<provider-session-id>`, and is in use today.
 
 Provider metadata is untrusted input. Adapters validate identifiers, timestamps, and paths and ignore message content. Provider session IDs come from a metadata field rather than a filename, so `model.ValidateProviderSessionID` is the single rule every ingest path applies: an ID containing the address separator would move the boundary between node and session in a qualified address.
 
@@ -116,8 +183,8 @@ rescans cannot undo the owner's choice.
 There are two views:
 
 - Owner-local view: all local sessions, including private sessions.
-- Owner export preview: the union of sessions published to at least one audience, projected into `SessionSummary`. Nothing consumes this preview over the network today.
-- Per-peer export view: `HeartbeatBuilder.BuildFor(peer)` filters that same projection to sessions authorized for the named peer. It is implemented and tested but has no transport consumer.
+- Owner export preview: the union of sessions published to at least one audience, projected into `SessionSummary`. This preview is the owner's own view and is deliberately never sent.
+- Per-peer export view: `HeartbeatBuilder.BuildFor(peer)` filters that same projection to sessions authorized for the named peer. `Publisher.deliver` sends it and `receiveHeartbeat` consumes it.
 
 `BuildFor` refuses a recipient that is not currently in `trusted_nodes`. The
 audience filter alone cannot enforce `all_paired`: `Audience.PublishesTo`
@@ -137,10 +204,10 @@ needs to see, and it is not usable as any peer's heartbeat, because the
 recipient it names is not that peer. There is no way to produce an undirected
 `node.heartbeat`; the constructor for undirected envelopes refuses the type.
 
-The MVP local inbox accepts local destinations and parses both local and
-qualified addresses, but a qualified remote address returns `UNKNOWN_NODE`
-until routing exists. Remote `agent_send` must also require both an authorized
-view and the destination session's `acceptMessages` flag.
+The local inbox accepts local destinations and parses both local and qualified
+addresses. A qualified remote address is routed to that node; an unpaired one is
+answered `UNKNOWN_NODE`. Remote `agent_send` (Step 7, #53) must also require both
+an authorized view and the destination session's `acceptMessages` flag.
 
 The heartbeat builder projects each published session into `protocol.SessionSummary`,
 a type separate from the owner-local `model.Session`. The projection copies field
@@ -151,13 +218,16 @@ addresses in the export view are qualified as `<node-id>/<provider>:<id>`.
 `GET /v1/heartbeat` returns the complete broker envelope rather than a
 differently-shaped preview, and tests validate both the builder output and the
 HTTP response against `broker-protocol.schema.json`. This settles the shape and
-per-peer filtering, not transport: no receiver authenticates, expires, or
-deduplicates these envelopes yet, so the node must not be connected to a LAN.
+per-peer filtering. Transport is settled separately: `receiveHeartbeat`
+authenticates the sender, enforces expiry and a strictly advancing sequence, and
+`receiveMessage` deduplicates by sender and message id. The peer listener stays
+on loopback unless `-allow-lan` is set and `-peer-listen` names a private
+address.
 The accepted audience and
 migration behavior is recorded in
 [ADR-001](decisions/001-session-audience-and-export-boundary.md).
 
-## Node and broker boundary
+## Node identity boundary
 
 The node identity has two parts. The random identifier persisted in SQLite is a
 label and proves nothing: anyone can claim one. The Ed25519 keypair beside the
@@ -265,7 +335,7 @@ were paired a second time. A node already trusted with a different key is
 refused rather than updated; silently accepting a new key is how a machine gets
 impersonated.
 
-A target broker heartbeat is a replaceable presence snapshot with:
+A heartbeat is a replaceable presence snapshot with:
 
 - protocol version
 - a signature over the envelope
@@ -337,9 +407,10 @@ publication revoked**, and merging would resurrect it: revocation is expressed
 by omission, so a consumer that merges never sees one. A snapshot is also scoped
 to its recipient — a session published to selected nodes appears only in the
 heartbeats built for those nodes — so one peer's snapshot says nothing about
-another's and the two must never be combined. The broker must authenticate nodes, reject replayed or expired
-heartbeats, and route only the export view produced by the owner node. These are
-target requirements, not capabilities of the current build.
+another's and the two must never be combined. A receiving node authenticates the
+sender, rejects replayed or expired heartbeats, and accepts only the export view
+the sending node produced. These are implemented; see the presence and messaging
+handlers.
 
 ### Proving a peer is who its address claims
 
@@ -495,8 +566,10 @@ exposing heartbeats would also expose `PUT /v1/sessions/{id}/audience`, and the
 only thing between a peer and the owner's controls would be that nobody had sent
 the request.
 
-Both listeners are still bound to loopback. Widening the peer listener is the
-remaining step, and it is a deliberate change to one guarded line.
+The owner's API is bound to loopback and is never widened. The peer listener is
+loopback by default and moves to a private address only when `-allow-lan` is set
+and `-peer-listen` names one; `ValidatePeerListen` is the single guarded line
+that decides it.
 
 ### The receiving side
 
@@ -532,15 +605,15 @@ indistinguishable from one that was never paired. Revoking a node discards its
 snapshot along with its grants: trust is what made that view admissible, so
 withdrawing trust withdraws the view.
 
-The centralized broker is trusted with metadata the owner has authorized for
-routing. It must not receive private registry rows or provider transcripts and
-must not persist message bodies. End-to-end encryption between peer nodes is a
-possible later hardening step, not a current guarantee.
+There is no central host to trust: a paired node receives only the metadata that
+node's audience authorizes, and nothing else. Message bodies are persisted by the
+recipient, in the recipient's own inbox, because the recipient's owner is who
+they are for. No third party sees either.
 
 ## Network safety
 
-The MVP HTTP API binds to loopback. A future LAN mode must require authenticated pairing, validate request origins where applicable, use TLS or a mutually authenticated overlay, and never reuse the local API as an unauthenticated LAN endpoint.
+The owner's HTTP API binds to loopback and stays there. LAN traffic goes to a separate peer listener over TLS 1.3 pinned to the key recorded at pairing; the owner's API is never reused as a LAN endpoint, because opening a port for heartbeats must not also open the endpoints that change who may see a session.
 
 The current API rejects non-loopback browser origins, emits no-store/nosniff headers, validates bounded JSON bodies, parameterizes all SQL, and paginates session listings. This is defense in depth for the local API, not a substitute for LAN authentication.
 
-Loopback is a same-host trust boundary, not per-user authentication. Another process or OS account that can connect to the user's loopback port may access the local API. A production LAN release should add capability-token or OS-credential authentication before broadening the bind address.
+Loopback is a same-host trust boundary, not per-user authentication. Another process or OS account that can connect to the user's loopback port may access the local API. A production LAN release should add capability-token or OS-credential authentication before broadening the owner API's bind address.
