@@ -1,11 +1,11 @@
 package protocol
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"fmt"
 	"strings"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 )
 

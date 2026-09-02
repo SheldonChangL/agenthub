@@ -1,13 +1,13 @@
 package protocol
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"context"
 	"crypto/ed25519"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )

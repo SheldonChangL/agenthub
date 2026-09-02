@@ -1,13 +1,13 @@
 package api
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
@@ -153,11 +153,11 @@ func qualifiedSender(senderNodeID, claimed string) string {
 	if claimed == "" {
 		return senderNodeID
 	}
-	address, err := address.ParseAddress(claimed, senderNodeID)
+	parsed, err := address.ParseAddress(claimed, senderNodeID)
 	if err != nil {
 		return senderNodeID
 	}
-	return senderNodeID + model.SessionIDSeparator + address.SessionID
+	return senderNodeID + model.SessionIDSeparator + parsed.SessionID
 }
 
 // queueForPeer records a message addressed to a session on another node.

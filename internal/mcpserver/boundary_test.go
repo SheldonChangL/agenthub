@@ -2,7 +2,10 @@ package mcpserver_test
 
 import (
 	"go/build"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -24,7 +27,18 @@ import (
 func TestTheDatabaseIsNotLinkedIntoTheServer(t *testing.T) {
 	// The full import path, not a relative one: the test's working directory is
 	// this package, not the module root.
-	command := exec.Command("go", "list", "-deps", "agenthub.local/agenthub/cmd/agenthub-mcp")
+	// GOROOT-relative rather than $PATH: this test is the boundary, and it
+	// should not silently stop enforcing it under a trimmed environment.
+	// go/build resolves the toolchain the same way.
+	goTool := filepath.Join(runtime.GOROOT(), "bin", "go")
+	if _, err := os.Stat(goTool); err != nil {
+		found, lookErr := exec.LookPath("go")
+		if lookErr != nil {
+			t.Fatalf("no go toolchain: %v / %v", err, lookErr)
+		}
+		goTool = found
+	}
+	command := exec.Command(goTool, "list", "-deps", "agenthub.local/agenthub/cmd/agenthub-mcp")
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()

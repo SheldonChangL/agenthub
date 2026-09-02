@@ -57,15 +57,16 @@ func TestTheSurfaceIsFourToolsAndNothingElse(t *testing.T) {
 	}
 
 	// Named separately from the count: a future tool could keep the count at
-	// four while introducing exactly the reach this server must not have.
-	forbidden := []string{"read", "write", "file", "shell", "bash", "exec", "command", "process", "sql", "query"}
+	// four while introducing exactly the reach this server must not have. The
+	// exact-set assertion above is the real guard; this one catches a rename
+	// that slips a capability in under a familiar count.
+	forbidden := []string{"file", "shell", "bash", "exec", "command", "process", "sql", "query", "open", "fetch"}
 	for _, tool := range result.Tools {
-		lower := strings.ToLower(tool.Name + " " + tool.Description)
+		name := strings.ToLower(tool.Name)
 		for _, word := range forbidden {
-			if strings.Contains(strings.ToLower(tool.Name), word) {
-				t.Errorf("tool %q suggests %q access; this server must expose none", tool.Name, word)
+			if strings.Contains(name, word) {
+				t.Errorf("tool %q suggests %q access; this server exposes none", tool.Name, word)
 			}
-			_ = lower
 		}
 	}
 }

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"agenthub.local/agenthub/internal/address"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
@@ -461,14 +461,14 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// later be a free-text field that a remote sender fills in with anything.
 	from := ""
 	if input.From != "" {
-		address, err := address.ParseAddress(input.From, s.node.ID)
+		parsed, err := address.ParseAddress(input.From, s.node.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "from: "+err.Error())
 			return
 		}
 		from = input.From
-		if address.Local() {
-			from = address.SessionID
+		if parsed.Local() {
+			from = parsed.SessionID
 		}
 	}
 	if !destination.Local() {

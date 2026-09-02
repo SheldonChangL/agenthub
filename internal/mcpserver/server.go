@@ -17,8 +17,14 @@ import (
 // Version is reported to the agent during initialize.
 const Version = "0.1.0-alpha"
 
-// Server is one bound session's MCP surface.
-type Server struct {
+// server is one bound session's MCP surface.
+//
+// Unexported on purpose. With an exported type, (&Server{}).Run(ctx) compiles
+// and serves with a nil client and an empty binding — New's check bypassed by
+// not calling New. That is the same hole Binding's unexported field closes, one
+// level up, so it is closed the same way: there is no literal a caller can
+// write.
+type server struct {
 	client  *Client
 	binding Binding
 	nodeID  string
@@ -32,11 +38,14 @@ var ErrUnboundServer = errors.New("this server was not given a validated session
 // It refuses a zero Binding rather than serving a session named "": a forgotten
 // Bind would otherwise produce a running server bound to nothing, which is the
 // failure -as exists to prevent.
-func New(client *Client, binding Binding, nodeID string) (*Server, error) {
+func New(client *Client, binding Binding, nodeID string) (*server, error) {
 	if !binding.valid() {
 		return nil, ErrUnboundServer
 	}
-	return &Server{client: client, binding: binding, nodeID: nodeID}, nil
+	if client == nil {
+		return nil, errors.New("a server needs a node client")
+	}
+	return &server{client: client, binding: binding, nodeID: nodeID}, nil
 }
 
 type listArgs struct {
@@ -68,7 +77,7 @@ func notYet(tool, issue string) error {
 }
 
 // MCPServer builds the SDK server with this surface registered.
-func (s *Server) MCPServer() *mcp.Server {
+func (s *server) MCPServer() *mcp.Server {
 	capabilities := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "agenthub", Version: Version},
@@ -120,6 +129,6 @@ func (s *Server) MCPServer() *mcp.Server {
 }
 
 // Run serves the surface over stdio until the agent closes it.
-func (s *Server) Run(ctx context.Context) error {
+func (s *server) Run(ctx context.Context) error {
 	return s.MCPServer().Run(ctx, &mcp.StdioTransport{})
 }
