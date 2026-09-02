@@ -2,20 +2,21 @@
 
 ## Objective
 
-Build an executable, privacy-first local foundation that inventories Claude Code and Codex sessions and can later route authorized metadata and messages across providers and LAN hosts.
+Build an executable, privacy-first local foundation that inventories Claude Code and Codex sessions and routes authorized metadata and messages across providers and LAN hosts between paired nodes.
 
 Success means a user can start one node, discover local sessions while decoding
 and persisting metadata fields only, inspect normalized status, explicitly add
 or remove individual sessions from a local export preview, and exchange queued
-messages through the local API. Future broker and MCP contracts are documented
-as drafts with their unresolved implementation gaps made explicit.
+messages through the local API, and exchange them with a paired node over an
+authenticated transport. The MCP contract is documented as a draft with its
+unresolved implementation gaps made explicit.
 
 ## Assumptions
 
 1. The first supported AgentHub hosts are Windows, macOS, and Ubuntu. Provider support may differ: Claude Code documents Windows 10+ through WSL or Git for Windows; native provider runtime acceptance remains separate from AgentHub compatibility.
 2. Existing provider sessions are unmanaged. Their activity is inferred conservatively from metadata recency and provider process presence.
 3. Managed sessions will report lifecycle state directly to the registry; launching and supervising providers is outside this increment.
-4. All discovered sessions default to audience `none`. Re-discovery must never reset audience or export flags. An audience prepared before LAN transport exists sends no data by itself.
+4. All discovered sessions default to audience `none`. Re-discovery must never reset audience or export flags. An audience by itself sends nothing: the peer listener must also be opened with `-allow-lan`.
 5. Transcript and prompt bodies are out of scope and must not be persisted.
 6. The owner's API binds to loopback. A separate peer listener carries signed envelopes between paired nodes over pinned TLS when `-allow-lan` is set; there is no central host. The automated `pair.*` exchange is not implemented, so pairing is still manual.
 

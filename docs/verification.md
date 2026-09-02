@@ -1,6 +1,7 @@
 # Verification
 
-Verified on 2026-08-28.
+Verified on 2026-08-28, except where a later date is given. Sections below the
+*Two-host run, 2026-09-02* heading, and that section itself, are later.
 
 ## Planning and contract audit
 
@@ -164,12 +165,12 @@ others can read it and is written through a temporary file; the sender label on
 a message is parsed rather than stored as free text.
 
 Payload schemas exist for `node.heartbeat`, `node.hello` and the four `pair.*`
-types. `agent.message` and `agent.ack` remain reserved names whose payloads are
-unconstrained until #16 defines them.
+types. `agent.message` and `agent.ack` were reserved names here; #16 has since
+defined both in `protocol/message.go`.
 
-Only `node.heartbeat` has a producer. The pairing types are defined and
-schema-tested ahead of the transport that will carry them, so nothing in the
-build emits one.
+At the time of this section only `node.heartbeat` had a producer. `agent.message`
+gained one in #16. The four `pair.*` types are still defined and schema-tested
+with no producer or consumer (#62).
 
 ### Review of the identity work: three further findings
 
@@ -242,9 +243,9 @@ TypeScript, so nothing about the generated output changes. The check passes.
 
 ## Heartbeat delivery contract
 
-Two properties a future receiver would have had to work around are now producer
-invariants. Neither adds a receiver or a transport: nothing in this build sends
-or accepts a heartbeat.
+Two properties a receiver would otherwise have had to work around are producer
+invariants. Neither added a receiver or a transport at the time; both arrived in
+#14, and the result is recorded under *Two-host run, 2026-09-02*.
 
 **A heartbeat is bound to the node it was built for.** The envelope carries a
 signed `recipientNodeId`, included in the length-prefixed signable bytes between
@@ -362,9 +363,11 @@ branch has the counter table and no marker, so this build refuses to open it.
 Nothing has been released with the unmarked layout, so this affects only a
 working copy taken mid-review, and the fix is to delete that scratch database.
 
-Not verified: no Windows or Linux host ran this build; no second implementation
-has reproduced the new signable bytes; and no receiver exists, so
-`VerifyDirected` is exercised only by tests.
+Not verified at the time: no Windows or Linux host ran this build; no second
+implementation has reproduced the new signable bytes; and no receiver existed, so
+`VerifyDirected` was exercised only by tests. A Linux host and a real receiver
+are covered under *Two-host run, 2026-09-02*; Windows and a second implementation
+remain unverified.
 
 ## Automated checks
 
@@ -388,7 +391,7 @@ addressing, CLI calls, and loopback-only binding.
 |---|---:|---:|
 | macOS arm64 | pass | pass |
 | macOS amd64 | pass | pending real Intel host |
-| Ubuntu/Linux amd64 | pass | pending real host |
+| Ubuntu/Linux amd64 | pass | partial: two-host run 2026-09-02 |
 | Ubuntu/Linux arm64 | pass | pending real host |
 | Windows amd64 | pass | pending real host |
 | Windows arm64 | pass | pending real host |
@@ -467,7 +470,7 @@ machines, on a direct ethernet segment.
 
 | | Host A | Host B |
 |---|---|---|
-| Platform | darwin/arm64, `sheldonchang-mac.local` | linux/amd64, `user-HP-ProBook` |
+| Platform | darwin/arm64 | linux/amd64 |
 | Address | 122.122.122.1 | 122.122.122.2 |
 | Fingerprint | `05A5 C549 4CF1 7846 6513 701C` | `1223 03EA 5E96 543A 2DD8 BFEA` |
 
@@ -494,13 +497,27 @@ Observed:
   unchanged, and it contained no trace of the message id. This is the documented
   boundary from #16, confirmed rather than assumed
 
-What this run did not cover: the automated `pair.*` handshake (pairing was done
-by hand with `ah pair` and a `PUT /v1/nodes/{id}/address`), and anything on
-Windows.
+What this run did not cover, and which therefore remains test-only:
+
+- the automated `pair.*` handshake — pairing was done by hand with `ah pair` and
+  a `PUT /v1/nodes/{id}/address`
+- `-discover` — both addresses were entered by hand, and nothing announces
+  itself in any case, because `discovery.Announce` has no caller
+- TLS pin rejection against a substituted certificate
+- refusal of a stale, expired, or replayed heartbeat
+- the inbox-full 503 path
+- revocation taking effect over the wire
+- anything on Windows
+
+This run is cited elsewhere as evidence the peer transport is exercised. It
+shows the transport carries authorized data between two real hosts and withholds
+unauthorized data. It does not show the refusal paths hold in the field.
 
 ## Required real-host acceptance
 
-On one Windows and one Ubuntu host with the target providers installed:
+On one Windows and one Ubuntu host with the target providers installed. Steps 1
+to 4 were satisfied on the Ubuntu host during the *Two-host run, 2026-09-02*;
+steps 5 and 6, and every step on Windows, remain outstanding (#21):
 
 1. Start `agenthub-node` with a temporary database.
 2. Confirm discovery counts match provider session metadata on that host.

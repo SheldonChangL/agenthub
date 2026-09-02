@@ -58,8 +58,9 @@ filtering.
 ```mermaid
 flowchart LR
     subgraph A["Node A"]
-        NodeA[agenthub-node]
+        AgentA[Agent on A]
         OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
+        NodeA[agenthub-node]
     end
 
     subgraph B["Node B"]
@@ -71,8 +72,9 @@ flowchart LR
     end
 
     NodeA -- "heartbeat, 15s by default<br/>only audience-authorised sessions<br/>not gated by acceptMessages" --> PresB
-    NodeA -.-> OutA
-    OutA -. "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" .-> InB
+    AgentA -. "agent_send, Step 7" .-> OutA
+    OutA -.-> NodeA
+    NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
     InB --> InboxB
     InboxB -. "Step 7 - a person asks the agent to look" .-> AgentB
     InboxB -.-> WakeB
@@ -562,8 +564,10 @@ exposing heartbeats would also expose `PUT /v1/sessions/{id}/audience`, and the
 only thing between a peer and the owner's controls would be that nobody had sent
 the request.
 
-Both listeners are still bound to loopback. Widening the peer listener is the
-remaining step, and it is a deliberate change to one guarded line.
+The owner's API is bound to loopback and is never widened. The peer listener is
+loopback by default and moves to a private address only when `-allow-lan` is set
+and `-peer-listen` names one; `ValidatePeerListen` is the single guarded line
+that decides it.
 
 ### The receiving side
 
@@ -610,4 +614,4 @@ The owner's HTTP API binds to loopback and stays there. LAN traffic goes to a se
 
 The current API rejects non-loopback browser origins, emits no-store/nosniff headers, validates bounded JSON bodies, parameterizes all SQL, and paginates session listings. This is defense in depth for the local API, not a substitute for LAN authentication.
 
-Loopback is a same-host trust boundary, not per-user authentication. Another process or OS account that can connect to the user's loopback port may access the local API. A production LAN release should add capability-token or OS-credential authentication before broadening the bind address.
+Loopback is a same-host trust boundary, not per-user authentication. Another process or OS account that can connect to the user's loopback port may access the local API. A production LAN release should add capability-token or OS-credential authentication before broadening the owner API's bind address.
