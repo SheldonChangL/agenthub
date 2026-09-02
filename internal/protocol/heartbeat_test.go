@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -53,7 +54,7 @@ func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := QualifiedID(node.ID, "codex:public")
+	want := address.QualifiedID(node.ID, "codex:public")
 	if len(got.Sessions) != 1 || got.Sessions[0].ID != want {
 		t.Fatalf("heartbeat sessions = %#v; want only %q", got.Sessions, want)
 	}

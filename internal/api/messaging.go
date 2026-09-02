@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
@@ -152,11 +153,11 @@ func qualifiedSender(senderNodeID, claimed string) string {
 	if claimed == "" {
 		return senderNodeID
 	}
-	address, err := protocol.ParseAddress(claimed, senderNodeID)
+	parsed, err := address.ParseAddress(claimed, senderNodeID)
 	if err != nil {
 		return senderNodeID
 	}
-	return senderNodeID + model.SessionIDSeparator + address.SessionID
+	return senderNodeID + model.SessionIDSeparator + parsed.SessionID
 }
 
 // queueForPeer records a message addressed to a session on another node.
@@ -165,7 +166,7 @@ func qualifiedSender(senderNodeID, claimed string) string {
 // contract: the message is queued here and nothing else has happened. The peer
 // may be asleep. Answering as though it had arrived would make `ah send`
 // success mean something it cannot know.
-func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination protocol.Address, from, body string) {
+func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination address.Address, from, body string) {
 	queued, err := s.store.QueueOutbound(r.Context(), registry.OutboundMessage{
 		DestinationNodeID: destination.NodeID,
 		To:                destination.SessionID,
