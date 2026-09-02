@@ -469,6 +469,16 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		from = input.From
 		if parsed.Local() {
 			from = parsed.SessionID
+		} else if destination.Local() {
+			// A message arriving over the peer surface has its sender proven by
+			// the envelope's signature. This one arrived on the owner's API,
+			// where nothing proves anything, so a claim to be another node
+			// would put an unverified label in a local inbox — next to the
+			// fingerprint that node really has, since a reader looks the
+			// fingerprint up by id.
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				"from may not name another node for a local destination: nothing here can verify that claim")
+			return
 		}
 	}
 	if !destination.Local() {
