@@ -38,6 +38,12 @@ func TestANodeIDMayNotReadAsASessionID(t *testing.T) {
 		"claude:0123456789abcdef",
 		"codex:some-local-session",
 		"claude:aaaaaaaaaaaaaaaaaaaa",
+		// Case is not a way around it: a reader skimming a trust list will not
+		// treat these as different things even though a parser would.
+		"Claude:0123456789abcdef",
+		"CODEX:0123456789abcdef",
+		// Cut takes the first colon, so a second one changes nothing.
+		"claude:a:0123456789abcdef",
 	} {
 		if err := ValidateNodeID(id); err == nil {
 			t.Errorf("ValidateNodeID(%q) accepted an id that reads as a session", id)

@@ -101,9 +101,9 @@ func ValidateLocalSessionID(sessionID string) error {
 	if !found {
 		return fmt.Errorf("address %q is not <provider>:<session-id>", sessionID)
 	}
-	switch model.Provider(provider) {
-	case model.ProviderClaude, model.ProviderCodex:
-	default:
+	// The same set ValidateNodeID uses to keep the two namespaces disjoint. One
+	// copy, so a third provider cannot silently reopen the overlap.
+	if !model.KnownProvider(provider) {
 		return fmt.Errorf("address %q names an unknown provider %q", sessionID, provider)
 	}
 	return model.ValidateProviderSessionID(providerSessionID)

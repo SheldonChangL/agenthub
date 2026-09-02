@@ -195,14 +195,24 @@ func ValidateNodeID(nodeID string) error {
 	//
 	// Enforced here, at the edge where an id is admitted, so every reader gets
 	// the guarantee rather than each having to re-derive it.
-	if provider, _, found := strings.Cut(nodeID, ":"); found {
-		switch Provider(provider) {
-		case ProviderClaude, ProviderCodex:
-			return fmt.Errorf(
-				"node id %q begins with a provider name, which would make it readable as a session id", nodeID)
-		}
+	if provider, _, found := strings.Cut(nodeID, ":"); found && KnownProvider(provider) {
+		return fmt.Errorf(
+			"node id %q begins with a provider name, which would make it readable as a session id", nodeID)
 	}
 	return nil
+}
+
+// KnownProvider reports whether a name is one this build discovers.
+//
+// Matched without regard to case: the point is to keep node ids and session ids
+// in disjoint namespaces, and a reader skimming a trust list will not treat
+// "Claude:" and "claude:" as different things even though the parser would.
+func KnownProvider(name string) bool {
+	switch Provider(strings.ToLower(name)) {
+	case ProviderClaude, ProviderCodex:
+		return true
+	}
+	return false
 }
 
 // ValidateProviderSessionID rejects provider session IDs that would corrupt a

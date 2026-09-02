@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"agenthub.local/agenthub/internal/address"
-	"agenthub.local/agenthub/internal/model"
 )
 
 // The inbox is where content authored by someone else reaches an agent's
@@ -141,57 +140,45 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 	return result, nil
 }
 
-// describeSender works out who a stored From names, without inferring anything
-// from the absence of a separator.
+// describeSender works out who a stored From names, without guessing.
 //
-// The node writes this field as qualifiedSender(provenNodeID, claimed), which
-// produces three shapes — and the one that matters is the third:
+// The node writes this field so that it identifies its own origin:
 //
-//   - <nodeID>/<provider>:<id>   a peer that named a sending session
-//   - <nodeID>                   a peer that named none, so only the proven
-//     node id was stored
-//   - <provider>:<id>            a message queued through the owner's own API
+//   - <localNodeID>/<provider>:<id>   queued here, through the owner's API
+//   - <peerNodeID>/<provider>:<id>    a peer that named a sending session
+//   - <peerNodeID>                    a peer that named none
 //
-// The last two overlap by shape alone — every session id long enough is also a
-// valid node id — so the trust store is consulted first, and ValidateNodeID
-// refuses new ids that read as sessions.
+// Only the node part is ever proven; the session part after it is whatever the
+// sender claimed.
 //
-// Reading "no separator" as "local" collapses the last two, and the collapse
-// runs the wrong way: a peer that simply omits `from` would be rendered with
-// local: true and this machine's own node id, which is the most trustworthy
-// label the envelope can carry. One signed message with an empty field would
-// have been enough. So each shape is identified for what it is, and anything
-// that matches none of them is reported as unknown rather than assumed to be
-// either.
+// Rows written before that was true are the awkward case. They stored a bare
+// session id for a local message, and a bare session id is also a valid node id
+// — ValidateNodeID refuses provider-prefixed ids now, but a peer paired under
+// the old rule keeps the id it chose. For those rows the trust store settles it
+// while the peer is still paired; once revoked, nothing distinguishes the two,
+// and the honest answer is that the origin is unknown. Claiming local there is
+// the failure this whole function exists to prevent, and it is precisely the
+// case an owner investigating a revoked peer would meet.
 func describeSender(from, localNodeID string, trusted map[string]TrustedNode) Sender {
 	if nodeID, sessionID, qualified := address.SplitQualifiedID(from); qualified {
+		if nodeID == localNodeID {
+			return Sender{NodeID: localNodeID, Session: sessionID, Local: true}
+		}
 		return Sender{NodeID: nodeID, Session: sessionID}
 	}
-	// A paired node's own id settles it, whatever shape that id has. Shape is
-	// the fallback, not the first answer: ValidateNodeID now refuses an id that
-	// reads as a session, but a peer paired before that rule cannot be
-	// un-paired retroactively, and its stored rows are still here.
+	// A paired node's own id settles a bare value, whatever shape it has. This
+	// covers a peer paired before ValidateNodeID refused provider-prefixed ids,
+	// which cannot be un-paired retroactively.
 	if _, paired := trusted[from]; paired {
 		return Sender{NodeID: from}
 	}
-	// The session shape is tested first because it is the narrower one: it
-	// requires a provider from a fixed list, while ValidateNodeID accepts any
-	// printable string of the right length — including "codex:something".
-	// Testing node first would classify every locally queued message as a peer.
-	if address.ValidateLocalSessionID(from) == nil {
-		return Sender{NodeID: localNodeID, Session: from, Local: true}
-	}
-	if model.ValidateNodeID(from) == nil {
-		// A peer that named no sending session. Remote, and not local.
-		return Sender{NodeID: from}
-	}
 	if from == "" {
-		// qualifiedSender never yields an empty string for a peer: it falls back
-		// to the proven node id. So empty means the owner's own API queued this
-		// without naming a sender.
+		// qualifiedSender never yields empty for a peer: it falls back to the
+		// proven node id. So empty means the owner's API queued this without
+		// naming a sender.
 		return Sender{NodeID: localNodeID, Local: true}
 	}
-	// Neither shape. Say so rather than guessing: an unrecognised label is not
-	// evidence of anything, least of all of being local.
+	// A legacy bare value from a peer no longer paired. Report what it says and
+	// claim nothing about where it came from.
 	return Sender{Session: from}
 }

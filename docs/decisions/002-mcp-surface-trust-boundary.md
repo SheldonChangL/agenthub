@@ -40,9 +40,12 @@ the content rather than what is in it.
 A fresh-context review found the limitation this ADR's first draft missed.
 
 A peer's **session summaries** are also written by that peer. Its `cwd`,
-`status` and session ids arrive over the wire, are stored unvalidated, and are
-served by `agent_list` with no notice, no sender attribution, and no untrusted
-framing (#76). A peer can put a paragraph of instructions in a working directory
+`status` and session ids arrive over the wire and are served by `agent_list`
+with no notice, no sender attribution, and no untrusted framing (#76). The
+envelope around them is checked — signature, recipient, sequence, expiry — and
+the snapshot store checks that a node id is present, that the sequence is in
+range, and that the payload is non-empty. What nothing checks is the *contents*
+of the summaries. A peer can put a paragraph of instructions in a working directory
 and the agent reads it inside the one payload the server's own `Instructions`
 string vouches for.
 
@@ -152,8 +155,26 @@ advertisement.
   a third gate for exactly that reason, and #59 is a merge condition for Step 8,
   not a follow-up.
 - **Provider injection.** Out of scope by decision (#16), unchanged.
-- **A peer that lies about its own state.** Presence content is unvalidated
-  (#76), a peer sets its own expiry so it can appear online forever (#77), and a
+- **A `from` label on the owner's own API.** Any local process can post with
+  `from` naming a real local session; the node validates the shape, not that the
+  caller owns it. The agent then sees that session as the sender. The API is
+  loopback-only, but the misuse this permits is a co-resident process posing as a
+  colleague session, which is not the "can already restart the process"
+  reasoning the bullet above rests on.
+- **The `session` half of a remote sender's label.** Only the node part is
+  proven; the rest is what the peer claimed, so a peer can label its message
+  `<peer>/claude:<the owner's own session id>`. That is why the notice tells the
+  agent nodeId and fingerprint are what identify.
+- **A revoked id, re-paired with a different key.** Re-pairing a live id with a
+  new key is refused, but revocation frees the id. Inbox rows from the first key
+  would then be shown with the second key's fingerprint.
+- **A legacy bare sender from a revoked peer.** Messages stored before senders
+  were self-describing kept a bare session id, which a peer paired under the old
+  ValidateNodeID could also have as its node id. Once that peer is revoked the
+  two are indistinguishable, so such a row is reported with no origin rather than
+  claimed as local.
+- **A peer that lies about its own state.** The contents of its session
+  summaries are unchecked (#76), a peer sets its own expiry so it can appear online forever (#77), and a
   peer can fill a session's inbox or make `agent_inbox` fail outright by
   exploiting JSON expansion against the client's read cap (#78, #79). None of
   these read another owner's data; they degrade or mislead this one. They are
@@ -161,11 +182,12 @@ advertisement.
 
 ## Consequences
 
-- Three independent flags, all closed by default: `acceptMessages` (inbound),
-  `allowOutbound` (outbound), `autoWake` (unattended, #59). Each answers a
-  different question, and no call that cannot express a choice may make one —
-  `SetVisibility` resets all three, which means publishing a session closes a
-  gate the owner had opened. That is the safe direction and it is tested in both
+- Two independent flags today, both closed by default: `acceptMessages`
+  (inbound) and `allowOutbound` (outbound). A third for unattended handling,
+  `autoWake`, is planned in #59 and does not exist. Each answers a different
+  question, and no call that cannot express a choice may make one —
+  `SetVisibility` resets both, which means publishing a session closes a gate
+  the owner had opened. That is the safe direction and it is tested in both
   directions, but it will surprise someone.
 - The MCP surface is four tools and cannot grow quietly: a test asserts the
   exact set, and another refuses any import of a database driver or `os/exec`.

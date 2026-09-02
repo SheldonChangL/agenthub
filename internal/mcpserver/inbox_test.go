@@ -250,14 +250,13 @@ func TestTheLimitIsBounded(t *testing.T) {
 	}
 }
 
-// A message queued on this machine has no signature behind it, because it never
-// crossed a network. It must not render as a peer whose fingerprint is merely
-// missing — that is what a revoked node looks like.
+// A message queued on this machine is marked local, and carries no fingerprint —
+// which must not be read as "a peer that was revoked".
 func TestALocallyQueuedMessageIsMarkedLocal(t *testing.T) {
 	node := &inboxNode{
 		held: 2,
 		messages: []map[string]any{
-			message("msg_local", "codex:some-local-session", "from this machine"),
+			message("msg_local", localNode+"/codex:some-local-session", "from this machine"),
 			message("msg_bare", "", "no sender named"),
 		},
 		nodes: []map[string]any{{"nodeId": "node_peer000000000000", "fingerprint": "AAAA"}},
@@ -295,6 +294,34 @@ func TestALocallyQueuedMessageIsMarkedLocal(t *testing.T) {
 	}
 	if decoded.Messages[0].Sender.Session != "codex:some-local-session" {
 		t.Errorf("the local session label was lost: %q", decoded.Messages[0].Sender.Session)
+	}
+}
+
+// A bare session id, written before senders were stored self-describing, cannot
+// be told apart from a revoked peer that chose a session-shaped node id. The
+// answer is that the origin is unknown — never that it is this machine.
+//
+// This is the case an owner investigating a peer they just revoked would meet,
+// and claiming local there is the forgery this whole function exists to prevent.
+func TestALegacyBareSenderFromARevokedPeerClaimsNothing(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "claude:0123456789abcdef", "I am you")},
+		nodes:    []map[string]any{}, // revoked
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	if strings.Contains(text, `"local":true`) {
+		t.Errorf("an unattributable legacy sender was claimed as local: %s", text)
+	}
+	if strings.Contains(text, `"nodeId":"`+localNode) {
+		t.Errorf("an unattributable legacy sender was given this machine's node id: %s", text)
+	}
+	// The label is still shown, so the owner can see what it claimed.
+	if !strings.Contains(text, "claude:0123456789abcdef") {
+		t.Errorf("the claimed label was hidden: %s", text)
 	}
 }
 

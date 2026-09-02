@@ -546,3 +546,46 @@ func TestASenderNamingNoSessionIsStoredAsItsProvenNodeID(t *testing.T) {
 		t.Errorf("a cross-node claim survived: %q", got)
 	}
 }
+
+// A locally queued message stores its sender qualified by this node.
+//
+// A bare session id is also a valid node id, so a reader holding one cannot tell
+// whether the message was queued here or sent by a peer that chose a
+// session-shaped id. Qualifying it removes the ambiguity at the source rather
+// than asking every reader to guess.
+func TestALocallyQueuedSenderIsQualifiedByThisNode(t *testing.T) {
+	store, handler := testServer(t)
+	id := seedSession(t, store, "local-from")
+	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatalf("opt in = %d %s", response.Code, response.Body.String())
+	}
+
+	created := perform(t, handler, http.MethodPost, "/v1/messages",
+		map[string]string{"to": id, "from": id, "body": "hello"})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("send = %d %s", created.Code, created.Body.String())
+	}
+
+	inbox := perform(t, handler, http.MethodGet, "/v1/inbox/"+id, nil)
+	if inbox.Code != http.StatusOK {
+		t.Fatalf("inbox = %d %s", inbox.Code, inbox.Body.String())
+	}
+	var decoded struct {
+		Messages []struct {
+			From string `json:"from"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(inbox.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d", len(decoded.Messages))
+	}
+	if !strings.Contains(decoded.Messages[0].From, "/") {
+		t.Errorf("from = %q; a bare session id cannot be told from a node id", decoded.Messages[0].From)
+	}
+	if !strings.HasSuffix(decoded.Messages[0].From, "/"+id) {
+		t.Errorf("from = %q, want it to end with /%s", decoded.Messages[0].From, id)
+	}
+}
