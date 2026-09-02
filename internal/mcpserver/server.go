@@ -67,6 +67,17 @@ type inboxArgs struct {
 	Limit int `json:"limit,omitempty" jsonschema:"how many messages to return"`
 }
 
+// listResult is what agent_list answers.
+//
+// Total is the size of the visible set before filtering, so an agent that
+// narrowed too far can tell "nothing matched" from "nothing is visible" without
+// a second call.
+type listResult struct {
+	Sessions []Session `json:"sessions"`
+	Count    int       `json:"count"`
+	Total    int       `json:"total"`
+}
+
 // notYet is what an unimplemented tool answers.
 //
 // It names the issue rather than failing vaguely, so an agent that calls the
@@ -94,8 +105,13 @@ func (s *server) MCPServer() *mcp.Server {
 		Title:       "List available agents",
 		Description: "List sessions visible to this node. Sessions on other nodes appear only where their owner authorised this node.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ listArgs) (*mcp.CallToolResult, any, error) {
-		return nil, nil, notYet("agent_list", "issue #51")
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args listArgs) (*mcp.CallToolResult, any, error) {
+		sessions, err := s.visible(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		matched := filter(sessions, args.Provider, args.Status, args.Node)
+		return nil, listResult{Sessions: matched, Count: len(matched), Total: len(sessions)}, nil
 	})
 
 	mcp.AddTool(sdk, &mcp.Tool{
@@ -103,8 +119,12 @@ func (s *server) MCPServer() *mcp.Server {
 		Title:       "Get agent status",
 		Description: "Return normalised lifecycle and evidence for one visible session.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ statusArgs) (*mcp.CallToolResult, any, error) {
-		return nil, nil, notYet("agent_status", "issue #51")
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, args statusArgs) (*mcp.CallToolResult, any, error) {
+		session, err := s.find(ctx, args.AgentID)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, session, nil
 	})
 
 	mcp.AddTool(sdk, &mcp.Tool{
