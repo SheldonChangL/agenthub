@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -391,4 +392,77 @@ func (c *Client) ReadInbox(ctx context.Context, sessionID string, limit int) (In
 		Messages: decoded.Messages, Held: decoded.Held,
 		Capacity: decoded.Capacity, Full: decoded.Full,
 	}, nil
+}
+
+// SessionAudience is the part of a session's policy this server needs.
+type SessionAudience struct {
+	AcceptMessages bool
+	AllowOutbound  bool
+}
+
+// Audience reads one local session's export policy.
+func (c *Client) Audience(ctx context.Context, sessionID string) (SessionAudience, error) {
+	status, body, err := c.get(ctx, "/v1/sessions/"+url.PathEscape(sessionID)+"/audience")
+	if err != nil {
+		return SessionAudience{}, err
+	}
+	if status != http.StatusOK {
+		return SessionAudience{}, fmt.Errorf("node answered %s reading the audience", describe(status, body))
+	}
+	var decoded struct {
+		AcceptMessages bool `json:"acceptMessages"`
+		AllowOutbound  bool `json:"allowOutbound"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return SessionAudience{}, fmt.Errorf("decode audience: %w", err)
+	}
+	return SessionAudience{
+		AcceptMessages: decoded.AcceptMessages,
+		AllowOutbound:  decoded.AllowOutbound,
+	}, nil
+}
+
+// QueuedMessage is what the node answers when it takes a message.
+type QueuedMessage struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Note  string `json:"note"`
+}
+
+// SendMessage hands a message to the node for delivery.
+func (c *Client) SendMessage(ctx context.Context, to, from, body string) (QueuedMessage, error) {
+	payload, err := json.Marshal(map[string]string{"to": to, "from": from, "body": body})
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	status, response, err := c.post(ctx, "/v1/messages", payload)
+	if err != nil {
+		return QueuedMessage{}, err
+	}
+	if status != http.StatusOK && status != http.StatusCreated && status != http.StatusAccepted {
+		return QueuedMessage{}, fmt.Errorf("node answered %s sending the message", describe(status, response))
+	}
+	var queued QueuedMessage
+	if err := json.Unmarshal(response, &queued); err != nil {
+		return QueuedMessage{}, fmt.Errorf("decode the queued message: %w", err)
+	}
+	return queued, nil
+}
+
+func (c *Client) post(ctx context.Context, path string, body []byte) (int, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := c.http.Do(request)
+	if err != nil {
+		return 0, nil, fmt.Errorf("reach the node at %s: %w", c.baseURL, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	answer, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return response.StatusCode, nil, err
+	}
+	return response.StatusCode, answer, nil
 }

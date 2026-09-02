@@ -71,45 +71,6 @@ func TestTheSurfaceIsFourToolsAndNothingElse(t *testing.T) {
 	}
 }
 
-// Every unimplemented tool must say which issue lands it, so an agent calling
-// one early gets something a person can act on instead of an empty result that
-// reads as "there is nothing here".
-//
-// This is a tripwire, not a permanent assertion: each entry is deleted as its
-// issue lands. agent_list and agent_status went with #51, agent_inbox with #52.
-func TestUnimplementedToolsNameTheirIssue(t *testing.T) {
-	session := connect(t)
-	cases := []struct {
-		tool  string
-		args  map[string]any
-		issue string
-	}{
-		{"agent_send", map[string]any{"agentId": "codex:demo", "message": "x"}, "#53"},
-	}
-	for _, c := range cases {
-		result, err := session.CallTool(context.Background(), &mcp.CallToolParams{
-			Name: c.tool, Arguments: c.args,
-		})
-		if err != nil {
-			t.Errorf("%s: transport error %v", c.tool, err)
-			continue
-		}
-		if !result.IsError {
-			t.Errorf("%s answered successfully; it is not implemented yet", c.tool)
-			continue
-		}
-		text := ""
-		for _, content := range result.Content {
-			if c, ok := content.(*mcp.TextContent); ok {
-				text += c.Text
-			}
-		}
-		if !strings.Contains(text, c.issue) {
-			t.Errorf("%s error %q does not name %s", c.tool, text, c.issue)
-		}
-	}
-}
-
 // Every tool's schema refuses unknown fields. Without this an agent could smuggle
 // a field past the declared surface and have it silently ignored, which is how a
 // tool ends up doing something its description does not mention.
