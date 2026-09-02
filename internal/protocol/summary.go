@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 )
 
@@ -26,23 +27,6 @@ type SessionSummary struct {
 	Visibility   string    `json:"visibility"`
 	CWD          string    `json:"cwd,omitempty"`
 	LastSeenAt   time.Time `json:"lastSeenAt"`
-}
-
-// QualifiedID renders the address a peer uses to reach a session:
-// <node-id>/<provider>:<provider-session-id>.
-func QualifiedID(nodeID, sessionID string) string {
-	return nodeID + "/" + sessionID
-}
-
-// SplitQualifiedID reverses QualifiedID. ok is false when the value is not a
-// qualified address, which callers must treat as a local session ID rather
-// than guessing a node.
-func SplitQualifiedID(qualified string) (nodeID, sessionID string, ok bool) {
-	nodeID, sessionID, found := strings.Cut(qualified, "/")
-	if !found || nodeID == "" || sessionID == "" {
-		return "", "", false
-	}
-	return nodeID, sessionID, true
 }
 
 // Summarize projects an owner-local session into the export view.
@@ -90,7 +74,7 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		return SessionSummary{}, fmt.Errorf("session %q or node %q contains an address separator", session.ID, nodeID)
 	}
 	return SessionSummary{
-		ID:           QualifiedID(nodeID, session.ID),
+		ID:           address.QualifiedID(nodeID, session.ID),
 		Provider:     string(session.Provider),
 		Status:       string(session.Status),
 		StatusSource: session.StatusSource,

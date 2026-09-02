@@ -1,6 +1,7 @@
 package api
 
 import (
+	"agenthub.local/agenthub/internal/address"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,11 +187,11 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 // It writes the response and returns false when the address is malformed or
 // names another node, so every session-addressed handler answers the same way.
 func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) {
-	sessionID, err := protocol.ResolveLocal(raw, s.node.ID)
+	sessionID, err := address.ResolveLocal(raw, s.node.ID)
 	switch {
 	case err == nil:
 		return sessionID, true
-	case errors.Is(err, protocol.ErrUnknownNode):
+	case errors.Is(err, address.ErrUnknownNode):
 		// The address is well formed; this node simply cannot reach it. Saying
 		// so is more useful than reporting a bad request, and remote routing
 		// does not exist yet.
@@ -375,7 +376,7 @@ func (s *Server) setAudienceBatch(w http.ResponseWriter, r *http.Request) {
 	results := make([]outcome, 0, len(input.IDs))
 	changed := 0
 	for _, raw := range input.IDs {
-		id, err := protocol.ResolveLocal(raw, s.node.ID)
+		id, err := address.ResolveLocal(raw, s.node.ID)
 		if err != nil {
 			results = append(results, outcome{ID: raw, Error: err.Error()})
 			continue
@@ -451,7 +452,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
-	destination, err := protocol.ParseAddress(input.To, s.node.ID)
+	destination, err := address.ParseAddress(input.To, s.node.ID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
@@ -460,7 +461,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// later be a free-text field that a remote sender fills in with anything.
 	from := ""
 	if input.From != "" {
-		address, err := protocol.ParseAddress(input.From, s.node.ID)
+		address, err := address.ParseAddress(input.From, s.node.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "from: "+err.Error())
 			return

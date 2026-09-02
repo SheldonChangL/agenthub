@@ -89,7 +89,24 @@ func TestTheBoundSessionIsTheOneAsked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Bind: %v", err)
 	}
-	if binding.SessionID != "claude:abc" {
-		t.Fatalf("bound to %q, want claude:abc", binding.SessionID)
+	if binding.SessionID() != "claude:abc" {
+		t.Fatalf("bound to %q, want claude:abc", binding.SessionID())
+	}
+}
+
+// A Binding that never went through Bind must not produce a running server.
+// Without this, mcpserver.New(client, mcpserver.Binding{}, id) would serve a
+// session named "" and every later tool would trust it.
+func TestAnUnvalidatedBindingCannotBuildAServer(t *testing.T) {
+	client := nodeStub(t, map[string]bool{"codex:demo": true})
+	if _, err := mcpserver.New(client, mcpserver.Binding{}, "node_0123456789abcdef0123"); !errors.Is(err, mcpserver.ErrUnboundServer) {
+		t.Fatalf("New(zero binding) = %v, want ErrUnboundServer", err)
+	}
+	binding, err := mcpserver.Bind(context.Background(), client, "codex:demo")
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if _, err := mcpserver.New(client, binding, "node_0123456789abcdef0123"); err != nil {
+		t.Fatalf("New(valid binding) = %v, want success", err)
 	}
 }

@@ -18,7 +18,11 @@ func connect(t *testing.T) *mcp.ClientSession {
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
-	server := mcpserver.New(client, binding, "node_0123456789abcdef0123").MCPServer()
+	built, err := mcpserver.New(client, binding, "node_0123456789abcdef0123")
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	server := built.MCPServer()
 
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
 	if _, err := server.Connect(context.Background(), serverTransport, nil); err != nil {
