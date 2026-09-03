@@ -4,15 +4,18 @@ import (
 	"context"
 
 	"agenthub.local/agenthub/internal/address"
+	"agenthub.local/agenthub/internal/model"
 )
 
-// The inbox is the one place in this server where content authored by someone
-// else reaches an agent's reasoning.
+// The inbox is where content authored by someone else reaches an agent's
+// reasoning most obviously — but it is not the only place, and saying so would
+// be the more dangerous mistake.
 //
-// Everything else here is metadata this installation observed: session ids,
-// statuses, working directories the owner chose to export. A message body is a
-// person on another machine writing whatever they like, and it arrives in the
-// same context window as the agent's instructions.
+// A peer's session summaries are also written by that peer. Its cwd, status and
+// session ids arrive over the wire and are served by agent_list with no notice
+// and no sender attribution, which makes them a quieter channel than this one
+// (#76). What distinguishes the inbox is that its content is unmistakably a
+// message from a person, so it is the place where framing can be applied at all.
 //
 // The MCP tools cannot read files or run commands, but that is not the defence
 // it looks like: the agent on the other end of this connection has Read and Bash
@@ -118,20 +121,13 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 		Full:     inbox.Full,
 	}
 	for _, stored := range inbox.Messages {
-		nodeID, sessionID, qualified := address.SplitQualifiedID(stored.From)
-		// A sender absent from the trust store gets no fingerprint but is still
-		// shown: a message from a node since revoked is what an owner
-		// investigating that peer is looking for.
-		sender := Sender{NodeID: nodeID, Session: sessionID}
-		if !qualified {
-			// Unqualified means the message was queued here, so the sender is
-			// this node and stored.From is at most a session label. Putting
-			// that label in nodeId — or leaving nodeId empty — would render a
-			// local message as though it came from an unidentifiable peer.
-			sender = Sender{NodeID: s.nodeID, Session: stored.From, Local: true}
-		} else if record, ok := trusted[nodeID]; ok {
-			// A fingerprint only means something for a peer, and only one this
-			// node paired with. It is looked up by the id the signature proved.
+		sender := describeSender(stored.From, s.nodeID, trusted)
+		// A fingerprint only means something for a peer, and only one this node
+		// paired with. It is looked up by the id the signature proved. A sender
+		// absent from the trust store gets none but is still shown: a message
+		// from a node since revoked is what an owner investigating that peer is
+		// looking for.
+		if record, ok := trusted[sender.NodeID]; ok && !sender.Local {
 			sender.DisplayName = record.DisplayName
 			sender.Fingerprint = record.Fingerprint
 		}
@@ -143,4 +139,71 @@ func (s *server) readInbox(ctx context.Context, limit int) (InboxResult, error) 
 		})
 	}
 	return result, nil
+}
+
+// describeSender works out who a stored From names, without guessing.
+//
+// The node writes this field so that it identifies its own origin:
+//
+//   - <localNodeID>/<provider>:<id>   queued here, through the owner's API
+//   - <peerNodeID>/<provider>:<id>    a peer that named a sending session
+//   - <peerNodeID>                    a peer that named none
+//
+// Only the node part is ever proven; the session part after it is whatever the
+// sender claimed.
+//
+// Rows written before that was true are the awkward case. They stored a bare
+// session id for a local message, and a bare session id is also a valid node id
+// — ValidateNodeID refuses provider-prefixed ids now, but a peer paired under
+// the old rule keeps the id it chose. For those rows the trust store settles it
+// while the peer is still paired; once revoked, nothing distinguishes the two,
+// and the honest answer is that the origin is unknown. Claiming local there is
+// the failure this whole function exists to prevent, and it is precisely the
+// case an owner investigating a revoked peer would meet.
+func describeSender(from, localNodeID string, trusted map[string]TrustedNode) Sender {
+	if nodeID, sessionID, qualified := address.SplitQualifiedID(from); qualified {
+		if nodeID == localNodeID {
+			return Sender{NodeID: localNodeID, Session: sessionID, Local: true}
+		}
+		return Sender{NodeID: nodeID, Session: sessionID}
+	}
+	// A paired node's own id settles a bare value, whatever shape it has. This
+	// covers a peer paired before ValidateNodeID refused provider-prefixed ids,
+	// which cannot be un-paired retroactively.
+	if _, paired := trusted[from]; paired {
+		return Sender{NodeID: from}
+	}
+	if from == "" {
+		// qualifiedSender never yields empty for a peer: it falls back to the
+		// proven node id. So empty means the owner's API queued this without
+		// naming a sender.
+		return Sender{NodeID: localNodeID, Local: true}
+	}
+	// A bare value that is a valid node id is a peer that named no sending
+	// session. That is the row an owner investigating a revoked peer is looking
+	// for, and its id belongs in the field they would search.
+	//
+	// True for every row written since senders began being validated. Rows from
+	// before that could hold free text, and one of 16 or more printable
+	// characters with no separator and no provider prefix would land here as a
+	// peer. That is the local-looking-remote direction, which this function
+	// treats as the acceptable error of the two.
+	if from == localNodeID {
+		// Unreachable from either write path — the owner's API refuses a bare
+		// node id as a sender, and the peer path would need this node's signing
+		// key — but stated rather than relied upon, because the alternative is
+		// rendering this machine as a peer with no fingerprint.
+		return Sender{NodeID: localNodeID, Local: true}
+	}
+	if model.ValidateNodeID(from) == nil {
+		return Sender{NodeID: from}
+	}
+	// Session-shaped and not paired: either a local message from before senders
+	// were self-describing, or a peer paired under the old rule and since
+	// revoked. Genuinely indistinguishable, so claim no origin.
+	//
+	// A peer id refused by ValidateNodeID for its provider prefix also lands
+	// here rather than in the branch above. Conservative in the same direction:
+	// no origin claimed rather than the wrong one.
+	return Sender{Session: from}
 }

@@ -68,3 +68,20 @@ func TestParseAddressSeparatesRoutingFromSyntax(t *testing.T) {
 		})
 	}
 }
+
+// A session id is compared byte for byte everywhere else — the registry stores
+// the lowercase constant and looks it up exactly — so accepting a second
+// spelling here would admit a label nothing downstream can match.
+//
+// ValidateNodeID folds case for the opposite reason: there the question is
+// whether a person could mistake the string for a session id.
+func TestASessionIDsProviderIsExactCase(t *testing.T) {
+	for _, id := range []string{"CLAUDE:abc", "Codex:abc", "cLaUdE:abc"} {
+		if err := address.ValidateLocalSessionID(id); err == nil {
+			t.Errorf("ValidateLocalSessionID(%q) accepted a second spelling of a provider", id)
+		}
+	}
+	if err := address.ValidateLocalSessionID("claude:abc"); err != nil {
+		t.Errorf("ValidateLocalSessionID(\"claude:abc\") = %v, want accepted", err)
+	}
+}

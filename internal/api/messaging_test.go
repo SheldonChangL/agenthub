@@ -529,3 +529,62 @@ func TestALocalSenderCannotClaimAnotherNode(t *testing.T) {
 		t.Errorf("a local from was refused: %d %s", ok.Code, ok.Body.String())
 	}
 }
+
+// The whole sender-rendering fix rests on this storage shape: a peer that names
+// no sending session is stored as the bare proven node id, not as an empty
+// string and not as anything the sender chose.
+func TestASenderNamingNoSessionIsStoredAsItsProvenNodeID(t *testing.T) {
+	if got := qualifiedSender(peerNodeID, ""); got != peerNodeID {
+		t.Errorf("qualifiedSender(%q, \"\") = %q, want the bare node id", peerNodeID, got)
+	}
+	// A claimed session is kept, qualified by the proven node.
+	if got := qualifiedSender(peerNodeID, "claude:theirs"); got != peerNodeID+"/claude:theirs" {
+		t.Errorf("qualifiedSender with a claim = %q", got)
+	}
+	// A claim naming another node is ignored: only the proven id is used.
+	if got := qualifiedSender(peerNodeID, "node_other00000000000/claude:x"); got != peerNodeID+"/claude:x" {
+		t.Errorf("a cross-node claim survived: %q", got)
+	}
+}
+
+// A locally queued message stores its sender qualified by this node.
+//
+// A bare session id is also a valid node id, so a reader holding one cannot tell
+// whether the message was queued here or sent by a peer that chose a
+// session-shaped id. Qualifying it removes the ambiguity at the source rather
+// than asking every reader to guess.
+func TestALocallyQueuedSenderIsQualifiedByThisNode(t *testing.T) {
+	store, handler := testServer(t)
+	id := seedSession(t, store, "local-from")
+	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatalf("opt in = %d %s", response.Code, response.Body.String())
+	}
+
+	created := perform(t, handler, http.MethodPost, "/v1/messages",
+		map[string]string{"to": id, "from": id, "body": "hello"})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("send = %d %s", created.Code, created.Body.String())
+	}
+
+	inbox := perform(t, handler, http.MethodGet, "/v1/inbox/"+id, nil)
+	if inbox.Code != http.StatusOK {
+		t.Fatalf("inbox = %d %s", inbox.Code, inbox.Body.String())
+	}
+	var decoded struct {
+		Messages []struct {
+			From string `json:"from"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(inbox.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d", len(decoded.Messages))
+	}
+	// Exact: asserting only that it contains "/" would pass for a value
+	// qualified by some other node, which is the thing being ruled out.
+	if want := testNodeID + "/" + id; decoded.Messages[0].From != want {
+		t.Errorf("from = %q, want %q", decoded.Messages[0].From, want)
+	}
+}

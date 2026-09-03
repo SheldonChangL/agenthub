@@ -470,7 +470,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		from = input.From
 		if parsed.Local() {
-			from = parsed.SessionID
+			// Qualified with this node, not left bare. A bare session id is
+			// also a valid node id, so a reader holding one cannot tell whether
+			// the message was queued here or sent by a peer that chose a
+			// session-shaped id — and guessing wrong renders someone else's
+			// message as this machine's own.
+			from = address.QualifiedID(s.node.ID, parsed.SessionID)
 		} else if destination.Local() {
 			// A message arriving over the peer surface has its sender proven by
 			// the envelope's signature. This one arrived on the owner's API,
