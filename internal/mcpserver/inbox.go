@@ -179,15 +179,31 @@ func describeSender(from, localNodeID string, trusted map[string]TrustedNode) Se
 		// naming a sender.
 		return Sender{NodeID: localNodeID, Local: true}
 	}
-	// A bare value that cannot be a session id is a peer that named no sending
-	// session — decidable now that ValidateNodeID refuses provider-prefixed ids,
-	// and worth deciding: this is the row an owner investigating a revoked peer
-	// is looking for, and its id belongs in the field they would search.
+	// A bare value that is a valid node id is a peer that named no sending
+	// session. That is the row an owner investigating a revoked peer is looking
+	// for, and its id belongs in the field they would search.
+	//
+	// True for every row written since senders began being validated. Rows from
+	// before that could hold free text, and one of 16 or more printable
+	// characters with no separator and no provider prefix would land here as a
+	// peer. That is the local-looking-remote direction, which this function
+	// treats as the acceptable error of the two.
+	if from == localNodeID {
+		// Unreachable from either write path — the owner's API refuses a bare
+		// node id as a sender, and the peer path would need this node's signing
+		// key — but stated rather than relied upon, because the alternative is
+		// rendering this machine as a peer with no fingerprint.
+		return Sender{NodeID: localNodeID, Local: true}
+	}
 	if model.ValidateNodeID(from) == nil {
 		return Sender{NodeID: from}
 	}
 	// Session-shaped and not paired: either a local message from before senders
 	// were self-describing, or a peer paired under the old rule and since
 	// revoked. Genuinely indistinguishable, so claim no origin.
+	//
+	// A peer id refused by ValidateNodeID for its provider prefix also lands
+	// here rather than in the branch above. Conservative in the same direction:
+	// no origin claimed rather than the wrong one.
 	return Sender{Session: from}
 }

@@ -320,3 +320,35 @@ func TestAnOlderDatabaseGainsTheDestinationColumn(t *testing.T) {
 		t.Fatalf("CreateMessage() after upgrade = %v", err)
 	}
 }
+
+// The provider set exists in two places: model.KnownProvider and the sessions
+// table's CHECK. They must agree, or a provider this build accepts becomes one
+// the store rejects — or worse, the reverse.
+func TestTheProviderCheckAgreesWithKnownProvider(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+
+	for _, provider := range []model.Provider{model.ProviderClaude, model.ProviderCodex} {
+		if !model.KnownProvider(string(provider)) {
+			t.Errorf("KnownProvider(%q) is false but the constant exists", provider)
+		}
+		session := sessionFixture("agree-" + string(provider))
+		session.Provider = provider
+		session.ID = model.SessionID(provider, "agree-"+string(provider))
+		session.ProviderSessionID = "agree-" + string(provider)
+		if _, err := store.UpsertSession(ctx, session); err != nil {
+			t.Errorf("the CHECK rejected %q, which KnownProvider accepts: %v", provider, err)
+		}
+	}
+
+	// And a provider neither knows is refused by both.
+	if model.KnownProvider("gemini") {
+		t.Error("KnownProvider accepts an unknown provider")
+	}
+	rogue := sessionFixture("rogue")
+	rogue.Provider = model.Provider("gemini")
+	rogue.ID = "gemini:rogue"
+	if _, err := store.UpsertSession(ctx, rogue); err == nil {
+		t.Error("the store accepted a provider KnownProvider refuses")
+	}
+}
