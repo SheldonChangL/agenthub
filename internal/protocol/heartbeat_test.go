@@ -198,3 +198,72 @@ func TestAnUnexportableDirectoryCostsOnlyTheDirectory(t *testing.T) {
 		}
 	}
 }
+
+// A local session a peer would refuse must not take the whole snapshot with it.
+//
+// The cwd fix covered one field; the same mismatch survived on the id and on
+// lastSeenAt, and the existing tests could not see it because the builder is
+// only ever given clean sessions. A receiver refuses a whole snapshot over one
+// bad row, so an unexportable id would have taken every other session in that
+// heartbeat off every peer's view.
+//
+// An id cannot be dropped the way a cwd can — it is what the session is — so
+// that session is left out. A time is clamped, because the session is still
+// worth exporting and the wrong value is only a display detail.
+func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "mismatch.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC().Add(-time.Hour)
+
+	seeds := []struct {
+		providerSessionID string
+		lastSeen          time.Time
+	}{
+		{"ordinary", now},
+		{strings.Repeat("a", MaxProviderSessionIDLength+1), now}, // id no peer accepts
+		{"has space here", now},                                  // id no peer accepts
+		{"future", time.Now().UTC().Add(72 * time.Hour)},         // a time no clock explains
+	}
+	for _, seed := range seeds {
+		id := "claude:" + seed.providerSessionID
+		if _, err := store.UpsertSession(ctx, model.Session{
+			ID: id, Provider: model.ProviderClaude, ProviderSessionID: seed.providerSessionID,
+			Management: model.Unmanaged, Status: model.StatusIdle, StatusSource: "test",
+			LastSeenAt: seed.lastSeen, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed %q: %v", id, err)
+		}
+		if err := store.SetAudience(ctx, id, model.Audience{Mode: model.AudienceAllPaired}); err != nil {
+			t.Fatalf("audience %q: %v", id, err)
+		}
+	}
+
+	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "t", Platform: "t"}
+	envelope, err := NewHeartbeatBuilder(store, node, internalTestSigner{}).Build(ctx, now)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	payload, err := DecodePayload[HeartbeatPayload](envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The two unexportable ids are left out; the ordinary one and the
+	// future-dated one survive.
+	if len(payload.Sessions) != 2 {
+		t.Fatalf("want 2 exported sessions, got %d: %+v", len(payload.Sessions), payload.Sessions)
+	}
+	// And the whole thing is acceptable to a peer, which is the point.
+	if err := ValidateIncomingPayload(node.ID, payload); err != nil {
+		t.Fatalf("a receiver would refuse this node's own heartbeat: %v", err)
+	}
+	for _, s := range payload.Sessions {
+		if s.LastSeenAt.After(time.Now().UTC().Add(MaxClockSkew)) {
+			t.Errorf("%s exported a time no clock explains: %s", s.ID, s.LastSeenAt)
+		}
+	}
+}

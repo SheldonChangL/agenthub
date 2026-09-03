@@ -85,6 +85,14 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		strings.Contains(nodeID, model.SessionIDSeparator) {
 		return SessionSummary{}, fmt.Errorf("session %q or node %q contains an address separator", session.ID, nodeID)
 	}
+	// A time no clock explains would cost the whole snapshot at the far end,
+	// because a receiver refuses a snapshot over one bad row. Clamped rather
+	// than refused: the session is still worth exporting, and the wrong value is
+	// only ever a display detail.
+	lastSeen := session.LastSeenAt.UTC()
+	if ceiling := time.Now().UTC().Add(MaxClockSkew); lastSeen.After(ceiling) {
+		lastSeen = ceiling
+	}
 	return SessionSummary{
 		ID:           address.QualifiedID(nodeID, session.ID),
 		Provider:     string(session.Provider),
@@ -95,6 +103,29 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		// The working directory names the account and the project, so it
 		// travels only when the owner asked for it.
 		CWD:        exportedCWD(session),
-		LastSeenAt: session.LastSeenAt.UTC(),
+		LastSeenAt: lastSeen,
 	}, nil
+}
+
+// ExportableSessionID applies the receiver's id rules on the sending side.
+//
+// One definition, used both ways, so the two cannot drift into a state where
+// this node sends what its peers refuse. The caller decides what to do about a
+// session that fails it: the builder leaves it out, because an id cannot be
+// dropped the way a working directory can — it is what the session is.
+func ExportableSessionID(sessionID string) error {
+	if err := address.ValidateLocalSessionID(sessionID); err != nil {
+		return err
+	}
+	_, providerSessionID, _ := strings.Cut(sessionID, ":")
+	if len(providerSessionID) > MaxProviderSessionIDLength {
+		return fmt.Errorf("id is %d bytes, over the %d a peer accepts",
+			len(providerSessionID), MaxProviderSessionIDLength)
+	}
+	for _, r := range providerSessionID {
+		if r < '!' || r > '~' {
+			return fmt.Errorf("id has a character outside printable ASCII")
+		}
+	}
+	return nil
 }

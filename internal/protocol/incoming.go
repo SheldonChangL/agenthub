@@ -102,13 +102,16 @@ func validateIncomingSummary(senderNodeID string, summary SessionSummary) error 
 	// as in every reader, because this is where it can be checked once.
 	nodeID, sessionID, qualified := address.SplitQualifiedID(summary.ID)
 	if !qualified {
-		return fmt.Errorf("id %q is not <node-id>/<provider>:<id>", summary.ID)
+		return fmt.Errorf("id %q is not <node-id>/<provider>:<id>", truncateForError(summary.ID))
 	}
 	if nodeID != senderNodeID {
-		return fmt.Errorf("id %q names another node", summary.ID)
+		return fmt.Errorf("id %q names another node", truncateForError(summary.ID))
 	}
 	if err := address.ValidateLocalSessionID(sessionID); err != nil {
-		return fmt.Errorf("id %q: %w", truncateForError(summary.ID), err)
+		// The inner error carries the id it was given, so it is not wrapped:
+		// wrapping would put the untruncated value back into the message the
+		// truncation above exists to bound.
+		return fmt.Errorf("id %q is not a session address", truncateForError(summary.ID))
 	}
 	// The provider session id is an address, not a label. Unconstrained it was
 	// the widest channel here — the first field of every agent_list row, and
@@ -125,23 +128,29 @@ func validateIncomingSummary(senderNodeID string, summary SessionSummary) error 
 	}
 	provider, _, _ := strings.Cut(sessionID, ":")
 	if summary.Provider != provider {
-		return fmt.Errorf("provider %q disagrees with the id %q", summary.Provider, summary.ID)
+		return fmt.Errorf("provider %q disagrees with the id %q",
+			truncateForError(summary.Provider), truncateForError(summary.ID))
 	}
 	if !model.ValidLifecycleStatus(model.LifecycleStatus(summary.Status)) {
-		return fmt.Errorf("status %q is not a status", summary.Status)
+		return fmt.Errorf("status %q is not a status", truncateForError(summary.Status))
 	}
 	switch model.Management(summary.Management) {
 	case model.Managed, model.Unmanaged:
 	default:
-		return fmt.Errorf("management %q is neither managed nor unmanaged", summary.Management)
+		return fmt.Errorf("management %q is neither managed nor unmanaged",
+			truncateForError(summary.Management))
 	}
 	if summary.Visibility != string(model.VisibilityPublic) {
 		// A summary only exists because its owner published the session, so
 		// anything else is a snapshot that disagrees with itself.
-		return fmt.Errorf("visibility %q, but only a published session is exported", summary.Visibility)
+		return fmt.Errorf("visibility %q, but only a published session is exported",
+			truncateForError(summary.Visibility))
 	}
 	if err := validateReportedCWD(summary.CWD); err != nil {
 		return err
+	}
+	if summary.StatusSource == "" {
+		return fmt.Errorf("statusSource is empty; the schema and the sending side both require one")
 	}
 	if len(summary.StatusSource) > MaxStatusSourceLength {
 		return fmt.Errorf("statusSource is %d bytes, over the %d limit",
