@@ -195,7 +195,7 @@ func ValidateNodeID(nodeID string) error {
 	//
 	// Enforced here, at the edge where an id is admitted, so every reader gets
 	// the guarantee rather than each having to re-derive it.
-	if provider, _, found := strings.Cut(nodeID, ":"); found && KnownProvider(provider) {
+	if provider, _, found := strings.Cut(nodeID, ":"); found && KnownProvider(strings.ToLower(provider)) {
 		return fmt.Errorf(
 			"node id %q begins with a provider name, which would make it readable as a session id", nodeID)
 	}
@@ -204,11 +204,16 @@ func ValidateNodeID(nodeID string) error {
 
 // KnownProvider reports whether a name is one this build discovers.
 //
-// Matched without regard to case: the point is to keep node ids and session ids
-// in disjoint namespaces, and a reader skimming a trust list will not treat
-// "Claude:" and "claude:" as different things even though the parser would.
+// Exact, because it decides what a session id may be, and a session id is
+// compared byte for byte everywhere else — the registry stores the lowercase
+// constant and looks it up exactly. Folding case here would admit "CLAUDE:x" as
+// a second spelling of a real session, which nothing downstream would match.
+//
+// Callers that want the looser reading fold before calling; ValidateNodeID does,
+// because there the question is the reverse — whether a string could be
+// mistaken for a session id by a person, not whether it is one.
 func KnownProvider(name string) bool {
-	switch Provider(strings.ToLower(name)) {
+	switch Provider(name) {
 	case ProviderClaude, ProviderCodex:
 		return true
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"agenthub.local/agenthub/internal/address"
+	"agenthub.local/agenthub/internal/model"
 )
 
 // The inbox is where content authored by someone else reaches an agent's
@@ -178,7 +179,15 @@ func describeSender(from, localNodeID string, trusted map[string]TrustedNode) Se
 		// naming a sender.
 		return Sender{NodeID: localNodeID, Local: true}
 	}
-	// A legacy bare value from a peer no longer paired. Report what it says and
-	// claim nothing about where it came from.
+	// A bare value that cannot be a session id is a peer that named no sending
+	// session — decidable now that ValidateNodeID refuses provider-prefixed ids,
+	// and worth deciding: this is the row an owner investigating a revoked peer
+	// is looking for, and its id belongs in the field they would search.
+	if model.ValidateNodeID(from) == nil {
+		return Sender{NodeID: from}
+	}
+	// Session-shaped and not paired: either a local message from before senders
+	// were self-describing, or a peer paired under the old rule and since
+	// revoked. Genuinely indistinguishable, so claim no origin.
 	return Sender{Session: from}
 }

@@ -582,10 +582,9 @@ func TestALocallyQueuedSenderIsQualifiedByThisNode(t *testing.T) {
 	if len(decoded.Messages) != 1 {
 		t.Fatalf("want 1 message, got %d", len(decoded.Messages))
 	}
-	if !strings.Contains(decoded.Messages[0].From, "/") {
-		t.Errorf("from = %q; a bare session id cannot be told from a node id", decoded.Messages[0].From)
-	}
-	if !strings.HasSuffix(decoded.Messages[0].From, "/"+id) {
-		t.Errorf("from = %q, want it to end with /%s", decoded.Messages[0].From, id)
+	// Exact: asserting only that it contains "/" would pass for a value
+	// qualified by some other node, which is the thing being ruled out.
+	if want := testNodeID + "/" + id; decoded.Messages[0].From != want {
+		t.Errorf("from = %q, want %q", decoded.Messages[0].From, want)
 	}
 }
