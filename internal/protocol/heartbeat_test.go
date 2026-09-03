@@ -89,7 +89,10 @@ func TestWhatTheBuilderProducesPassesTheIncomingCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+	// Relative to the clock, because the incoming check bounds how far ahead a
+	// reported time may be. A hardcoded date drifts into the future and the test
+	// starts failing for a reason unrelated to what it asserts.
+	now := time.Now().UTC().Add(-time.Hour)
 
 	// One of each provider, one published every way a session can be.
 	for _, seed := range []struct {
@@ -129,5 +132,69 @@ func TestWhatTheBuilderProducesPassesTheIncomingCheck(t *testing.T) {
 	}
 	if err := ValidateIncomingPayload(node.ID, payload); err != nil {
 		t.Errorf("this node's own heartbeat would be refused by a node running this code: %v", err)
+	}
+}
+
+// A path this build cannot export must cost its owner the directory, not the
+// session — and not every other session in the same heartbeat.
+//
+// A receiver refuses a whole snapshot over one bad field, so a long or
+// tab-bearing path (both legal: PATH_MAX is 1024 on macOS, 4096 on Linux) would
+// otherwise take the entire node off every peer's view.
+func TestAnUnexportableDirectoryCostsOnlyTheDirectory(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "cwd.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC().Add(-time.Hour)
+
+	seeds := map[string]string{
+		"claude:long": "/home/u/" + strings.Repeat("專案", 200), // 1206 bytes, legal
+		"claude:tab":  "/home/u/a\tb",
+		"claude:fine": "/home/u/ordinary",
+	}
+	for id, cwd := range seeds {
+		if _, err := store.UpsertSession(ctx, model.Session{
+			ID: id, Provider: model.ProviderClaude, ProviderSessionID: id[len("claude:"):],
+			Management: model.Unmanaged, Status: model.StatusIdle, StatusSource: "test",
+			CWD: cwd, LastSeenAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetAudience(ctx, id, model.Audience{
+			Mode: model.AudienceAllPaired, ExportCWD: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "t", Platform: "t"}
+	envelope, err := NewHeartbeatBuilder(store, node, internalTestSigner{}).Build(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := DecodePayload[HeartbeatPayload](envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Sessions) != 3 {
+		t.Fatalf("want all 3 sessions exported, got %d", len(payload.Sessions))
+	}
+	if err := ValidateIncomingPayload(node.ID, payload); err != nil {
+		t.Fatalf("a receiver would refuse this node's own heartbeat: %v", err)
+	}
+	byID := map[string]string{}
+	for _, s := range payload.Sessions {
+		byID[s.ID] = s.CWD
+	}
+	if got := byID[node.ID+"/claude:fine"]; got != "/home/u/ordinary" {
+		t.Errorf("an ordinary path was not exported: %q", got)
+	}
+	for _, id := range []string{"claude:long", "claude:tab"} {
+		if got := byID[node.ID+"/"+id]; got != "" {
+			t.Errorf("%s exported a directory a receiver refuses: %q", id, got)
+		}
 	}
 }

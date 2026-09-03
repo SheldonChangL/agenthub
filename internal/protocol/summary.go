@@ -45,6 +45,18 @@ func exportedCWD(session model.Session) string {
 	if !session.Audience.ExportCWD {
 		return ""
 	}
+	// Bounded by the same rules a receiver applies, and dropped rather than
+	// truncated when it does not fit.
+	//
+	// A receiver refuses the whole snapshot over one bad field, so exporting a
+	// directory this build knows will be refused would take the session — and
+	// every other session in that heartbeat — off every peer's view, for a path
+	// that happens to be long or to contain a tab. PATH_MAX allows both. The
+	// owner loses a directory they opted into exporting; they do not lose the
+	// session.
+	if len(session.CWD) > MaxCWDLength || printableOnly("cwd", session.CWD) != nil {
+		return ""
+	}
 	return session.CWD
 }
 
