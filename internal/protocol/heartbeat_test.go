@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,4 +74,60 @@ func (internalTestSigner) Sign(message []byte) []byte {
 		panic(err)
 	}
 	return ed25519.Sign(private, message)
+}
+
+// Whatever this node sends, a node running this code must accept.
+//
+// The receiving side refuses snapshots whose contents are not what the fields
+// are for (ValidateIncomingPayload). If the builder could produce something that
+// check refuses, this build would reject its own peers — so the two are pinned
+// to each other rather than tested apart.
+func TestWhatTheBuilderProducesPassesTheIncomingCheck(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "heartbeat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 9, 3, 10, 0, 0, 0, time.UTC)
+
+	// One of each provider, one published every way a session can be.
+	for _, seed := range []struct {
+		id       string
+		provider model.Provider
+		cwd      string
+	}{
+		{"claude:one", model.ProviderClaude, "/home/someone/a project with spaces"},
+		{"codex:two", model.ProviderCodex, ""},
+	} {
+		providerID := seed.id[strings.Index(seed.id, ":")+1:]
+		if _, err := store.UpsertSession(ctx, model.Session{
+			ID: seed.id, Provider: seed.provider, ProviderSessionID: providerID,
+			Management: model.Unmanaged, Status: model.StatusActive, StatusSource: "test",
+			CWD: seed.cwd, LastSeenAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetAudience(ctx, seed.id, model.Audience{
+			Mode: model.AudienceAllPaired, ExportCWD: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"}
+	envelope, err := NewHeartbeatBuilder(store, node, internalTestSigner{}).Build(ctx, now)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	payload, err := DecodePayload[HeartbeatPayload](envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Sessions) != 2 {
+		t.Fatalf("want 2 sessions, got %d; the test would not exercise much", len(payload.Sessions))
+	}
+	if err := ValidateIncomingPayload(node.ID, payload); err != nil {
+		t.Errorf("this node's own heartbeat would be refused by a node running this code: %v", err)
+	}
 }

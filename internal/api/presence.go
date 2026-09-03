@@ -89,11 +89,22 @@ func (s *Server) receiveHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Checked before it is stored, not when it is read. What is inside a
+	// snapshot reaches an agent's reasoning through agent_list with no notice
+	// and no attribution, and the desktop and the CLI read the same rows — a
+	// check in any one reader protects only that reader.
+	if err := protocol.ValidateIncomingPayload(envelope.NodeID, payload); err != nil {
+		refuse("payload describes sessions this node will not store", err)
+		return
+	}
+
 	now := time.Now().UTC()
 	snapshot := registry.PeerSnapshot{
-		NodeID:    envelope.NodeID,
-		Sequence:  payload.Sequence,
-		ExpiresAt: payload.ExpiresAt,
+		NodeID:   envelope.NodeID,
+		Sequence: payload.Sequence,
+		// Clamped: a peer choosing its own expiry could otherwise declare itself
+		// online indefinitely with one heartbeat.
+		ExpiresAt: protocol.ClampExpiry(payload.ExpiresAt, now),
 		Payload:   envelope.Payload,
 	}
 	err = s.store.StorePeerSnapshot(r.Context(), snapshot, now)
