@@ -32,10 +32,30 @@ func ClampExpiry(declared, now time.Time) time.Time {
 
 // MaxCWDLength bounds a working directory a peer reports.
 //
-// Long enough for any real path, short enough that the field cannot carry
-// prose. A peer that wants to say more than this about a directory is not
-// describing a directory.
+// This bounds volume, not intent: a sentence fits in 512 bytes, and no length
+// limit can stop one. What it stops is a field being used to carry a page. The
+// sending side applies the same bound (Summarize drops an over-long directory
+// rather than exporting it), so this refuses only what a peer running different
+// code would send.
+//
+// PATH_MAX is 1024 on macOS and 4096 on Linux, so a legal path can exceed this
+// and its session is still exported — without the directory.
 const MaxCWDLength = 512
+
+// MaxProviderSessionIDLength bounds the half of an id a peer chooses.
+//
+// Claude and Codex both use UUIDs, which are 36 characters.
+const MaxProviderSessionIDLength = 128
+
+// MaxClockSkew is how far ahead a peer's reported times may be.
+//
+// Not a security bound — it exists so that a value no clock explains cannot
+// become a sort order. Wide enough that a genuinely skewed peer is not punished.
+const MaxClockSkew = 24 * time.Hour
+
+// MaxStatusSourceLength matches the published schema. Every value this build
+// produces is under 30 bytes.
+const MaxStatusSourceLength = 64
 
 // MaxSummarySessions bounds how many sessions one snapshot may describe.
 //
@@ -88,7 +108,20 @@ func validateIncomingSummary(senderNodeID string, summary SessionSummary) error 
 		return fmt.Errorf("id %q names another node", summary.ID)
 	}
 	if err := address.ValidateLocalSessionID(sessionID); err != nil {
-		return fmt.Errorf("id %q: %w", summary.ID, err)
+		return fmt.Errorf("id %q: %w", truncateForError(summary.ID), err)
+	}
+	// The provider session id is an address, not a label. Unconstrained it was
+	// the widest channel here — the first field of every agent_list row, and
+	// large enough to hold a page of text. Real ones are UUIDs.
+	_, providerSessionID, _ := strings.Cut(sessionID, ":")
+	if len(providerSessionID) > MaxProviderSessionIDLength {
+		return fmt.Errorf("id is %d bytes, over the %d limit",
+			len(providerSessionID), MaxProviderSessionIDLength)
+	}
+	for _, r := range providerSessionID {
+		if r < '!' || r > '~' {
+			return fmt.Errorf("id %q has a character outside printable ASCII", truncateForError(summary.ID))
+		}
 	}
 	provider, _, _ := strings.Cut(sessionID, ":")
 	if summary.Provider != provider {
@@ -110,10 +143,24 @@ func validateIncomingSummary(senderNodeID string, summary SessionSummary) error 
 	if err := validateReportedCWD(summary.CWD); err != nil {
 		return err
 	}
-	if len(summary.StatusSource) > 128 {
-		return fmt.Errorf("statusSource is %d bytes, over the 128 limit", len(summary.StatusSource))
+	if len(summary.StatusSource) > MaxStatusSourceLength {
+		return fmt.Errorf("statusSource is %d bytes, over the %d limit",
+			len(summary.StatusSource), MaxStatusSourceLength)
 	}
-	return printableOnly("statusSource", summary.StatusSource)
+	if err := printableOnly("statusSource", summary.StatusSource); err != nil {
+		return err
+	}
+	// A time that is not a time. It reaches a reader through agent_list and the
+	// desktop, where "last seen in the year 9999" is a sort order nobody chose.
+	//
+	// Deliberately wide. A wrong lastSeenAt is a display problem, not a security
+	// one, and the refusal is of the whole snapshot — so a peer whose clock runs
+	// twenty minutes fast should not vanish from its owner's view over it. Only
+	// values no clock error explains are refused.
+	if summary.LastSeenAt.After(time.Now().UTC().Add(MaxClockSkew)) {
+		return fmt.Errorf("lastSeenAt %s is further ahead than any clock error explains", summary.LastSeenAt)
+	}
+	return nil
 }
 
 func validateReportedCWD(cwd string) error {
@@ -126,15 +173,29 @@ func validateReportedCWD(cwd string) error {
 	return printableOnly("cwd", cwd)
 }
 
-// printableOnly refuses control characters.
+// printableOnly refuses anything that is not a graphic character.
 //
 // A newline in a path is what turns a field into two lines on a reader's screen,
-// and the second line is the attacker's.
+// and the second line is the attacker's. unicode.IsControl alone misses that:
+// U+2028 LINE SEPARATOR and U+2029 are category Zl/Zp, not Cc, and render as
+// line breaks in plenty of contexts. U+202E RIGHT-TO-LEFT OVERRIDE is Cf and
+// reorders whatever follows it. IsGraphic keeps letters, marks, numbers,
+// punctuation, symbols and ordinary spaces, and refuses the rest.
 func printableOnly(field, value string) error {
 	for _, r := range value {
-		if unicode.IsControl(r) {
-			return fmt.Errorf("%s contains a control character", field)
+		if !unicode.IsGraphic(r) {
+			return fmt.Errorf("%s contains a character that is not printable", field)
 		}
 	}
 	return nil
+}
+
+// truncateForError bounds peer-controlled text on its way into an error or a
+// log line. A refusal is logged, and a megabyte id would otherwise be a
+// megabyte log line, on demand.
+func truncateForError(value string) string {
+	if runes := []rune(value); len(runes) > 80 {
+		return string(runes[:80]) + "…"
+	}
+	return value
 }
