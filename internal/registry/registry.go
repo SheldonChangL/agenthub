@@ -652,7 +652,7 @@ func validateSessionFields(session model.Session) error {
 	if err := model.ValidateProviderSessionID(session.ProviderSessionID); err != nil {
 		return err
 	}
-	if session.Provider != model.ProviderClaude && session.Provider != model.ProviderCodex {
+	if !model.KnownProvider(string(session.Provider)) {
 		return fmt.Errorf("invalid provider %q", session.Provider)
 	}
 	if session.Management != model.Managed && session.Management != model.Unmanaged {

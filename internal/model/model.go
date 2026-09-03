@@ -184,7 +184,40 @@ func ValidateNodeID(nodeID string) error {
 			return fmt.Errorf("node id %q contains a character outside printable ASCII", nodeID)
 		}
 	}
+	// A node id must not also be readable as a session id.
+	//
+	// Every local session id of sixteen characters or more otherwise satisfies
+	// every rule above, so the two namespaces overlap — and a reader holding one
+	// bare string cannot tell which it has. That is not hypothetical: a message
+	// whose sender named no session is stored as the bare sender node id, and a
+	// peer that chose `claude:0123456789abcdef` at pairing time would have its
+	// messages read as though they had been queued on this machine.
+	//
+	// Enforced here, at the edge where an id is admitted, so every reader gets
+	// the guarantee rather than each having to re-derive it.
+	if provider, _, found := strings.Cut(nodeID, ":"); found && KnownProvider(strings.ToLower(provider)) {
+		return fmt.Errorf(
+			"node id %q begins with a provider name, which would make it readable as a session id", nodeID)
+	}
 	return nil
+}
+
+// KnownProvider reports whether a name is one this build discovers.
+//
+// Exact, because it decides what a session id may be, and a session id is
+// compared byte for byte everywhere else — the registry stores the lowercase
+// constant and looks it up exactly. Folding case here would admit "CLAUDE:x" as
+// a second spelling of a real session, which nothing downstream would match.
+//
+// Callers that want the looser reading fold before calling; ValidateNodeID does,
+// because there the question is the reverse — whether a string could be
+// mistaken for a session id by a person, not whether it is one.
+func KnownProvider(name string) bool {
+	switch Provider(name) {
+	case ProviderClaude, ProviderCodex:
+		return true
+	}
+	return false
 }
 
 // ValidateProviderSessionID rejects provider session IDs that would corrupt a

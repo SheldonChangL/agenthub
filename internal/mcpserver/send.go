@@ -88,11 +88,10 @@ func (s *server) send(ctx context.Context, to, body string) (SendResult, error) 
 		}
 	}
 
-	// The bare session id, both ways. The node reduces a self-qualified `from`
-	// to this same value before storing or forwarding it, and a recipient learns
-	// the sending node from the envelope's signature rather than from this
-	// field — so qualifying it here would be a second spelling of the same
-	// thing, differing only in which code path strips it.
+	// The bare session id, both ways. The node qualifies a local sender with its
+	// own id before storing, and a remote recipient learns the sending node from
+	// the envelope's signature rather than from this field — so qualifying here
+	// would only be a second spelling of what the node writes anyway.
 	queued, err := s.client.SendMessage(ctx, destination.ID, s.binding.SessionID(), body)
 	if err != nil {
 		return SendResult{}, err

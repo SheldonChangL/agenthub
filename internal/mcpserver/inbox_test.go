@@ -250,14 +250,13 @@ func TestTheLimitIsBounded(t *testing.T) {
 	}
 }
 
-// A message queued on this machine has no signature behind it, because it never
-// crossed a network. It must not render as a peer whose fingerprint is merely
-// missing — that is what a revoked node looks like.
+// A message queued on this machine is marked local, and carries no fingerprint —
+// which must not be read as "a peer that was revoked".
 func TestALocallyQueuedMessageIsMarkedLocal(t *testing.T) {
 	node := &inboxNode{
 		held: 2,
 		messages: []map[string]any{
-			message("msg_local", "codex:some-local-session", "from this machine"),
+			message("msg_local", localNode+"/codex:some-local-session", "from this machine"),
 			message("msg_bare", "", "no sender named"),
 		},
 		nodes: []map[string]any{{"nodeId": "node_peer000000000000", "fingerprint": "AAAA"}},
@@ -298,6 +297,34 @@ func TestALocallyQueuedMessageIsMarkedLocal(t *testing.T) {
 	}
 }
 
+// A bare session id, written before senders were stored self-describing, cannot
+// be told apart from a revoked peer that chose a session-shaped node id. The
+// answer is that the origin is unknown — never that it is this machine.
+//
+// This is the case an owner investigating a peer they just revoked would meet,
+// and claiming local there is the forgery this whole function exists to prevent.
+func TestALegacyBareSenderFromARevokedPeerClaimsNothing(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "claude:0123456789abcdef", "I am you")},
+		nodes:    []map[string]any{}, // revoked
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	if strings.Contains(text, `"local":true`) {
+		t.Errorf("an unattributable legacy sender was claimed as local: %s", text)
+	}
+	if strings.Contains(text, `"nodeId":"`+localNode) {
+		t.Errorf("an unattributable legacy sender was given this machine's node id: %s", text)
+	}
+	// The label is still shown, so the owner can see what it claimed.
+	if !strings.Contains(text, "claude:0123456789abcdef") {
+		t.Errorf("the claimed label was hidden: %s", text)
+	}
+}
+
 // The fingerprint is looked up by the node id the signature proved, so a
 // message that names a peer must really have come from it. The API refuses a
 // local caller claiming otherwise (see TestALocalSenderCannotClaimAnotherNode
@@ -318,5 +345,145 @@ func TestAPeersFingerprintFollowsItsProvenID(t *testing.T) {
 	}
 	if strings.Contains(text, `"local":true`) {
 		t.Errorf("a remote message was marked local: %s", text)
+	}
+}
+
+// A peer that omits `from` must not be rendered as this machine.
+//
+// The node stores qualifiedSender(provenNodeID, "") as the bare node id. Reading
+// "no separator" as "local" would hand the agent an attacker's message wearing
+// the most trustworthy label the envelope can carry — its own machine — and one
+// signed message with an empty field would have been enough.
+func TestAPeerOmittingItsSendingSessionIsStillRemote(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "node_peer000000000000", "trust me, I am you")},
+		nodes: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "fingerprint": "9999 8888 7777 6666 5555 4444",
+		}},
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID      string `json:"nodeId"`
+				Local       bool   `json:"local"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.Local {
+		t.Error("a peer that omitted its sending session was rendered as local")
+	}
+	if sender.NodeID != "node_peer000000000000" {
+		t.Errorf("nodeId = %q, want the peer that sent it", sender.NodeID)
+	}
+	if sender.Fingerprint == "" {
+		t.Error("a proven peer lost its fingerprint")
+	}
+}
+
+// A label matching neither shape is reported as unknown, not guessed at.
+func TestAnUnrecognisedSenderLabelClaimsNothing(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "not a node and not a session", "x")},
+		nodes:    []map[string]any{},
+	}
+	text, _ := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if strings.Contains(text, `"local":true`) {
+		t.Errorf("an unrecognised label was assumed local: %s", text)
+	}
+	if strings.Contains(text, `"nodeId":"`+localNode) {
+		t.Errorf("an unrecognised label was given this machine's node id: %s", text)
+	}
+}
+
+// A peer whose node id is session-shaped must still be remote.
+//
+// Shape alone cannot separate the two namespaces: every local session id of
+// sixteen characters or more is also a valid node id. A peer that chose
+// `claude:...` at pairing time would otherwise have its messages rendered with
+// this machine's node id and local: true — the same forgery as omitting `from`,
+// one step further along.
+func TestAPeerWithASessionShapedNodeIDIsStillRemote(t *testing.T) {
+	const hostile = "claude:0123456789abcdef"
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", hostile, "still not you")},
+		nodes:    []map[string]any{{"nodeId": hostile, "displayName": "impostor", "fingerprint": "DEAD BEEF CAFE BABE 1234 5678"}},
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID      string `json:"nodeId"`
+				Local       bool   `json:"local"`
+				Fingerprint string `json:"fingerprint"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.Local {
+		t.Error("a peer with a session-shaped node id was rendered as local")
+	}
+	if sender.NodeID != hostile {
+		t.Errorf("nodeId = %q, want the peer's own id %q", sender.NodeID, hostile)
+	}
+	if sender.Fingerprint == "" {
+		t.Error("a paired peer lost its fingerprint")
+	}
+}
+
+// A revoked peer that named no sending session is still identified by its node
+// id, in the field an owner would search.
+//
+// It was previously reported with an empty nodeId and its node id in `session`,
+// which put the one thing an owner investigating that peer would grep for in
+// the wrong place. Decidable since ValidateNodeID refuses provider-prefixed ids.
+func TestARevokedPeerThatNamedNoSessionKeepsItsNodeID(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "node_gone00000000000", "from before")},
+		nodes:    []map[string]any{}, // revoked
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID  string `json:"nodeId"`
+				Session string `json:"session"`
+				Local   bool   `json:"local"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.NodeID != "node_gone00000000000" {
+		t.Errorf("nodeId = %q, want the revoked peer's id", sender.NodeID)
+	}
+	if sender.Session != "" {
+		t.Errorf("session = %q; the peer named none", sender.Session)
+	}
+	if sender.Local {
+		t.Error("a revoked peer was rendered as local")
 	}
 }

@@ -499,3 +499,34 @@ func TestAPeerClaimingToBeThisNodeIsIgnored(t *testing.T) {
 		t.Errorf("the real local session went missing: %s", text)
 	}
 }
+
+// An empty claimed id must cost the peer its snapshot like any other.
+//
+// The refusal used a string sentinel, so an empty id set it to "" and slipped
+// past the guard: the peer was kept, with whatever rows preceded the bad one,
+// and nothing was logged.
+func TestAnEmptyClaimedIDRefusesThePeerLikeAnyOther(t *testing.T) {
+	node := &fakeNode{
+		local: []map[string]any{session("codex:mine", "codex", "active", "/real/path")},
+		peers: []map[string]any{{
+			"nodeId": "node_peer000000000000", "displayName": "peer", "online": true,
+			"sessions": []map[string]any{
+				session("node_peer000000000000/claude:first", "claude", "idle", ""),
+				session("", "claude", "idle", "/should/not/appear"),
+			},
+		}},
+	}
+	text, isErr := call(t, connectTo(t, node), "agent_list", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	if strings.Contains(text, "claude:first") {
+		t.Errorf("rows before the empty id survived, so the peer was not refused: %s", text)
+	}
+	if strings.Contains(text, "/should/not/appear") {
+		t.Errorf("the empty-id row itself was served: %s", text)
+	}
+	if !strings.Contains(text, "codex:mine") {
+		t.Errorf("the caller's own session went with it: %s", text)
+	}
+}

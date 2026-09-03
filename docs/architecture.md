@@ -20,7 +20,7 @@ flowchart TB
         CLI[ah CLI]
     end
 
-    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools<br/>Step 7 - not built"]
+    MCP["agenthub-mcp - bound to one session<br/>agent_list · agent_status<br/>agent_inbox · agent_send<br/>no file or shell tools"]
 
     API["Loopback HTTP API<br/>127.0.0.1:7462"]
 
@@ -32,9 +32,9 @@ flowchart TB
 
     Peer["Peer listener<br/>:7463 TLS 1.3<br/>the only surface that leaves the host"]
 
-    Claude -. stdio .-> MCP
-    Codex -. stdio .-> MCP
-    MCP -. Step 7 .-> API
+    Claude -- stdio --> MCP
+    Codex -- stdio --> MCP
+    MCP --> API
     Desktop --> API
     CLI --> API
     API --> Node
@@ -42,16 +42,16 @@ flowchart TB
     Node --> Peer
 ```
 
-None of the MCP layer exists yet; the dashed edges are Step 7 (#56).
+The MCP layer exists as of Step 7 (#56); only the wake-up edges are still
+dashed.
 
-The agent will start `agenthub-mcp` as its own child process, which is why that
+The agent starts `agenthub-mcp` as its own child process, which is why that
 process cannot know which session called it unless it is told at startup — hence
-the `--as` binding required by #50. Two acceptance criteria in #50 and #51, not
-properties of any current code: it must reach the registry only through the same
-loopback API the desktop app and CLI use, never SQLite directly, so
-`agenthub-node` stays the only writer; and `agent_list` must read presence rather
-than the registry, so the MCP surface cannot become a second path around audience
-filtering.
+the `-as` binding. It reaches the registry only through the same loopback API the
+desktop app and CLI use, never SQLite directly, so `agenthub-node` stays the only
+writer; a test asserts the registry and every SQLite package are absent from the
+command's dependency closure. `agent_list` reads presence rather than the
+registry, so the MCP surface is not a second path around audience filtering.
 
 ### Between two nodes
 
@@ -60,7 +60,7 @@ flowchart LR
     subgraph A["Node A"]
         OwnerA["Owner: ah send / desktop"]
         AgentA[Agent on A]
-        OutA{{"allowOutbound<br/>Step 7 - issue 53<br/>default off"}}
+        OutA{{"allowOutbound<br/>default off"}}
         NodeA[agenthub-node]
     end
 
@@ -74,11 +74,11 @@ flowchart LR
 
     NodeA -- "heartbeat, 15s by default<br/>only audience-authorised sessions<br/>not gated by acceptMessages" --> PresB
     OwnerA --> NodeA
-    AgentA -. "agent_send, Step 7" .-> OutA
-    OutA -.-> NodeA
+    AgentA -- "agent_send" --> OutA
+    OutA --> NodeA
     NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
     InB --> InboxB
-    InboxB -. "Step 7 - a person asks the agent to look" .-> AgentB
+    InboxB -- "a person asks the agent to look" --> AgentB
     InboxB -.-> WakeB
     WakeB -. "Step 8 - arrives on its own" .-> AgentB
 ```
@@ -89,7 +89,7 @@ to receive is not willing to send, and neither is willing to act unattended:
 | Gate | Where | State |
 |---|---|---|
 | `acceptMessages` | on the recipient | implemented |
-| `allowOutbound` | on the sender | Step 7, #53, default off |
+| `allowOutbound` | on the sender | implemented, default off, enforced in `agenthub-mcp` rather than the node (#75) |
 | `autoWake` | on the recipient | Step 8, #59, default off |
 
 TLS is pinned to the public key recorded when the two nodes paired, verified
@@ -98,16 +98,16 @@ middlebox that substitutes its own certificate cannot complete the connection.
 
 ### How a message reaches an agent
 
-Delivery to the inbox works today and has been exercised between two machines.
-What does not exist yet is anything an agent can call, and anything that hands a
-message to an agent without a person asking.
+Delivery to the inbox works today and has been exercised between two machines,
+and an agent can now read and send through `agenthub-mcp`. What does not exist
+is anything that hands a message to an agent without a person asking.
 
 | Leg | Mechanism | State |
 |---|---|---|
-| Agent sends | `agent_send` over MCP | Step 7, #53 |
+| Agent sends | `agent_send` over MCP | implemented |
 | Node to node | signed envelope over pinned TLS | implemented; a two-host run is described in PR #40/#41 and recorded in verification.md |
 | Into the inbox | `acceptMessages`, deduplicated, bounded at 500 | implemented |
-| Agent reads on request | `agent_inbox` over MCP | Step 7, #52 |
+| Agent reads on request | `agent_inbox` over MCP | implemented |
 | Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | Step 8, #57 |
 | Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | Step 8, #58 |
 
@@ -132,6 +132,10 @@ Neither path is intended to inject text into a provider's files or process, so
 `#16`'s boundary is intended to hold: the Codex path calls Codex's own API, and
 the Claude Code path uses a documented MCP capability.
 
+The trust boundary this surface creates, what each defence does, and what none
+of them do, is recorded in
+[ADR-002](decisions/002-mcp-surface-trust-boundary.md).
+
 ## Current implementation boundary
 
 | Boundary | Current state |
@@ -139,8 +143,8 @@ the Claude Code path uses a documented MCP capability.
 | Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
 | Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
 | Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
-| MCP client -> node | Tool contracts are drafted in `mcp-tools.json`; no server exists. Step 7, #56 |
-| Node -> agent | Messages are queued in the inbox and nothing hands them to an agent. Step 8, #60 |
+| MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced in this process rather than the node (#75) |
+| Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
 | Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
 | Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |
 
@@ -206,8 +210,9 @@ recipient it names is not that peer. There is no way to produce an undirected
 
 The local inbox accepts local destinations and parses both local and qualified
 addresses. A qualified remote address is routed to that node; an unpaired one is
-answered `UNKNOWN_NODE`. Remote `agent_send` (Step 7, #53) must also require both
-an authorized view and the destination session's `acceptMessages` flag.
+answered `UNKNOWN_NODE`. Remote `agent_send` requires an authorized view of the
+destination, resolved against the same set `agent_status` uses; the destination's
+`acceptMessages` is the receiving node's decision, made when it answers.
 
 The heartbeat builder projects each published session into `protocol.SessionSummary`,
 a type separate from the owner-local `model.Session`. The projection copies field
