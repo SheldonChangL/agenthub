@@ -184,7 +184,7 @@ func TestARedeliveryDoesNotDuplicate(t *testing.T) {
 		t.Fatalf("second ack = %+v; want duplicate", ack)
 	}
 
-	messages, err := store.Inbox(context.Background(), session, 10)
+	messages, err := store.Inbox(context.Background(), session, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestATakenIDIsRefusedLikeAnythingElse(t *testing.T) {
 			collisionAck.Reason, declinedAck.Reason)
 	}
 	// The first peer's message must be untouched.
-	inbox, err := store.Inbox(context.Background(), session, 10)
+	inbox, err := store.Inbox(context.Background(), session, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestAForgedSenderLabelCannotNameAnotherNode(t *testing.T) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 
-	inbox, err := store.Inbox(context.Background(), session, 10)
+	inbox, err := store.Inbox(context.Background(), session, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestDeletingOneMessageLeavesTheRest(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d %s", deleted.Code, deleted.Body.String())
 	}
-	remaining, err := store.Inbox(context.Background(), session, 10)
+	remaining, err := store.Inbox(context.Background(), session, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

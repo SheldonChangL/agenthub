@@ -521,11 +521,20 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	after := 0
+	if value := r.URL.Query().Get("after"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "after must not be negative")
+			return
+		}
+		after = parsed
+	}
 	recipient, ok := s.localSession(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
-	messages, err := s.store.Inbox(r.Context(), recipient, limit)
+	messages, err := s.store.Inbox(r.Context(), recipient, limit, after)
 	if err != nil {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
