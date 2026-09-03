@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"agenthub.local/agenthub/internal/model"
@@ -159,6 +160,16 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, recipientNo
 		// the recipient answers "may this peer see it", so a per-peer build
 		// applies the grant list here.
 		if filter == peerExportView && !session.Audience.PublishesTo(recipientNodeID) {
+			continue
+		}
+		// An id a peer would refuse costs that session, not the heartbeat. A
+		// receiver refuses a whole snapshot over one bad row, so exporting it
+		// would take every other session with it — and unlike a working
+		// directory an id cannot be dropped and the session kept. Claude and
+		// Codex both produce UUIDs, so this is about a store written by
+		// something else.
+		if err := ExportableSessionID(session.ID); err != nil {
+			log.Printf("not exporting session %q: %v", session.ID, err)
 			continue
 		}
 		// A refusal here means the registry returned something the export view

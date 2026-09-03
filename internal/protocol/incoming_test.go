@@ -172,3 +172,37 @@ func TestASnapshotIsBoundedAndWithoutDuplicates(t *testing.T) {
 		t.Error("a snapshot naming the same session twice was accepted")
 	}
 }
+
+// A refusal is logged, so a peer must not be able to choose how long the log
+// line is. Every field it controls is truncated on the way into the error, and
+// an inner error carrying the raw value is not wrapped.
+func TestARefusalCannotBeMadeEnormous(t *testing.T) {
+	big := strings.Repeat("A", 900000)
+	cases := map[string]func(*protocol.SessionSummary){
+		"an unqualified id":            func(s *protocol.SessionSummary) { s.ID = big },
+		"an id naming another":         func(s *protocol.SessionSummary) { s.ID = "node_other00000000000/claude:" + big },
+		"an id over the limit":         func(s *protocol.SessionSummary) { s.ID = incomingSender + "/claude:" + big },
+		"a disagreeing provider":       func(s *protocol.SessionSummary) { s.Provider = big },
+		"a status that is prose":       func(s *protocol.SessionSummary) { s.Status = big },
+		"a management that is prose":   func(s *protocol.SessionSummary) { s.Management = big },
+		"a visibility that is prose":   func(s *protocol.SessionSummary) { s.Visibility = big },
+		"a statusSource that is prose": func(s *protocol.SessionSummary) { s.StatusSource = big },
+		"a cwd that is prose":          func(s *protocol.SessionSummary) { s.CWD = big },
+	}
+	for name, corrupt := range cases {
+		t.Run(name, func(t *testing.T) {
+			summary := validSummary()
+			corrupt(&summary)
+			err := protocol.ValidateIncomingPayload(incomingSender,
+				protocol.HeartbeatPayload{Sessions: []protocol.SessionSummary{summary}})
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			// Generous: the message itself plus a truncated value and its
+			// ellipsis. Anything near the input size means a field went in whole.
+			if len(err.Error()) > 1000 {
+				t.Errorf("refusal is %d bytes; a peer chose the size of a log line", len(err.Error()))
+			}
+		})
+	}
+}
