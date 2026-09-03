@@ -42,10 +42,10 @@ A fresh-context review found the limitation this ADR's first draft missed.
 A peer's **session summaries** are also written by that peer. Its `cwd`,
 `status` and session ids arrive over the wire and are served by `agent_list`
 with no notice, no sender attribution, and no untrusted framing (#76). The
-envelope around them is checked — signature, recipient, sequence, expiry — and
-the snapshot store checks that a node id is present, that the sequence is in
-range, and that the payload is non-empty. What nothing checks is the *contents*
-of the summaries. A peer can put a paragraph of instructions in a working directory
+envelope around them is checked for signature and recipient, and the snapshot
+store checks that a node id is present, that the payload is non-empty, that the
+snapshot has not expired, and that its sequence advances. What nothing checks is
+the *contents* of the summaries. A peer can put a paragraph of instructions in a working directory
 and the agent reads it inside the one payload the server's own `Instructions`
 string vouches for.
 
@@ -168,11 +168,13 @@ advertisement.
 - **A revoked id, re-paired with a different key.** Re-pairing a live id with a
   new key is refused, but revocation frees the id. Inbox rows from the first key
   would then be shown with the second key's fingerprint.
-- **A legacy bare sender from a revoked peer.** Messages stored before senders
-  were self-describing kept a bare session id, which a peer paired under the old
-  ValidateNodeID could also have as its node id. Once that peer is revoked the
-  two are indistinguishable, so such a row is reported with no origin rather than
-  claimed as local.
+- **A legacy bare sender that is session-shaped.** Messages stored before
+  senders were self-describing kept a bare session id, which a peer paired under
+  the old ValidateNodeID could also have as its node id. The trust store is
+  preferred, so while such a peer is paired its rows are attributed to it — which
+  means a local row whose session id equals that peer's node id is attributed to
+  the peer too. Once the peer is revoked neither can be told from the other, and
+  the row is reported with no origin rather than claimed as local.
 - **A peer that lies about its own state.** The contents of its session
   summaries are unchecked (#76), a peer sets its own expiry so it can appear online forever (#77), and a
   peer can fill a session's inbox or make `agent_inbox` fail outright by

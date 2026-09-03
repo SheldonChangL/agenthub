@@ -447,3 +447,43 @@ func TestAPeerWithASessionShapedNodeIDIsStillRemote(t *testing.T) {
 		t.Error("a paired peer lost its fingerprint")
 	}
 }
+
+// A revoked peer that named no sending session is still identified by its node
+// id, in the field an owner would search.
+//
+// It was previously reported with an empty nodeId and its node id in `session`,
+// which put the one thing an owner investigating that peer would grep for in
+// the wrong place. Decidable since ValidateNodeID refuses provider-prefixed ids.
+func TestARevokedPeerThatNamedNoSessionKeepsItsNodeID(t *testing.T) {
+	node := &inboxNode{
+		held:     1,
+		messages: []map[string]any{message("msg_1", "node_gone00000000000", "from before")},
+		nodes:    []map[string]any{}, // revoked
+	}
+	text, isErr := call(t, node.connect(t), "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatalf("errored: %s", text)
+	}
+	var decoded struct {
+		Messages []struct {
+			Sender struct {
+				NodeID  string `json:"nodeId"`
+				Session string `json:"session"`
+				Local   bool   `json:"local"`
+			} `json:"sender"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	sender := decoded.Messages[0].Sender
+	if sender.NodeID != "node_gone00000000000" {
+		t.Errorf("nodeId = %q, want the revoked peer's id", sender.NodeID)
+	}
+	if sender.Session != "" {
+		t.Errorf("session = %q; the peer named none", sender.Session)
+	}
+	if sender.Local {
+		t.Error("a revoked peer was rendered as local")
+	}
+}
