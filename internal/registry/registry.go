@@ -299,14 +299,24 @@ VALUES (?, ?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Destin
 	return message, nil
 }
 
-func (r *Registry) Inbox(ctx context.Context, recipientID string, limit int) ([]model.Message, error) {
+// Inbox reads a page of the messages held for one session.
+//
+// Paged rather than all-at-once because a caller cannot always afford one large
+// answer: message bodies are bounded, but what they become when serialised is
+// not bounded by the same factor, and a reader with a response-size limit needs
+// to be able to ask for less. The order is stable so that `after` names a
+// position rather than a moment.
+func (r *Registry) Inbox(ctx context.Context, recipientID string, limit, after int) ([]model.Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
+	}
+	if after < 0 {
+		after = 0
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms
 FROM messages WHERE recipient_id = ?
-ORDER BY created_at_ms ASC, id ASC LIMIT ?`, recipientID, limit)
+ORDER BY created_at_ms ASC, id ASC LIMIT ? OFFSET ?`, recipientID, limit, after)
 	if err != nil {
 		return nil, fmt.Errorf("read inbox: %w", err)
 	}

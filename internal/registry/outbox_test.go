@@ -212,7 +212,7 @@ func TestARedeliveryFromTheSameSenderIsNotStoredTwice(t *testing.T) {
 	if stored {
 		t.Fatal("a redelivery was stored as a new message")
 	}
-	inbox, err := store.Inbox(ctx, session.ID, 10)
+	inbox, err := store.Inbox(ctx, session.ID, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

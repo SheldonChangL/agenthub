@@ -19,8 +19,8 @@ type inboxNode struct {
 	nodes    []map[string]any
 	held     int
 	capacity int
-	// lastLimit records what the tool asked for.
-	lastLimit string
+	// asked totals what the tool requested across pages.
+	asked int
 	// seen records every request, so a read that reached for a side effect
 	// through a GET is caught too.
 	seen []string
@@ -39,7 +39,11 @@ func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
 		case r.URL.Path == "/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"nodes": n.nodes})
 		case strings.HasPrefix(r.URL.Path, "/v1/inbox/"):
-			n.lastLimit = r.URL.Query().Get("limit")
+			if v := r.URL.Query().Get("limit"); v != "" {
+				var want int
+				_, _ = fmt.Sscanf(v, "%d", &want)
+				n.asked += want
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"messages": n.messages, "held": n.held,
 				"capacity": n.capacity, "full": n.held >= n.capacity,
@@ -173,20 +177,15 @@ func TestReadingTheInboxChangesNothing(t *testing.T) {
 			t.Fatal("agent_inbox errored")
 		}
 	}
-	want := map[string]int{
-		"GET /v1/inbox/codex:mine?limit=50": 3,
-		"GET /v1/nodes?":                    3,
-	}
-	got := map[string]int{}
+	// The inbox is read in pages, so the exact request count depends on how many
+	// messages are there. What must hold is that every request is a GET, and
+	// that only the two read endpoints are touched.
 	for _, request := range node.seen {
-		got[request]++
-	}
-	if len(got) != len(want) {
-		t.Fatalf("agent_inbox made requests beyond reading:\n got %v\nwant %v", got, want)
-	}
-	for request, count := range want {
-		if got[request] != count {
-			t.Errorf("%q happened %d times, want %d (all of: %v)", request, got[request], count, got)
+		if !strings.HasPrefix(request, "GET ") {
+			t.Errorf("agent_inbox made a non-GET request: %q", request)
+		}
+		if !strings.Contains(request, "/v1/inbox/codex:mine?") && !strings.HasPrefix(request, "GET /v1/nodes") {
+			t.Errorf("agent_inbox reached beyond reading: %q (all: %v)", request, node.seen)
 		}
 	}
 }
@@ -230,11 +229,19 @@ func TestTheInboxReportsItsOwnPressure(t *testing.T) {
 func TestTheLimitIsBounded(t *testing.T) {
 	node := &inboxNode{messages: []map[string]any{}}
 	session := node.connect(t)
-	for _, c := range []struct{ asked, want string }{
-		{"", "50"},
-		{"1000", "200"},
-		{"7", "7"},
+	// The inbox is read in pages, so what the node sees per request is the batch
+	// size, not the caller's limit. What the caller's limit must still bound is
+	// the total asked for across the pages — otherwise "give me 1000" would just
+	// become a hundred requests.
+	for _, c := range []struct {
+		asked   string
+		wantMax int
+	}{
+		{"", 50},
+		{"1000", 200},
+		{"7", 7},
 	} {
+		node.asked = 0
 		args := map[string]any{}
 		if c.asked != "" {
 			var n int
@@ -244,8 +251,9 @@ func TestTheLimitIsBounded(t *testing.T) {
 		if _, isErr := call(t, session, "agent_inbox", args); isErr {
 			t.Fatalf("limit %q errored", c.asked)
 		}
-		if node.lastLimit != c.want {
-			t.Errorf("asked %q, node saw %q, want %q", c.asked, node.lastLimit, c.want)
+		if node.asked > c.wantMax {
+			t.Errorf("limit %q caused %d messages to be asked for, over the %d it should bound to",
+				c.asked, node.asked, c.wantMax)
 		}
 	}
 }

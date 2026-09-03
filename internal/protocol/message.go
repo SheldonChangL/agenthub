@@ -21,6 +21,13 @@ const (
 // storage layer would have refused it anyway.
 const maxMessageBody = 32768
 
+// maxSenderLabel bounds the sender address a peer attaches to a message.
+//
+// A qualified address is a node id and a session id with a separator, both of
+// which are bounded elsewhere; this is the belt on the outside of those braces,
+// applied where the value arrives from the network.
+const maxSenderLabel = 512
+
 // MessagePayload is one message crossing between nodes.
 //
 // This is the first payload that carries something a person wrote rather than
@@ -58,6 +65,13 @@ func (p MessagePayload) Validate() error {
 	}
 	if err := address.ValidateLocalSessionID(p.To); err != nil {
 		return fmt.Errorf("recipient session: %w", err)
+	}
+	// The sender's label is stored and shown. Unbounded, a peer could attach a
+	// megabyte of text to every message — storage a recipient did not agree to,
+	// and a field that reaches a reader beside the body without the body's
+	// framing.
+	if len(p.From) > maxSenderLabel {
+		return fmt.Errorf("sender address is %d bytes, over the %d limit", len(p.From), maxSenderLabel)
 	}
 	if strings.TrimSpace(p.Body) == "" {
 		return fmt.Errorf("message body is empty")
