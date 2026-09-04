@@ -67,7 +67,9 @@ func (a *App) SetNodeURL(raw string) error {
 		return fmt.Errorf("node URL must include a host")
 	}
 	if !isLoopbackHost(parsed.Hostname()) {
-		return fmt.Errorf("only loopback nodes are supported until authenticated LAN pairing exists")
+		return fmt.Errorf("the node URL must be loopback: this app speaks to the owner's API, " +
+			"which has no authentication and is served on loopback for that reason. Pairing with " +
+			"another machine happens through the peer listener, not through this field")
 	}
 	trimmed := strings.TrimRight(raw, "/")
 	a.mu.Lock()
@@ -251,8 +253,14 @@ func (a *App) RevokeNode(nodeID string) error {
 	return activeClient.revokeNode(a.ctx, nodeID)
 }
 
-// Heartbeat returns the exact payload a future broker would receive. It is the
-// app's proof to the user that private sessions never leave the host.
+// Heartbeat returns the owner's own preview of what this node exports: the union
+// of every published session, signed the way a peer's copy would be.
+//
+// It is not what any peer receives. A peer gets the output of BuildFor, which
+// applies that peer's audience — so this preview is a superset, and a session
+// published to one node appears here whether or not the peer reading over the
+// owner's shoulder is that node. What it does show, and what it is here for, is
+// that a private session appears in no export at all.
 func (a *App) Heartbeat() (string, error) {
 	activeClient, _ := a.current()
 	raw, err := activeClient.heartbeat(a.ctx)
