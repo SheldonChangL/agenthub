@@ -106,6 +106,6 @@ and tracked from issue #1.
 - Remote presence subscriptions and retries
 - Provider-specific live APIs and message injection
 - Session launch/supervision and wake-up
-- Full MCP server transport implementation (issue #56), and wake-up (issue #60)
+- Wake-up: nothing hands a message to an agent (issue #60)
 - Policy groups and aliases
 - Windows real-host acceptance (issue #21); a two-host macOS/Ubuntu run is recorded in [verification.md](verification.md)

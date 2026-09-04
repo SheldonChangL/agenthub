@@ -234,7 +234,7 @@ FROM trusted_nodes ORDER BY display_name, node_id`)
 //
 // It never creates a row, for the same reason MarkNodeSeen does not: learning
 // an address is not a trust decision. Anything that discovers addresses —
-// today an owner typing one, later mDNS — is an untrusted input source, and a
+// an owner typing one, or mDNS filling it in — is an untrusted input source, and a
 // discovery that could add rows here would let whatever is shouting on the
 // network decide who this node believes in.
 //

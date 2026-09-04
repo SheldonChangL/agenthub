@@ -13,9 +13,12 @@ import (
 	"agenthub.local/agenthub/internal/model"
 )
 
-// ErrUnknownNode marks an address that names a node this installation does not
-// know. It is a routing answer, not a malformed input: the caller wrote a
-// well-formed address for a machine that has not been paired.
+// ErrUnknownNode marks a well-formed address that names some node other than
+// this one. It is a routing answer, not a malformed input.
+//
+// It says nothing about pairing: resolving an address never consults the trust
+// store, so a paired peer's address produces this too. What it means is that
+// the thing being addressed is not here.
 var ErrUnknownNode = errors.New("unknown node")
 
 // QualifiedID renders the address a peer uses to reach a session:

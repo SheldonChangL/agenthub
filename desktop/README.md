@@ -8,7 +8,8 @@ a provider rescan, and shows the current signed heartbeat preview.
 
 The app is an HTTP client only. It does not read provider files or SQLite and
 does not write a second copy of session state. It accepts loopback node URLs
-only because the local API has no authentication yet.
+only, because the owner's API has no authentication and stays on loopback for
+that reason.
 
 ## Prerequisites
 
@@ -43,8 +44,8 @@ cross-platform node or CLI builds.
   built by `BuildFor` and are never the same document.
 - The Network view shows paired nodes with their presence: remote sessions they
   have authorised for this node, and online or offline from the last snapshot's
-  expiry. Provider wake-up is not implemented (Step 8, #60), and neither is
-  anything an agent can call (Step 7, #56).
+  expiry. An agent reaches the same data through `agenthub-mcp` (#56); provider
+  wake-up is not implemented, so a message waits to be read (Step 8, #60).
 - Provider metadata is rendered through DOM text APIs and covered by a hostile
   metadata regression test; see closed
   [issue #19](https://github.com/SheldonChangL/agenthub/issues/19).
