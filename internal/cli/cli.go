@@ -96,10 +96,26 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		return r.simple(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(args[1]), nil)
 	case "send":
-		if len(args) < 3 {
-			return errors.New("usage: ah send <session-id> <message>")
+		// A message to another node must say which local session it is from,
+		// because the node refuses to send on behalf of a session whose owner
+		// has not opened outbound — and it cannot tell the owner's CLI from an
+		// agent that was talked into calling it. The gate is per session, so
+		// the message has to be attributed to one.
+		fromSession := ""
+		rest := args[1:]
+		if len(rest) >= 2 && rest[0] == "--from" {
+			fromSession = rest[1]
+			rest = rest[2:]
 		}
-		return r.simple(ctx, http.MethodPost, "/v1/messages", map[string]string{"to": args[1], "body": strings.Join(args[2:], " ")})
+		if len(rest) < 2 {
+			return errors.New("usage: ah send [--from <local-session-id>] <session-id> <message>\n" +
+				"  --from is required when <session-id> names another node")
+		}
+		body := map[string]string{"to": rest[0], "body": strings.Join(rest[1:], " ")}
+		if fromSession != "" {
+			body["from"] = fromSession
+		}
+		return r.simple(ctx, http.MethodPost, "/v1/messages", body)
 	case "inbox":
 		if len(args) != 2 {
 			return errors.New("usage: ah inbox <session-id>")

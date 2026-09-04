@@ -489,6 +489,37 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !destination.Local() {
+		// Leaving this machine needs a session whose owner opened outbound.
+		//
+		// The gate is per session, and until now it was checked only in
+		// agenthub-mcp — a client of this node. Any process here could post to
+		// this endpoint directly and bypass it, and this node cannot tell the
+		// owner's CLI from an agent that was talked into calling it: both are
+		// loopback. So the message has to be attributed to a local session,
+		// and that session's gate decides. A message from nobody in particular
+		// is refused rather than let through, because "nobody" is exactly the
+		// label an agent working around the gate would choose.
+		//
+		// Local destinations are not gated: nothing leaves the machine.
+		if from == "" {
+			writeError(w, http.StatusBadRequest, "OUTBOUND_NEEDS_SENDER",
+				"a message to another node must say which local session it is from; "+
+					"pass `from` as <provider>:<id> (ah send --from <session-id> ...)")
+			return
+		}
+		senderSession, _ := address.ParseAddress(from, s.node.ID)
+		audience, err := s.store.GetAudience(r.Context(), senderSession.SessionID)
+		if err != nil {
+			writeRegistryError(w, err)
+			return
+		}
+		if !audience.AllowOutbound {
+			writeError(w, http.StatusForbidden, "OUTBOUND_CLOSED",
+				"session "+senderSession.SessionID+" may not send to other nodes; its owner has not "+
+					"opened outbound (ah audience "+senderSession.SessionID+" ... --outbound). This is "+
+					"deliberate: a message may have been suggested by content that arrived from another machine")
+			return
+		}
 		s.queueForPeer(w, r, destination, from, input.Body)
 		return
 	}

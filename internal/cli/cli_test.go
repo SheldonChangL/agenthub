@@ -197,3 +197,41 @@ func TestAnUnknownAudienceFlagIsRefused(t *testing.T) {
 		t.Errorf("the error does not list the real flag: %q", stderr.String())
 	}
 }
+
+// A message to another node must be attributed to a local session, because the
+// node's outbound gate is per session. --from carries that, and its absence must
+// produce a request the node refuses rather than one that quietly omits it.
+func TestSendCarriesFromToTheNode(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_x","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(),
+		[]string{"--url", server.URL, "send", "--from", "claude:mine", "node_peer0000000000000/codex:x", "hello", "there"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["from"] != "claude:mine" {
+		t.Errorf("from = %v, want claude:mine", body["from"])
+	}
+	if body["to"] != "node_peer0000000000000/codex:x" || body["body"] != "hello there" {
+		t.Errorf("to/body = %v / %v", body["to"], body["body"])
+	}
+
+	// Without --from the field is simply absent — the node decides.
+	body = nil
+	code = Run(context.Background(),
+		[]string{"--url", server.URL, "send", "claude:local", "hi"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if _, present := body["from"]; present {
+		t.Errorf("from was sent without --from: %v", body["from"])
+	}
+}
