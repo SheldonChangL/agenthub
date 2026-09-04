@@ -273,16 +273,14 @@ func (c *Client) Peers(ctx context.Context) ([]Peer, error) {
 		refused, refusedID := false, ""
 		for _, s := range p.Sessions {
 			// A peer says what its own sessions are called, and nothing more.
-			// The node authenticates the sender of a heartbeat but does not
-			// check that the ids inside name that sender (#72), so a paired
-			// peer can currently claim any id it likes. Two consequences if
-			// believed: it could attribute a session to a third node that
-			// authorised nothing, and it could send a bare local-form id that
-			// collides with one of this machine's own sessions — after which
-			// asking about that session could return the peer's fabrication.
 			//
-			// Checked here rather than assumed of the node: this is the layer
-			// that hands the answer to an agent.
+			// The node checks this too, when it accepts the heartbeat, which is
+			// where every reader benefits. Kept here as well because this is the
+			// layer that hands the answer to an agent, and a row that reached
+			// the store before that check existed is still a row. If believed,
+			// a peer could attribute a session to a third node that authorised
+			// nothing, or send a bare local-form id colliding with one of this
+			// machine's own sessions.
 			nodeID, sessionID, qualified := address.SplitQualifiedID(s.ID)
 			if !qualified || nodeID != p.NodeID || address.ValidateLocalSessionID(sessionID) != nil {
 				// A bool, not the id itself: an empty claimed id would set a

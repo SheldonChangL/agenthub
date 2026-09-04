@@ -24,6 +24,18 @@ const (
 	StatusUnknown  LifecycleStatus = "unknown"
 )
 
+// ValidLifecycleStatus reports whether a status is one this build assigns.
+//
+// Exported because a peer's reported status arrives as a bare string and has to
+// be checked against the same set the local one comes from.
+func ValidLifecycleStatus(status LifecycleStatus) bool {
+	switch status {
+	case StatusActive, StatusIdle, StatusInactive, StatusUnknown:
+		return true
+	}
+	return false
+}
+
 type Management string
 
 const (
