@@ -227,10 +227,9 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 		lastSeen          time.Time
 	}{
 		{"ordinary", now},
-		{strings.Repeat("a", MaxProviderSessionIDLength+1), now}, // id no peer accepts
-		{"has space here", now},                                  // id no peer accepts
-		{"future", time.Now().UTC().Add(72 * time.Hour)},         // a time no clock explains
-		{"disagrees", now},                                       // provider will be made to disagree with the id
+		{"has space here", now},                          // id no peer accepts
+		{"future", time.Now().UTC().Add(72 * time.Hour)}, // a time no clock explains
+		{"disagrees", now},                               // provider will be made to disagree with the id
 	}
 	for _, seed := range seeds {
 		id := "claude:" + seed.providerSessionID
@@ -256,6 +255,43 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 	defer db.Close()
 	if _, err := db.ExecContext(ctx, `UPDATE sessions SET provider = 'codex' WHERE id = 'claude:disagrees'`); err != nil {
 		t.Fatalf("corrupt row: %v", err)
+	}
+	// An id longer than a peer accepts. The store refuses one on write now, so
+	// it goes in the same way — which is the premise either way: these rows
+	// exist because something other than this build wrote them.
+	long := "claude:" + strings.Repeat("a", MaxProviderSessionIDLength+1)
+	inserted, err := db.ExecContext(ctx, `
+INSERT INTO sessions (id, provider, provider_session_id, management, audience_mode, export_cwd,
+	accept_messages, allow_outbound, status, status_source, cwd, source, metadata_path,
+	last_seen_at_ms, updated_at_ms)
+SELECT ?, provider, ?, management, audience_mode, export_cwd,
+	accept_messages, allow_outbound, status, status_source, cwd, source, metadata_path,
+	last_seen_at_ms, updated_at_ms
+FROM sessions WHERE id = 'claude:ordinary'`, long, strings.Repeat("a", MaxProviderSessionIDLength+1))
+	if err != nil {
+		t.Fatalf("long-id row: %v", err)
+	}
+	if affected, err := inserted.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("long-id row: %d rows written, %v; the seed this test rests on is not there", affected, err)
+	}
+	// A separator in the id. This one is left out by the address check that
+	// runs before Summarize, and it has to: Summarize refuses a separator by
+	// failing, which would cost the whole heartbeat rather than this row.
+	// The column CHECK is on provider_session_id, not on id, so the store
+	// admits this shape.
+	split, err := db.ExecContext(ctx, `
+INSERT INTO sessions (id, provider, provider_session_id, management, audience_mode, export_cwd,
+	accept_messages, allow_outbound, status, status_source, cwd, source, metadata_path,
+	last_seen_at_ms, updated_at_ms)
+SELECT 'claude:a/b', provider, 'ab', management, audience_mode, export_cwd,
+	accept_messages, allow_outbound, status, status_source, cwd, source, metadata_path,
+	last_seen_at_ms, updated_at_ms
+FROM sessions WHERE id = 'claude:ordinary'`)
+	if err != nil {
+		t.Fatalf("separator row: %v", err)
+	}
+	if affected, err := split.RowsAffected(); err != nil || affected != 1 {
+		t.Fatalf("separator row: %d rows written, %v", affected, err)
 	}
 
 	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "t", Platform: "t"}
