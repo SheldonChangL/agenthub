@@ -22,10 +22,9 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
-- No packaging: there is nothing to download, so installing means building from source (Step 10, issue #67)
 - No provider message injection, by design
 - Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
-- No release, installer, or version number (Step 10, issue #67)
+- No release, installer, or version number: installing means building from source (Step 10, issue #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
@@ -47,7 +46,7 @@ this. Those are Steps 8 to 10, tracked from
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Automated pairing, wake-up, distribution | Planned | issues [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
-| Provider injection and wake-up | Deferred by design, and by step | [spec](docs/spec.md), [issue #60](https://github.com/SheldonChangL/agenthub/issues/60) |
+| Provider message injection | Never, by design | [spec](docs/spec.md) |
 
 ## Build and test
 
@@ -64,6 +63,7 @@ go test ./...
 mkdir -p bin
 go build -o bin/agenthub-node ./cmd/agenthub-node
 go build -o bin/ah ./cmd/ah
+go build -o bin/agenthub-mcp ./cmd/agenthub-mcp
 ```
 
 ## Run locally
@@ -108,6 +108,35 @@ by hand, and the receiving side authenticates every envelope against them:
 signature and recipient binding on all of them, plus expiry and a strictly
 advancing sequence on heartbeats, and message-id deduplication on messages.
 Session list responses are paginated; `ah list` follows every page automatically.
+
+## Give an agent the four tools
+
+`agenthub-mcp` is an MCP server over stdio. It is bound to one session at
+startup, because stdio carries no caller identity: whoever runs it decides which
+session it speaks for, and it will not act for any other.
+
+```sh
+go run ./cmd/agenthub-mcp -as claude:<id>            # or -url http://127.0.0.1:7462
+```
+
+In `.mcp.json`, for a Claude Code session:
+
+```json
+{
+  "mcpServers": {
+    "agenthub": {
+      "command": "agenthub-mcp",
+      "args": ["-as", "claude:<id>"]
+    }
+  }
+}
+```
+
+The four tools are `agent_list`, `agent_status`, `agent_inbox` and `agent_send`;
+their contract is [mcp-tools.json](docs/mcp-tools.json). Reading is enough on its
+own, but sending needs the owner to open the gate for that session
+(`ah audience <id> ... --outbound`), and the node refuses an unattributed message
+to another machine regardless.
 
 ## Desktop app
 
@@ -168,7 +197,7 @@ share with one.
 
 Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
 
-See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool draft](docs/mcp-tools.json).
+See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool contract](docs/mcp-tools.json).
 
 The Codex App Server client boundary is implemented and schema-tested, but is not enabled in the node's default scan path yet. See [Codex App Server notes](docs/codex-app-server.md).
 

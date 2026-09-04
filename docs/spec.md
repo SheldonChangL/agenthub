@@ -8,8 +8,9 @@ Success means a user can start one node, discover local sessions while decoding
 and persisting metadata fields only, inspect normalized status, explicitly add
 or remove individual sessions from a local export preview, and exchange queued
 messages through the local API, and exchange them with a paired node over an
-authenticated transport. The MCP contract is documented as a draft with its
-unresolved implementation gaps made explicit.
+authenticated transport. The MCP surface is served by `agenthub-mcp` over
+stdio; `mcp-tools.json` is its contract, and a test asserts the arguments it
+documents are the ones the server accepts.
 
 ## Assumptions
 
@@ -50,6 +51,7 @@ internal/adapter/    provider discovery adapters
 internal/api/        local HTTP API
 internal/identity/   persistent node identity
 internal/model/      normalized contracts
+internal/mcpserver/  the four MCP tools an agent calls
 internal/protocol/   signed broker envelopes, addressing, and export projection
 internal/registry/   SQLite persistence
 internal/status/     lifecycle inference
@@ -94,7 +96,7 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 5. The heartbeat contains sessions published to at least one audience, projected into remote `SessionSummary`, signed by the node key, and validated against the published broker schema.
 6. Managed and unmanaged status behavior is covered by deterministic tests.
 7. `ah list`, `status`, `publish`, `unpublish`, `send`, and `inbox` work against the node.
-8. Draft broker and MCP contracts are documented as JSON Schema-compatible JSON; the broker envelope is validated against runtime output, and remaining MCP gaps are tracked rather than presented as complete.
+8. Broker and MCP contracts are documented as JSON Schema-compatible JSON; the broker envelope is validated against runtime output, and the MCP contract is checked against what `agenthub-mcp` serves.
 9. Windows, macOS, and Linux builds compile; macOS runs locally, while Windows and Ubuntu runtime acceptance is documented for real-host verification.
 
 ## Deferred work

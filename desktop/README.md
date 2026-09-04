@@ -44,8 +44,9 @@ cross-platform node or CLI builds.
   built by `BuildFor` and are never the same document.
 - The Network view shows paired nodes with their presence: remote sessions they
   have authorised for this node, and online or offline from the last snapshot's
-  expiry. An agent reaches the same data through `agenthub-mcp` (#56); provider
-  wake-up is not implemented, so a message waits to be read (Step 8, #60).
+  expiry. An agent sees the same authorised sessions through `agenthub-mcp`
+  (#56), though not the node list or presence; provider wake-up is not
+  implemented, so a message waits to be read (Step 8, #60).
 - Provider metadata is rendered through DOM text APIs and covered by a hostile
   metadata regression test; see closed
   [issue #19](https://github.com/SheldonChangL/agenthub/issues/19).

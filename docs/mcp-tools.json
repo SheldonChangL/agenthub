@@ -1,9 +1,9 @@
 {
-  "draft": "agenthub.mcp/v1alpha1",
-  "implementationStatus": "Implemented by agenthub-mcp over stdio, bound to one session at startup. The addressing and audience rules are enforced by the local API and the export projection.",
+  "contract": "agenthub.mcp/v1alpha1",
+  "implementationStatus": "Implemented by agenthub-mcp over stdio, bound to one session at startup. The served inputSchemas are generated from the Go argument structs, so this file describes exactly what the tools accept: a field here that the server did not accept would be rejected as an additional property, which is worse than not offering it.",
   "transport": "stdio only. Streamable HTTP would put this surface on a socket, which is a separate decision from the peer listener and has not been taken.",
   "privacy": "A remote caller sees only sessions whose audience authorizes that caller: audience all_paired, or selected naming that caller's node. Working directories travel only for sessions whose owner opted in. Local owner clients may request the owner-local view.",
-  "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns the qualified form. A well-formed address for an unpaired node is answered as UNKNOWN_NODE, not as a malformed request.",
+  "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns the qualified form. An address the caller may not see — an unpaired node, a session its owner did not authorise for this node, or none at all — gets one indistinguishable answer, \"unknown node or session\"; a malformed address is reported as malformed.",
   "tools": [
     {
       "name": "agent_list",
@@ -25,15 +25,6 @@
               "inactive",
               "unknown"
             ]
-          },
-          "pageSize": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 200,
-            "default": 50
-          },
-          "cursor": {
-            "type": "string"
           },
           "node": {
             "type": "string",
@@ -93,11 +84,6 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 32768
-          },
-          "idempotencyKey": {
-            "type": "string",
-            "minLength": 8,
-            "maxLength": 128
           }
         },
         "additionalProperties": false
@@ -130,5 +116,6 @@
         "openWorldHint": false
       }
     }
-  ]
+  ],
+  "notOffered": "Paging (pageSize, cursor) and an idempotency key were in the draft and are not served. agent_list returns the whole visible set with a count and a total; a resend is a second message. Adding either means adding it to the Go argument struct, which is what generates these schemas."
 }

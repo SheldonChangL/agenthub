@@ -2,6 +2,9 @@ package mcpserver_test
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -97,6 +100,86 @@ func TestToolSchemasRefuseUnknownFields(t *testing.T) {
 		}
 		if !strings.Contains(text, "smuggled") {
 			t.Errorf("%s rejected the call but not for the unknown field: %q", tool, text)
+		}
+	}
+}
+
+// docs/mcp-tools.json is the contract an agent author reads. The schemas the
+// server actually serves are generated from the Go argument structs, so the two
+// drift silently: the file offered pageSize, cursor and idempotencyKey long
+// after the server had begun rejecting them as additional properties. A field
+// documented but not accepted is worse than one never offered — it is an
+// invitation to write a call that fails.
+func TestTheDocumentedToolArgumentsAreTheOnesServed(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "mcp-tools.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Properties map[string]any `json:"properties"`
+				Required   []string       `json:"required"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &contract); err != nil {
+		t.Fatalf("mcp-tools.json does not parse: %v", err)
+	}
+
+	result, err := connect(t).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	// The served schema is whatever the SDK generated; read it back as JSON so
+	// this test compares what a client sees, not an internal representation.
+	type schema struct {
+		Properties map[string]any `json:"properties"`
+		Required   []string       `json:"required"`
+	}
+	served := make(map[string]schema, len(result.Tools))
+	for _, tool := range result.Tools {
+		encoded, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: re-encode served schema: %v", tool.Name, err)
+		}
+		var decoded schema
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("%s: decode served schema: %v", tool.Name, err)
+		}
+		served[tool.Name] = decoded
+	}
+
+	if len(contract.Tools) != len(served) {
+		t.Errorf("the contract describes %d tools, the server serves %d", len(contract.Tools), len(served))
+	}
+	for _, documented := range contract.Tools {
+		actual, ok := served[documented.Name]
+		if !ok {
+			t.Errorf("the contract describes %q, which the server does not serve", documented.Name)
+			continue
+		}
+		want := make([]string, 0, len(documented.InputSchema.Properties))
+		for name := range documented.InputSchema.Properties {
+			want = append(want, name)
+		}
+		got := make([]string, 0, len(actual.Properties))
+		for name := range actual.Properties {
+			got = append(got, name)
+		}
+		sort.Strings(want)
+		sort.Strings(got)
+		if strings.Join(want, ",") != strings.Join(got, ",") {
+			t.Errorf("%s: the contract documents %v, the server accepts %v", documented.Name, want, got)
+		}
+		wantRequired := append([]string(nil), documented.InputSchema.Required...)
+		gotRequired := append([]string(nil), actual.Required...)
+		sort.Strings(wantRequired)
+		sort.Strings(gotRequired)
+		if strings.Join(wantRequired, ",") != strings.Join(gotRequired, ",") {
+			t.Errorf("%s: the contract requires %v, the server requires %v",
+				documented.Name, wantRequired, gotRequired)
 		}
 	}
 }
