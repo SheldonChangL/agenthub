@@ -240,10 +240,35 @@ func TestSendCarriesFromToTheNode(t *testing.T) {
 			t.Errorf("%s: from/to/body = %v / %v / %v", name, body["from"], body["to"], body["body"])
 		}
 	}
-	// A dangling --from is an error, not a message.
-	if code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "hi", "--from"},
-		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--from needs a value") {
-		t.Errorf("dangling --from: exit = %d, stderr = %q", code, stderr.String())
+	// After `--` everything is text, so a message may talk about --from
+	// without losing words or changing its sender.
+	body = nil
+	code = Run(context.Background(), []string{"--url", server.URL, "send", "--from", "claude:mine",
+		"node_peer0000000000000/codex:x", "--", "please", "pass", "--from", "claude:y", "to", "the", "script"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("terminator: exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["from"] != "claude:mine" || body["body"] != "please pass --from claude:y to the script" {
+		t.Errorf("terminator: from/body = %v / %v", body["from"], body["body"])
+	}
+
+	// A --from with nothing behind it is an error, not a message and not a
+	// silent absence the node then asks the user to fix.
+	for name, args := range map[string][]string{
+		"dangling": {"send", "claude:local", "hi", "--from"},
+		"empty":    {"send", "--from=", "node_peer0000000000000/codex:x", "hi"},
+	} {
+		stderr.Reset()
+		if code = Run(context.Background(), append([]string{"--url", server.URL}, args...),
+			&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--from needs a value") {
+			t.Errorf("%s --from: exit = %d, stderr = %q", name, code, stderr.String())
+		}
+	}
+	stderr.Reset()
+	if code = Run(context.Background(), []string{"--url", server.URL, "send", "--from", "claude:a", "--from", "claude:b", "claude:local", "hi"},
+		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "twice") {
+		t.Errorf("repeated --from: exit = %d, stderr = %q", code, stderr.String())
 	}
 
 	// Without --from the field is simply absent — the node decides.
