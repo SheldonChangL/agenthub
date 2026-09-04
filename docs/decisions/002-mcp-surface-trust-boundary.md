@@ -193,8 +193,9 @@ advertisement.
   directions, but it will surprise someone.
 - The MCP surface is four tools and cannot grow quietly: a test asserts the
   exact set, and another refuses any import of a database driver or `os/exec`.
-- #72 must fix the attribution gap at the node, where every reader benefits —
-  the desktop reads the same endpoint with no such check (#80). The check in
+- The attribution gap is closed at the node now: #72 refuses such a heartbeat
+  before it is stored, and #80 stops `/v1/peers` serving one an older build
+  stored, so the desktop benefits without a check of its own. The check in
   `Peers()` stays regardless: it is the layer that hands the answer to an agent,
   and it should not assume its upstream.
 - The findings this document exists to record were found by a reviewer with no

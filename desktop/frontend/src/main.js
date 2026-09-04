@@ -352,6 +352,12 @@ function nodeSessions(node) {
     )];
   }
   const sessions = presence.sessions ?? [];
+  if (presence.sessionsWithheld) {
+    return [heading, element("div", "empty",
+      "本機拒絕了這個節點送來的 session 清單——不符合本機接受的規則，" +
+      "或其中有不屬於它的 session——因此整份都不顯示。" +
+      "這是本機的判斷，不是對方離線；下一次有效的心跳會取代它。")];
+  }
   if (sessions.length === 0) {
     return [heading, element("div", "empty", "這個節點線上，但沒有公開任何 session 給我。")];
   }

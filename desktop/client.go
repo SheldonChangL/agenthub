@@ -62,6 +62,13 @@ type Peer struct {
 	ReceivedAt  time.Time `json:"receivedAt,omitzero"`
 	ExpiresAt   time.Time `json:"expiresAt,omitzero"`
 	Sessions    []Session `json:"sessions"`
+	// SessionsWithheld means the node refused what this peer published, rather
+	// than the peer having published nothing. The two are the same shape on the
+	// wire — an online peer with an empty list — and only this tells them
+	// apart. Named here rather than left to pass through: an unknown key is
+	// dropped in decoding, so a field this struct does not carry is one the UI
+	// can never render.
+	SessionsWithheld bool `json:"sessionsWithheld,omitempty"`
 }
 
 type NodeIdentity struct {
