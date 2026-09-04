@@ -1,7 +1,7 @@
 {
   "draft": "agenthub.mcp/v1alpha1",
-  "implementationStatus": "Contract draft only; no MCP server transport is implemented. The addressing and audience rules above are implemented in the local API and enforced by the export projection.",
-  "transport": "stdio-first; Streamable HTTP only after authenticated LAN pairing is implemented",
+  "implementationStatus": "Implemented by agenthub-mcp over stdio, bound to one session at startup. The addressing and audience rules are enforced by the local API and the export projection.",
+  "transport": "stdio only. Streamable HTTP would put this surface on a socket, which is a separate decision from the peer listener and has not been taken.",
   "privacy": "A remote caller sees only sessions whose audience authorizes that caller: audience all_paired, or selected naming that caller's node. Working directories travel only for sessions whose owner opted in. Local owner clients may request the owner-local view.",
   "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns the qualified form. A well-formed address for an unpaired node is answered as UNKNOWN_NODE, not as a malformed request.",
   "tools": [

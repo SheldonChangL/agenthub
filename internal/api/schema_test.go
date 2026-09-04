@@ -99,8 +99,8 @@ func TestHeartbeatEndpointServesSchemaConformantJSON(t *testing.T) {
 	}
 }
 
-// Internal failures must not describe the machine to the caller. This is the
-// listener a LAN mode would expose.
+// Internal failures must not describe the machine to the caller. The same
+// helper answers on the peer listener, where the caller is a stranger.
 //
 // An earlier version of this test posted to /v1/discover on a server with no
 // discoverer, which answers 501 before ever reaching the error path, and
