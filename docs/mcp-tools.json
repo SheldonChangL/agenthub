@@ -1,9 +1,9 @@
 {
   "contract": "agenthub.mcp/v1alpha1",
-  "implementationStatus": "Implemented by agenthub-mcp over stdio, bound to one session at startup. The served inputSchemas are generated from the Go argument structs, and a test compares this file against tools/list, so the fields, the required set, the annotations and the descriptions here are the ones served. The enums and bounds below are the server's behaviour rather than schema-enforced: a provider outside the enum matches nothing, and a limit outside the range is clamped, not refused.",
+  "implementationStatus": "Implemented by agenthub-mcp over stdio, bound to one session at startup. The served inputSchemas are generated from the Go argument structs, and a test compares this file against tools/list: the tool set, each tool's title and description, the argument names, which are required, each argument's type and description, and the annotations are all the served ones. The enums, bounds and defaults below are not schema-enforced and are not compared — they describe what the server does with a value: a provider outside the enum matches nothing, a limit outside the range is clamped, and an agentId or message over its bound is refused by the node.",
   "transport": "stdio only. Streamable HTTP would put this surface on a socket, which is a separate decision from the peer listener and has not been taken.",
   "privacy": "A remote caller sees only sessions whose audience authorizes that caller: audience all_paired, or selected naming that caller's node. Working directories travel only for sessions whose owner opted in. Every session on this node is included for its own owner.",
-  "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns a local session in the bare form and a remote one qualified; the node field on each row says which. An address the caller may not see — an unpaired node, a session its owner did not authorise for this node, or none at all — gets one indistinguishable answer, \"unknown node or session\"; a malformed address is reported as malformed.",
+  "addressing": "Both forms are accepted wherever a session is named: <provider>:<id> means this node, and <node-id>/<provider>:<id> names one. agent_list returns a local session in the bare form with no node field, and a remote one qualified with its node field set; filtering by this node's own id still selects the local rows. An address the caller may not see — an unpaired node, a session its owner did not authorise for this node, or none at all — gets one indistinguishable answer, \"unknown node or session\"; a malformed address is reported as malformed.",
   "tools": [
     {
       "name": "agent_list",
@@ -13,23 +13,27 @@
         "type": "object",
         "properties": {
           "provider": {
+            "type": "string",
             "enum": [
               "claude",
               "codex"
-            ]
+            ],
+            "description": "restrict to claude or codex"
           },
           "status": {
+            "type": "string",
             "enum": [
               "active",
               "idle",
               "inactive",
               "unknown"
-            ]
+            ],
+            "description": "restrict to active, idle, inactive or unknown"
           },
           "node": {
             "type": "string",
             "maxLength": 128,
-            "description": "Restrict the listing to one node. Omit for every node the caller may see."
+            "description": "restrict to one node; omit for every node the caller may see"
           }
         },
         "additionalProperties": false
@@ -53,8 +57,8 @@
           "agentId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 512,
-            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
+            "maxLength": 274,
+            "description": "session address, bare or node-qualified"
           }
         },
         "additionalProperties": false
@@ -79,13 +83,14 @@
           "agentId": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 512,
-            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
+            "maxLength": 274,
+            "description": "destination session address"
           },
           "message": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 32768
+            "maxLength": 32768,
+            "description": "the message body"
           }
         },
         "additionalProperties": false
@@ -108,7 +113,8 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 200,
-            "default": 50
+            "default": 50,
+            "description": "how many messages to return"
           }
         },
         "additionalProperties": false

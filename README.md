@@ -22,7 +22,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
-- No provider message injection, by design
+- Nothing writes into a provider's session files or process, by design
 - Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
 - No release or installer: installing means building from source (Step 10, issue #67)
 
@@ -46,7 +46,7 @@ this. Those are Steps 8 to 10, tracked from
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Automated pairing, wake-up, distribution | Planned | issues [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
-| Provider message injection | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [issue #16](https://github.com/SheldonChangL/agenthub/issues/16) |
+| Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
 
 ## Build and test
 

@@ -9,8 +9,9 @@ and persisting metadata fields only, inspect normalized status, explicitly add
 or remove individual sessions from a local export preview, and exchange queued
 messages through the local API, and exchange them with a paired node over an
 authenticated transport. The MCP surface is served by `agenthub-mcp` over
-stdio; `mcp-tools.json` is its contract, and a test asserts the arguments it
-documents are the ones the server accepts.
+stdio; `mcp-tools.json` is its contract, and a test asserts that the tools,
+arguments, types, descriptions and annotations it documents are the ones the
+server serves.
 
 ## Assumptions
 
@@ -86,7 +87,7 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
 - Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
 - Ask first: weaken an export default, or expand the remote metadata allowlist.
-- Never: inject messages into a provider session, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
+- Never: write into a provider's session files or process, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active. Wake-up (issue #60), when it comes, goes through each provider's own API — see [architecture](architecture.md).
 
 ## Success criteria
 
@@ -108,7 +109,7 @@ and tracked from issue #1.
 - Automated pairing exchange (issue #63); LAN transport and presence are implemented
 - Remote presence subscriptions and retries
 - Provider-specific live APIs
-- Session launch/supervision and wake-up
+- Session launch and supervision
 - Wake-up: nothing hands a message to an agent (issue #60)
 - Policy groups and aliases
 - Windows real-host acceptance (issue #21); a two-host macOS/Ubuntu run is recorded in [verification.md](verification.md)
