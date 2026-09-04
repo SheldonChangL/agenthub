@@ -126,8 +126,8 @@ address.
    on the destination node, and the destination provider's session file was
    confirmed unmodified — still not injected into any provider.
 
-Steps 7 to 10 continue in issues #56 (MCP server), #60 (wake-up), #63 (pairing),
-and #67 (distribution).
+Step 7 (#56, the MCP server) is done. Steps 8 to 10 continue in #60 (wake-up),
+#63 (pairing), and #67 (distribution).
 
 ## Boundaries for this increment
 

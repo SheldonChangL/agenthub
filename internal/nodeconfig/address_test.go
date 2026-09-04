@@ -36,7 +36,10 @@ func TestValidateLoopbackRefusesToServeTheOwnerAPIToTheNetwork(t *testing.T) {
 		// reader would have waited for a feature that was never coming, having
 		// already been given the one they wanted. Naming a gap is the specific
 		// thing this message must not do again.
-		for _, never := range []string{"not implemented", "not supported", "does not exist", "yet"} {
+		for _, never := range []string{
+			"not implemented", "not supported", "does not exist", "yet",
+			"later", "planned", "future", "coming",
+		} {
 			if strings.Contains(err.Error(), never) {
 				t.Errorf("ValidateLoopback(%q) describes a gap (%q), but the rule is permanent: %v",
 					address, never, err)
