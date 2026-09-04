@@ -21,6 +21,14 @@ const (
 // storage layer would have refused it anyway.
 const maxMessageBody = 32768
 
+// maxSenderLabel bounds the sender address a peer attaches to a message.
+//
+// Derived from the limits of the parts a qualified address is made of, so a
+// legitimate sender at every limit passes and nothing longer does. Applied here
+// because this is where the value arrives from the network; the store applies
+// the same bound to every write.
+const maxSenderLabel = model.MaxSenderLabelLength
+
 // MessagePayload is one message crossing between nodes.
 //
 // This is the first payload that carries something a person wrote rather than
@@ -53,11 +61,29 @@ func (p MessagePayload) Validate() error {
 	if strings.TrimSpace(p.MessageID) == "" {
 		return fmt.Errorf("message id is required")
 	}
-	if len(p.MessageID) > 128 {
+	if len(p.MessageID) > model.MaxMessageIDLength {
 		return fmt.Errorf("message id is too long")
+	}
+	// Printable ASCII, like every other identifier here. Not because the store
+	// cannot hold anything else — it can — but because an id is shown to a
+	// person, named in `ah inbox-clear <session> <id>`, and used to name a page
+	// boundary. A tab or a right-to-left override in it belongs to none of
+	// those uses. The value is not echoed: an id with a control byte in it is
+	// exactly what must not reach a log line.
+	for i := 0; i < len(p.MessageID); i++ {
+		if p.MessageID[i] < '!' || p.MessageID[i] > '~' {
+			return fmt.Errorf("message id has a byte outside printable ASCII")
+		}
 	}
 	if err := address.ValidateLocalSessionID(p.To); err != nil {
 		return fmt.Errorf("recipient session: %w", err)
+	}
+	// The sender's label is stored and shown. Unbounded, a peer could attach a
+	// megabyte of text to every message — storage a recipient did not agree to,
+	// and a field that reaches a reader beside the body without the body's
+	// framing.
+	if len(p.From) > maxSenderLabel {
+		return fmt.Errorf("sender address is %d bytes, over the %d limit", len(p.From), maxSenderLabel)
 	}
 	if strings.TrimSpace(p.Body) == "" {
 		return fmt.Errorf("message body is empty")
