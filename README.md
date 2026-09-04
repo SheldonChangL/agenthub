@@ -24,7 +24,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
 - No provider message injection, by design
 - Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
-- No release, installer, or version number: installing means building from source (Step 10, issue #67)
+- No release or installer: installing means building from source (Step 10, issue #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
@@ -46,7 +46,7 @@ this. Those are Steps 8 to 10, tracked from
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Automated pairing, wake-up, distribution | Planned | issues [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
-| Provider message injection | Never, by design | [spec](docs/spec.md) |
+| Provider message injection | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [issue #16](https://github.com/SheldonChangL/agenthub/issues/16) |
 
 ## Build and test
 
@@ -116,7 +116,8 @@ startup, because stdio carries no caller identity: whoever runs it decides which
 session it speaks for, and it will not act for any other.
 
 ```sh
-go run ./cmd/agenthub-mcp -as claude:<id>            # or -url http://127.0.0.1:7462
+# -as is required. Add -url <node url> if the node is not on 127.0.0.1:7462.
+go run ./cmd/agenthub-mcp -as claude:<id>
 ```
 
 In `.mcp.json`, for a Claude Code session:
@@ -125,7 +126,7 @@ In `.mcp.json`, for a Claude Code session:
 {
   "mcpServers": {
     "agenthub": {
-      "command": "agenthub-mcp",
+      "command": "/absolute/path/to/bin/agenthub-mcp",
       "args": ["-as", "claude:<id>"]
     }
   }
@@ -195,7 +196,7 @@ at audience `none`, including rows previously marked public: that flag controlle
 a local preview at a time when no remote peer existed, so it was never consent to
 share with one.
 
-Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
+Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
 
 See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool contract](docs/mcp-tools.json).
 

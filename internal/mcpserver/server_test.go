@@ -118,10 +118,12 @@ func TestTheDocumentedToolArgumentsAreTheOnesServed(t *testing.T) {
 	var contract struct {
 		Tools []struct {
 			Name        string `json:"name"`
+			Description string `json:"description"`
 			InputSchema struct {
 				Properties map[string]any `json:"properties"`
 				Required   []string       `json:"required"`
 			} `json:"inputSchema"`
+			Annotations map[string]any `json:"annotations"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(raw, &contract); err != nil {
@@ -139,6 +141,8 @@ func TestTheDocumentedToolArgumentsAreTheOnesServed(t *testing.T) {
 		Required   []string       `json:"required"`
 	}
 	served := make(map[string]schema, len(result.Tools))
+	annotations := make(map[string]map[string]any, len(result.Tools))
+	descriptions := make(map[string]string, len(result.Tools))
 	for _, tool := range result.Tools {
 		encoded, err := json.Marshal(tool.InputSchema)
 		if err != nil {
@@ -149,10 +153,36 @@ func TestTheDocumentedToolArgumentsAreTheOnesServed(t *testing.T) {
 			t.Fatalf("%s: decode served schema: %v", tool.Name, err)
 		}
 		served[tool.Name] = decoded
+		descriptions[tool.Name] = tool.Description
+		if tool.Annotations != nil {
+			encodedAnnotations, err := json.Marshal(tool.Annotations)
+			if err != nil {
+				t.Fatalf("%s: re-encode annotations: %v", tool.Name, err)
+			}
+			var hints map[string]any
+			if err := json.Unmarshal(encodedAnnotations, &hints); err != nil {
+				t.Fatalf("%s: decode annotations: %v", tool.Name, err)
+			}
+			annotations[tool.Name] = hints
+		}
 	}
 
 	if len(contract.Tools) != len(served) {
 		t.Errorf("the contract describes %d tools, the server serves %d", len(contract.Tools), len(served))
+	}
+	// Counted names, not just the count: a file that documents one tool twice
+	// and omits another has the right length and the right membership.
+	seen := map[string]bool{}
+	for _, documented := range contract.Tools {
+		if seen[documented.Name] {
+			t.Errorf("the contract documents %q twice", documented.Name)
+		}
+		seen[documented.Name] = true
+	}
+	for name := range served {
+		if !seen[name] {
+			t.Errorf("the server serves %q, which the contract does not describe", name)
+		}
 	}
 	for _, documented := range contract.Tools {
 		actual, ok := served[documented.Name]
@@ -180,6 +210,34 @@ func TestTheDocumentedToolArgumentsAreTheOnesServed(t *testing.T) {
 		if strings.Join(wantRequired, ",") != strings.Join(gotRequired, ",") {
 			t.Errorf("%s: the contract requires %v, the server requires %v",
 				documented.Name, wantRequired, gotRequired)
+		}
+		// The hints are advice a client acts on: destructiveHint and
+		// openWorldHint default to true when absent, so a hint documented here
+		// and not served tells the reader the opposite of what a client sees.
+		// Both directions. A hint the file omits is a hint the reader assumes
+		// the default for, and destructiveHint and openWorldHint default to
+		// true — so an omission here says the opposite of what is served.
+		for hint, want := range documented.Annotations {
+			got, present := annotations[documented.Name][hint]
+			if !present {
+				t.Errorf("%s: the contract documents %s=%v, which the server does not send",
+					documented.Name, hint, want)
+				continue
+			}
+			if got != want {
+				t.Errorf("%s: the contract says %s=%v, the server sends %v",
+					documented.Name, hint, want, got)
+			}
+		}
+		for hint, got := range annotations[documented.Name] {
+			if _, present := documented.Annotations[hint]; !present {
+				t.Errorf("%s: the server sends %s=%v, which the contract does not document",
+					documented.Name, hint, got)
+			}
+		}
+		if documented.Description != descriptions[documented.Name] {
+			t.Errorf("%s: the contract's description is not the one served:\n  file:   %q\n  server: %q",
+				documented.Name, documented.Description, descriptions[documented.Name])
 		}
 	}
 }
