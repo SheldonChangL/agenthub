@@ -253,11 +253,23 @@ func TestSendCarriesFromToTheNode(t *testing.T) {
 		t.Errorf("terminator: from/body = %v / %v", body["from"], body["body"])
 	}
 
+	// A `--` inside the message is prose, not the terminator: it must arrive.
+	body = nil
+	code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "fixed", "--", "see", "commit"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("dash in prose: exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["body"] != "fixed -- see commit" {
+		t.Errorf("dash in prose: body = %v, want the dash kept", body["body"])
+	}
+
 	// A --from with nothing behind it is an error, not a message and not a
 	// silent absence the node then asks the user to fix.
 	for name, args := range map[string][]string{
 		"dangling": {"send", "claude:local", "hi", "--from"},
 		"empty":    {"send", "--from=", "node_peer0000000000000/codex:x", "hi"},
+		"a flag":   {"send", "--from", "--from", "x", "claude:local", "hi"},
 	} {
 		stderr.Reset()
 		if code = Run(context.Background(), append([]string{"--url", server.URL}, args...),

@@ -102,18 +102,19 @@ func (r runner) command(ctx context.Context, args []string) error {
 		// agent that was talked into calling it. The gate is per session, so
 		// the message has to be attributed to one.
 		//
-		// --from is recognised anywhere before a `--`, as `--from <id>` or
+		// --from is recognised before the message starts, as `--from <id>` or
 		// `--from=<id>`; the first remaining word is the destination and the
 		// rest is the message. The message is unquoted words, so one that
-		// happens to contain "--from" needs the terminator: after `--`
-		// everything is text. Without it the flag would be taken out of the
-		// middle of a sentence and the sender silently changed.
+		// happens to contain "--from" needs a `--` between the destination
+		// and the message: after it everything is text. The terminator is
+		// honoured only in that slot, so a `--` inside the message stays in
+		// the message — a dash in prose must not vanish, exit 0.
 		fromSession := ""
 		fromSeen := false
 		rest := make([]string, 0, len(args)-1)
 		for i := 1; i < len(args); i++ {
 			switch {
-			case args[i] == "--":
+			case args[i] == "--" && len(rest) <= 1:
 				rest = append(rest, args[i+1:]...)
 				i = len(args)
 			case args[i] == "--from" || strings.HasPrefix(args[i], "--from="):
@@ -130,7 +131,7 @@ func (r runner) command(ctx context.Context, args []string) error {
 				} else {
 					fromSession = strings.TrimPrefix(args[i], "--from=")
 				}
-				if fromSession == "" {
+				if fromSession == "" || strings.HasPrefix(fromSession, "-") {
 					return errors.New("--from needs a value: the local session the message is from")
 				}
 			default:
@@ -139,7 +140,7 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		if len(rest) < 2 {
 			return errors.New("usage: ah send [--from <local-session-id>] <session-id> [--] <message>\n" +
-				"  --from is required when <session-id> names another node; after -- everything is message text")
+				"  --from is required when <session-id> names another node; put -- before a message that mentions --from")
 		}
 		body := map[string]string{"to": rest[0], "body": strings.Join(rest[1:], " ")}
 		if fromSession != "" {
@@ -395,7 +396,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
-	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node; -- ends flags")
+	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
+	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 }

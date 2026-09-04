@@ -471,10 +471,11 @@ wrote, which is a different kind of data and is treated as one: it is queued for
 the owner to read, and **nothing injects it into a provider**.
 
 `ah send --from <local-session-id> <node-id>/<provider>:<id> <message>` records
-the message in a local queue and answers `202 Accepted`. That status is the contract: the message is queued here
-and nothing else has happened. The destination machine may be asleep. Answering
-`201 Created` would make success mean something this node cannot know, so
-`ah outbound <message-id>` is where the outcome is found afterwards.
+the message in a local queue and answers `202 Accepted`. That status is the
+contract: the message is queued here and nothing else has happened. The
+destination machine may be asleep. Answering `201 Created` would make success
+mean something this node cannot know, so `ah outbound <message-id>` is where the
+outcome is found afterwards.
 
 Delivery rides the same schedule and the same pinned, challenged connection as
 the heartbeat. Content must not travel on a weaker path than metadata does.

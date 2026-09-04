@@ -153,14 +153,15 @@ advertisement.
 - **Provider injection.** Out of scope by decision (#16), unchanged.
 - **A `from` label on the owner's own API.** Any local process can post with
   `from` naming a real local session; the node validates the shape, not that the
-  caller owns it. The agent then sees that session as the sender — and since
-  #75 it is that session's `allowOutbound` that decides whether the message may
-  leave, so an agent that reasons its way to `curl`-ing the owner's API meets
-  the same gate as `agent_send`, but any local process can name a session whose
-  owner opened it. The gate bounds which sessions may send, not who speaks for
-  them. The API is loopback-only, but the misuse this permits is a co-resident
-  process posing as a colleague session, which is not the "can already restart
-  the process" reasoning the bullet above rests on.
+  caller owns it. The reader at the far end then sees that session as the
+  sender. Since #75 that session's `allowOutbound` also decides whether the
+  message may leave at all, so a local agent that reasons its way to `curl`-ing
+  the owner's API meets the same gate as `agent_send` — but any local process
+  can name a session whose owner opened it. The gate bounds which sessions may
+  send, not who speaks for them (§4). The API is loopback-only, but the misuse
+  this permits is a co-resident process posing as a colleague session, which is
+  not the "can already restart the process" reasoning the "owner's own API"
+  bullet above rests on.
 - **The `session` half of a remote sender's label.** Only the node part is
   proven; the rest is what the peer claimed, so a peer can label its message
   `<peer>/claude:<the owner's own session id>`. That is why the notice tells the
