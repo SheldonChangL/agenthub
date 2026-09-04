@@ -522,7 +522,7 @@ The first end-to-end exercise of the MCP surface between two machines, each
 running its own Claude Code against its own `agenthub-mcp`. A's binaries were
 built from `614cab2` with a clean tree — `go version -m` on them reports
 `vcs.revision=614cab2…`, `vcs.modified=false`. B's binaries were not
-re-inspected; B was offline when this was written.
+inspected; B was offline when this was written.
 
 | | Host A | Host B |
 |---|---|---|
