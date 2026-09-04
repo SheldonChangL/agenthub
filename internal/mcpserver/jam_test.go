@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -21,12 +22,15 @@ import (
 // returned an error and NO messages at all, until the owner noticed and cleared
 // the inbox by hand. Fifty signed messages is well inside both the rate limit
 // and the 500-message inbox bound.
+//
+// Every one of the fifty must come back, once: a reader that pages but never
+// advances would pass a weaker test with five copies of the first ten.
 func TestAPeerCannotJamTheInbox(t *testing.T) {
 	const heavy = 50
 	messages := make([]map[string]any, heavy)
 	for i := range messages {
 		messages[i] = map[string]any{
-			"id":   "msg_" + strings.Repeat("0", 20) + string(rune('a'+i%26)),
+			"id":   fmt.Sprintf("msg_%026d", i),
 			"from": "node_peer000000000000/claude:x", "to": "codex:mine",
 			"body":              strings.Repeat("<", 32768),
 			"destinationNodeId": localNode,
@@ -42,7 +46,8 @@ func TestAPeerCannotJamTheInbox(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"nodes": []map[string]any{
 				{"nodeId": "node_peer000000000000", "fingerprint": "F"}}})
 		case strings.HasPrefix(r.URL.Path, "/v1/inbox/"):
-			// Honour the limit the client asks for, the way the node does.
+			// Honour limit and the cursor the way the node does; the cursor is
+			// opaque to the client, so here it is simply the next index.
 			limit := heavy
 			if v := r.URL.Query().Get("limit"); v != "" {
 				var n int
@@ -51,10 +56,22 @@ func TestAPeerCannotJamTheInbox(t *testing.T) {
 					limit = n
 				}
 			}
-			served += limit
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"messages": messages[:limit], "held": heavy, "capacity": 500, "full": false,
-			})
+			start := 0
+			if v := r.URL.Query().Get("after"); v != "" {
+				_, _ = fmt.Sscanf(v, "%d", &start)
+			}
+			end := start + limit
+			if end > heavy {
+				end = heavy
+			}
+			served += end - start
+			page := map[string]any{
+				"messages": messages[start:end], "held": heavy, "capacity": 500, "full": false,
+			}
+			if end < heavy {
+				page["next"] = fmt.Sprint(end)
+			}
+			_ = json.NewEncoder(w).Encode(page)
 		case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "codex:mine"})
 		default:
@@ -90,15 +107,14 @@ func TestAPeerCannotJamTheInbox(t *testing.T) {
 	if isErr {
 		t.Fatalf("a peer disabled agent_inbox with %d messages: %s", heavy, text)
 	}
-	// Something must come back — the owner has to be able to see what is there.
-	if !strings.Contains(text, "msg_") {
-		t.Errorf("no messages were returned: %s", text[:min(400, len(text))])
+	distinct := map[string]bool{}
+	for _, id := range regexp.MustCompile(`msg_\d{26}`).FindAllString(text, -1) {
+		distinct[id] = true
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
+	if len(distinct) != heavy {
+		t.Errorf("%d distinct messages came back, want all %d", len(distinct), heavy)
 	}
-	return b
+	if served != heavy {
+		t.Errorf("the node served %d messages for %d held; a page was repeated or skipped", served, heavy)
+	}
 }

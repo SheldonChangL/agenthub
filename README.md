@@ -188,7 +188,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node |
 | `POST` | `/v1/messages` | Queue a message for a local session, or for a session on a paired node |
-| `GET` | `/v1/inbox/{id}` | Read a local inbox |
+| `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |

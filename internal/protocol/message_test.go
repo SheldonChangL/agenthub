@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"agenthub.local/agenthub/internal/model"
 	"strings"
 	"testing"
 
@@ -24,5 +25,12 @@ func TestASenderLabelIsBounded(t *testing.T) {
 	payload.From = "node_peer0000000000000/claude:abc"
 	if err := payload.Validate(); err != nil {
 		t.Errorf("an ordinary sender label was refused: %v", err)
+	}
+	// The bound is derived from the parts' own limits, so a legitimate sender
+	// with every part at its limit fits.
+	payload.From = "node_" + strings.Repeat("a", model.MaxNodeIDLength-5) + "/claude:" +
+		strings.Repeat("b", model.MaxProviderSessionIDLength)
+	if err := payload.Validate(); err != nil {
+		t.Errorf("a sender at every limit was refused: %v", err)
 	}
 }

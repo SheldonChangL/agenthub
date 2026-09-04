@@ -103,7 +103,7 @@ func TestCreateMessageQueuesForLocalInbox(t *testing.T) {
 		t.Fatalf("created message = %#v", created)
 	}
 
-	messages, err := store.Inbox(ctx, session.ID, 50, 0)
+	messages, err := store.Inbox(ctx, session.ID, 50, InboxStart)
 	if err != nil {
 		t.Fatalf("Inbox() error = %v", err)
 	}
@@ -250,7 +250,7 @@ func TestAMessageRecordsWhereItWasAddressed(t *testing.T) {
 		t.Fatalf("destination = %q", created.DestinationNodeID)
 	}
 
-	inbox, err := store.Inbox(ctx, session.ID, 10, 0)
+	inbox, err := store.Inbox(ctx, session.ID, 10, InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestAnOlderDatabaseGainsTheDestinationColumn(t *testing.T) {
 
 	// Reopening runs the migration.
 	reopened := openRegistryAt(t, path)
-	inbox, err := reopened.Inbox(ctx, session.ID, 10, 0)
+	inbox, err := reopened.Inbox(ctx, session.ID, 10, InboxStart)
 	if err != nil {
 		t.Fatalf("Inbox() after upgrade = %v", err)
 	}

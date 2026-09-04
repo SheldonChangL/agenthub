@@ -104,7 +104,7 @@ func (r runner) command(ctx context.Context, args []string) error {
 		if len(args) != 2 {
 			return errors.New("usage: ah inbox <session-id>")
 		}
-		return r.simple(ctx, http.MethodGet, "/v1/inbox/"+url.PathEscape(args[1]), nil)
+		return r.inbox(ctx, args[1])
 	case "inbox-clear":
 		// The inbox is bounded, so it needs emptying. Deletion is explicit
 		// rather than inferred from reading: nothing tracks what has been read.
@@ -292,6 +292,49 @@ func (r runner) simple(ctx context.Context, method, path string, input any) erro
 	return writePrettyJSON(r.stdout, body)
 }
 
+// inbox reads a session's inbox in pages and prints the whole.
+//
+// One request for everything is a size a peer controls: bodies are bounded, but
+// fifty of them serialised can pass the response cap, after which nothing
+// decodes and the owner cannot see what is jamming their inbox — the situation
+// this command exists for. Pages of ten stay well inside it.
+func (r runner) inbox(ctx context.Context, sessionID string) error {
+	type page struct {
+		Messages []json.RawMessage `json:"messages"`
+		Held     int               `json:"held"`
+		Capacity int               `json:"capacity"`
+		Full     bool              `json:"full"`
+		Next     string            `json:"next,omitempty"`
+	}
+	whole := page{Messages: []json.RawMessage{}}
+	after := ""
+	for {
+		path := "/v1/inbox/" + url.PathEscape(sessionID) + "?limit=10&after=" + url.QueryEscape(after)
+		body, err := r.request(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return err
+		}
+		var current page
+		if err := json.Unmarshal(body, &current); err != nil {
+			return fmt.Errorf("decode inbox page: %w", err)
+		}
+		whole.Messages = append(whole.Messages, current.Messages...)
+		whole.Held, whole.Capacity, whole.Full = current.Held, current.Capacity, current.Full
+		if current.Next == "" || len(current.Messages) == 0 {
+			break
+		}
+		after = current.Next
+	}
+	encoded, err := json.Marshal(whole)
+	if err != nil {
+		return fmt.Errorf("encode inbox: %w", err)
+	}
+	return writePrettyJSON(r.stdout, encoded)
+}
+
+// responseCap bounds what this CLI reads from the node in one answer.
+const responseCap = 4 * 1024 * 1024
+
 func (r runner) request(ctx context.Context, method, path string, input any) ([]byte, error) {
 	var body io.Reader
 	if input != nil {
@@ -313,9 +356,16 @@ func (r runner) request(ctx context.Context, method, path string, input any) ([]
 		return nil, fmt.Errorf("contact node: %w", err)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(response.Body, responseCap))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(data) >= responseCap {
+		// Cut off, so it will not decode — and "unexpected end of JSON input"
+		// sends the reader nowhere. Say what happened.
+		return nil, fmt.Errorf("the node's answer reached the %d byte limit and was cut off; "+
+			"something in it is too large to read here. For an inbox, `ah inbox-clear <session> [message-id]` removes what is there",
+			responseCap)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var apiError struct {
