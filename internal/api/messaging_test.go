@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func TestARedeliveryDoesNotDuplicate(t *testing.T) {
 		t.Fatalf("second ack = %+v; want duplicate", ack)
 	}
 
-	messages, err := store.Inbox(context.Background(), session, 10, 0)
+	messages, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +341,7 @@ func TestATakenIDIsRefusedLikeAnythingElse(t *testing.T) {
 			collisionAck.Reason, declinedAck.Reason)
 	}
 	// The first peer's message must be untouched.
-	inbox, err := store.Inbox(context.Background(), session, 10, 0)
+	inbox, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +365,7 @@ func TestAForgedSenderLabelCannotNameAnotherNode(t *testing.T) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 
-	inbox, err := store.Inbox(context.Background(), session, 10, 0)
+	inbox, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +484,7 @@ func TestDeletingOneMessageLeavesTheRest(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d %s", deleted.Code, deleted.Body.String())
 	}
-	remaining, err := store.Inbox(context.Background(), session, 10, 0)
+	remaining, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,5 +587,62 @@ func TestALocallyQueuedSenderIsQualifiedByThisNode(t *testing.T) {
 	// qualified by some other node, which is the thing being ruled out.
 	if want := testNodeID + "/" + id; decoded.Messages[0].From != want {
 		t.Errorf("from = %q, want %q", decoded.Messages[0].From, want)
+	}
+}
+
+// Pages chain by the cursor the previous one handed out. Every message is seen
+// once across the pages, and a cursor this node did not issue is refused.
+func TestTheInboxPagesWithNext(t *testing.T) {
+	store, owner := testServer(t)
+	id := seedSession(t, store, "paged")
+	if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	for i := 0; i < 12; i++ {
+		if response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": id, "body": fmt.Sprintf("m%02d", i)}); response.Code != http.StatusCreated {
+			t.Fatalf("send %d = %d %s", i, response.Code, response.Body.String())
+		}
+	}
+	type page struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Next string `json:"next"`
+	}
+	seen := map[string]bool{}
+	after := ""
+	pages := 0
+	for {
+		response := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=5&after="+url.QueryEscape(after), nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("page = %d %s", response.Code, response.Body.String())
+		}
+		var p page
+		if err := json.Unmarshal(response.Body.Bytes(), &p); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		for _, m := range p.Messages {
+			if seen[m.ID] {
+				t.Errorf("message %s appeared twice", m.ID)
+			}
+			seen[m.ID] = true
+		}
+		if p.Next == "" {
+			break
+		}
+		after = p.Next
+		if pages > 5 {
+			t.Fatal("paging did not end")
+		}
+	}
+	if len(seen) != 12 || pages != 3 {
+		t.Errorf("saw %d messages over %d pages; want 12 over 3", len(seen), pages)
+	}
+	bad := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?after=garbage", nil)
+	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "cursor") {
+		t.Errorf("garbage cursor = %d %s; want 400 naming the cursor", bad.Code, bad.Body.String())
 	}
 }

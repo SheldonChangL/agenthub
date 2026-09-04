@@ -23,10 +23,11 @@ const maxMessageBody = 32768
 
 // maxSenderLabel bounds the sender address a peer attaches to a message.
 //
-// A qualified address is a node id and a session id with a separator, both of
-// which are bounded elsewhere; this is the belt on the outside of those braces,
-// applied where the value arrives from the network.
-const maxSenderLabel = 512
+// Derived from the limits of the parts a qualified address is made of, so a
+// legitimate sender at every limit passes and nothing longer does. Applied here
+// because this is where the value arrives from the network; the store applies
+// the same bound to every write.
+const maxSenderLabel = model.MaxSenderLabelLength
 
 // MessagePayload is one message crossing between nodes.
 //

@@ -334,6 +334,9 @@ func (r *Registry) checkMessageAcceptable(ctx context.Context, message model.Mes
 		return fmt.Errorf("%w: message recipient is required", ErrInvalidSession)
 	case strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768:
 		return fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
+	case len(message.From) > model.MaxSenderLabelLength:
+		return fmt.Errorf("%w: message sender label is %d bytes, over the %d limit",
+			ErrInvalidSession, len(message.From), model.MaxSenderLabelLength)
 	case message.DestinationNodeID == "":
 		return fmt.Errorf("%w: message destination node is required", ErrInvalidSession)
 	case message.ID == "":

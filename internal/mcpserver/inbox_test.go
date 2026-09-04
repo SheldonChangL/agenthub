@@ -24,6 +24,9 @@ type inboxNode struct {
 	// seen records every request, so a read that reached for a side effect
 	// through a GET is caught too.
 	seen []string
+	// endless serves a full page with a `next` every time: what an unbounded
+	// read would keep taking.
+	endless bool
 }
 
 func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
@@ -39,15 +42,24 @@ func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
 		case r.URL.Path == "/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"nodes": n.nodes})
 		case strings.HasPrefix(r.URL.Path, "/v1/inbox/"):
+			want := 0
 			if v := r.URL.Query().Get("limit"); v != "" {
-				var want int
 				_, _ = fmt.Sscanf(v, "%d", &want)
 				n.asked += want
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			page := map[string]any{
 				"messages": n.messages, "held": n.held,
 				"capacity": n.capacity, "full": n.held >= n.capacity,
-			})
+			}
+			if n.endless {
+				batch := make([]map[string]any, want)
+				for i := range batch {
+					batch[i] = message(fmt.Sprintf("msg_%d_%d", len(n.seen), i), "node_peer000000000000/claude:x", "x")
+				}
+				page["messages"] = batch
+				page["next"] = "more"
+			}
+			_ = json.NewEncoder(w).Encode(page)
 		case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "codex:mine"})
 		default:
@@ -227,7 +239,9 @@ func TestTheInboxReportsItsOwnPressure(t *testing.T) {
 // The limit is clamped rather than passed through, so a caller cannot ask the
 // node for an unbounded read.
 func TestTheLimitIsBounded(t *testing.T) {
-	node := &inboxNode{messages: []map[string]any{}}
+	// A node with no end: every page is full and says there is more. A reader
+	// that stopped only when the node ran out would never stop here.
+	node := &inboxNode{endless: true}
 	session := node.connect(t)
 	// The inbox is read in pages, so what the node sees per request is the batch
 	// size, not the caller's limit. What the caller's limit must still bound is
@@ -242,6 +256,7 @@ func TestTheLimitIsBounded(t *testing.T) {
 		{"7", 7},
 	} {
 		node.asked = 0
+		node.seen = nil
 		args := map[string]any{}
 		if c.asked != "" {
 			var n int
@@ -251,10 +266,48 @@ func TestTheLimitIsBounded(t *testing.T) {
 		if _, isErr := call(t, session, "agent_inbox", args); isErr {
 			t.Fatalf("limit %q errored", c.asked)
 		}
-		if node.asked > c.wantMax {
-			t.Errorf("limit %q caused %d messages to be asked for, over the %d it should bound to",
-				c.asked, node.asked, c.wantMax)
+		requests := 0
+		for _, seen := range node.seen {
+			if strings.Contains(seen, "/v1/inbox/") {
+				requests++
+			}
 		}
+		if node.asked != c.wantMax || requests != (c.wantMax+9)/10 {
+			t.Errorf("limit %q: asked for %d messages over %d requests; want exactly %d over %d",
+				c.asked, node.asked, requests, c.wantMax, (c.wantMax+9)/10)
+		}
+	}
+}
+
+// A node answer too large to read means a bug or a hostile node, but the tool
+// must say what happened rather than "unexpected end of JSON input".
+func TestAnAnswerTooLargeToReadIsExplained(t *testing.T) {
+	node := &inboxNode{held: 1, messages: []map[string]any{
+		message("msg_huge", "node_peer000000000000/claude:x", strings.Repeat("a", 9<<20)),
+	}}
+	session := node.connect(t)
+	text, isErr := call(t, session, "agent_inbox", map[string]any{})
+	if !isErr {
+		t.Fatal("a cut-off answer was reported as success")
+	}
+	for _, want := range []string{"cut off", "inbox-clear"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the error does not say %q: %s", want, text)
+		}
+	}
+}
+
+// Every label the sender chose is named as one. Bounding the session label did
+// not make it trustworthy.
+func TestTheNoticeNamesEveryLabelTheSenderChose(t *testing.T) {
+	node := &inboxNode{}
+	session := node.connect(t)
+	text, isErr := call(t, session, "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatal(text)
+	}
+	if !strings.Contains(text, "displayName and session are labels they chose") {
+		t.Errorf("the notice does not cover the session label: %s", text)
 	}
 }
 

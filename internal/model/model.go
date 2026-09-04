@@ -166,6 +166,20 @@ type Message struct {
 // the qualified export address <node-id>/<provider>:<provider-session-id>.
 const SessionIDSeparator = "/"
 
+// The two halves of an address have named bounds because the sender label a
+// peer attaches to a message is built from them, and its bound has to be
+// derived from theirs rather than guessed.
+const (
+	MaxNodeIDLength            = 128
+	MaxProviderSessionIDLength = 128
+	// MaxProviderNameLength bounds nothing new — KnownProvider is an exact
+	// match on a short list — but the label's derivation needs a number here.
+	MaxProviderNameLength = 16
+	// MaxSenderLabelLength is <node-id>/<provider>:<id> with every part at its
+	// limit. A legitimate sender at every limit fits; nothing longer does.
+	MaxSenderLabelLength = MaxNodeIDLength + 1 + MaxProviderNameLength + 1 + MaxProviderSessionIDLength
+)
+
 // ValidateNodeID constrains a node identifier to what this project generates
 // and a person can compare.
 //
@@ -173,8 +187,8 @@ const SessionIDSeparator = "/"
 // entries that look identical in a list, and a lookalike built from non-ASCII
 // characters looks identical too.
 func ValidateNodeID(nodeID string) error {
-	if len(nodeID) < 16 || len(nodeID) > 128 {
-		return fmt.Errorf("node id %q must be 16 to 128 characters", nodeID)
+	if len(nodeID) < 16 || len(nodeID) > MaxNodeIDLength {
+		return fmt.Errorf("node id %q must be 16 to %d characters", nodeID, MaxNodeIDLength)
 	}
 	if strings.Contains(nodeID, SessionIDSeparator) {
 		return fmt.Errorf("node id %q contains %q", nodeID, SessionIDSeparator)
@@ -230,6 +244,14 @@ func KnownProvider(name string) bool {
 func ValidateProviderSessionID(providerSessionID string) error {
 	if providerSessionID == "" {
 		return errors.New("provider session id is required")
+	}
+	// Real ones are UUIDs. Unbounded, this was the widest free-text field in
+	// the system: it is stored, it travels in every heartbeat and on every
+	// message as the sender's label, and it is the first thing a reader sees.
+	// The value is not echoed: the point is that it may be enormous.
+	if len(providerSessionID) > MaxProviderSessionIDLength {
+		return fmt.Errorf("provider session id is %d bytes, over the %d limit",
+			len(providerSessionID), MaxProviderSessionIDLength)
 	}
 	if strings.Contains(providerSessionID, SessionIDSeparator) {
 		return fmt.Errorf("provider session id %q contains %q", providerSessionID, SessionIDSeparator)

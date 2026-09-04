@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -252,6 +253,10 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 	if strings.TrimSpace(message.Body) == "" || len(message.Body) > 32768 {
 		return model.Message{}, fmt.Errorf("%w: message body must contain 1 to 32768 bytes", ErrInvalidSession)
 	}
+	if len(message.From) > model.MaxSenderLabelLength {
+		return model.Message{}, fmt.Errorf("%w: message sender label is %d bytes, over the %d limit",
+			ErrInvalidSession, len(message.From), model.MaxSenderLabelLength)
+	}
 	// Checked with the other fields rather than at the insert: a structurally
 	// invalid message should not cost a session lookup and an id first.
 	if message.DestinationNodeID == "" {
@@ -299,24 +304,74 @@ VALUES (?, ?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.Destin
 	return message, nil
 }
 
-// Inbox reads a page of the messages held for one session.
+// ErrInvalidCursor marks an inbox cursor this node did not issue.
+var ErrInvalidCursor = errors.New("invalid inbox cursor")
+
+// InboxCursor marks where a page of an inbox ended: the time and id of its last
+// message. The next page is every message that sorts after it, so a message
+// deleted or delivered between two pages neither hides another nor repeats
+// one. An offset does both, because it counts rows that are no longer — or
+// newly — there.
+type InboxCursor struct {
+	CreatedAtMS int64
+	ID          string
+}
+
+// InboxStart is the cursor before the first message.
+var InboxStart = InboxCursor{}
+
+// CursorAfter is the cursor that continues past message.
+func CursorAfter(message model.Message) InboxCursor {
+	return InboxCursor{CreatedAtMS: message.CreatedAt.UTC().UnixMilli(), ID: message.ID}
+}
+
+// String renders a cursor for the wire as "<created_at_ms>.<id>". A reader
+// treats it as opaque and passes back what a page gave it.
+func (c InboxCursor) String() string {
+	if c == InboxStart {
+		return ""
+	}
+	return strconv.FormatInt(c.CreatedAtMS, 10) + "." + c.ID
+}
+
+// ParseInboxCursor reads back what String produced; "" is the start.
+func ParseInboxCursor(value string) (InboxCursor, error) {
+	if value == "" {
+		return InboxStart, nil
+	}
+	ms, id, found := strings.Cut(value, ".")
+	if !found || id == "" || len(id) > 128 {
+		return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
+	}
+	for _, r := range id {
+		if r < '!' || r > '~' {
+			return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
+		}
+	}
+	parsed, err := strconv.ParseInt(ms, 10, 64)
+	if err != nil || parsed < 0 {
+		return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
+	}
+	return InboxCursor{CreatedAtMS: parsed, ID: id}, nil
+}
+
+// Inbox reads a page of the messages held for one session, in arrival order.
 //
 // Paged rather than all-at-once because a caller cannot always afford one large
 // answer: message bodies are bounded, but what they become when serialised is
 // not bounded by the same factor, and a reader with a response-size limit needs
-// to be able to ask for less. The order is stable so that `after` names a
-// position rather than a moment.
-func (r *Registry) Inbox(ctx context.Context, recipientID string, limit, after int) ([]model.Message, error) {
+// to be able to ask for less. The page after a cursor is defined by what sorts
+// after it, not by how many rows precede it; see InboxCursor for why.
+func (r *Registry) Inbox(ctx context.Context, recipientID string, limit int, after InboxCursor) ([]model.Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	if after < 0 {
-		after = 0
-	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms
-FROM messages WHERE recipient_id = ?
-ORDER BY created_at_ms ASC, id ASC LIMIT ? OFFSET ?`, recipientID, limit, after)
+FROM messages
+WHERE recipient_id = ? AND (created_at_ms > ? OR (created_at_ms = ? AND id > ?))
+ORDER BY created_at_ms ASC, id ASC LIMIT ?`,
+		recipientID, after.CreatedAtMS, after.CreatedAtMS, after.ID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read inbox: %w", err)
 	}

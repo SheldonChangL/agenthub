@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -195,5 +196,71 @@ func TestAnUnknownAudienceFlagIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--outbound") {
 		t.Errorf("the error does not list the real flag: %q", stderr.String())
+	}
+}
+
+// The owner's own view of an inbox must survive what a peer can put in it. One
+// request for fifty heavy messages passed the read cap and decoded as nothing —
+// on the very command the tool's error told the owner to run. Read in pages.
+func TestInboxReadsInPagesAndPrintsTheWhole(t *testing.T) {
+	const total = 23
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("limit") != "10" {
+			t.Errorf("limit = %q, want pages of 10", r.URL.Query().Get("limit"))
+		}
+		start := 0
+		_, _ = fmt.Sscanf(r.URL.Query().Get("after"), "%d", &start)
+		end := start + 10
+		if end > total {
+			end = total
+		}
+		messages := make([]map[string]any, 0, end-start)
+		for i := start; i < end; i++ {
+			messages = append(messages, map[string]any{"id": fmt.Sprintf("msg_%02d", i), "body": strings.Repeat("<", 32768)})
+		}
+		page := map[string]any{"messages": messages, "held": total, "capacity": 500, "full": false}
+		if end < total {
+			page["next"] = fmt.Sprint(end)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(page)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	var printed struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Held int     `json:"held"`
+		Next *string `json:"next"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &printed); err != nil {
+		t.Fatalf("output is not JSON: %v", err)
+	}
+	if len(printed.Messages) != total || printed.Held != total || requests != 3 || printed.Next != nil {
+		t.Errorf("printed %d messages (held %d) over %d requests, next=%v; want %d over 3 with no next",
+			len(printed.Messages), printed.Held, requests, printed.Next, total)
+	}
+}
+
+// A cut-off answer says so. "unexpected end of JSON input" sends the owner nowhere.
+func TestACutOffAnswerIsExplained(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"body":"`))
+		_, _ = w.Write([]byte(strings.Repeat("a", 5<<20)))
+		_, _ = w.Write([]byte(`"}]}`))
+	}))
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr)
+	if code == 0 || !strings.Contains(stderr.String(), "cut off") {
+		t.Errorf("exit = %d, stderr = %q; want a failure that says the answer was cut off", code, stderr.String())
 	}
 }
