@@ -56,6 +56,7 @@ func TestASnapshotFieldCannotCarryProse(t *testing.T) {
 		"a statusSource longer than the limit": func(s *protocol.SessionSummary) {
 			s.StatusSource = strings.Repeat("x", protocol.MaxStatusSourceLength+1)
 		},
+		"a statusSource that is empty": func(s *protocol.SessionSummary) { s.StatusSource = "" },
 		// The id was the widest channel here: the first field of every
 		// agent_list row, and unconstrained beyond its shape.
 		"an id carrying instructions": func(s *protocol.SessionSummary) {
@@ -179,15 +180,20 @@ func TestASnapshotIsBoundedAndWithoutDuplicates(t *testing.T) {
 func TestARefusalCannotBeMadeEnormous(t *testing.T) {
 	big := strings.Repeat("A", 900000)
 	cases := map[string]func(*protocol.SessionSummary){
-		"an unqualified id":            func(s *protocol.SessionSummary) { s.ID = big },
-		"an id naming another":         func(s *protocol.SessionSummary) { s.ID = "node_other00000000000/claude:" + big },
-		"an id over the limit":         func(s *protocol.SessionSummary) { s.ID = incomingSender + "/claude:" + big },
-		"a disagreeing provider":       func(s *protocol.SessionSummary) { s.Provider = big },
-		"a status that is prose":       func(s *protocol.SessionSummary) { s.Status = big },
-		"a management that is prose":   func(s *protocol.SessionSummary) { s.Management = big },
-		"a visibility that is prose":   func(s *protocol.SessionSummary) { s.Visibility = big },
-		"a statusSource that is prose": func(s *protocol.SessionSummary) { s.StatusSource = big },
-		"a cwd that is prose":          func(s *protocol.SessionSummary) { s.CWD = big },
+		"an unqualified id":    func(s *protocol.SessionSummary) { s.ID = big },
+		"an id naming another": func(s *protocol.SessionSummary) { s.ID = "node_other00000000000/claude:" + big },
+		"an id over the limit": func(s *protocol.SessionSummary) { s.ID = incomingSender + "/claude:" + big },
+		// These three fail the address check, whose own error carries the raw
+		// value — the one path that must not wrap it.
+		"an id with an unknown provider": func(s *protocol.SessionSummary) { s.ID = incomingSender + "/bogus:" + big },
+		"an id with no provider":         func(s *protocol.SessionSummary) { s.ID = incomingSender + "/" + big },
+		"an id with a second separator":  func(s *protocol.SessionSummary) { s.ID = incomingSender + "/claude:a/" + big },
+		"a disagreeing provider":         func(s *protocol.SessionSummary) { s.Provider = big },
+		"a status that is prose":         func(s *protocol.SessionSummary) { s.Status = big },
+		"a management that is prose":     func(s *protocol.SessionSummary) { s.Management = big },
+		"a visibility that is prose":     func(s *protocol.SessionSummary) { s.Visibility = big },
+		"a statusSource that is prose":   func(s *protocol.SessionSummary) { s.StatusSource = big },
+		"a cwd that is prose":            func(s *protocol.SessionSummary) { s.CWD = big },
 	}
 	for name, corrupt := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -90,6 +90,9 @@ func ValidateIncomingPayload(senderNodeID string, payload HeartbeatPayload) erro
 			return fmt.Errorf("session %d: %w", i, err)
 		}
 		if _, duplicate := seen[summary.ID]; duplicate {
+			// Not truncated because it is bounded by construction: the row has
+			// just passed validateIncomingSummary, so the id is a node id and a
+			// provider session id, each within its limit.
 			return fmt.Errorf("session %d: %q appears twice", i, summary.ID)
 		}
 		seen[summary.ID] = struct{}{}
@@ -203,8 +206,14 @@ func printableOnly(field, value string) error {
 // log line. A refusal is logged, and a megabyte id would otherwise be a
 // megabyte log line, on demand.
 func truncateForError(value string) string {
-	if runes := []rune(value); len(runes) > 80 {
-		return string(runes[:80]) + "…"
+	// Counted in place rather than converted to []rune, which would allocate
+	// four bytes per input byte to keep eighty characters of a megabyte.
+	count := 0
+	for i := range value {
+		if count == 80 {
+			return value[:i] + "…"
+		}
+		count++
 	}
 	return value
 }

@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
+	_ "modernc.org/sqlite"
 )
 
 func TestHeartbeatContainsPublicSessionsOnly(t *testing.T) {
@@ -212,7 +214,8 @@ func TestAnUnexportableDirectoryCostsOnlyTheDirectory(t *testing.T) {
 // worth exporting and the wrong value is only a display detail.
 func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 	ctx := context.Background()
-	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "mismatch.db"))
+	path := filepath.Join(t.TempDir(), "mismatch.db")
+	store, err := registry.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +230,7 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 		{strings.Repeat("a", MaxProviderSessionIDLength+1), now}, // id no peer accepts
 		{"has space here", now},                                  // id no peer accepts
 		{"future", time.Now().UTC().Add(72 * time.Hour)},         // a time no clock explains
+		{"disagrees", now},                                       // provider will be made to disagree with the id
 	}
 	for _, seed := range seeds {
 		id := "claude:" + seed.providerSessionID
@@ -242,6 +246,18 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 		}
 	}
 
+	// The registry validates on write, so a row that passes every column
+	// check yet would be refused by a peer has to be written behind its back —
+	// which is the premise: a store written by something else.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `UPDATE sessions SET provider = 'codex' WHERE id = 'claude:disagrees'`); err != nil {
+		t.Fatalf("corrupt row: %v", err)
+	}
+
 	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "t", Platform: "t"}
 	envelope, err := NewHeartbeatBuilder(store, node, internalTestSigner{}).Build(ctx, now)
 	if err != nil {
@@ -252,8 +268,8 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The two unexportable ids are left out; the ordinary one and the
-	// future-dated one survive.
+	// The two unexportable ids and the disagreeing row are left out; the
+	// ordinary one and the future-dated one survive.
 	if len(payload.Sessions) != 2 {
 		t.Fatalf("want 2 exported sessions, got %d: %+v", len(payload.Sessions), payload.Sessions)
 	}
@@ -261,9 +277,12 @@ func TestASessionAPeerWouldRefuseIsLeftOutNotFatal(t *testing.T) {
 	if err := ValidateIncomingPayload(node.ID, payload); err != nil {
 		t.Fatalf("a receiver would refuse this node's own heartbeat: %v", err)
 	}
+	// Clamped to the builder's now, not to the edge of what a receiver
+	// tolerates: that edge is on the receiver's clock, and a sender running
+	// ahead would land just past it.
 	for _, s := range payload.Sessions {
-		if s.LastSeenAt.After(time.Now().UTC().Add(MaxClockSkew)) {
-			t.Errorf("%s exported a time no clock explains: %s", s.ID, s.LastSeenAt)
+		if s.LastSeenAt.After(now) {
+			t.Errorf("%s exported lastSeenAt %s, after the build's own now %s", s.ID, s.LastSeenAt, now)
 		}
 	}
 }
