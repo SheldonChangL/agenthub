@@ -341,6 +341,9 @@ func (r *Registry) checkMessageAcceptable(ctx context.Context, message model.Mes
 		return fmt.Errorf("%w: message destination node is required", ErrInvalidSession)
 	case message.ID == "":
 		return fmt.Errorf("%w: message id is required", ErrInvalidSession)
+	case len(message.ID) > model.MaxMessageIDLength:
+		return fmt.Errorf("%w: message id is %d bytes, over the %d limit",
+			ErrInvalidSession, len(message.ID), model.MaxMessageIDLength)
 	}
 	destination, err := r.GetSession(ctx, message.To)
 	if err != nil {

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -257,6 +258,15 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 		return model.Message{}, fmt.Errorf("%w: message sender label is %d bytes, over the %d limit",
 			ErrInvalidSession, len(message.From), model.MaxSenderLabelLength)
 	}
+	// This path does not go through checkMessageAcceptable, so the bound is
+	// stated here too. A message the store admits but the cursor cannot name is
+	// a page boundary this node cannot get past, which is the whole subject of
+	// this change — an invariant is not one if only one of two write paths
+	// keeps it.
+	if len(message.ID) > model.MaxMessageIDLength {
+		return model.Message{}, fmt.Errorf("%w: message id is %d bytes, over the %d limit",
+			ErrInvalidSession, len(message.ID), model.MaxMessageIDLength)
+	}
 	// Checked with the other fields rather than at the insert: a structurally
 	// invalid message should not cost a session lookup and an id first.
 	if message.DestinationNodeID == "" {
@@ -325,34 +335,44 @@ func CursorAfter(message model.Message) InboxCursor {
 	return InboxCursor{CreatedAtMS: message.CreatedAt.UTC().UnixMilli(), ID: message.ID}
 }
 
-// String renders a cursor for the wire as "<created_at_ms>.<id>". A reader
-// treats it as opaque and passes back what a page gave it.
+// String renders a cursor for the wire as "<created_at_ms>.<base64url id>". A
+// reader treats it as opaque and passes back what a page gave it.
+//
+// The id is encoded rather than written out, so that the cursor is total over
+// every id the store will hold. A peer chooses the id of a message it sends,
+// and the store admits any non-blank one within its bound — including one with
+// a space or a non-ASCII byte. A cursor that could not name such an id was one
+// this node would emit at a page boundary and then refuse on the next request,
+// which is the failure this whole change is about, reachable with eleven small
+// messages instead of fifty large ones.
 func (c InboxCursor) String() string {
 	if c == InboxStart {
 		return ""
 	}
-	return strconv.FormatInt(c.CreatedAtMS, 10) + "." + c.ID
+	return strconv.FormatInt(c.CreatedAtMS, 10) + "." + base64.RawURLEncoding.EncodeToString([]byte(c.ID))
 }
 
 // ParseInboxCursor reads back what String produced; "" is the start.
+//
+// The id is only ever a bound parameter in the query below, so nothing here
+// needs to constrain its bytes — only its length, which the store bounds too.
 func ParseInboxCursor(value string) (InboxCursor, error) {
 	if value == "" {
 		return InboxStart, nil
 	}
-	ms, id, found := strings.Cut(value, ".")
-	if !found || id == "" || len(id) > 128 {
+	ms, encoded, found := strings.Cut(value, ".")
+	if !found || encoded == "" {
 		return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
 	}
-	for _, r := range id {
-		if r < '!' || r > '~' {
-			return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
-		}
+	id, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(id) == 0 || len(id) > model.MaxMessageIDLength {
+		return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
 	}
 	parsed, err := strconv.ParseInt(ms, 10, 64)
 	if err != nil || parsed < 0 {
 		return InboxCursor{}, fmt.Errorf("%w: not a cursor this node issued", ErrInvalidCursor)
 	}
-	return InboxCursor{CreatedAtMS: parsed, ID: id}, nil
+	return InboxCursor{CreatedAtMS: parsed, ID: string(id)}, nil
 }
 
 // Inbox reads a page of the messages held for one session, in arrival order.

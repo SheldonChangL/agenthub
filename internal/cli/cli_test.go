@@ -203,7 +203,17 @@ func TestAnUnknownAudienceFlagIsRefused(t *testing.T) {
 // request for fifty heavy messages passed the read cap and decoded as nothing —
 // on the very command the tool's error told the owner to run. Read in pages.
 func TestInboxReadsInPagesAndPrintsTheWhole(t *testing.T) {
-	const total = 23
+	// An inbox that ends inside the first page is the common case, and an empty
+	// one is what a reader sees most often. Both must be a plain success: the
+	// loop stops early on purpose there, and the report of stopping early must
+	// not fire for it.
+	for _, total := range []int{0, 5, 23} {
+		t.Run(fmt.Sprint(total, " messages"), func(t *testing.T) { inboxPages(t, total) })
+	}
+}
+
+func inboxPages(t *testing.T, total int) {
+	t.Helper()
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -233,6 +243,9 @@ func TestInboxReadsInPagesAndPrintsTheWhole(t *testing.T) {
 	if code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
+	if stderr.Len() != 0 {
+		t.Errorf("a complete inbox wrote to stderr: %q", stderr.String())
+	}
 	var printed struct {
 		Messages []struct {
 			ID string `json:"id"`
@@ -243,9 +256,10 @@ func TestInboxReadsInPagesAndPrintsTheWhole(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &printed); err != nil {
 		t.Fatalf("output is not JSON: %v", err)
 	}
-	if len(printed.Messages) != total || printed.Held != total || requests != 3 || printed.Next != nil {
-		t.Errorf("printed %d messages (held %d) over %d requests, next=%v; want %d over 3 with no next",
-			len(printed.Messages), printed.Held, requests, printed.Next, total)
+	wantRequests := total/10 + 1
+	if len(printed.Messages) != total || printed.Held != total || requests != wantRequests || printed.Next != nil {
+		t.Errorf("printed %d messages (held %d) over %d requests, next=%v; want %d over %d with no next",
+			len(printed.Messages), printed.Held, requests, printed.Next, total, wantRequests)
 	}
 }
 
@@ -262,5 +276,76 @@ func TestACutOffAnswerIsExplained(t *testing.T) {
 	code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr)
 	if code == 0 || !strings.Contains(stderr.String(), "cut off") {
 		t.Errorf("exit = %d, stderr = %q; want a failure that says the answer was cut off", code, stderr.String())
+	}
+}
+
+// A node that answers with a cursor that never advances must not spin here.
+// The node is trusted, but a bug or a wrong URL is not a reason to fill a
+// terminal until the context dies.
+func TestInboxStopsOnACursorThatDoesNotAdvance(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{"id": "msg_stuck", "body": "x"}},
+			"held":     1, "capacity": 500, "full": false, "next": "stuck",
+		})
+	}))
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr)
+	// Two: the first page, then the one that repeats the cursor and stops.
+	if requests != 2 {
+		t.Errorf("made %d requests against a node whose cursor never advances; want 2", requests)
+	}
+	// The repeated page's messages are the ones already held, so they must not
+	// be printed twice.
+	if got := strings.Count(stdout.String(), "msg_stuck"); got != 1 {
+		t.Errorf("the repeated page was printed %d times, want 1: %s", got, stdout.String())
+	}
+	// A node that answers with the same cursor twice is misbehaving too, and
+	// the answer may be short. Both ways of stopping early say so.
+	if code == 0 || !strings.Contains(stderr.String(), "stopped after") {
+		t.Errorf("exit = %d, stderr = %q; a short answer must not read as a complete one", code, stderr.String())
+	}
+}
+
+// A node that keeps issuing fresh cursors past what an inbox can hold is
+// misbehaving, and the answer is truncated. Saying nothing would make a partial
+// inbox look like a complete one — the failure this command was just fixed for,
+// in a different costume.
+func TestInboxSaysSoWhenItStopsShort(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{{"id": fmt.Sprintf("msg_%d", requests), "body": "x"}},
+			"held":     9999, "capacity": 500, "full": false,
+			"next": fmt.Sprint(requests),
+		})
+	}))
+	defer server.Close()
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--url", server.URL, "inbox", "codex:mine"}, &stdout, &stderr)
+	if code == 0 {
+		t.Error("a truncated inbox exited 0, so it reads as a complete one")
+	}
+	for _, want := range []string{"stopped after", "misbehaving"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr does not say %q: %s", want, stderr.String())
+		}
+	}
+	// What was read is still printed, and `next` says where it stopped.
+	var printed struct {
+		Messages []json.RawMessage `json:"messages"`
+		Next     string            `json:"next"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &printed); err != nil {
+		t.Fatalf("nothing usable was printed: %v", err)
+	}
+	if len(printed.Messages) != 60 || printed.Next == "" {
+		t.Errorf("printed %d messages, next = %q; want 60 and a cursor", len(printed.Messages), printed.Next)
 	}
 }
