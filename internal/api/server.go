@@ -199,9 +199,14 @@ func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) 
 	case err == nil:
 		return sessionID, true
 	case errors.Is(err, address.ErrUnknownNode):
-		// The address is well formed; this node simply cannot reach it. Saying
-		// so is more useful than reporting a bad request, and remote routing
-		// does not exist yet.
+		// The address is well formed and names some node other than this one —
+		// paired or not, since resolving never consults the trust store — so
+		// there is nothing here to act on. A routing answer rather than a parse
+		// error: the caller's input was fine.
+		//
+		// This helper is for endpoints that act on a session on this machine:
+		// an inbox, an audience. Messages do reach a paired node, through
+		// sendMessage, which does not go through here.
 		writeError(w, http.StatusNotFound, "UNKNOWN_NODE", err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
@@ -449,8 +454,8 @@ func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The builder refuses to export anything unpublished, and says which
 		// session and why. That detail identifies a private session, so it
-		// belongs in the operator's log, not in a response body on the one
-		// endpoint intended to face a network.
+		// belongs in the operator's log rather than in a response body —
+		// writeInternalError also answers on the peer surface.
 		writeInternalError(w, "HEARTBEAT_FAILED", "could not build heartbeat", err)
 		return
 	}
@@ -547,10 +552,10 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	to := destination.SessionID
-	// The destination node is recorded explicitly. Today it is always this
-	// node — localSession refuses anything else — but the row must say where
-	// the message was addressed rather than leaving it to be inferred from the
-	// absence of a prefix, which stops being readable once routing exists.
+	// The destination node is recorded explicitly, even though a message on
+	// this path is always addressed to this node. The outbound row written by
+	// the branch above carries a peer's id in the same column, so a reader must
+	// not have to infer the destination from the absence of a prefix.
 	message, err := s.store.CreateMessage(r.Context(), model.Message{
 		To: to, From: from, DestinationNodeID: s.node.ID, Body: input.Body,
 	})
@@ -720,9 +725,9 @@ func writeRegistryError(w http.ResponseWriter, err error) {
 // writeInternalError keeps server-side detail on the server.
 //
 // Internal errors here name absolute provider paths, the account's home
-// directory, and private session IDs. The local API is loopback-only today, but
-// it is the same listener a LAN mode would expose, and an error body is a poor
-// place to learn what a machine is working on.
+// directory, and private session IDs. The owner's API is loopback-only, but this
+// helper also answers on the peer listener, where the caller is a stranger — and
+// an error body is a poor place to learn what a machine is working on.
 func writeInternalError(w http.ResponseWriter, code, message string, err error) {
 	log.Printf("%s: %v", code, err)
 	writeError(w, http.StatusInternalServerError, code, message)

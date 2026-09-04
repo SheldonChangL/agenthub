@@ -146,7 +146,7 @@ of them do, is recorded in
 | MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced by the node and checked earlier in this process |
 | Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
 | Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
-| Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |
+| Distribution | CI cross-compiles for six platforms and discards the output. No release and no installer; the only build version a shipped binary reports is `agenthub-mcp`'s at initialize. Step 10, #67 |
 
 ## Platform boundary
 
@@ -468,7 +468,10 @@ a discovery record aimed at the wrong node and a peer whose key has rotated.
 
 A heartbeat carries metadata this node observed. A message carries what a person
 wrote, which is a different kind of data and is treated as one: it is queued for
-the owner to read, and **nothing injects it into a provider**.
+the owner to read, and **nothing writes it into a provider's files or
+process**. Wake-up will hand it to an agent through the provider's own API
+(#60); what will not happen is this node reaching into a session behind the
+provider's back.
 
 `ah send --from <local-session-id> <node-id>/<provider>:<id> <message>` records
 the message in a local queue and answers `202 Accepted`. That status is the

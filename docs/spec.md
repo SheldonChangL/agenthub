@@ -8,8 +8,10 @@ Success means a user can start one node, discover local sessions while decoding
 and persisting metadata fields only, inspect normalized status, explicitly add
 or remove individual sessions from a local export preview, and exchange queued
 messages through the local API, and exchange them with a paired node over an
-authenticated transport. The MCP contract is documented as a draft with its
-unresolved implementation gaps made explicit.
+authenticated transport. The MCP surface is served by `agenthub-mcp` over
+stdio; `mcp-tools.json` is its contract, and a test asserts that the tools,
+arguments, types, descriptions and annotations it documents are the ones the
+server serves.
 
 ## Assumptions
 
@@ -33,9 +35,9 @@ unresolved implementation gaps made explicit.
 go test ./...
 go test -race ./...
 go vet ./...
-go build ./cmd/agenthub-node ./cmd/ah
-GOOS=windows GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah
-GOOS=linux GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah
+go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
+GOOS=windows GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
+GOOS=linux GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
 go run ./cmd/agenthub-node --db ./data/agenthub.db
 go run ./cmd/ah list
 ```
@@ -45,11 +47,13 @@ go run ./cmd/ah list
 ```text
 cmd/agenthub-node/   node daemon entrypoint
 cmd/ah/              user CLI entrypoint
+cmd/agenthub-mcp/    MCP server entrypoint, bound to one session
 desktop/             Wails desktop management app (separate Go module)
 internal/adapter/    provider discovery adapters
 internal/api/        local HTTP API
 internal/identity/   persistent node identity
 internal/model/      normalized contracts
+internal/mcpserver/  the four MCP tools an agent calls
 internal/protocol/   signed broker envelopes, addressing, and export projection
 internal/registry/   SQLite persistence
 internal/status/     lifecycle inference
@@ -82,19 +86,19 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
 - Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
-- Ask first: inject prompts into provider sessions, weaken an export default, or expand the remote metadata allowlist.
-- Never: store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
+- Ask first: weaken an export default, or expand the remote metadata allowlist.
+- Never: write into a provider's session files or process, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active. Wake-up (issue #60), when it comes, goes through each provider's own API — see [architecture](architecture.md).
 
 ## Success criteria
 
-1. `agenthub-node` and `ah` build and run.
+1. `agenthub-node`, `ah` and `agenthub-mcp` build and run.
 2. Discovery registers synthetic and local Claude/Codex sessions while decoding and persisting metadata fields only; message-body fields are ignored.
 3. A Codex App Server client boundary can initialize and parse live `thread/list` status without being enabled by default.
 4. Every newly discovered session has audience `none`; rediscovery preserves audience and export flags.
 5. The heartbeat contains sessions published to at least one audience, projected into remote `SessionSummary`, signed by the node key, and validated against the published broker schema.
 6. Managed and unmanaged status behavior is covered by deterministic tests.
 7. `ah list`, `status`, `publish`, `unpublish`, `send`, and `inbox` work against the node.
-8. Draft broker and MCP contracts are documented as JSON Schema-compatible JSON; the broker envelope is validated against runtime output, and remaining MCP gaps are tracked rather than presented as complete.
+8. Broker and MCP contracts are documented as JSON Schema-compatible JSON; the broker envelope is validated against runtime output, and the MCP contract is checked against what `agenthub-mcp` serves.
 9. Windows, macOS, and Linux builds compile; macOS runs locally, while Windows and Ubuntu runtime acceptance is documented for real-host verification.
 
 ## Deferred work
@@ -104,8 +108,8 @@ and tracked from issue #1.
 
 - Automated pairing exchange (issue #63); LAN transport and presence are implemented
 - Remote presence subscriptions and retries
-- Provider-specific live APIs and message injection
-- Session launch/supervision and wake-up
-- Full MCP server transport implementation (issue #56), and wake-up (issue #60)
+- Provider-specific live APIs
+- Session launch and supervision
+- Wake-up: nothing hands a message to an agent (issue #60)
 - Policy groups and aliases
 - Windows real-host acceptance (issue #21); a two-host macOS/Ubuntu run is recorded in [verification.md](verification.md)

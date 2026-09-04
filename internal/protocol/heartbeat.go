@@ -22,7 +22,7 @@ const (
 
 // Envelope is the broker wire contract from docs/broker-protocol.schema.json.
 // GET /v1/heartbeat returns exactly this shape so the local preview and the
-// future network payload can never drift apart unnoticed.
+// payload that goes on the wire can never drift apart unnoticed.
 type Envelope struct {
 	ProtocolVersion string    `json:"protocolVersion"`
 	MessageID       string    `json:"messageId"`
