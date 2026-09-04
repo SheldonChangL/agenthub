@@ -196,7 +196,7 @@ at audience `none`, including rows previously marked public: that flag controlle
 a local preview at a time when no remote peer existed, so it was never consent to
 share with one.
 
-Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
+Queued AgentHub messages are stored in the local SQLite database. They are not written into a Claude or Codex session's files or process — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
 
 See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool contract](docs/mcp-tools.json).
 
