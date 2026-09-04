@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agenthub.local/agenthub/internal/address"
@@ -37,6 +38,12 @@ type Server struct {
 	deliveryPolicy func(string) error
 	// peerLimiter throttles the peer surface by source address.
 	peerLimiter *rateLimiter
+	// refused remembers which stored snapshot was last reported as unservable,
+	// per peer, so a reader that polls /v1/peers — every agent_list call does —
+	// does not write the same line again for as long as the row sits there.
+	// One entry per node id the owner has paired, dropped on revoke.
+	refusedMu sync.Mutex
+	refused   map[string]uint64
 }
 
 // Option adjusts a Server at construction.
@@ -280,6 +287,12 @@ func (s *Server) revokeNode(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	// Its snapshot is gone, so the note about that snapshot has nothing left to
+	// suppress. Kept tidy rather than left to the process lifetime: if the same
+	// node is paired again, its first bad snapshot should say so.
+	s.refusedMu.Lock()
+	delete(s.refused, r.PathValue("id"))
+	s.refusedMu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 

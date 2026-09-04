@@ -77,8 +77,10 @@ const MaxSummarySessions = 500
 // prerogative and the ADR says so — but it stops the fields being used as a
 // place to write to the reader.
 //
-// Applied at the receiving edge rather than at each reader: the desktop app and
-// the CLI read the same rows, and a check in one of them protects only that one.
+// Applied at the receiving edge rather than in each reader: several readers see
+// the same rows, and a check in one of them protects only that one. `listPeers`
+// runs it again on the way out, because a database written before this existed
+// still holds what a peer sent.
 func ValidateIncomingPayload(senderNodeID string, payload HeartbeatPayload) error {
 	if len(payload.Sessions) > MaxSummarySessions {
 		return fmt.Errorf("snapshot describes %d sessions, over the %d limit",

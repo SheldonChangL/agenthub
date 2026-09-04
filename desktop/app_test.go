@@ -220,3 +220,42 @@ func TestSetVisibilityMapsOntoAudience(t *testing.T) {
 		t.Errorf("unpublish sent %+v", seen)
 	}
 }
+
+// The node distinguishes "this peer published nothing" from "this node refused
+// what it published". Both are an online peer with an empty session list, so a
+// field this struct does not name is a field the UI cannot render — an unknown
+// JSON key is dropped in decoding and gone when the overview is re-encoded.
+func TestARefusedPeerSnapshotReachesTheUI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v1/peers"):
+			_, _ = w.Write([]byte(`{"peers":[{"nodeId":"node_peer0000000000000","displayName":"p",` +
+				`"online":true,"sessions":[],"sessionsWithheld":true}]}`))
+		case strings.HasPrefix(r.URL.Path, "/v1/sessions"):
+			_, _ = w.Write([]byte(`{"sessions":[],"total":0}`))
+		default:
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	peers, err := newClient(server.URL).peers(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("peers = %+v", peers)
+	}
+	if !peers[0].SessionsWithheld {
+		t.Error("the node said it withheld this peer's sessions; the desktop dropped that")
+	}
+	// And it survives the encoding the UI actually reads.
+	encoded, err := json.Marshal(peers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"sessionsWithheld":true`) {
+		t.Errorf("the field does not reach the UI: %s", encoded)
+	}
+}
