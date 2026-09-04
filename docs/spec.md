@@ -34,9 +34,9 @@ documents are the ones the server accepts.
 go test ./...
 go test -race ./...
 go vet ./...
-go build ./cmd/agenthub-node ./cmd/ah
-GOOS=windows GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah
-GOOS=linux GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah
+go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
+GOOS=windows GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
+GOOS=linux GOARCH=amd64 go build ./cmd/agenthub-node ./cmd/ah ./cmd/agenthub-mcp
 go run ./cmd/agenthub-node --db ./data/agenthub.db
 go run ./cmd/ah list
 ```
@@ -46,6 +46,7 @@ go run ./cmd/ah list
 ```text
 cmd/agenthub-node/   node daemon entrypoint
 cmd/ah/              user CLI entrypoint
+cmd/agenthub-mcp/    MCP server entrypoint, bound to one session
 desktop/             Wails desktop management app (separate Go module)
 internal/adapter/    provider discovery adapters
 internal/api/        local HTTP API
@@ -84,12 +85,12 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
 - Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
-- Ask first: inject prompts into provider sessions, weaken an export default, or expand the remote metadata allowlist.
-- Never: store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
+- Ask first: weaken an export default, or expand the remote metadata allowlist.
+- Never: inject messages into a provider session, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active.
 
 ## Success criteria
 
-1. `agenthub-node` and `ah` build and run.
+1. `agenthub-node`, `ah` and `agenthub-mcp` build and run.
 2. Discovery registers synthetic and local Claude/Codex sessions while decoding and persisting metadata fields only; message-body fields are ignored.
 3. A Codex App Server client boundary can initialize and parse live `thread/list` status without being enabled by default.
 4. Every newly discovered session has audience `none`; rediscovery preserves audience and export flags.
@@ -106,7 +107,7 @@ and tracked from issue #1.
 
 - Automated pairing exchange (issue #63); LAN transport and presence are implemented
 - Remote presence subscriptions and retries
-- Provider-specific live APIs and message injection
+- Provider-specific live APIs
 - Session launch/supervision and wake-up
 - Wake-up: nothing hands a message to an agent (issue #60)
 - Policy groups and aliases
