@@ -277,6 +277,13 @@ func TestSendCarriesFromToTheNode(t *testing.T) {
 			t.Errorf("%s --from: exit = %d, stderr = %q", name, code, stderr.String())
 		}
 	}
+	// A --from after a dash in prose is ambiguous: refused, not taken out of
+	// the sentence with the sender silently changed.
+	stderr.Reset()
+	if code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "hey", "--", "use", "--from", "claude:mine"},
+		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "ambiguous") {
+		t.Errorf("--from after a prose dash: exit = %d, stderr = %q", code, stderr.String())
+	}
 	stderr.Reset()
 	if code = Run(context.Background(), []string{"--url", server.URL, "send", "--from", "claude:a", "--from", "claude:b", "claude:local", "hi"},
 		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "twice") {
