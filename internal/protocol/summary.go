@@ -45,10 +45,28 @@ func exportedCWD(session model.Session) string {
 	if !session.Audience.ExportCWD {
 		return ""
 	}
+	// Bounded by the same rules a receiver applies, and dropped rather than
+	// truncated when it does not fit.
+	//
+	// A receiver refuses the whole snapshot over one bad field, so exporting a
+	// directory this build knows will be refused would take the session — and
+	// every other session in that heartbeat — off every peer's view, for a path
+	// that happens to be long or to contain a tab. PATH_MAX allows both. The
+	// owner loses a directory they opted into exporting; they do not lose the
+	// session.
+	if len(session.CWD) > MaxCWDLength || printableOnly("cwd", session.CWD) != nil {
+		return ""
+	}
 	return session.CWD
 }
 
 func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
+	return SummarizeAt(nodeID, session, time.Now())
+}
+
+// SummarizeAt is Summarize with the clock passed in, so the builder's one
+// reading of the time governs every field of an envelope.
+func SummarizeAt(nodeID string, session model.Session, now time.Time) (SessionSummary, error) {
 	if !session.Audience.PublishesToAnyone() {
 		return SessionSummary{}, fmt.Errorf(
 			"refusing to export session %q with audience %q", session.ID, session.Audience.Mode)
@@ -73,6 +91,19 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		strings.Contains(nodeID, model.SessionIDSeparator) {
 		return SessionSummary{}, fmt.Errorf("session %q or node %q contains an address separator", session.ID, nodeID)
 	}
+	// A time no clock explains would cost the whole snapshot at the far end,
+	// because a receiver refuses a snapshot over one bad row. Clamped rather
+	// than refused: the session is still worth exporting, and the wrong value is
+	// only ever a display detail.
+	//
+	// Clamped to now, not to the edge of what a receiver tolerates. That edge
+	// is measured on the receiver's clock, so a sender whose clock runs ahead
+	// would land the clamped value just past it — refused for the exact reason
+	// the clamp exists. A last-seen in the future means "now" anyway.
+	lastSeen := session.LastSeenAt.UTC()
+	if now := now.UTC(); lastSeen.After(now) {
+		lastSeen = now
+	}
 	return SessionSummary{
 		ID:           address.QualifiedID(nodeID, session.ID),
 		Provider:     string(session.Provider),
@@ -83,6 +114,6 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		// The working directory names the account and the project, so it
 		// travels only when the owner asked for it.
 		CWD:        exportedCWD(session),
-		LastSeenAt: session.LastSeenAt.UTC(),
+		LastSeenAt: lastSeen,
 	}, nil
 }
