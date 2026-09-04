@@ -187,7 +187,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, and there is no `ah` subcommand for it yet |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node |
-| `POST` | `/v1/messages` | Queue a message for a local session, or for a session on a paired node |
+| `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |

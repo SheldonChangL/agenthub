@@ -81,10 +81,11 @@ type Audience struct {
 	// send. It bounds what an agent can do after reading a message written on
 	// another machine, which reaches its context through agent_inbox.
 	//
-	// Enforced today by agenthub-mcp, which is a client of this node rather than
-	// the node itself (#75). That closes the path an agent takes by following an
-	// instruction it read; it does not stop a process that posts to the owner's
-	// API directly.
+	// Enforced by the node in POST /v1/messages: a message to another node must
+	// name a local session, and this flag on that session decides. agenthub-mcp
+	// checks it too, earlier and in words aimed at an agent, but the node's
+	// check is the boundary — any process here can reach the owner's API, and
+	// the node cannot tell the owner's CLI from an agent talked into calling it.
 	AllowOutbound bool `json:"allowOutbound"`
 }
 

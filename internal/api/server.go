@@ -462,31 +462,34 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// The sender label is stored and shown. Validating it now means it cannot
 	// later be a free-text field that a remote sender fills in with anything.
 	from := ""
+	senderSessionID := ""
 	if input.From != "" {
 		parsed, err := address.ParseAddress(input.From, s.node.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "from: "+err.Error())
 			return
 		}
-		from = input.From
-		if parsed.Local() {
-			// Qualified with this node, not left bare. A bare session id is
-			// also a valid node id, so a reader holding one cannot tell whether
-			// the message was queued here or sent by a peer that chose a
-			// session-shaped id — and guessing wrong renders someone else's
-			// message as this machine's own.
-			from = address.QualifiedID(s.node.ID, parsed.SessionID)
-		} else if destination.Local() {
+		if !parsed.Local() {
 			// A message arriving over the peer surface has its sender proven by
 			// the envelope's signature. This one arrived on the owner's API,
-			// where nothing proves anything, so a claim to be another node
+			// where nothing proves anything. For a local destination the claim
 			// would put an unverified label in a local inbox — next to the
 			// fingerprint that node really has, since a reader looks the
-			// fingerprint up by id.
+			// fingerprint up by id. For a remote destination it would have the
+			// gate below decide on a session the caller has just said is
+			// somewhere else, and record a third node as the sender.
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
-				"from may not name another node for a local destination: nothing here can verify that claim")
+				"from may not name another node: nothing here can verify that claim, "+
+					"and only a local session's gate can let a message leave")
 			return
 		}
+		// Qualified with this node, not left bare. A bare session id is also a
+		// valid node id, so a reader holding one cannot tell whether the
+		// message was queued here or sent by a peer that chose a
+		// session-shaped id — and guessing wrong renders someone else's
+		// message as this machine's own.
+		from = address.QualifiedID(s.node.ID, parsed.SessionID)
+		senderSessionID = parsed.SessionID
 	}
 	if !destination.Local() {
 		// Leaving this machine needs a session whose owner opened outbound.
@@ -507,16 +510,23 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 					"pass `from` as <provider>:<id> (ah send --from <session-id> ...)")
 			return
 		}
-		senderSession, _ := address.ParseAddress(from, s.node.ID)
-		audience, err := s.store.GetAudience(r.Context(), senderSession.SessionID)
+		audience, err := s.store.GetAudience(r.Context(), senderSessionID)
 		if err != nil {
+			if errors.Is(err, registry.ErrNotFound) {
+				// Named, so say which name: after `ah send --from X Y`, a bare
+				// "session not found" reads as being about Y.
+				writeError(w, http.StatusNotFound, "OUTBOUND_SENDER_UNKNOWN",
+					"from: this node has no session "+senderSessionID+"; a message to another "+
+						"node is sent on behalf of a local session, and the gate is that session's")
+				return
+			}
 			writeRegistryError(w, err)
 			return
 		}
 		if !audience.AllowOutbound {
 			writeError(w, http.StatusForbidden, "OUTBOUND_CLOSED",
-				"session "+senderSession.SessionID+" may not send to other nodes; its owner has not "+
-					"opened outbound (ah audience "+senderSession.SessionID+" ... --outbound). This is "+
+				"session "+senderSessionID+" may not send to other nodes; its owner has not "+
+					"opened outbound (ah audience "+senderSessionID+" ... --outbound). This is "+
 					"deliberate: a message may have been suggested by content that arrived from another machine")
 			return
 		}

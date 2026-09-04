@@ -38,12 +38,10 @@ const localNote = "Placed in that session's inbox on this machine. This does not
 //  1. This session may send at all. The owner's decision. Checked first so that
 //     a closed session cannot be used to probe what is visible.
 //
-//     This gate lives in this process, which is a client of the node. The node
-//     does not enforce allow_outbound (#75), so an agent with a shell can post
-//     to the owner's API directly and bypass it. It closes the path an agent
-//     reaches by following an instruction in its context — which is the path
-//     inbox content actually opens — and it is not a boundary against an agent
-//     that has decided to work around it.
+//     The node enforces allow_outbound as well, in POST /v1/messages, so an
+//     agent with a shell that posts to the owner's API directly meets the same
+//     gate there. This check refuses earlier, and in words addressed to the
+//     agent reading them; the node's is the boundary.
 //
 //  2. The destination is visible to this node.
 //

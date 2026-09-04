@@ -41,13 +41,9 @@ func TestEndpointsAcceptQualifiedAddresses(t *testing.T) {
 // is a routing answer, not a malformed request.
 func TestEndpointsReportUnknownNodesAsRouting(t *testing.T) {
 	store, handler := testServer(t)
-	id := seedSession(t, store, "remote-target")
 	// A message leaving the machine must name a local sender whose outbound
 	// gate is open; otherwise the answer is about the gate, not the route.
-	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
-		map[string]any{"mode": "none", "allowOutbound": true}); response.Code != http.StatusOK {
-		t.Fatalf("open outbound = %d %s", response.Code, response.Body.String())
-	}
+	id := openOutbound(t, store, handler, "remote-target")
 	remoteRaw := "node_somewhere_else/" + id
 	remote := url.PathEscape(remoteRaw)
 
