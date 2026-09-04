@@ -89,10 +89,11 @@ func (s *Server) receiveHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Checked before it is stored, not when it is read. What is inside a
-	// snapshot reaches an agent's reasoning through agent_list with no notice
-	// and no attribution, and the desktop and the CLI read the same rows — a
-	// check in any one reader protects only that reader.
+	// Checked before it is stored, and again by listPeers on the way out for
+	// rows a build without this check already wrote. What is inside a snapshot
+	// reaches an agent's reasoning through agent_list with no notice and no
+	// attribution, and the desktop reads the same rows — a check in any one
+	// reader protects only that reader.
 	if err := protocol.ValidateIncomingPayload(envelope.NodeID, payload); err != nil {
 		refuse("payload describes sessions this node will not store", err)
 		return
@@ -160,6 +161,10 @@ func (s *Server) listPeers(w http.ResponseWriter, r *http.Request) {
 		ReceivedAt  *time.Time                `json:"receivedAt,omitempty"`
 		ExpiresAt   *time.Time                `json:"expiresAt,omitempty"`
 		Sessions    []protocol.SessionSummary `json:"sessions"`
+		// SessionsWithheld distinguishes "this peer published nothing" from
+		// "this node refused what it published". Without it the two render the
+		// same, and the second is the one an owner needs to act on.
+		SessionsWithheld bool `json:"sessionsWithheld,omitempty"`
 	}
 
 	peers := make([]peerView, 0, len(trusted))
@@ -177,7 +182,30 @@ func (s *Server) listPeers(w http.ResponseWriter, r *http.Request) {
 						fmt.Errorf("stored snapshot for %q is unreadable: %w", node.NodeID, err))
 					return
 				}
-				if payload.Sessions != nil {
+				// The same check the receiving edge applies, applied again on
+				// the way out. A snapshot stored by a build that predates that
+				// check is still in the database after an upgrade, and this is
+				// the layer that hands it to the desktop — where a session
+				// attributed to a third node the owner has also paired with is
+				// read as that node's, and a person makes a trust decision on
+				// it.
+				//
+				// The whole snapshot goes, not the offending row: a peer that
+				// has started claiming other people's sessions is not a source
+				// whose remaining rows are worth serving, which is the same
+				// judgement `Peers()` makes in agenthub-mcp.
+				//
+				// The peer stays listed and online rather than disappearing: it
+				// is reachable, and its next heartbeat replaces this. What it
+				// does not do is look like a peer that published nothing —
+				// sessionsWithheld says which of the two this is. This is not
+				// what the receiving edge does with the same content: there, a
+				// refusal leaves the previous valid snapshot in place, and here
+				// there is nothing to fall back to.
+				if err := protocol.ValidateIncomingPayload(node.NodeID, payload); err != nil {
+					view.SessionsWithheld = true
+					s.noteUnservableSnapshot(node.NodeID, snapshot.Sequence, err)
+				} else if payload.Sessions != nil {
 					view.Sessions = payload.Sessions
 				}
 			}
@@ -185,6 +213,27 @@ func (s *Server) listPeers(w http.ResponseWriter, r *http.Request) {
 		peers = append(peers, view)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
+}
+
+// noteUnservableSnapshot logs a stored snapshot this node will not serve, once
+// per peer per sequence.
+//
+// Without the bookkeeping every `agent_list` call — which reads this endpoint —
+// would write the line again for as long as the row is the newest one held and
+// unexpired. That is the case that produces it: an expired snapshot is skipped
+// before this is reached, and a row stored by a build that did not clamp expiry
+// can sit unexpired indefinitely.
+func (s *Server) noteUnservableSnapshot(nodeID string, sequence uint64, reason error) {
+	s.refusedMu.Lock()
+	defer s.refusedMu.Unlock()
+	if last, seen := s.refused[nodeID]; seen && last == sequence {
+		return
+	}
+	if s.refused == nil {
+		s.refused = make(map[string]uint64)
+	}
+	s.refused[nodeID] = sequence
+	log.Printf("peers: serving no sessions for %q: stored snapshot %d %v", nodeID, sequence, reason)
 }
 
 // setNodeAddress records where a paired peer answers.
