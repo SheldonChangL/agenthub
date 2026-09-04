@@ -199,9 +199,13 @@ func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) 
 	case err == nil:
 		return sessionID, true
 	case errors.Is(err, address.ErrUnknownNode):
-		// The address is well formed; this node simply cannot reach it. Saying
-		// so is more useful than reporting a bad request, and remote routing
-		// does not exist yet.
+		// The address is well formed and names a node this owner has not
+		// paired with, so it resolves to nothing here. A routing answer rather
+		// than a parse error: the caller's input was fine.
+		//
+		// This helper is for endpoints that act on a session on this machine —
+		// an inbox, an audience. Messages do route to a paired node, through
+		// sendMessage, which does not go through here.
 		writeError(w, http.StatusNotFound, "UNKNOWN_NODE", err.Error())
 	default:
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())

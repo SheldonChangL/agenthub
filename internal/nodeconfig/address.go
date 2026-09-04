@@ -8,6 +8,16 @@ import (
 	"strings"
 )
 
+// ValidateLoopback keeps the owner's API on loopback.
+//
+// This is a decision, not a missing feature. The owner's API has no
+// authentication of its own: anything that can reach it can read every
+// session's metadata, queue messages, and change the audience policy. It is
+// safe only because reaching it means already being on this machine.
+//
+// Sharing with another machine is a different surface: the peer listener, which
+// authenticates every request by signature against the trust store. That one
+// can leave loopback, with -allow-lan and -peer-listen.
 func ValidateLoopback(address string) error {
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
@@ -18,7 +28,10 @@ func ValidateLoopback(address string) error {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("listen address %q is not loopback; authenticated LAN mode is not implemented", address)
+		return fmt.Errorf("listen address %q is not loopback: the owner's API has no authentication "+
+			"and is safe only because reaching it means being on this machine. To share with another "+
+			"machine, leave -listen on loopback and open the peer listener instead, with -allow-lan "+
+			"and -peer-listen — every request there is checked against the trust store", address)
 	}
 	return nil
 }
