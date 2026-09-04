@@ -96,10 +96,67 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		return r.simple(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(args[1]), nil)
 	case "send":
-		if len(args) < 3 {
-			return errors.New("usage: ah send <session-id> <message>")
+		// A message to another node must say which local session it is from,
+		// because the node refuses to send on behalf of a session whose owner
+		// has not opened outbound — and it cannot tell the owner's CLI from an
+		// agent that was talked into calling it. The gate is per session, so
+		// the message has to be attributed to one.
+		//
+		// --from is recognised anywhere, before or after the message, as
+		// `--from <id>` or `--from=<id>` — unless a `--` sits before the
+		// message, in which case everything after it is text. The message is
+		// unquoted words, so one that mentions "--from" needs that `--`, right
+		// after the destination (or before it). A `--` inside the message is
+		// prose and stays; a --from after such a `--` is refused as ambiguous
+		// rather than taken out of a sentence with the sender silently
+		// changed. The first remaining word is the destination, the rest the
+		// message.
+		fromSession := ""
+		fromSeen := false
+		dashInProse := false
+		rest := make([]string, 0, len(args)-1)
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--" && len(rest) <= 1:
+				rest = append(rest, args[i+1:]...)
+				i = len(args)
+			case args[i] == "--":
+				dashInProse = true
+				rest = append(rest, args[i])
+			case args[i] == "--from" || strings.HasPrefix(args[i], "--from="):
+				if dashInProse {
+					return errors.New("--from after a -- in the message is ambiguous: to send the words, " +
+						"put -- right after the destination; to set the sender, put --from before the message")
+				}
+				if fromSeen {
+					return errors.New("--from given twice; a message leaves from one session")
+				}
+				fromSeen = true
+				if args[i] == "--from" {
+					if i+1 >= len(args) {
+						return errors.New("--from needs a value: the local session the message is from")
+					}
+					i++
+					fromSession = args[i]
+				} else {
+					fromSession = strings.TrimPrefix(args[i], "--from=")
+				}
+				if fromSession == "" || strings.HasPrefix(fromSession, "-") {
+					return errors.New("--from needs a value: the local session the message is from")
+				}
+			default:
+				rest = append(rest, args[i])
+			}
 		}
-		return r.simple(ctx, http.MethodPost, "/v1/messages", map[string]string{"to": args[1], "body": strings.Join(args[2:], " ")})
+		if len(rest) < 2 {
+			return errors.New("usage: ah send [--from <local-session-id>] <session-id> [--] <message>\n" +
+				"  --from is required when <session-id> names another node; put -- before a message that mentions --from")
+		}
+		body := map[string]string{"to": rest[0], "body": strings.Join(rest[1:], " ")}
+		if fromSession != "" {
+			body["from"] = fromSession
+		}
+		return r.simple(ctx, http.MethodPost, "/v1/messages", body)
 	case "inbox":
 		if len(args) != 2 {
 			return errors.New("usage: ah inbox <session-id>")
@@ -348,7 +405,9 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
-	_, _ = fmt.Fprintln(output, "  ah send <node-id>/<provider>:<id> <message>   queues for a paired node")
+	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
+	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
+	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 }

@@ -197,3 +197,107 @@ func TestAnUnknownAudienceFlagIsRefused(t *testing.T) {
 		t.Errorf("the error does not list the real flag: %q", stderr.String())
 	}
 }
+
+// A message to another node must be attributed to a local session, because the
+// node's outbound gate is per session. --from carries that, and its absence must
+// produce a request the node refuses rather than one that quietly omits it.
+func TestSendCarriesFromToTheNode(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_x","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(),
+		[]string{"--url", server.URL, "send", "--from", "claude:mine", "node_peer0000000000000/codex:x", "hello", "there"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["from"] != "claude:mine" {
+		t.Errorf("from = %v, want claude:mine", body["from"])
+	}
+	if body["to"] != "node_peer0000000000000/codex:x" || body["body"] != "hello there" {
+		t.Errorf("to/body = %v / %v", body["to"], body["body"])
+	}
+
+	// The flag is positional-agnostic, the way audience's flags are: after the
+	// destination, after the message, or in `--from=` form.
+	for name, args := range map[string][]string{
+		"after the destination": {"send", "node_peer0000000000000/codex:x", "--from", "claude:mine", "hello", "there"},
+		"after the message":     {"send", "node_peer0000000000000/codex:x", "hello", "there", "--from", "claude:mine"},
+		"equals form":           {"send", "--from=claude:mine", "node_peer0000000000000/codex:x", "hello", "there"},
+	} {
+		body = nil
+		code = Run(context.Background(), append([]string{"--url", server.URL}, args...), &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, stderr = %q", name, code, stderr.String())
+		}
+		if body["from"] != "claude:mine" || body["to"] != "node_peer0000000000000/codex:x" || body["body"] != "hello there" {
+			t.Errorf("%s: from/to/body = %v / %v / %v", name, body["from"], body["to"], body["body"])
+		}
+	}
+	// After `--` everything is text, so a message may talk about --from
+	// without losing words or changing its sender.
+	body = nil
+	code = Run(context.Background(), []string{"--url", server.URL, "send", "--from", "claude:mine",
+		"node_peer0000000000000/codex:x", "--", "please", "pass", "--from", "claude:y", "to", "the", "script"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("terminator: exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["from"] != "claude:mine" || body["body"] != "please pass --from claude:y to the script" {
+		t.Errorf("terminator: from/body = %v / %v", body["from"], body["body"])
+	}
+
+	// A `--` inside the message is prose, not the terminator: it must arrive.
+	body = nil
+	code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "fixed", "--", "see", "commit"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("dash in prose: exit = %d, stderr = %q", code, stderr.String())
+	}
+	if body["body"] != "fixed -- see commit" {
+		t.Errorf("dash in prose: body = %v, want the dash kept", body["body"])
+	}
+
+	// A --from with nothing behind it is an error, not a message and not a
+	// silent absence the node then asks the user to fix.
+	for name, args := range map[string][]string{
+		"dangling": {"send", "claude:local", "hi", "--from"},
+		"empty":    {"send", "--from=", "node_peer0000000000000/codex:x", "hi"},
+		"a flag":   {"send", "--from", "--from", "x", "claude:local", "hi"},
+	} {
+		stderr.Reset()
+		if code = Run(context.Background(), append([]string{"--url", server.URL}, args...),
+			&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--from needs a value") {
+			t.Errorf("%s --from: exit = %d, stderr = %q", name, code, stderr.String())
+		}
+	}
+	// A --from after a dash in prose is ambiguous: refused, not taken out of
+	// the sentence with the sender silently changed.
+	stderr.Reset()
+	if code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "hey", "--", "use", "--from", "claude:mine"},
+		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "ambiguous") {
+		t.Errorf("--from after a prose dash: exit = %d, stderr = %q", code, stderr.String())
+	}
+	stderr.Reset()
+	if code = Run(context.Background(), []string{"--url", server.URL, "send", "--from", "claude:a", "--from", "claude:b", "claude:local", "hi"},
+		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "twice") {
+		t.Errorf("repeated --from: exit = %d, stderr = %q", code, stderr.String())
+	}
+
+	// Without --from the field is simply absent — the node decides.
+	body = nil
+	code = Run(context.Background(),
+		[]string{"--url", server.URL, "send", "claude:local", "hi"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if _, present := body["from"]; present {
+		t.Errorf("from was sent without --from: %v", body["from"])
+	}
+}
