@@ -156,8 +156,8 @@ advertisement.
   caller owns it. The reader at the far end then sees that session as the
   sender. Since #75 that session's `allowOutbound` also decides whether the
   message may leave at all, so a local agent that reasons its way to `curl`-ing
-  the owner's API meets the same gate as `agent_send` — but any local process
-  can name a session whose owner opened it. The gate bounds which sessions may
+  the owner's API meets the same gate as `agent_send`. Any local process can
+  still name a session whose owner opened it. The gate bounds which sessions may
   send, not who speaks for them (§4). The API is loopback-only, but the misuse
   this permits is a co-resident process posing as a colleague session, which is
   not the "can already restart the process" reasoning the "owner's own API"

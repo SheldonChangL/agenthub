@@ -102,22 +102,32 @@ func (r runner) command(ctx context.Context, args []string) error {
 		// agent that was talked into calling it. The gate is per session, so
 		// the message has to be attributed to one.
 		//
-		// --from is recognised before the message starts, as `--from <id>` or
-		// `--from=<id>`; the first remaining word is the destination and the
-		// rest is the message. The message is unquoted words, so one that
-		// happens to contain "--from" needs a `--` between the destination
-		// and the message: after it everything is text. The terminator is
-		// honoured only in that slot, so a `--` inside the message stays in
-		// the message — a dash in prose must not vanish, exit 0.
+		// --from is recognised anywhere, before or after the message, as
+		// `--from <id>` or `--from=<id>` — unless a `--` sits before the
+		// message, in which case everything after it is text. The message is
+		// unquoted words, so one that mentions "--from" needs that `--`, right
+		// after the destination (or before it). A `--` inside the message is
+		// prose and stays; a --from after such a `--` is refused as ambiguous
+		// rather than taken out of a sentence with the sender silently
+		// changed. The first remaining word is the destination, the rest the
+		// message.
 		fromSession := ""
 		fromSeen := false
+		dashInProse := false
 		rest := make([]string, 0, len(args)-1)
 		for i := 1; i < len(args); i++ {
 			switch {
 			case args[i] == "--" && len(rest) <= 1:
 				rest = append(rest, args[i+1:]...)
 				i = len(args)
+			case args[i] == "--":
+				dashInProse = true
+				rest = append(rest, args[i])
 			case args[i] == "--from" || strings.HasPrefix(args[i], "--from="):
+				if dashInProse {
+					return errors.New("--from after a -- in the message is ambiguous: to send the words, " +
+						"put -- right after the destination; to set the sender, put --from before the message")
+				}
 				if fromSeen {
 					return errors.New("--from given twice; a message leaves from one session")
 				}
