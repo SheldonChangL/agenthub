@@ -44,8 +44,11 @@ const MaxCWDLength = 512
 
 // MaxProviderSessionIDLength bounds the half of an id a peer chooses.
 //
-// Claude and Codex both use UUIDs, which are 36 characters.
-const MaxProviderSessionIDLength = 128
+// Claude and Codex both use UUIDs, which are 36 characters. The same number the
+// store enforces on write, aliased rather than repeated: two constants that
+// must agree are one that eventually will not, and the gap between them is a
+// session this node stores happily and every peer refuses.
+const MaxProviderSessionIDLength = model.MaxProviderSessionIDLength
 
 // MaxClockSkew is how far ahead a peer's reported times may be.
 //
@@ -121,6 +124,12 @@ func validateIncomingSummary(senderNodeID string, summary SessionSummary) error 
 	// The provider session id is an address, not a label. Unconstrained it was
 	// the widest channel here — the first field of every agent_list row, and
 	// large enough to hold a page of text. Real ones are UUIDs.
+	//
+	// ValidateLocalSessionID above enforces the same length today, so this is a
+	// restatement rather than the only guard. It stays: this function is the
+	// receiving edge's own statement of what it will accept, and a receiver
+	// that inherited its bounds from an address parser would silently widen the
+	// day that parser did.
 	_, providerSessionID, _ := strings.Cut(sessionID, ":")
 	if len(providerSessionID) > MaxProviderSessionIDLength {
 		return fmt.Errorf("id is %d bytes, over the %d limit",

@@ -575,11 +575,17 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
+	after, err := registry.ParseInboxCursor(r.URL.Query().Get("after"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"after is not a cursor this node issued; pass the `next` value from the previous page, or omit it to start over")
+		return
+	}
 	recipient, ok := s.localSession(w, r.PathValue("id"))
 	if !ok {
 		return
 	}
-	messages, err := s.store.Inbox(r.Context(), recipient, limit)
+	messages, err := s.store.Inbox(r.Context(), recipient, limit, after)
 	if err != nil {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
@@ -593,12 +599,18 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	page := map[string]any{
 		"messages": messages,
 		"held":     held,
 		"capacity": registry.MaxInboxMessages,
 		"full":     held >= registry.MaxInboxMessages,
-	})
+	}
+	// A full page may not be the last; `next` says where the following one
+	// begins. Absent on a short page, which is the end.
+	if len(messages) == limit {
+		page["next"] = registry.CursorAfter(messages[len(messages)-1]).String()
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // deleteMessage removes one message the owner has finished with.

@@ -220,7 +220,7 @@ func TestQualifiedAddressesReachTheRightAnswer(t *testing.T) {
 		if response.Code != http.StatusCreated && response.Code != http.StatusOK {
 			t.Fatalf("response = %d %s", response.Code, response.Body.String())
 		}
-		inbox, err := store.Inbox(ctx, session, 10)
+		inbox, err := store.Inbox(ctx, session, 10, registry.InboxStart)
 		if err != nil {
 			t.Fatal(err)
 		}

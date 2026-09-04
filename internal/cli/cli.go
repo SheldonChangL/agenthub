@@ -161,7 +161,7 @@ func (r runner) command(ctx context.Context, args []string) error {
 		if len(args) != 2 {
 			return errors.New("usage: ah inbox <session-id>")
 		}
-		return r.simple(ctx, http.MethodGet, "/v1/inbox/"+url.PathEscape(args[1]), nil)
+		return r.inbox(ctx, args[1])
 	case "inbox-clear":
 		// The inbox is bounded, so it needs emptying. Deletion is explicit
 		// rather than inferred from reading: nothing tracks what has been read.
@@ -349,6 +349,91 @@ func (r runner) simple(ctx context.Context, method, path string, input any) erro
 	return writePrettyJSON(r.stdout, body)
 }
 
+// inbox reads a session's inbox in pages and prints the whole.
+//
+// One request for everything is a size a peer controls: bodies are bounded, but
+// fifty of them serialised can pass the response cap, after which nothing
+// decodes and the owner cannot see what is jamming their inbox — the situation
+// this command exists for. Pages of ten stay well inside it.
+func (r runner) inbox(ctx context.Context, sessionID string) error {
+	type page struct {
+		Messages []json.RawMessage `json:"messages"`
+		Held     int               `json:"held"`
+		Capacity int               `json:"capacity"`
+		Full     bool              `json:"full"`
+		Next     string            `json:"next,omitempty"`
+	}
+	whole := page{Messages: []json.RawMessage{}}
+	after := ""
+	// A ceiling on the pages, not only on what ends them. The node is trusted,
+	// but a bug or a wrong URL that answers with a cursor that never advances
+	// would otherwise spin here until the context died, with the terminal
+	// filling. The inbox bound is 500 and a page is 10.
+	const maxPages = 60
+	stopped := false
+	pagesRead := 0
+	for pages := 0; ; pages++ {
+		if pages == maxPages {
+			stopped = true
+			break
+		}
+		path := "/v1/inbox/" + url.PathEscape(sessionID) + "?limit=10&after=" + url.QueryEscape(after)
+		body, err := r.request(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return err
+		}
+		var current page
+		if err := json.Unmarshal(body, &current); err != nil {
+			return fmt.Errorf("decode inbox page: %w", err)
+		}
+		whole.Held, whole.Capacity, whole.Full = current.Held, current.Capacity, current.Full
+		if current.Next == after && after != "" {
+			// The same cursor again. Its messages are the ones already held, so
+			// appending them would print a duplicate on the way out.
+			stopped = true
+			break
+		}
+		whole.Messages = append(whole.Messages, current.Messages...)
+		pagesRead++
+		if current.Next == "" || len(current.Messages) == 0 {
+			break
+		}
+		after = current.Next
+	}
+	// Encoded straight out rather than marshalled and decoded again: an inbox
+	// at its bound is tens of megabytes, and the round trip through `any` would
+	// hold three copies of it at once.
+	//
+	// Printed before the error below, so a truncated answer is still an answer:
+	// the messages that were read are worth having even when the reason the
+	// reading stopped is a misbehaving node.
+	if stopped {
+		whole.Next = after
+	}
+	encoder := json.NewEncoder(r.stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(whole); err != nil {
+		return err
+	}
+	if stopped {
+		// Not silent. A truncated answer that looks complete is the failure
+		// this command was just fixed for, in a different costume.
+		bound := ""
+		if whole.Capacity > 0 {
+			// Only when the node said what its bound is. A broken node may not
+			// have, and "holds at most 0 messages" explains nothing.
+			bound = fmt.Sprintf(" An inbox holds at most %d messages.", whole.Capacity)
+		}
+		return fmt.Errorf("stopped after %d page(s): the node is still issuing cursors, or issued "+
+			"the same one twice.%s This is the node misbehaving. What was read is above "+
+			"and `next` says where it stopped", pagesRead, bound)
+	}
+	return nil
+}
+
+// responseCap bounds what this CLI reads from the node in one answer.
+const responseCap = 4 * 1024 * 1024
+
 func (r runner) request(ctx context.Context, method, path string, input any) ([]byte, error) {
 	var body io.Reader
 	if input != nil {
@@ -370,9 +455,16 @@ func (r runner) request(ctx context.Context, method, path string, input any) ([]
 		return nil, fmt.Errorf("contact node: %w", err)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(response.Body, responseCap))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(data) >= responseCap {
+		// Cut off, so it will not decode — and "unexpected end of JSON input"
+		// sends the reader nowhere. Say what happened.
+		return nil, fmt.Errorf("the node's answer reached the %d byte limit and was cut off; "+
+			"something in it is too large to read here. For an inbox, `ah inbox-clear <session> [message-id]` removes what is there",
+			responseCap)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var apiError struct {
