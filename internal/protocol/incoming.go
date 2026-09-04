@@ -44,8 +44,11 @@ const MaxCWDLength = 512
 
 // MaxProviderSessionIDLength bounds the half of an id a peer chooses.
 //
-// Claude and Codex both use UUIDs, which are 36 characters.
-const MaxProviderSessionIDLength = 128
+// Claude and Codex both use UUIDs, which are 36 characters. The same number the
+// store enforces on write, aliased rather than repeated: two constants that
+// must agree are one that eventually will not, and the gap between them is a
+// session this node stores happily and every peer refuses.
+const MaxProviderSessionIDLength = model.MaxProviderSessionIDLength
 
 // MaxClockSkew is how far ahead a peer's reported times may be.
 //
