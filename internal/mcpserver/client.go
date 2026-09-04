@@ -17,6 +17,10 @@ import (
 	"agenthub.local/agenthub/internal/address"
 )
 
+// maxNodeResponse bounds what this client will read from the node in one
+// answer. Reached only by a response a peer made large; see inboxBatch.
+const maxNodeResponse = 8 << 20
+
 // ErrSessionNotFound marks an address the node does not have.
 var ErrSessionNotFound = errors.New("no such session on this node")
 
@@ -156,7 +160,7 @@ func (c *Client) get(ctx context.Context, path string) (int, []byte, error) {
 	defer func() { _ = response.Body.Close() }()
 	// Bounded: this client trusts the node, but a bug or a wrong URL should not
 	// be able to exhaust memory here.
-	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxNodeResponse))
 	if err != nil {
 		return response.StatusCode, nil, err
 	}
@@ -368,11 +372,66 @@ type Inbox struct {
 	Held     int
 	Capacity int
 	Full     bool
+	// Next is where the following page begins when the read stopped at the
+	// caller's limit with more held; empty when it reached the end.
+	Next string
 }
 
+// inboxBatch is how many messages are asked for at once.
+//
+// Bodies are capped at 32 KiB decoded, but JSON escaping expands "<", "&" and
+// every control byte sixfold, so a batch is sized by what the response can
+// become rather than by what the messages contain: ten worst-case bodies are
+// about 2 MiB, comfortably inside the read cap. Asking for fifty at once put a
+// peer within reach of exceeding it, after which nothing decoded and the tool
+// returned no messages at all.
+const inboxBatch = 10
+
 // ReadInbox returns what the node holds for a session.
+//
+// Read in batches rather than in one request. The node will return as many
+// messages as it is asked for, and a peer chooses the size of what it sends, so
+// a single large request is a size a peer controls.
 func (c *Client) ReadInbox(ctx context.Context, sessionID string, limit int) (Inbox, error) {
-	path := fmt.Sprintf("/v1/inbox/%s?limit=%d", url.PathEscape(sessionID), limit)
+	// Clamped here as well as in the tool: an exported method on an exported
+	// type should neither panic on a negative count nor read nothing for zero.
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	inbox := Inbox{Messages: make([]StoredMessage, 0, limit)}
+	after := ""
+	for len(inbox.Messages) < limit {
+		want := limit - len(inbox.Messages)
+		if want > inboxBatch {
+			want = inboxBatch
+		}
+		batch, err := c.readInboxBatch(ctx, sessionID, after, want)
+		if err != nil {
+			return Inbox{}, err
+		}
+		inbox.Held, inbox.Capacity, inbox.Full = batch.Held, batch.Capacity, batch.Full
+		if len(batch.Messages) > want {
+			// A node that over-delivers does not get to exceed the caller's limit.
+			batch.Messages = batch.Messages[:want]
+		}
+		inbox.Messages = append(inbox.Messages, batch.Messages...)
+		if batch.Next == "" || len(batch.Messages) == 0 {
+			// The node said this page was the last — or gave nothing, which
+			// must not become a loop.
+			return inbox, nil
+		}
+		after = batch.Next
+	}
+	// Stopped at the caller's limit with the node saying there is more.
+	inbox.Next = after
+	return inbox, nil
+}
+
+func (c *Client) readInboxBatch(ctx context.Context, sessionID string, after string, limit int) (Inbox, error) {
+	path := fmt.Sprintf("/v1/inbox/%s?limit=%d&after=%s", url.PathEscape(sessionID), limit, url.QueryEscape(after))
 	status, body, err := c.get(ctx, path)
 	if err != nil {
 		return Inbox{}, err
@@ -385,13 +444,25 @@ func (c *Client) ReadInbox(ctx context.Context, sessionID string, limit int) (In
 		Held     int             `json:"held"`
 		Capacity int             `json:"capacity"`
 		Full     bool            `json:"full"`
+		Next     string          `json:"next"`
 	}
 	if err := json.Unmarshal(body, &decoded); err != nil {
+		// A truncated answer decodes as badly as a malformed one, and the
+		// difference matters: one is a bug, the other is a message too large to
+		// read. Say which, because "unexpected end of JSON input" sends the
+		// reader nowhere.
+		if len(body) >= maxNodeResponse {
+			return Inbox{}, fmt.Errorf(
+				"the node's answer reached the %d byte limit and was cut off; "+
+					"one of these messages is too large to read. The owner can list what is there with "+
+					"`ah inbox <session>`, which reads in small pages, and remove one message with "+
+					"`ah inbox-clear <session> <message-id>` or all of them with `ah inbox-clear <session>`", maxNodeResponse)
+		}
 		return Inbox{}, fmt.Errorf("decode inbox: %w", err)
 	}
 	return Inbox{
 		Messages: decoded.Messages, Held: decoded.Held,
-		Capacity: decoded.Capacity, Full: decoded.Full,
+		Capacity: decoded.Capacity, Full: decoded.Full, Next: decoded.Next,
 	}, nil
 }
 

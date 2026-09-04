@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -184,7 +185,7 @@ func TestARedeliveryDoesNotDuplicate(t *testing.T) {
 		t.Fatalf("second ack = %+v; want duplicate", ack)
 	}
 
-	messages, err := store.Inbox(context.Background(), session, 10)
+	messages, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +343,7 @@ func TestATakenIDIsRefusedLikeAnythingElse(t *testing.T) {
 			collisionAck.Reason, declinedAck.Reason)
 	}
 	// The first peer's message must be untouched.
-	inbox, err := store.Inbox(context.Background(), session, 10)
+	inbox, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +367,7 @@ func TestAForgedSenderLabelCannotNameAnotherNode(t *testing.T) {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 
-	inbox, err := store.Inbox(context.Background(), session, 10)
+	inbox, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +486,7 @@ func TestDeletingOneMessageLeavesTheRest(t *testing.T) {
 	if deleted.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d %s", deleted.Code, deleted.Body.String())
 	}
-	remaining, err := store.Inbox(context.Background(), session, 10)
+	remaining, err := store.Inbox(context.Background(), session, 10, registry.InboxStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,4 +686,110 @@ func TestAMessageLeavingTheMachineNeedsAnOpenGate(t *testing.T) {
 			t.Fatalf("a local send was gated: %d %s", response.Code, response.Body.String())
 		}
 	})
+}
+
+// Pages chain by the cursor the previous one handed out. Every message is seen
+// once across the pages, and a cursor this node did not issue is refused.
+func TestTheInboxPagesWithNext(t *testing.T) {
+	store, owner := testServer(t)
+	id := seedSession(t, store, "paged")
+	if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	for i := 0; i < 12; i++ {
+		if response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": id, "body": fmt.Sprintf("m%02d", i)}); response.Code != http.StatusCreated {
+			t.Fatalf("send %d = %d %s", i, response.Code, response.Body.String())
+		}
+	}
+	type page struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Next string `json:"next"`
+	}
+	seen := map[string]bool{}
+	after := ""
+	pages := 0
+	for {
+		response := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=5&after="+url.QueryEscape(after), nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("page = %d %s", response.Code, response.Body.String())
+		}
+		var p page
+		if err := json.Unmarshal(response.Body.Bytes(), &p); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		for _, m := range p.Messages {
+			if seen[m.ID] {
+				t.Errorf("message %s appeared twice", m.ID)
+			}
+			seen[m.ID] = true
+		}
+		if p.Next == "" {
+			break
+		}
+		after = p.Next
+		if pages > 5 {
+			t.Fatal("paging did not end")
+		}
+	}
+	if len(seen) != 12 || pages != 3 {
+		t.Errorf("saw %d messages over %d pages; want 12 over 3", len(seen), pages)
+	}
+	bad := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?after=garbage", nil)
+	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "cursor") {
+		t.Errorf("garbage cursor = %d %s; want 400 naming the cursor", bad.Code, bad.Body.String())
+	}
+}
+
+// A page boundary that falls on a message whose id a peer chose must still be
+// crossable. The wire refuses an awkward id now, but a row already in a
+// database was written before that check, and the node must not answer its own
+// cursor with a 400 — that is the failure this change exists to remove, and it
+// is cheaper to reach with small messages than with large ones.
+func TestAPageBoundaryOnAPeerChosenIDIsCrossable(t *testing.T) {
+	store, owner := testServer(t)
+	id := seedSession(t, store, "awkward-boundary")
+	if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	// Straight into the store, the way an older build stored what a peer sent.
+	for i, messageID := range []string{"msg with space", "msg_\ttab", "msg_é"} {
+		if _, err := store.CreateMessage(context.Background(), model.Message{
+			ID: messageID, To: id, From: "codex:sender", DestinationNodeID: testNodeID,
+			Body: fmt.Sprintf("m%d", i),
+		}); err != nil {
+			t.Fatalf("seed %q: %v", messageID, err)
+		}
+	}
+	var page struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Next string `json:"next"`
+	}
+	first := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=1", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("page 1 = %d %s", first.Code, first.Body.String())
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Next == "" {
+		t.Fatal("no cursor was issued for a full page")
+	}
+	second := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=1&after="+url.QueryEscape(page.Next), nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("the node refused a cursor it issued: %d %s", second.Code, second.Body.String())
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 1 || page.Messages[0].ID == "msg with space" {
+		t.Errorf("page 2 = %+v; want the message after the first", page.Messages)
+	}
 }
