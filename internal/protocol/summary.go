@@ -61,6 +61,12 @@ func exportedCWD(session model.Session) string {
 }
 
 func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
+	return SummarizeAt(nodeID, session, time.Now())
+}
+
+// SummarizeAt is Summarize with the clock passed in, so the builder's one
+// reading of the time governs every field of an envelope.
+func SummarizeAt(nodeID string, session model.Session, now time.Time) (SessionSummary, error) {
 	if !session.Audience.PublishesToAnyone() {
 		return SessionSummary{}, fmt.Errorf(
 			"refusing to export session %q with audience %q", session.ID, session.Audience.Mode)
@@ -89,9 +95,14 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 	// because a receiver refuses a snapshot over one bad row. Clamped rather
 	// than refused: the session is still worth exporting, and the wrong value is
 	// only ever a display detail.
+	//
+	// Clamped to now, not to the edge of what a receiver tolerates. That edge
+	// is measured on the receiver's clock, so a sender whose clock runs ahead
+	// would land the clamped value just past it — refused for the exact reason
+	// the clamp exists. A last-seen in the future means "now" anyway.
 	lastSeen := session.LastSeenAt.UTC()
-	if ceiling := time.Now().UTC().Add(MaxClockSkew); lastSeen.After(ceiling) {
-		lastSeen = ceiling
+	if now := now.UTC(); lastSeen.After(now) {
+		lastSeen = now
 	}
 	return SessionSummary{
 		ID:           address.QualifiedID(nodeID, session.ID),
@@ -105,27 +116,4 @@ func Summarize(nodeID string, session model.Session) (SessionSummary, error) {
 		CWD:        exportedCWD(session),
 		LastSeenAt: lastSeen,
 	}, nil
-}
-
-// ExportableSessionID applies the receiver's id rules on the sending side.
-//
-// One definition, used both ways, so the two cannot drift into a state where
-// this node sends what its peers refuse. The caller decides what to do about a
-// session that fails it: the builder leaves it out, because an id cannot be
-// dropped the way a working directory can — it is what the session is.
-func ExportableSessionID(sessionID string) error {
-	if err := address.ValidateLocalSessionID(sessionID); err != nil {
-		return err
-	}
-	_, providerSessionID, _ := strings.Cut(sessionID, ":")
-	if len(providerSessionID) > MaxProviderSessionIDLength {
-		return fmt.Errorf("id is %d bytes, over the %d a peer accepts",
-			len(providerSessionID), MaxProviderSessionIDLength)
-	}
-	for _, r := range providerSessionID {
-		if r < '!' || r > '~' {
-			return fmt.Errorf("id has a character outside printable ASCII")
-		}
-	}
-	return nil
 }
