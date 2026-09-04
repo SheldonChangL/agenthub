@@ -152,6 +152,7 @@ Step 7 (#56, the MCP server) is done. Steps 8 to 10 continue in #60 (wake-up),
   trust-record views.
 - Policy groups and aliases. The audience table is the primitive they would be
   built from; it is enough on its own for the first release.
-- Session launch and wake-up. Provider message injection is never, by decision
-  (#16). `agenthub-mcp` serves the MCP surface over stdio; Streamable HTTP would
-  put it on a socket, which is a separate decision and has not been taken.
+- Session launch and supervision, and wake-up (#60), which goes through each
+  provider's own API rather than writing into its files or process — that
+  boundary does not move. `agenthub-mcp` serves the MCP surface over stdio;
+  Streamable HTTP would put it on a socket, a separate decision not taken.

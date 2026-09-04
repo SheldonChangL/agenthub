@@ -150,7 +150,11 @@ advertisement.
   is a different risk from the same content read on request. `autoWake` (#59) is
   a third gate for exactly that reason, and #59 is a merge condition for Step 8,
   not a follow-up.
-- **Provider injection.** Out of scope by decision (#16), unchanged.
+- **Provider injection.** Nothing here writes into a provider's session files
+  or process, and nothing will: that is this project's boundary, first drawn in
+  #16 and restated in `architecture.md`. Wake-up (#60) does not cross it — it
+  goes through each provider's own API — but it does put remote content in front
+  of an agent with nobody watching, which is what `autoWake` and #59 are for.
 - **A `from` label on the owner's own API.** Any local process can post with
   `from` naming a real local session; the node validates the shape, not that the
   caller owns it. The reader at the far end then sees that session as the
