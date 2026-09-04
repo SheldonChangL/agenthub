@@ -80,16 +80,17 @@ does not control it.
 It is checked **before** the destination is resolved, so a closed session cannot
 be used to enumerate what is visible.
 
-**Where it is enforced matters, and the honest answer is not flattering.** The
-check lives in `agenthub-mcp`, a client of the node. `POST /v1/messages` knows
-nothing about the flag, so any process on this machine can post directly —
-including an agent with a shell, which can read the node URL from this process's
-argv.
+**Where it is enforced.** The node enforces it in `POST /v1/messages`: a message
+to another node must name a local session, and that session's flag decides.
+`agenthub-mcp` checks it as well, before resolving the destination, in words
+addressed to the agent. Until #75 the client was the only check, and any process
+on this machine — including an agent with a shell, which can read the node URL
+from this process's argv — could post directly and bypass it.
 
-So this closes the path an agent takes by *following an instruction it read*,
-which is the path inbox content actually opens. It is not a boundary against an
-agent that has decided to work around it. #75 moves enforcement to the node,
-where the policy lives.
+The node's check is the boundary. What it cannot do is tell the owner's CLI from
+an agent that was talked into calling it: both are loopback. So the gate bounds
+*which sessions* may send, not *who* speaks for them — a session whose owner
+opened outbound can be named by anything on the machine.
 
 ### 5. The caller's identity is fixed at startup, not per call
 
@@ -140,11 +141,6 @@ advertisement.
   in an inbox stays, and is shown without a fingerprint.
 - **An agent that decides to comply.** Presentation makes the provenance of a
   message unmistakable. It cannot make a model refuse.
-- **An agent that works around the gate.** Until #75, `allowOutbound` is
-  enforced by a client of the node rather than the node. An agent that reasons
-  its way to `curl`-ing the owner's API is not stopped by it. This is the gap
-  between "an agent following instructions" and "an agent pursuing a goal", and
-  only the first is addressed today.
 - **The owner's own API.** It is loopback-only, and anything that can reach it
   can already restart the process. `agenthub-mcp` additionally refuses a
   non-loopback node URL, but that is a guardrail against misconfiguration, not a
@@ -157,10 +153,15 @@ advertisement.
 - **Provider injection.** Out of scope by decision (#16), unchanged.
 - **A `from` label on the owner's own API.** Any local process can post with
   `from` naming a real local session; the node validates the shape, not that the
-  caller owns it. The agent then sees that session as the sender. The API is
-  loopback-only, but the misuse this permits is a co-resident process posing as a
-  colleague session, which is not the "can already restart the process"
-  reasoning the bullet above rests on.
+  caller owns it. The reader at the far end then sees that session as the
+  sender. Since #75 that session's `allowOutbound` also decides whether the
+  message may leave at all, so a local agent that reasons its way to `curl`-ing
+  the owner's API meets the same gate as `agent_send`. Any local process can
+  still name a session whose owner opened it. The gate bounds which sessions may
+  send, not who speaks for them (§4). The API is loopback-only, but the misuse
+  this permits is a co-resident process posing as a colleague session, which is
+  not the "can already restart the process" reasoning the "owner's own API"
+  bullet above rests on.
 - **The `session` half of a remote sender's label.** Only the node part is
   proven; the rest is what the peer claimed, so a peer can label its message
   `<peer>/claude:<the owner's own session id>`. That is why the notice tells the
