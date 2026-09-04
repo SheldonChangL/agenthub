@@ -19,11 +19,14 @@ type inboxNode struct {
 	nodes    []map[string]any
 	held     int
 	capacity int
-	// lastLimit records what the tool asked for.
-	lastLimit string
+	// asked totals what the tool requested across pages.
+	asked int
 	// seen records every request, so a read that reached for a side effect
 	// through a GET is caught too.
 	seen []string
+	// endless serves a full page with a `next` every time: what an unbounded
+	// read would keep taking.
+	endless bool
 }
 
 func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
@@ -39,11 +42,24 @@ func (n *inboxNode) connect(t *testing.T) *mcp.ClientSession {
 		case r.URL.Path == "/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"nodes": n.nodes})
 		case strings.HasPrefix(r.URL.Path, "/v1/inbox/"):
-			n.lastLimit = r.URL.Query().Get("limit")
-			_ = json.NewEncoder(w).Encode(map[string]any{
+			want := 0
+			if v := r.URL.Query().Get("limit"); v != "" {
+				_, _ = fmt.Sscanf(v, "%d", &want)
+				n.asked += want
+			}
+			page := map[string]any{
 				"messages": n.messages, "held": n.held,
 				"capacity": n.capacity, "full": n.held >= n.capacity,
-			})
+			}
+			if n.endless {
+				batch := make([]map[string]any, want)
+				for i := range batch {
+					batch[i] = message(fmt.Sprintf("msg_%d_%d", len(n.seen), i), "node_peer000000000000/claude:x", "x")
+				}
+				page["messages"] = batch
+				page["next"] = "more"
+			}
+			_ = json.NewEncoder(w).Encode(page)
 		case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "codex:mine"})
 		default:
@@ -173,20 +189,15 @@ func TestReadingTheInboxChangesNothing(t *testing.T) {
 			t.Fatal("agent_inbox errored")
 		}
 	}
-	want := map[string]int{
-		"GET /v1/inbox/codex:mine?limit=50": 3,
-		"GET /v1/nodes?":                    3,
-	}
-	got := map[string]int{}
+	// The inbox is read in pages, so the exact request count depends on how many
+	// messages are there. What must hold is that every request is a GET, and
+	// that only the two read endpoints are touched.
 	for _, request := range node.seen {
-		got[request]++
-	}
-	if len(got) != len(want) {
-		t.Fatalf("agent_inbox made requests beyond reading:\n got %v\nwant %v", got, want)
-	}
-	for request, count := range want {
-		if got[request] != count {
-			t.Errorf("%q happened %d times, want %d (all of: %v)", request, got[request], count, got)
+		if !strings.HasPrefix(request, "GET ") {
+			t.Errorf("agent_inbox made a non-GET request: %q", request)
+		}
+		if !strings.Contains(request, "/v1/inbox/codex:mine?") && !strings.HasPrefix(request, "GET /v1/nodes") {
+			t.Errorf("agent_inbox reached beyond reading: %q (all: %v)", request, node.seen)
 		}
 	}
 }
@@ -228,13 +239,24 @@ func TestTheInboxReportsItsOwnPressure(t *testing.T) {
 // The limit is clamped rather than passed through, so a caller cannot ask the
 // node for an unbounded read.
 func TestTheLimitIsBounded(t *testing.T) {
-	node := &inboxNode{messages: []map[string]any{}}
+	// A node with no end: every page is full and says there is more. A reader
+	// that stopped only when the node ran out would never stop here.
+	node := &inboxNode{endless: true}
 	session := node.connect(t)
-	for _, c := range []struct{ asked, want string }{
-		{"", "50"},
-		{"1000", "200"},
-		{"7", "7"},
+	// The inbox is read in pages, so what the node sees per request is the batch
+	// size, not the caller's limit. What the caller's limit must still bound is
+	// the total asked for across the pages — otherwise "give me 1000" would just
+	// become a hundred requests.
+	for _, c := range []struct {
+		asked   string
+		wantMax int
+	}{
+		{"", 50},
+		{"1000", 200},
+		{"7", 7},
 	} {
+		node.asked = 0
+		node.seen = nil
 		args := map[string]any{}
 		if c.asked != "" {
 			var n int
@@ -244,9 +266,48 @@ func TestTheLimitIsBounded(t *testing.T) {
 		if _, isErr := call(t, session, "agent_inbox", args); isErr {
 			t.Fatalf("limit %q errored", c.asked)
 		}
-		if node.lastLimit != c.want {
-			t.Errorf("asked %q, node saw %q, want %q", c.asked, node.lastLimit, c.want)
+		requests := 0
+		for _, seen := range node.seen {
+			if strings.Contains(seen, "/v1/inbox/") {
+				requests++
+			}
 		}
+		if node.asked != c.wantMax || requests != (c.wantMax+9)/10 {
+			t.Errorf("limit %q: asked for %d messages over %d requests; want exactly %d over %d",
+				c.asked, node.asked, requests, c.wantMax, (c.wantMax+9)/10)
+		}
+	}
+}
+
+// A node answer too large to read means a bug or a hostile node, but the tool
+// must say what happened rather than "unexpected end of JSON input".
+func TestAnAnswerTooLargeToReadIsExplained(t *testing.T) {
+	node := &inboxNode{held: 1, messages: []map[string]any{
+		message("msg_huge", "node_peer000000000000/claude:x", strings.Repeat("a", 9<<20)),
+	}}
+	session := node.connect(t)
+	text, isErr := call(t, session, "agent_inbox", map[string]any{})
+	if !isErr {
+		t.Fatal("a cut-off answer was reported as success")
+	}
+	for _, want := range []string{"cut off", "inbox-clear"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the error does not say %q: %s", want, text)
+		}
+	}
+}
+
+// Every label the sender chose is named as one. Bounding the session label did
+// not make it trustworthy.
+func TestTheNoticeNamesEveryLabelTheSenderChose(t *testing.T) {
+	node := &inboxNode{}
+	session := node.connect(t)
+	text, isErr := call(t, session, "agent_inbox", map[string]any{})
+	if isErr {
+		t.Fatal(text)
+	}
+	if !strings.Contains(text, "displayName and session are labels they chose") {
+		t.Errorf("the notice does not cover the session label: %s", text)
 	}
 }
 

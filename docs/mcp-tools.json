@@ -115,19 +115,7 @@
       "description": "Read queued messages addressed to the caller's managed session.",
       "inputSchema": {
         "type": "object",
-        "required": [
-          "agentId"
-        ],
         "properties": {
-          "agentId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512,
-            "description": "<provider>:<id> for this node, or <node-id>/<provider>:<id> for a named node."
-          },
-          "after": {
-            "type": "string"
-          },
           "limit": {
             "type": "integer",
             "minimum": 1,
