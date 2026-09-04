@@ -89,7 +89,7 @@ to receive is not willing to send, and neither is willing to act unattended:
 | Gate | Where | State |
 |---|---|---|
 | `acceptMessages` | on the recipient | implemented |
-| `allowOutbound` | on the sender | implemented, default off, enforced by the node in `POST /v1/messages` and checked earlier in `agenthub-mcp` |
+| `allowOutbound` | on the sender | implemented, default off, enforced by the node in `POST /v1/messages`; `agenthub-mcp` also checks it first for the sends it makes |
 | `autoWake` | on the recipient | Step 8, #59, default off |
 
 TLS is pinned to the public key recorded when the two nodes paired, verified
@@ -470,8 +470,8 @@ A heartbeat carries metadata this node observed. A message carries what a person
 wrote, which is a different kind of data and is treated as one: it is queued for
 the owner to read, and **nothing injects it into a provider**.
 
-`ah send <node-id>/<provider>:<id>` records the message in a local queue and
-answers `202 Accepted`. That status is the contract: the message is queued here
+`ah send --from <local-session-id> <node-id>/<provider>:<id> <message>` records
+the message in a local queue and answers `202 Accepted`. That status is the contract: the message is queued here
 and nothing else has happened. The destination machine may be asleep. Answering
 `201 Created` would make success mean something this node cannot know, so
 `ah outbound <message-id>` is where the outcome is found afterwards.

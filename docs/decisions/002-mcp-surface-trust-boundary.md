@@ -141,11 +141,6 @@ advertisement.
   in an inbox stays, and is shown without a fingerprint.
 - **An agent that decides to comply.** Presentation makes the provenance of a
   message unmistakable. It cannot make a model refuse.
-- **An agent that speaks for an open session.** `allowOutbound` is enforced by
-  the node (#75), so an agent that reasons its way to `curl`-ing the owner's API
-  meets the same gate. But the owner's API cannot tell the CLI from an agent, so
-  any local process can name a session whose owner opened outbound. The gate
-  bounds which sessions may send, not who speaks for them.
 - **The owner's own API.** It is loopback-only, and anything that can reach it
   can already restart the process. `agenthub-mcp` additionally refuses a
   non-loopback node URL, but that is a guardrail against misconfiguration, not a
@@ -158,10 +153,14 @@ advertisement.
 - **Provider injection.** Out of scope by decision (#16), unchanged.
 - **A `from` label on the owner's own API.** Any local process can post with
   `from` naming a real local session; the node validates the shape, not that the
-  caller owns it. The agent then sees that session as the sender. The API is
-  loopback-only, but the misuse this permits is a co-resident process posing as a
-  colleague session, which is not the "can already restart the process"
-  reasoning the bullet above rests on.
+  caller owns it. The agent then sees that session as the sender — and since
+  #75 it is that session's `allowOutbound` that decides whether the message may
+  leave, so an agent that reasons its way to `curl`-ing the owner's API meets
+  the same gate as `agent_send`, but any local process can name a session whose
+  owner opened it. The gate bounds which sessions may send, not who speaks for
+  them. The API is loopback-only, but the misuse this permits is a co-resident
+  process posing as a colleague session, which is not the "can already restart
+  the process" reasoning the bullet above rests on.
 - **The `session` half of a remote sender's label.** Only the node part is
   proven; the rest is what the peer claimed, so a peer can label its message
   `<peer>/claude:<the owner's own session id>`. That is why the notice tells the
