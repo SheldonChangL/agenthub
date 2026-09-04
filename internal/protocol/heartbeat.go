@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
+	"agenthub.local/agenthub/internal/address"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -154,6 +156,7 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, recipientNo
 	}
 
 	summaries := make([]SessionSummary, 0, len(sessions))
+	var leftOut []string
 	for _, session := range sessions {
 		// The registry filter answers "does this leave the host at all". Only
 		// the recipient answers "may this peer see it", so a per-peer build
@@ -161,15 +164,44 @@ func (b *HeartbeatBuilder) build(ctx context.Context, now time.Time, recipientNo
 		if filter == peerExportView && !session.Audience.PublishesTo(recipientNodeID) {
 			continue
 		}
+		// A row a peer would refuse costs that session, not the heartbeat. A
+		// receiver refuses a whole snapshot over one bad row, so exporting it
+		// would take every other session with it — and unlike a working
+		// directory an id cannot be dropped and the session kept. Claude and
+		// Codex both produce UUIDs, so this is about a store written by
+		// something else.
+		//
+		// The address check comes first because Summarize fails on a separator,
+		// and that failure is the loud kind below.
+		if err := address.ValidateLocalSessionID(session.ID); err != nil {
+			leftOut = append(leftOut, "id "+truncateForError(session.ID)+" is not a session address")
+			continue
+		}
 		// A refusal here means the registry returned something the export view
 		// must not carry. Fail the whole heartbeat rather than send a partial
 		// one: the query already filters on visibility, so reaching this is a
 		// bug, and a bug in this path is exactly what must not ship silently.
-		summary, err := Summarize(b.node.ID, session)
+		summary, err := SummarizeAt(b.node.ID, session, now)
 		if err != nil {
 			return Envelope{}, fmt.Errorf("project session for export: %w", err)
 		}
+		// The receiver's own check, run here on what is about to be sent, so
+		// the two sides cannot disagree: whatever this node would refuse from a
+		// peer, it does not send to one. A restatement of those rules on this
+		// side was tried first and missed one (a provider disagreeing with its
+		// id); running the same function cannot.
+		if err := validateIncomingSummary(b.node.ID, summary); err != nil {
+			leftOut = append(leftOut, err.Error())
+			continue
+		}
 		summaries = append(summaries, summary)
+	}
+	if len(leftOut) > 0 {
+		// One line per build, not one per row: a store full of rows a peer would
+		// refuse is for the owner to notice, not for the log to fill at every
+		// tick for every peer.
+		log.Printf("heartbeat: leaving out %d session(s) a peer would refuse; first: %s",
+			len(leftOut), leftOut[0])
 	}
 
 	// The sequence is reserved last, and a failure here produces no envelope at
