@@ -618,8 +618,10 @@ property of the design.
 Two things about how the message got there. B's own agent **declined to send
 it** through `agent_send`, so it was queued with the owner's CLI instead — which
 is why the receiving side could be tested at all. And `ah send` reached the node
-through the same unchecked `POST /v1/messages` that #75 is about, though by the
-owner rather than by the agent that issue describes.
+through the then-unchecked `POST /v1/messages` that #75 is about, though by the
+owner rather than by the agent that issue describes. #85 has since closed that
+endpoint: a message to another node must now name a local session whose owner
+opened outbound.
 
 The hostile message was still in A's inbox at revoke time, and is shown from
 then on without a fingerprint, since its sender is no longer in the trust store.
@@ -629,7 +631,8 @@ then on without a fingerprint, since its sender is no longer in the trust store.
 - Wake-up: nothing hands a message to an agent unprompted (#60). Every read here
   was asked for.
 - B's side of revocation, above.
-- The outbound gate is enforced in `agenthub-mcp`, not the node (#75).
+- The outbound gate was enforced in `agenthub-mcp`, not the node, at the time
+  of this run (#75; closed by #85).
 - Presence content validation (#76), peer-declared expiry (#77), and the inbox
   jam (#78) were not exercised. All three were open at the time of this run,
   and their fixes (#83, #84) had not merged when this was written.

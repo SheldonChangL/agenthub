@@ -196,14 +196,14 @@ func TestQualifiedAddressesReachTheRightAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	allow := perform(t, handler, http.MethodPut, "/v1/sessions/"+session+"/audience",
-		map[string]any{"mode": "none", "acceptMessages": true})
+		map[string]any{"mode": "none", "acceptMessages": true, "allowOutbound": true})
 	if allow.Code != http.StatusOK {
 		t.Fatalf("opt in = %d %s", allow.Code, allow.Body.String())
 	}
 
 	t.Run("a qualified address for an unknown node reports the node, not a parse failure", func(t *testing.T) {
 		response := perform(t, handler, http.MethodPost, "/v1/messages", map[string]string{
-			"to": "node_somewhereelse00/claude:abc", "body": "hello",
+			"to": "node_somewhereelse00/claude:abc", "from": session, "body": "hello",
 		})
 		if response.Code != http.StatusNotFound {
 			t.Fatalf("response = %d %s; want 404", response.Code, response.Body.String())
