@@ -89,7 +89,7 @@ to receive is not willing to send, and neither is willing to act unattended:
 | Gate | Where | State |
 |---|---|---|
 | `acceptMessages` | on the recipient | implemented |
-| `allowOutbound` | on the sender | implemented, default off, enforced in `agenthub-mcp` rather than the node (#75) |
+| `allowOutbound` | on the sender | implemented, default off, enforced by the node in `POST /v1/messages` and checked earlier in `agenthub-mcp` |
 | `autoWake` | on the recipient | Step 8, #59, default off |
 
 TLS is pinned to the public key recorded when the two nodes paired, verified
@@ -143,7 +143,7 @@ of them do, is recorded in
 | Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
 | Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
 | Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
-| MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced in this process rather than the node (#75) |
+| MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced by the node and checked earlier in this process |
 | Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
 | Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
 | Distribution | CI cross-compiles for six platforms and discards the output. No release, no installer, no version number. Step 10, #67 |

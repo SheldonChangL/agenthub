@@ -648,6 +648,29 @@ func TestAMessageLeavingTheMachineNeedsAnOpenGate(t *testing.T) {
 		}
 	})
 
+	t.Run("a sender qualified with another node is refused even with its gate open", func(t *testing.T) {
+		// Otherwise the gate decides on a session the caller has just said is
+		// elsewhere, and the outbound record names a third node as the sender.
+		open := openOutbound(t, store, owner, "open-gate-elsewhere")
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": remote, "from": "node_other00000000000/" + open, "body": "hello"})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "verify") {
+			t.Fatalf("response = %d %s; want 400 saying the claim cannot be verified",
+				response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("a sender this node has no session for is refused by name", func(t *testing.T) {
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": remote, "from": "claude:nobody-here", "body": "hello"})
+		if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "OUTBOUND_SENDER_UNKNOWN") {
+			t.Fatalf("response = %d %s; want 404 OUTBOUND_SENDER_UNKNOWN", response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "from: ") || !strings.Contains(response.Body.String(), "nobody-here") {
+			t.Errorf("the refusal does not say which name it is about: %s", response.Body.String())
+		}
+	})
+
 	t.Run("a local destination is not gated", func(t *testing.T) {
 		// Nothing leaves the machine, so the gate does not apply — and the
 		// sender need not be named at all, as before.

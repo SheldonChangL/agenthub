@@ -80,16 +80,17 @@ does not control it.
 It is checked **before** the destination is resolved, so a closed session cannot
 be used to enumerate what is visible.
 
-**Where it is enforced matters, and the honest answer is not flattering.** The
-check lives in `agenthub-mcp`, a client of the node. `POST /v1/messages` knows
-nothing about the flag, so any process on this machine can post directly —
-including an agent with a shell, which can read the node URL from this process's
-argv.
+**Where it is enforced.** The node enforces it in `POST /v1/messages`: a message
+to another node must name a local session, and that session's flag decides.
+`agenthub-mcp` checks it as well, before resolving the destination, in words
+addressed to the agent. Until #75 the client was the only check, and any process
+on this machine — including an agent with a shell, which can read the node URL
+from this process's argv — could post directly and bypass it.
 
-So this closes the path an agent takes by *following an instruction it read*,
-which is the path inbox content actually opens. It is not a boundary against an
-agent that has decided to work around it. #75 moves enforcement to the node,
-where the policy lives.
+The node's check is the boundary. What it cannot do is tell the owner's CLI from
+an agent that was talked into calling it: both are loopback. So the gate bounds
+*which sessions* may send, not *who* speaks for them — a session whose owner
+opened outbound can be named by anything on the machine.
 
 ### 5. The caller's identity is fixed at startup, not per call
 
@@ -140,11 +141,11 @@ advertisement.
   in an inbox stays, and is shown without a fingerprint.
 - **An agent that decides to comply.** Presentation makes the provenance of a
   message unmistakable. It cannot make a model refuse.
-- **An agent that works around the gate.** Until #75, `allowOutbound` is
-  enforced by a client of the node rather than the node. An agent that reasons
-  its way to `curl`-ing the owner's API is not stopped by it. This is the gap
-  between "an agent following instructions" and "an agent pursuing a goal", and
-  only the first is addressed today.
+- **An agent that speaks for an open session.** `allowOutbound` is enforced by
+  the node (#75), so an agent that reasons its way to `curl`-ing the owner's API
+  meets the same gate. But the owner's API cannot tell the CLI from an agent, so
+  any local process can name a session whose owner opened outbound. The gate
+  bounds which sessions may send, not who speaks for them.
 - **The owner's own API.** It is loopback-only, and anything that can reach it
   can already restart the process. `agenthub-mcp` additionally refuses a
   non-loopback node URL, but that is a guardrail against misconfiguration, not a

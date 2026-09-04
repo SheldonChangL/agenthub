@@ -101,11 +101,25 @@ func (r runner) command(ctx context.Context, args []string) error {
 		// has not opened outbound — and it cannot tell the owner's CLI from an
 		// agent that was talked into calling it. The gate is per session, so
 		// the message has to be attributed to one.
+		//
+		// --from is recognised anywhere, as `--from <id>` or `--from=<id>`,
+		// the way audience takes its flags; the first remaining word is the
+		// destination and the rest is the message.
 		fromSession := ""
-		rest := args[1:]
-		if len(rest) >= 2 && rest[0] == "--from" {
-			fromSession = rest[1]
-			rest = rest[2:]
+		rest := make([]string, 0, len(args)-1)
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--from":
+				if i+1 >= len(args) {
+					return errors.New("--from needs a value: the local session the message is from")
+				}
+				i++
+				fromSession = args[i]
+			case strings.HasPrefix(args[i], "--from="):
+				fromSession = strings.TrimPrefix(args[i], "--from=")
+			default:
+				rest = append(rest, args[i])
+			}
 		}
 		if len(rest) < 2 {
 			return errors.New("usage: ah send [--from <local-session-id>] <session-id> <message>\n" +
@@ -364,7 +378,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
-	_, _ = fmt.Fprintln(output, "  ah send <node-id>/<provider>:<id> <message>   queues for a paired node")
+	_, _ = fmt.Fprintln(output, "  ah send --from <local-session-id> <node-id>/<provider>:<id> <message>")
+	_, _ = fmt.Fprintln(output, "                                               queues for a paired node; --from names the local session it leaves from")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 }

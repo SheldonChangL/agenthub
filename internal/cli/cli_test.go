@@ -224,6 +224,28 @@ func TestSendCarriesFromToTheNode(t *testing.T) {
 		t.Errorf("to/body = %v / %v", body["to"], body["body"])
 	}
 
+	// The flag is positional-agnostic, the way audience's flags are: after the
+	// destination, after the message, or in `--from=` form.
+	for name, args := range map[string][]string{
+		"after the destination": {"send", "node_peer0000000000000/codex:x", "--from", "claude:mine", "hello", "there"},
+		"after the message":     {"send", "node_peer0000000000000/codex:x", "hello", "there", "--from", "claude:mine"},
+		"equals form":           {"send", "--from=claude:mine", "node_peer0000000000000/codex:x", "hello", "there"},
+	} {
+		body = nil
+		code = Run(context.Background(), append([]string{"--url", server.URL}, args...), &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("%s: exit = %d, stderr = %q", name, code, stderr.String())
+		}
+		if body["from"] != "claude:mine" || body["to"] != "node_peer0000000000000/codex:x" || body["body"] != "hello there" {
+			t.Errorf("%s: from/to/body = %v / %v / %v", name, body["from"], body["to"], body["body"])
+		}
+	}
+	// A dangling --from is an error, not a message.
+	if code = Run(context.Background(), []string{"--url", server.URL, "send", "claude:local", "hi", "--from"},
+		&stdout, &stderr); code == 0 || !strings.Contains(stderr.String(), "--from needs a value") {
+		t.Errorf("dangling --from: exit = %d, stderr = %q", code, stderr.String())
+	}
+
 	// Without --from the field is simply absent — the node decides.
 	body = nil
 	code = Run(context.Background(),
