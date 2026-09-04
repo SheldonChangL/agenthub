@@ -308,7 +308,18 @@ func (r runner) inbox(ctx context.Context, sessionID string) error {
 	}
 	whole := page{Messages: []json.RawMessage{}}
 	after := ""
-	for {
+	// A ceiling on the pages, not only on what ends them. The node is trusted,
+	// but a bug or a wrong URL that answers with a cursor that never advances
+	// would otherwise spin here until the context died, with the terminal
+	// filling. The inbox bound is 500 and a page is 10.
+	const maxPages = 60
+	stopped := false
+	pagesRead := 0
+	for pages := 0; ; pages++ {
+		if pages == maxPages {
+			stopped = true
+			break
+		}
 		path := "/v1/inbox/" + url.PathEscape(sessionID) + "?limit=10&after=" + url.QueryEscape(after)
 		body, err := r.request(ctx, http.MethodGet, path, nil)
 		if err != nil {
@@ -318,18 +329,49 @@ func (r runner) inbox(ctx context.Context, sessionID string) error {
 		if err := json.Unmarshal(body, &current); err != nil {
 			return fmt.Errorf("decode inbox page: %w", err)
 		}
-		whole.Messages = append(whole.Messages, current.Messages...)
 		whole.Held, whole.Capacity, whole.Full = current.Held, current.Capacity, current.Full
+		if current.Next == after && after != "" {
+			// The same cursor again. Its messages are the ones already held, so
+			// appending them would print a duplicate on the way out.
+			stopped = true
+			break
+		}
+		whole.Messages = append(whole.Messages, current.Messages...)
+		pagesRead++
 		if current.Next == "" || len(current.Messages) == 0 {
 			break
 		}
 		after = current.Next
 	}
-	encoded, err := json.Marshal(whole)
-	if err != nil {
-		return fmt.Errorf("encode inbox: %w", err)
+	// Encoded straight out rather than marshalled and decoded again: an inbox
+	// at its bound is tens of megabytes, and the round trip through `any` would
+	// hold three copies of it at once.
+	//
+	// Printed before the error below, so a truncated answer is still an answer:
+	// the messages that were read are worth having even when the reason the
+	// reading stopped is a misbehaving node.
+	if stopped {
+		whole.Next = after
 	}
-	return writePrettyJSON(r.stdout, encoded)
+	encoder := json.NewEncoder(r.stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(whole); err != nil {
+		return err
+	}
+	if stopped {
+		// Not silent. A truncated answer that looks complete is the failure
+		// this command was just fixed for, in a different costume.
+		bound := ""
+		if whole.Capacity > 0 {
+			// Only when the node said what its bound is. A broken node may not
+			// have, and "holds at most 0 messages" explains nothing.
+			bound = fmt.Sprintf(" An inbox holds at most %d messages.", whole.Capacity)
+		}
+		return fmt.Errorf("stopped after %d page(s): the node is still issuing cursors, or issued "+
+			"the same one twice.%s This is the node misbehaving. What was read is above "+
+			"and `next` says where it stopped", pagesRead, bound)
+	}
+	return nil
 }
 
 // responseCap bounds what this CLI reads from the node in one answer.

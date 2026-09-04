@@ -184,6 +184,11 @@ const SessionIDSeparator = "/"
 const (
 	MaxNodeIDLength            = 128
 	MaxProviderSessionIDLength = 128
+	// MaxMessageIDLength bounds an id a peer chooses for a message it sends.
+	// The receiving edge and the inbox cursor both have to agree on it: a
+	// message the store admits but the cursor cannot name is a page boundary
+	// the node cannot get past.
+	MaxMessageIDLength = 128
 	// MaxProviderNameLength bounds nothing new — KnownProvider is an exact
 	// match on a short list — but the label's derivation needs a number here.
 	MaxProviderNameLength = 16

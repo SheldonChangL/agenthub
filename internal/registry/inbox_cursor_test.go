@@ -105,12 +105,64 @@ func TestAnInboxCursorRoundTripsAndGarbageIsRefused(t *testing.T) {
 		t.Errorf("empty = %+v, %v; want the start", start, err)
 	}
 	for _, bad := range []string{
-		"abc", "12", ".msg_a", "12.", "-1.msg_a", "12.msg\n", "12.msg a",
-		strings.Repeat("1", 30) + ".msg_a", "12." + strings.Repeat("a", 200),
+		"abc", "12", ".bXNnX2E", "12.", "-1.bXNnX2E", "12.not base64!",
+		strings.Repeat("1", 30) + ".bXNnX2E", "12." + strings.Repeat("YQ", 200),
 	} {
 		if _, err := registry.ParseInboxCursor(bad); err == nil {
 			t.Errorf("%q was accepted as a cursor", bad)
 		}
+	}
+}
+
+// A peer chooses the id of a message it sends, and the store admits any
+// non-blank one within its bound. A cursor that could not name one of those was
+// a cursor this node would emit at a page boundary and then refuse on the next
+// request — the failure this whole change is about, reachable with eleven small
+// messages instead of fifty large ones.
+//
+// The protocol layer refuses such an id on the wire now, but a row already in a
+// database does not go back through it, so the cursor has to be total anyway.
+func TestACursorCanNameAnyIDTheStoreHolds(t *testing.T) {
+	ctx := context.Background()
+	store, id := openWithAcceptingSession(t)
+	awkward := []string{"msg with space", "msg_é", "msg_\ttab", "msg_\"quote\"", "msg_/slash"}
+	for i, messageID := range awkward {
+		if _, err := store.CreateMessage(ctx, model.Message{
+			ID: messageID, To: id, From: "codex:sender", DestinationNodeID: cursorTestNode,
+			Body: fmt.Sprintf("m%d", i),
+		}); err != nil {
+			t.Fatalf("seed %q: %v", messageID, err)
+		}
+	}
+	seen := map[string]bool{}
+	after := registry.InboxStart
+	for page := 0; page < len(awkward)+1; page++ {
+		messages, err := store.Inbox(ctx, id, 2, after)
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(messages) == 0 {
+			break
+		}
+		for _, m := range messages {
+			if seen[m.ID] {
+				t.Fatalf("message %q came back twice", m.ID)
+			}
+			seen[m.ID] = true
+		}
+		// Round-tripped through the wire form, which is what the API does.
+		next := registry.CursorAfter(messages[len(messages)-1])
+		parsed, err := registry.ParseInboxCursor(next.String())
+		if err != nil {
+			t.Fatalf("the node refused a cursor it issued for %q: %v", next.ID, err)
+		}
+		if parsed != next {
+			t.Fatalf("cursor round trip = %+v, want %+v", parsed, next)
+		}
+		after = parsed
+	}
+	if len(seen) != len(awkward) {
+		t.Errorf("saw %d of %d messages: %v", len(seen), len(awkward), seen)
 	}
 }
 
@@ -130,6 +182,21 @@ func TestASenderLabelIsBoundedOnEveryWritePath(t *testing.T) {
 		ID: "msg_in", To: id, From: long, DestinationNodeID: cursorTestNode, Body: "hi",
 	}); err == nil {
 		t.Error("StoreIncomingMessage stored an oversized sender label")
+	}
+	// An id longer than the bound is refused on both write paths. Both, because
+	// an id the store admits and the cursor cannot name is a page boundary the
+	// node cannot get past — and the owner's path does not go through the
+	// peer path's checks.
+	longID := strings.Repeat("i", model.MaxMessageIDLength+1)
+	if _, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: longID, To: id, From: "codex:sender", DestinationNodeID: cursorTestNode, Body: "hi",
+	}); err == nil {
+		t.Error("StoreIncomingMessage stored an oversized message id")
+	}
+	if _, err := store.CreateMessage(ctx, model.Message{
+		ID: longID, To: id, From: "codex:sender", DestinationNodeID: cursorTestNode, Body: "hi",
+	}); err == nil {
+		t.Error("CreateMessage stored an oversized message id")
 	}
 	// A sender with every part at its limit is legitimate and fits.
 	atLimit := strings.Repeat("n", model.MaxNodeIDLength) + "/claude:" + strings.Repeat("s", model.MaxProviderSessionIDLength)

@@ -646,3 +646,52 @@ func TestTheInboxPagesWithNext(t *testing.T) {
 		t.Errorf("garbage cursor = %d %s; want 400 naming the cursor", bad.Code, bad.Body.String())
 	}
 }
+
+// A page boundary that falls on a message whose id a peer chose must still be
+// crossable. The wire refuses an awkward id now, but a row already in a
+// database was written before that check, and the node must not answer its own
+// cursor with a 400 — that is the failure this change exists to remove, and it
+// is cheaper to reach with small messages than with large ones.
+func TestAPageBoundaryOnAPeerChosenIDIsCrossable(t *testing.T) {
+	store, owner := testServer(t)
+	id := seedSession(t, store, "awkward-boundary")
+	if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+		t.Fatal(response.Body.String())
+	}
+	// Straight into the store, the way an older build stored what a peer sent.
+	for i, messageID := range []string{"msg with space", "msg_\ttab", "msg_é"} {
+		if _, err := store.CreateMessage(context.Background(), model.Message{
+			ID: messageID, To: id, From: "codex:sender", DestinationNodeID: testNodeID,
+			Body: fmt.Sprintf("m%d", i),
+		}); err != nil {
+			t.Fatalf("seed %q: %v", messageID, err)
+		}
+	}
+	var page struct {
+		Messages []struct {
+			ID string `json:"id"`
+		} `json:"messages"`
+		Next string `json:"next"`
+	}
+	first := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=1", nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("page 1 = %d %s", first.Code, first.Body.String())
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Next == "" {
+		t.Fatal("no cursor was issued for a full page")
+	}
+	second := perform(t, owner, http.MethodGet, "/v1/inbox/"+id+"?limit=1&after="+url.QueryEscape(page.Next), nil)
+	if second.Code != http.StatusOK {
+		t.Fatalf("the node refused a cursor it issued: %d %s", second.Code, second.Body.String())
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 1 || page.Messages[0].ID == "msg with space" {
+		t.Errorf("page 2 = %+v; want the message after the first", page.Messages)
+	}
+}

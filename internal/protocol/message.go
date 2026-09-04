@@ -61,8 +61,19 @@ func (p MessagePayload) Validate() error {
 	if strings.TrimSpace(p.MessageID) == "" {
 		return fmt.Errorf("message id is required")
 	}
-	if len(p.MessageID) > 128 {
+	if len(p.MessageID) > model.MaxMessageIDLength {
 		return fmt.Errorf("message id is too long")
+	}
+	// Printable ASCII, like every other identifier here. Not because the store
+	// cannot hold anything else — it can — but because an id is shown to a
+	// person, named in `ah inbox-clear <session> <id>`, and used to name a page
+	// boundary. A tab or a right-to-left override in it belongs to none of
+	// those uses. The value is not echoed: an id with a control byte in it is
+	// exactly what must not reach a log line.
+	for i := 0; i < len(p.MessageID); i++ {
+		if p.MessageID[i] < '!' || p.MessageID[i] > '~' {
+			return fmt.Errorf("message id has a byte outside printable ASCII")
+		}
 	}
 	if err := address.ValidateLocalSessionID(p.To); err != nil {
 		return fmt.Errorf("recipient session: %w", err)
