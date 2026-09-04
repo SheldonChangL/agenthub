@@ -126,8 +126,8 @@ address.
    on the destination node, and the destination provider's session file was
    confirmed unmodified — still not injected into any provider.
 
-Steps 7 to 10 continue in issues #56 (MCP server), #60 (wake-up), #63 (pairing),
-and #67 (distribution).
+Step 7 (#56, the MCP server) is done. Steps 8 to 10 continue in #60 (wake-up),
+#63 (pairing), and #67 (distribution).
 
 ## Boundaries for this increment
 
@@ -152,4 +152,7 @@ and #67 (distribution).
   trust-record views.
 - Policy groups and aliases. The audience table is the primitive they would be
   built from; it is enough on its own for the first release.
-- Provider message injection, session launch and wake-up, full MCP transport.
+- Session launch and supervision, and wake-up (#60), which goes through each
+  provider's own API rather than writing into its files or process — that
+  boundary does not move. `agenthub-mcp` serves the MCP surface over stdio;
+  Streamable HTTP would put it on a socket, a separate decision not taken.

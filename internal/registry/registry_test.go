@@ -263,7 +263,7 @@ func TestAMessageRecordsWhereItWasAddressed(t *testing.T) {
 }
 
 // TestAMessageWithoutADestinationIsRefused keeps the column from quietly
-// filling with empty strings once routing exists and the value matters.
+// filling with empty strings, now that a row can name another node.
 func TestAMessageWithoutADestinationIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)

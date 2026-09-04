@@ -48,9 +48,10 @@ func (a *App) NodeURL() string {
 	return nodeURL
 }
 
-// SetNodeURL repoints the app at another node. Non-loopback hosts are refused:
-// the local API has no authentication yet, so a remote target would be both
-// unreachable and unsafe to encourage.
+// SetNodeURL repoints the app at another node on this machine. Non-loopback
+// hosts are refused: the owner's API has no authentication and stays on loopback
+// for that reason, so a remote target would be both unreachable and unsafe to
+// encourage.
 func (a *App) SetNodeURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -67,7 +68,10 @@ func (a *App) SetNodeURL(raw string) error {
 		return fmt.Errorf("node URL must include a host")
 	}
 	if !isLoopbackHost(parsed.Hostname()) {
-		return fmt.Errorf("only loopback nodes are supported until authenticated LAN pairing exists")
+		return fmt.Errorf("the node URL must be loopback: this app speaks to the owner's API, " +
+			"which has no authentication and is served on loopback for that reason. This field " +
+			"says where this machine's own node is; to reach another machine, pair with it in " +
+			"the Network view — its node answers this one over its peer listener")
 	}
 	trimmed := strings.TrimRight(raw, "/")
 	a.mu.Lock()
@@ -251,8 +255,14 @@ func (a *App) RevokeNode(nodeID string) error {
 	return activeClient.revokeNode(a.ctx, nodeID)
 }
 
-// Heartbeat returns the exact payload a future broker would receive. It is the
-// app's proof to the user that private sessions never leave the host.
+// Heartbeat returns the owner's own preview of what this node exports: the union
+// of every published session, signed the way a peer's copy would be.
+//
+// It is not what any peer receives. A peer gets the output of BuildFor, which
+// applies that peer's audience, so this preview is a superset: a session
+// published only to node X appears here, while every other peer's envelope
+// omits it. What it does show, and what it is here for, is that a session the
+// owner has not published appears in no export at all.
 func (a *App) Heartbeat() (string, error) {
 	activeClient, _ := a.current()
 	raw, err := activeClient.heartbeat(a.ctx)

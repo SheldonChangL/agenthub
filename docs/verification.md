@@ -462,9 +462,9 @@ Measured on 2026-08-28 while raising the floor from `go 1.25.0`:
 `internal/buildpolicy` holds no production code; its one test reads both
 `go.mod` files and fails if either floor drops below 1.27.0.
 
-CI does not yet pin the toolchain. That is tracked in
-[issue #22](https://github.com/SheldonChangL/agenthub/issues/22); until it
-lands, the floor is enforced by the go command on each contributor's machine.
+CI pins the toolchain to the same floor: every job resolves its Go version with
+`go-version-file`, pointed at the module's own `go.mod`, so a raised floor moves
+CI in the same commit rather than by remembering to (issue #22).
 
 ## Two-host run, 2026-09-02
 

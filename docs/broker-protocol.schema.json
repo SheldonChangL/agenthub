@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agenthub.local/schema/broker-protocol-v1.json",
   "title": "AgentHub Broker Envelope v1",
-  "$comment": "GET /v1/heartbeat returns this envelope so the local preview and the future wire payload cannot drift. Transport, authentication, and per-peer audience filtering are not implemented yet.",
+  "$comment": "GET /v1/heartbeat returns this envelope so the owner's local preview and what goes on the wire cannot drift. The preview is the union of published sessions; a peer receives the same shape with that peer's audience applied.",
   "type": "object",
   "required": [
     "protocolVersion",

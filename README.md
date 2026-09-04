@@ -19,20 +19,21 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Message inbox, bounded and deduplicated, reachable from paired nodes
 - Per-session audience, working-directory export, and inbound-message policy
 - Manual fingerprint pairing, trust storage, revocation, and desktop management
-- Broker envelope schema, in use on the wire, and draft MCP tool schemas
+- Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
-- No MCP server: the four tools in `mcp-tools.json` are contract drafts, so no agent can reach any of the above (Step 7, issue #56)
-- No wake-up: messages sit in the inbox until a person reads them (Step 8, issue #60)
-- No provider message injection, by design
+- No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
+- Nothing writes into a provider's session files or process, by design
 - Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
-- No release, installer, or version number (Step 10, issue #67)
+- No release or installer: installing means building from source (Step 10, issue #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
 implemented and have been exercised between two machines
-([verification.md](docs/verification.md)). What is missing is the layer an agent
-can actually call, and everything needed for someone else to install this. Those
-are planned as Steps 7 to 10 and tracked from
+([verification.md](docs/verification.md)), and `agenthub-mcp` gives an agent four
+tools over those pipes — also exercised between two machines, each running its
+own Claude Code. What is missing is wake-up, so a message waits until someone
+asks their agent to look, and everything needed for someone else to install
+this. Those are Steps 8 to 10, tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
 ## Roadmap and release gates
@@ -42,9 +43,10 @@ are planned as Steps 7 to 10 and tracked from
 | Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
 | Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
-| Automated pairing, MCP server, wake-up, distribution | Planned | issues [#56](https://github.com/SheldonChangL/agenthub/issues/56), [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
+| MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
+| Automated pairing, wake-up, distribution | Planned | issues [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
-| MCP runtime and provider injection/wake-up | Deferred; contracts or model only | [MCP draft](docs/mcp-tools.json), [spec](docs/spec.md) |
+| Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
 
 ## Build and test
 
@@ -61,6 +63,7 @@ go test ./...
 mkdir -p bin
 go build -o bin/agenthub-node ./cmd/agenthub-node
 go build -o bin/ah ./cmd/ah
+go build -o bin/agenthub-mcp ./cmd/agenthub-mcp
 ```
 
 ## Run locally
@@ -106,6 +109,36 @@ signature and recipient binding on all of them, plus expiry and a strictly
 advancing sequence on heartbeats, and message-id deduplication on messages.
 Session list responses are paginated; `ah list` follows every page automatically.
 
+## Give an agent the four tools
+
+`agenthub-mcp` is an MCP server over stdio. It is bound to one session at
+startup, because stdio carries no caller identity: whoever runs it decides which
+session it speaks for, and it will not act for any other.
+
+```sh
+# -as is required. Add -url <node url> if the node is not on 127.0.0.1:7462.
+go run ./cmd/agenthub-mcp -as claude:<id>
+```
+
+In `.mcp.json`, for a Claude Code session:
+
+```json
+{
+  "mcpServers": {
+    "agenthub": {
+      "command": "/absolute/path/to/bin/agenthub-mcp",
+      "args": ["-as", "claude:<id>"]
+    }
+  }
+}
+```
+
+The four tools are `agent_list`, `agent_status`, `agent_inbox` and `agent_send`;
+their contract is [mcp-tools.json](docs/mcp-tools.json). Reading is enough on its
+own, but sending needs the owner to open the gate for that session
+(`ah audience <id> ... --outbound`), and the node refuses an unattributed message
+to another machine regardless.
+
 ## Desktop app
 
 The desktop app is the owner's management surface for the privacy model. It
@@ -121,7 +154,7 @@ wails dev     # live-reload development
 wails build   # produces build/bin/agenthub-desktop.app
 ```
 
-The app requires a running node and talks to it over the same local HTTP API as the CLI. It refuses non-loopback node URLs, because the local API has no authentication yet.
+The app requires a running node and talks to it over the same local HTTP API as the CLI. It refuses non-loopback node URLs, because the owner's API has no authentication and stays on loopback for that reason.
 
 ## Privacy model
 
@@ -163,9 +196,9 @@ at audience `none`, including rows previously marked public: that flag controlle
 a local preview at a time when no remote peer existed, so it was never consent to
 share with one.
 
-Queued AgentHub messages are stored in the local SQLite database. They are not injected into Claude or Codex in this MVP, and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
+Queued AgentHub messages are stored in the local SQLite database. They are not written into a Claude or Codex session's files or process — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
 
-See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool draft](docs/mcp-tools.json).
+See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool contract](docs/mcp-tools.json).
 
 The Codex App Server client boundary is implemented and schema-tested, but is not enabled in the node's default scan path yet. See [Codex App Server notes](docs/codex-app-server.md).
 
