@@ -42,6 +42,12 @@ func TestEndpointsAcceptQualifiedAddresses(t *testing.T) {
 func TestEndpointsReportUnknownNodesAsRouting(t *testing.T) {
 	store, handler := testServer(t)
 	id := seedSession(t, store, "remote-target")
+	// A message leaving the machine must name a local sender whose outbound
+	// gate is open; otherwise the answer is about the gate, not the route.
+	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "allowOutbound": true}); response.Code != http.StatusOK {
+		t.Fatalf("open outbound = %d %s", response.Code, response.Body.String())
+	}
 	remoteRaw := "node_somewhere_else/" + id
 	remote := url.PathEscape(remoteRaw)
 
@@ -53,7 +59,7 @@ func TestEndpointsReportUnknownNodesAsRouting(t *testing.T) {
 		"read audience": {http.MethodGet, "/v1/sessions/" + remote + "/audience", nil},
 		"set audience":  {http.MethodPut, "/v1/sessions/" + remote + "/audience", map[string]any{"mode": "none"}},
 		"read inbox":    {http.MethodGet, "/v1/inbox/" + remote, nil},
-		"send message":  {http.MethodPost, "/v1/messages", map[string]string{"to": remoteRaw, "body": "hello"}},
+		"send message":  {http.MethodPost, "/v1/messages", map[string]string{"to": remoteRaw, "from": id, "body": "hello"}},
 	}
 	for name, testCase := range cases {
 		t.Run(name, func(t *testing.T) {

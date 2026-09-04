@@ -196,12 +196,13 @@ func TestARedeliveryDoesNotDuplicate(t *testing.T) {
 // TestSendToAPeerQueuesRatherThanDelivers is issue #16's second acceptance
 // item. `ah send` succeeding must not be read as "delivered" or "read".
 func TestSendToAPeerQueuesRatherThanDelivers(t *testing.T) {
-	_, owner, _ := testSurfaces(t)
+	store, owner, _ := testSurfaces(t)
 	peer := newSender(t, peerNodeID)
 	peer.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
 
 	response := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
-		"to": peerNodeID + "/codex:their-session", "body": "look at this",
+		"to": peerNodeID + "/codex:their-session", "from": from, "body": "look at this",
 	})
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("response = %d %s; want 202 Accepted, not a created-and-delivered 201",
@@ -234,9 +235,10 @@ func TestSendToAPeerQueuesRatherThanDelivers(t *testing.T) {
 // TestSendToAnUnpairedNodeIsRefused keeps the queue from filling with messages
 // that can never be delivered.
 func TestSendToAnUnpairedNodeIsRefused(t *testing.T) {
-	_, owner, _ := testSurfaces(t)
+	store, owner, _ := testSurfaces(t)
+	from := openOutbound(t, store, owner, "sender")
 	response := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
-		"to": "node_neverpaired00000/codex:whatever", "body": "hello",
+		"to": "node_neverpaired00000/codex:whatever", "from": from, "body": "hello",
 	})
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("response = %d %s; want 404", response.Code, response.Body.String())
@@ -587,4 +589,77 @@ func TestALocallyQueuedSenderIsQualifiedByThisNode(t *testing.T) {
 	if want := testNodeID + "/" + id; decoded.Messages[0].From != want {
 		t.Errorf("from = %q, want %q", decoded.Messages[0].From, want)
 	}
+}
+
+// openOutbound seeds a local session and opens its outbound gate, returning the
+// id a caller passes as `from`.
+func openOutbound(t *testing.T, store *registry.Registry, handler http.Handler, name string) string {
+	t.Helper()
+	id := seedSession(t, store, name)
+	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience",
+		map[string]any{"mode": "none", "allowOutbound": true}); response.Code != http.StatusOK {
+		t.Fatalf("open outbound for %s = %d %s", id, response.Code, response.Body.String())
+	}
+	return id
+}
+
+// The gate was checked only in agenthub-mcp, a client of this node. Any local
+// process could post here directly and bypass it — and this node cannot tell the
+// owner's CLI from an agent talked into calling it. So a message that leaves the
+// machine must be attributed to a local session, and that session's gate
+// decides.
+func TestAMessageLeavingTheMachineNeedsAnOpenGate(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	remote := peerNodeID + "/codex:theirs"
+
+	t.Run("no sender named is refused", func(t *testing.T) {
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": remote, "body": "hello"})
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "OUTBOUND_NEEDS_SENDER") {
+			t.Fatalf("response = %d %s; want 400 OUTBOUND_NEEDS_SENDER", response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Body.String(), "--from") {
+			t.Errorf("the refusal does not say how to fix it: %s", response.Body.String())
+		}
+	})
+
+	t.Run("a sender with the gate closed is refused", func(t *testing.T) {
+		closed := seedSession(t, store, "closed-gate")
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": remote, "from": closed, "body": "hello"})
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "OUTBOUND_CLOSED") {
+			t.Fatalf("response = %d %s; want 403 OUTBOUND_CLOSED", response.Code, response.Body.String())
+		}
+		for _, want := range []string{"--outbound", "another machine"} {
+			if !strings.Contains(response.Body.String(), want) {
+				t.Errorf("the refusal does not mention %q: %s", want, response.Body.String())
+			}
+		}
+	})
+
+	t.Run("a sender with the gate open is queued", func(t *testing.T) {
+		open := openOutbound(t, store, owner, "open-gate")
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": remote, "from": open, "body": "hello"})
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("response = %d %s; want 202", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("a local destination is not gated", func(t *testing.T) {
+		// Nothing leaves the machine, so the gate does not apply — and the
+		// sender need not be named at all, as before.
+		local := seedSession(t, store, "local-target")
+		if response := perform(t, owner, http.MethodPut, "/v1/sessions/"+local+"/audience",
+			map[string]any{"mode": "none", "acceptMessages": true}); response.Code != http.StatusOK {
+			t.Fatal(response.Body.String())
+		}
+		response := perform(t, owner, http.MethodPost, "/v1/messages",
+			map[string]string{"to": local, "body": "hello"})
+		if response.Code != http.StatusCreated {
+			t.Fatalf("a local send was gated: %d %s", response.Code, response.Body.String())
+		}
+	})
 }
