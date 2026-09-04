@@ -152,8 +152,10 @@ advertisement.
   not a follow-up.
 - **Provider injection.** Nothing here writes into a provider's session files
   or process, and nothing will: that is this project's boundary, drawn in the
-  MVP spec and the multi-node plan, confirmed on two hosts in #16 (Step 6), and
-  restated in `architecture.md`. Wake-up (#60) does not cross it — it
+  multi-node plan as Step 6's acceptance criterion, carried into #16, confirmed
+  on two hosts on 2026-09-02 (`verification.md`), and stated in
+  `architecture.md` and the spec's Never line. Wake-up (#60) does not cross it —
+  it
   goes through each provider's own API — but it does put remote content in front
   of an agent with nobody watching, which is what `autoWake` and #59 are for.
 - **A `from` label on the owner's own API.** Any local process can post with
