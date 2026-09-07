@@ -226,9 +226,11 @@ jobs:
           } > dist/BUILD
           # The checksums travel with the binaries: a downloader can check what
           # they got without a second source. Listed explicitly rather than with
-          # a bare glob: the shell creates SHA256SUMS before it expands the
-          # pattern, so on a re-run the file would checksum itself — as the
-          # empty string, which is a puzzle for whoever verifies it.
+          # a bare glob: on a second run in this directory the glob would match
+          # the previous SHA256SUMS, which the redirect has already truncated,
+          # and record the hash of the empty string — a puzzle for whoever
+          # verifies it. The directory is fresh per run, so this is about not
+          # depending on that.
           (
             cd dist
             shopt -s nullglob
