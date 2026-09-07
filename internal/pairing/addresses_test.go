@@ -46,6 +46,23 @@ func TestOnlyTheBoundAddressIsAnnounced(t *testing.T) {
 		"the loopback wildcard announces nothing": {
 			":7463", lan, nil, 7463,
 		},
+		// The unspecified address binds every interface, including any public
+		// one, so there is no single address it means. ValidatePeerListen
+		// refuses it beyond loopback; announcing it would be meaningless
+		// either way.
+		"the unspecified v4 address announces nothing": {
+			"0.0.0.0:7463", lan, nil, 7463,
+		},
+		"the unspecified v6 address announces nothing": {
+			"[::]:7463", lan, nil, 7463,
+		},
+		// A v4-mapped LAN address is announced in its plain form: the peer
+		// compares what it reads against the datagram's source, and the two
+		// spellings do not compare equal.
+		"a mapped private address is announced unmapped": {
+			"[::ffff:192.168.161.2]:7483", lan,
+			[]netip.Addr{netip.MustParseAddr("192.168.161.2")}, 7483,
+		},
 		"a name announces nothing": {
 			"localhost:7463", lan, nil, 7463,
 		},
