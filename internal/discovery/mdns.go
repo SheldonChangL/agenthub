@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/text/secure/precis"
+	"golang.org/x/text/unicode/norm"
 	"log"
 	"net"
 	"net/netip"
@@ -109,12 +110,25 @@ type Candidate struct {
 	// Duplicate marks a row whose display name or announced fingerprint is
 	// shared with another row. Two candidates claiming one fingerprint means at
 	// least one is lying, and a person needs to see that rather than pick.
+	//
+	// It compares names by meaning, not bytes — case, composition, and the
+	// apostrophe and dash variants a real machine name contains — but it cannot
+	// catch a name built from another script's lookalike letters. That is what
+	// the handshake's fingerprint comparison is for.
 	Duplicate bool
 	// Contested marks a row that something has since announced different
 	// details for, under the same node id. Either the node moved or someone is
 	// impersonating it, and nothing here can tell which — but pairing with a
 	// row in this state means comparing the fingerprint especially carefully,
 	// so it must reach the person rather than be resolved by a rule.
+	//
+	// Once set it stays set for the row's life: a rule that cleared it after
+	// quiet would be defeated by one packet every eighty-nine seconds. And it
+	// is advisory — an attacker can set it on any row for the cost of one
+	// packet, so a reader must treat it as "compare carefully", never as a
+	// reason to refuse. It is also family-scoped: a claim arriving over the
+	// address family a row is not pinned to is not flagged, because at this
+	// layer that is indistinguishable from the same node being dual-stack.
 	Contested bool
 }
 
@@ -386,9 +400,21 @@ func ParseAnnouncements(packet []byte) []Announcement {
 // "laptop" and "laptop " are two rows that look like one.
 //
 // It admits U+2800, the braille blank, which renders as nothing — so that one
-// is still refused here. It also refuses emoji ZWJ sequences under its
-// contextual rules, so a display name of "👨‍💻" is dropped; that is a real
-// limitation and preferable to writing the rules again.
+// is still refused here.
+//
+// Two of its refusals are worked around because they cost real names. Variation
+// selectors are Default_Ignorable and therefore disallowed, which is how ❤️, ☕️
+// and every keycap are written — and, for CJK, which glyph of a character to
+// draw; the selector is dropped and the character kept. A ZWJ between
+// pictographs violates a contextual rule, so a name that fails only for that is
+// retried without the emoji joiners — the ones after a virama stay, because in
+// Devanagari a joiner there is spelling and removing it writes a different
+// conjunct. Tag-sequence flags are still refused, and accepted as a limitation.
+//
+// What this cannot do is stop a name that merely looks like another. A Cyrillic
+// а in "lаptop" is a different letter, and no normalisation makes it the same
+// one; mixed-script detection would, and is not done here. The fingerprint
+// comparison in the handshake is what separates two rows that read alike.
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
@@ -403,7 +429,7 @@ func printableField(value string) string {
 	// they are how a phone or a Mac writes ❤️, ☕️, ⚠️ and every keycap. Dropping
 	// the selector keeps the character, which is what the person typed.
 	value = strings.Map(func(r rune) rune {
-		if r == '\ufe0e' || r == '\ufe0f' {
+		if unicode.Is(unicode.Variation_Selector, r) {
 			return -1
 		}
 		return r
@@ -417,7 +443,7 @@ func printableField(value string) string {
 		if !strings.ContainsRune(value, '\u200d') {
 			return ""
 		}
-		clean, err = precis.Nickname.String(strings.ReplaceAll(value, "\u200d", ""))
+		clean, err = precis.Nickname.String(stripEmojiJoiners(value))
 		if err != nil {
 			return ""
 		}
@@ -442,6 +468,35 @@ func printableField(value string) string {
 	}
 	return clean
 }
+
+// stripEmojiJoiners removes the zero-width joiners that only join emoji.
+//
+// A ZWJ after a virama is not presentation: in Devanagari it selects the
+// half-form, and removing it spells a different conjunct. A ZWJ between
+// pictographs is presentation, and PRECIS refuses it under a contextual rule,
+// so that one goes and the name survives.
+func stripEmojiJoiners(value string) string {
+	var out strings.Builder
+	out.Grow(len(value))
+	var previous rune
+	for _, r := range value {
+		if r == '\u200d' && !isVirama(previous) {
+			continue
+		}
+		out.WriteRune(r)
+		previous = r
+	}
+	return out.String()
+}
+
+// isVirama reports a combining mark with canonical combining class 9, which is
+// what makes a following joiner part of the spelling rather than of the
+// rendering.
+func isVirama(r rune) bool {
+	return norm.NFD.PropertiesString(string(r)).CCC() == viramaCombiningClass
+}
+
+const viramaCombiningClass = 9
 
 // hasBase reports whether a value has anything for its marks to attach to.
 // Combining marks alone are a row with no visible name.

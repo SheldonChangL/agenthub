@@ -312,7 +312,95 @@ func TestAForgerCannotRewriteTheRowSomeoneIsAboutToClick(t *testing.T) {
 	}
 }
 
-// A forger must not be able to keep a departed node's row alive. Refreshing on
+// The other half of the contest check, and the one that matters most: the same
+// address, a different key. A node re-keyed, or someone answering at the same
+// place with their own key — either way the fingerprint a person is about to
+// compare has changed under them.
+func TestADifferentKeyAtTheSameAddressIsContested(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	first := offering("node_rekeyed00000000", "192.168.1.9:7463", "laptop")
+	if _, err := observeOne(c, first); err != nil {
+		t.Fatal(err)
+	}
+	rekeyed := first
+	rekeyed.Fingerprint = "DEAD BEEF DEAD BEEF DEAD BEEF"
+	*clock = clock.Add(time.Second)
+	changed, err := observeOne(c, rekeyed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("a new key under a listed id was not reported as a change")
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v", listed)
+	}
+	if !listed[0].Contested {
+		t.Error("a different key at the same address is not contested")
+	}
+	if listed[0].Fingerprint != first.Fingerprint {
+		t.Errorf("fingerprint = %q; the row moved to the new key", listed[0].Fingerprint)
+	}
+}
+
+// A claim over the address family a row is not pinned to is deliberately not
+// flagged: at this layer it cannot be told from the same node being dual-stack,
+// and flagging it would mark every dual-stack machine. Pinned here so that
+// changing it is a decision rather than an accident.
+func TestAClaimOverTheOtherFamilyIsKnowinglyNotFlagged(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	victim := offering("node_victim000000000", "192.168.1.9:7463", "sheldon's laptop")
+	if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("192.168.1.9"),
+		[]Announcement{victim}); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(time.Second)
+	// Same id, same name, same announced fingerprint, other family.
+	claimant := offering("node_victim000000000", "[fe80::66]:7463", "sheldon's laptop")
+	if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("fe80::66%en0"),
+		[]Announcement{claimant}); err != nil {
+		t.Fatal(err)
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v", listed)
+	}
+	if listed[0].Contested {
+		t.Error("the cross-family case is flagged; that marks every dual-stack machine")
+	}
+	// What does hold: the row still names the address it was pinned to, so the
+	// claimant did not redirect it.
+	if listed[0].Address != "192.168.1.9:7463" {
+		t.Errorf("address = %q; a cross-family claimant redirected the row", listed[0].Address)
+	}
+}
+
+// The three outcomes, stated as a table rather than inferred from two
+// predicates — a port change used to land in the branch for a different family.
+func TestHowTwoAddressesRelate(t *testing.T) {
+	for name, c := range map[string]struct {
+		announced, existing string
+		want                addressRelation
+	}{
+		"identical":                    {"192.168.1.9:7463", "192.168.1.9:7463", addressSame},
+		"a v4-mapped form of the same": {"[::ffff:192.168.1.9]:7463", "192.168.1.9:7463", addressSame},
+		"a zoned form of the same":     {"[fe80::1%en0]:7463", "[fe80::1]:7463", addressSame},
+		"another host, same family":    {"192.168.1.40:7463", "192.168.1.9:7463", addressConflicts},
+		"another port, same host":      {"192.168.1.9:7464", "192.168.1.9:7463", addressConflicts},
+		"the other family":             {"[fe80::1]:7463", "192.168.1.9:7463", addressOtherFamily},
+		"unparseable and different":    {"not-an-address", "192.168.1.9:7463", addressConflicts},
+		"unparseable and identical":    {"not-an-address", "not-an-address", addressSame},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := relateAddresses(c.announced, c.existing); got != c.want {
+				t.Errorf("relateAddresses(%q, %q) = %v, want %v", c.announced, c.existing, got, c.want)
+			}
+		})
+	}
+}
+
+// A forger must not be able to inherit a departed node's row. Refreshing on
 // any packet under the id does exactly that, and the row would still carry the
 // address and fingerprint the owner recognises long after that machine left.
 //
@@ -321,7 +409,7 @@ func TestAForgerCannotRewriteTheRowSomeoneIsAboutToClick(t *testing.T) {
 // That is not something this list can prevent and not what it is for: the
 // fingerprint comparison in the handshake is. What it must prevent is a forged
 // packet inheriting a row someone already trusts the look of.
-func TestAForgerCannotKeepADepartedNodesRowAlive(t *testing.T) {
+func TestAForgerCannotInheritADepartedNodesRow(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
 	start := *clock
 	genuine := offering("node_gone00000000000", "192.168.1.9:7463", "went home")

@@ -101,7 +101,7 @@ func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announce
 		// address it has in one packet, and only one of them is the one the
 		// datagram came from — keeping the first and checking afterwards drops
 		// the node entirely, which is every dual-stack machine on the network.
-		if source.IsValid() && !announcedFrom(announcement.Address, source) {
+		if !announcedFrom(announcement.Address, source) {
 			continue
 		}
 		if _, repeated := seenInPacket[announcement.NodeID]; repeated {
@@ -234,24 +234,28 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		// node moving or an impersonator, and the person choosing a row is the
 		// only one who can tell.
 		switch {
-		case announcement.Fingerprint != existing.Fingerprint,
-			differentAddressSameFamily(announcement.Address, existing.Address):
-			// Someone else is claiming this id, or the node moved: either way
-			// the person choosing a row has to be told rather than have it
-			// resolved by a rule that favours whoever announced first.
-			if !existing.Contested {
-				existing.Contested = true
-				c.seen[announcement.NodeID] = existing
-				return true, nil
-			}
-			return false, nil
-		case announcement.Address != existing.Address:
-			// The same node on its other address family. A dual-stack machine
-			// announces on both groups, and each datagram reduces to the
-			// address matching its own source — so this is the ordinary case,
-			// not a conflict. Neither contested nor used to refresh: the row
-			// stays pinned to the family it was first seen on, and that
-			// family's packets keep it alive.
+		case announcement.Fingerprint != existing.Fingerprint:
+			// A different key under this id. Either the node was re-keyed or
+			// someone else is claiming it, and only the person comparing
+			// fingerprints in the handshake can tell.
+			return c.contest(announcement.NodeID, existing)
+		case relateAddresses(announcement.Address, existing.Address) == addressConflicts:
+			// The node moved, or someone is claiming its id at another address
+			// in the same family.
+			return c.contest(announcement.NodeID, existing)
+		case relateAddresses(announcement.Address, existing.Address) == addressOtherFamily:
+			// The same id seen over the other address family. A dual-stack
+			// machine announces on both groups and each datagram reduces to the
+			// address matching its own source, so this is the ordinary case for
+			// one node — and it is indistinguishable, at this layer, from
+			// someone claiming the id from the family this row is not pinned to.
+			// It is deliberately not flagged: flagging it would mark every
+			// dual-stack machine on the network, which would make the flag
+			// noise exactly where it is meant to be read. The fingerprint
+			// comparison in the handshake is what separates the two cases.
+			//
+			// It does not refresh either, so a forger on the other family
+			// cannot keep this row alive after the node it names has gone.
 			return false, nil
 		}
 		existing.LastSeen = now
@@ -270,31 +274,62 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	return true, nil
 }
 
-// differentAddressSameFamily reports an address change within one family, which
-// is a node moving or someone claiming its id — as opposed to the same node
-// seen over its other family, which is neither.
-func differentAddressSameFamily(announced, existing string) bool {
-	a, aOK := hostOf(announced)
-	b, bOK := hostOf(existing)
+// addressRelation says how an announced address stands to the one a row is
+// pinned to. Three outcomes, one function: deciding them with two predicates
+// over two representations of an address is how a port change ended up in the
+// branch for a different address family.
+type addressRelation int
+
+const (
+	// addressSame is the same node at the same place: refresh the row.
+	addressSame addressRelation = iota
+	// addressOtherFamily is the same node reached over its other address
+	// family, or someone claiming the id there — see the caller.
+	addressOtherFamily
+	// addressConflicts is anything else: a different host in the same family, a
+	// different port on the same host, or an address that does not parse and is
+	// not identical.
+	addressConflicts
+)
+
+func relateAddresses(announced, existing string) addressRelation {
+	a, aOK := parseHostPort(announced)
+	b, bOK := parseHostPort(existing)
 	if !aOK || !bOK {
-		return announced != existing
+		if announced == existing {
+			return addressSame
+		}
+		return addressConflicts
 	}
-	if a.Is4() != b.Is4() {
-		return false
+	switch {
+	case a == b:
+		return addressSame
+	case a.Addr().Is4() != b.Addr().Is4():
+		return addressOtherFamily
+	default:
+		return addressConflicts
 	}
-	return a != b
 }
 
-func hostOf(address string) (netip.Addr, bool) {
-	host, _, err := net.SplitHostPort(address)
+// parseHostPort normalises an address for comparison. Unmap because a v4 host
+// can be written as a v4-mapped v6 one, and the zone goes because it describes
+// the local interface a packet arrived on rather than the peer.
+func parseHostPort(address string) (netip.AddrPort, bool) {
+	parsed, err := netip.ParseAddrPort(address)
 	if err != nil {
-		return netip.Addr{}, false
+		return netip.AddrPort{}, false
 	}
-	parsed, err := netip.ParseAddr(host)
-	if err != nil {
-		return netip.Addr{}, false
+	return netip.AddrPortFrom(parsed.Addr().Unmap().WithZone(""), parsed.Port()), true
+}
+
+// contest marks a row whose id something else has claimed, once.
+func (c *Candidates) contest(nodeID string, existing Candidate) (bool, error) {
+	if existing.Contested {
+		return false, nil
 	}
-	return parsed.Unmap().WithZone(""), true
+	existing.Contested = true
+	c.seen[nodeID] = existing
+	return true, nil
 }
 
 // announcedFrom reports whether an announced address names the host the packet
