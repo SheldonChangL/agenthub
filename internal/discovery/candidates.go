@@ -149,6 +149,21 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	if !announcement.Offering() || announcement.Address == "" {
 		return false, nil
 	}
+	// A loopback source is refused in dispatch, where the multicast loop copy
+	// arrives. Refused again here so the property does not rest on one call
+	// site: this is the function that decides what appears on a person's
+	// screen, and a caller that reads packets some other way — a unicast reply
+	// to :5353, a future transport — would otherwise reintroduce it.
+	//
+	// The announced address is checked too, because an offer naming loopback is
+	// an offer to connect to the reader's own machine. Nothing legitimate sends
+	// one: the announcing side refuses to put a loopback address in a packet.
+	if source.Unmap().IsLoopback() {
+		return false, nil
+	}
+	if parsed, ok := parseHostPort(announcement.Address); ok && parsed.Addr().IsLoopback() {
+		return false, nil
+	}
 	// The id is the map key and a field on a person's screen, so it has to be
 	// an id. Before this list existed a hostile id was inert — it could only
 	// fail to match the trust store — and now it is displayed, which is what
