@@ -1,10 +1,15 @@
 package discovery
 
 import (
+	"agenthub.local/agenthub/internal/identity"
+	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
+	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -232,9 +237,9 @@ func TestAnnouncementsSurviveTheWire(t *testing.T) {
 	packet, err := buildAnnouncement(pairedNode, "agenthub-test", 7463, []netip.Addr{
 		netip.MustParseAddr("192.0.2.10"),
 		netip.MustParseAddr("2001:db8::1"),
-	})
+	}, Offer{})
 	if err != nil {
-		t.Fatalf("buildAnnouncement() error = %v", err)
+		t.Fatalf("buildAnnouncement(, Offer{}) error = %v", err)
 	}
 
 	announcements := ParseAnnouncements(packet)
@@ -259,7 +264,7 @@ func TestAnnouncementsSurviveTheWire(t *testing.T) {
 // controls. None may panic, and none may yield an announcement.
 func TestHostilePacketsProduceNothing(t *testing.T) {
 	valid, err := buildAnnouncement(pairedNode, "agenthub-test", 7463,
-		[]netip.Addr{netip.MustParseAddr("192.0.2.10")})
+		[]netip.Addr{netip.MustParseAddr("192.0.2.10")}, Offer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +297,7 @@ func TestHostilePacketsProduceNothing(t *testing.T) {
 // that simply does not identify itself: another protocol on the same group.
 func TestAPacketWithoutANodeIDYieldsNothing(t *testing.T) {
 	packet, err := buildAnnouncement("", "agenthub-test", 7463,
-		[]netip.Addr{netip.MustParseAddr("192.0.2.10")})
+		[]netip.Addr{netip.MustParseAddr("192.0.2.10")}, Offer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,8 +308,8 @@ func TestAPacketWithoutANodeIDYieldsNothing(t *testing.T) {
 
 func TestBuildAnnouncementRefusesAnImpossiblePort(t *testing.T) {
 	for _, port := range []int{0, -1, 65536, 1 << 20} {
-		if _, err := buildAnnouncement(pairedNode, "agenthub-test", port, nil); err == nil {
-			t.Errorf("buildAnnouncement(port=%d) succeeded", port)
+		if _, err := buildAnnouncement(pairedNode, "agenthub-test", port, nil, Offer{}); err == nil {
+			t.Errorf("buildAnnouncement(port=%d, Offer{}) succeeded", port)
 		}
 	}
 }
@@ -315,4 +320,195 @@ func bytesRepeat(value byte, count int) []byte {
 		out[i] = value
 	}
 	return out
+}
+
+// A node offering to pair carries three more claims. They have to survive a
+// real packet, because the alternative is a candidate list that is empty for a
+// reason nobody can see.
+func TestAnOfferSurvivesTheWire(t *testing.T) {
+	packet, err := buildAnnouncement("node_offering0000000", "agenthub-test", 7463,
+		[]netip.Addr{netip.MustParseAddr("192.168.1.42")},
+		Offer{
+			DisplayName: "sheldon's laptop",
+			Platform:    "darwin/arm64",
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		})
+	if err != nil {
+		t.Fatalf("buildAnnouncement() error = %v", err)
+	}
+	announcements := ParseAnnouncements(packet)
+	if len(announcements) != 1 {
+		t.Fatalf("announcements = %+v, want one", announcements)
+	}
+	got := announcements[0]
+	if !got.Offering() {
+		t.Error("an announcement with a fingerprint does not report itself as an offer")
+	}
+	for field, pair := range map[string][2]string{
+		"node id":      {got.NodeID, "node_offering0000000"},
+		"display name": {got.DisplayName, "sheldon's laptop"},
+		"platform":     {got.Platform, "darwin/arm64"},
+		"fingerprint":  {got.Fingerprint, "1223 03EA 5E96 543A 2DD8 BFEA"},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %q, want %q", field, pair[0], pair[1])
+		}
+	}
+}
+
+// The public key must not travel. A key on a multicast group is a key an
+// attacker can replace, and the fingerprint is only useful next to the key that
+// arrives in the handshake.
+func TestAnOfferCarriesNoPublicKey(t *testing.T) {
+	public, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := identity.EncodePublicKey(public)
+	packet, err := buildAnnouncement("node_offering0000000", "agenthub-test", 7463,
+		[]netip.Addr{netip.MustParseAddr("192.168.1.42")},
+		Offer{DisplayName: "laptop", Platform: "darwin/arm64", Fingerprint: identity.Fingerprint(public)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(packet, []byte(encoded)) {
+		t.Error("the announcement carries the public key")
+	}
+	if bytes.Contains(packet, public) {
+		t.Error("the announcement carries the raw public key bytes")
+	}
+	// The fingerprint is there, and it is the one identity produces.
+	if got := ParseAnnouncements(packet)[0].Fingerprint; got != identity.Fingerprint(public) {
+		t.Errorf("fingerprint = %q, want %q", got, identity.Fingerprint(public))
+	}
+}
+
+// Every field here reaches a person's screen and every one is chosen by whoever
+// sent the packet. A newline in a display name is what turns one row of a
+// candidate list into two, and the second row is the sender's.
+func TestAHostileOfferCannotWriteToTheReader(t *testing.T) {
+	for name, offer := range map[string]Offer{
+		"a newline in the name": {
+			DisplayName: "laptop\n\nnode_evil000000000  trusted",
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		},
+		"a line separator": {
+			DisplayName: "laptop attacker",
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		},
+		"a right-to-left override": {
+			DisplayName: "laptop‮gnp.exe",
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		},
+		"a name longer than the bound": {
+			DisplayName: strings.Repeat("a", MaxCandidateFieldLength+1),
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		},
+		"a fingerprint that is prose": {
+			DisplayName: "laptop",
+			Fingerprint: "trust me\nthis is fine",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			packet, err := buildAnnouncement("node_hostile00000000", "agenthub-test", 7463,
+				[]netip.Addr{netip.MustParseAddr("192.168.1.42")}, offer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, got := range ParseAnnouncements(packet) {
+				for field, value := range map[string]string{
+					"display name": got.DisplayName,
+					"platform":     got.Platform,
+					"fingerprint":  got.Fingerprint,
+				} {
+					if strings.ContainsAny(value, "\n\r  ‮") {
+						t.Errorf("%s carries a character that moves the cursor: %q", field, value)
+					}
+					if len(value) > MaxCandidateFieldLength {
+						t.Errorf("%s is %d bytes, over the %d bound", field, len(value), MaxCandidateFieldLength)
+					}
+				}
+			}
+		})
+	}
+}
+
+// A packet claiming to offer, built by something other than this code: the
+// parser has to bound it the same way, because that is where hostile input
+// arrives.
+func TestHostileFieldsAreDroppedOnParse(t *testing.T) {
+	for name, txt := range map[string][]string{
+		// 240, not 300: a DNS character string cannot exceed 255, so the
+		// protocol bounds this before we do. MaxCandidateFieldLength is the
+		// tighter bound, and it is the one under test.
+		"an over-long name":        {"node=node_x000000000000", "name=" + strings.Repeat("b", 240)},
+		"a name with a newline":    {"node=node_x000000000000", "name=one\ntwo"},
+		"a fingerprint with a tab": {"node=node_x000000000000", "fp=AAAA\tBBBB"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			packet := txtPacket(t, txt)
+			for _, got := range ParseAnnouncements(packet) {
+				if strings.ContainsAny(got.DisplayName+got.Platform+got.Fingerprint, "\n\r\t") {
+					t.Errorf("a control character survived parsing: %+v", got)
+				}
+				if len(got.DisplayName) > MaxCandidateFieldLength {
+					t.Errorf("an over-long name survived parsing: %d bytes", len(got.DisplayName))
+				}
+			}
+		})
+	}
+}
+
+// txtPacket builds a packet with arbitrary TXT entries, which buildAnnouncement
+// will not do — the point is to be the sender this code does not control.
+func txtPacket(t *testing.T, txt []string) []byte {
+	t.Helper()
+	instanceName, err := dnsmessage.NewName("agenthub-hostile." + serviceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostName, err := dnsmessage.NewName("agenthub-hostile.local.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := dnsmessage.NewBuilder(nil, dnsmessage.Header{Response: true, Authoritative: true})
+	builder.EnableCompression()
+	if err := builder.StartAnswers(); err != nil {
+		t.Fatal(err)
+	}
+	header := dnsmessage.ResourceHeader{Name: instanceName, Class: dnsmessage.ClassINET, TTL: 120}
+	if err := builder.SRVResource(header, dnsmessage.SRVResource{Port: 7463, Target: hostName}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.TXTResource(header, dnsmessage.TXTResource{TXT: txt}); err != nil {
+		t.Fatal(err)
+	}
+	addressHeader := dnsmessage.ResourceHeader{Name: hostName, Class: dnsmessage.ClassINET, TTL: 120}
+	if err := builder.AResource(addressHeader, dnsmessage.AResource{A: [4]byte{192, 168, 1, 42}}); err != nil {
+		t.Fatal(err)
+	}
+	packet, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return packet
+}
+
+// A node not in pairing mode announces exactly what it announced before any of
+// this existed: its id, so peers that already know it can find its address.
+func TestANodeNotOfferingAnnouncesNothingExtra(t *testing.T) {
+	packet, err := buildAnnouncement("node_quiet0000000000", "agenthub-test", 7463,
+		[]netip.Addr{netip.MustParseAddr("192.168.1.42")}, Offer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{"name=", "platform=", "fp="} {
+		if bytes.Contains(packet, []byte(marker)) {
+			t.Errorf("a node that is not offering announced %q", marker)
+		}
+	}
+	got := ParseAnnouncements(packet)
+	if len(got) != 1 || got[0].Offering() {
+		t.Errorf("announcements = %+v; a quiet node must not read as an offer", got)
+	}
 }
