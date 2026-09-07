@@ -492,3 +492,97 @@ func TestVersionAnswersEvenWithAnUnusableURL(t *testing.T) {
 		t.Errorf("--version = %q", stdout.String())
 	}
 }
+
+// `ah pairing` is how an owner turns local-network advertising on and off, so
+// each spelling has to reach the right method: reading must not open a window,
+// and "off" must not be sent as a request to open one.
+func TestRunPairingMapsEachSpellingToAMethod(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		args       []string
+		wantMethod string
+		wantBody   map[string]int
+	}{
+		"read":            {[]string{"pairing"}, http.MethodGet, nil},
+		"open by default": {[]string{"pairing", "on"}, http.MethodPost, map[string]int{}},
+		"open for a while": {[]string{"pairing", "on", "90"}, http.MethodPost,
+			map[string]int{"seconds": 90}},
+		"close": {[]string{"pairing", "off"}, http.MethodDelete, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var gotMethod string
+			var gotBody map[string]int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/pairing" {
+					t.Errorf("path = %s, want /v1/pairing", r.URL.Path)
+				}
+				gotMethod = r.Method
+				if r.Method == http.MethodPost {
+					if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+						t.Errorf("decode body: %v", err)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"open":false,"announcing":{"announceableAddresses":0}}`))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"--url", server.URL}, testCase.args...)
+			if exit := Run(context.Background(), args, &stdout, &stderr); exit != 0 {
+				t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+			}
+			if gotMethod != testCase.wantMethod {
+				t.Errorf("method = %s, want %s", gotMethod, testCase.wantMethod)
+			}
+			if testCase.wantBody == nil {
+				return
+			}
+			if len(gotBody) != len(testCase.wantBody) {
+				t.Fatalf("body = %v, want %v", gotBody, testCase.wantBody)
+			}
+			for key, want := range testCase.wantBody {
+				if gotBody[key] != want {
+					t.Errorf("body[%q] = %d, want %d", key, gotBody[key], want)
+				}
+			}
+		})
+	}
+}
+
+// A duration the CLI cannot use must not become a request. Zero is the one that
+// matters: the API reads it as "no preference" and opens its default window, so
+// forwarding it would give five minutes to someone who asked for none.
+func TestRunPairingRefusesADurationItCannotSend(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		args      []string
+		wantInErr string
+	}{
+		"zero":       {[]string{"pairing", "on", "0"}, "0 seconds"},
+		"negative":   {[]string{"pairing", "on", "-30"}, "-30 seconds"},
+		"not-number": {[]string{"pairing", "on", "5m"}, `"5m"`},
+		"too many":   {[]string{"pairing", "on", "60", "90"}, "60 90"},
+		"unknown":    {[]string{"pairing", "sometimes"}, `"sometimes"`},
+		"candidates": {[]string{"candidates", "all"}, "all"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				t.Errorf("a refused argument still reached the node: %s %s", r.Method, r.URL.Path)
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"--url", server.URL}, testCase.args...)
+			if exit := Run(context.Background(), args, &stdout, &stderr); exit == 0 {
+				t.Fatalf("exit = 0 on %v; stdout = %s", testCase.args, stdout.String())
+			}
+			// The value has to appear, because it came from a shell and that is
+			// usually where the mistake is visible.
+			if !strings.Contains(stderr.String(), testCase.wantInErr) {
+				t.Errorf("stderr = %q, want it to name %s", stderr.String(), testCase.wantInErr)
+			}
+			if !strings.Contains(stderr.String(), "usage:") {
+				t.Errorf("stderr = %q, want a usage line", stderr.String())
+			}
+		})
+	}
+}

@@ -106,24 +106,37 @@ func (r runner) command(ctx context.Context, args []string) error {
 		case args[1] == "off":
 			return r.simple(ctx, http.MethodDelete, "/v1/pairing", nil)
 		case args[1] == "on":
+			if len(args) > 3 {
+				return fmt.Errorf("ah pairing on takes one duration at most, got %d: %s\nusage: ah pairing on [seconds]",
+					len(args)-2, strings.Join(args[2:], " "))
+			}
 			body := map[string]int{}
 			if len(args) == 3 {
 				seconds, err := strconv.Atoi(args[2])
-				if err != nil || seconds < 0 {
-					return fmt.Errorf("usage: ah pairing on [seconds]")
+				// Echoed rather than answered with a bare usage line: the
+				// argument came from a shell, and what went wrong is usually
+				// visible in it — a stray quote, a duration like "5m", a flag
+				// that landed in the wrong place.
+				if err != nil {
+					return fmt.Errorf("%q is not a number of seconds\nusage: ah pairing on [seconds]", args[2])
+				}
+				// Zero is refused rather than sent. The API reads zero as "no
+				// preference" and opens its default window, so `ah pairing on 0`
+				// would open five minutes for someone who asked for none.
+				if seconds <= 0 {
+					return fmt.Errorf("a pairing window of %d seconds would advertise nothing; "+
+						"use `ah pairing off` to stop advertising\nusage: ah pairing on [seconds]", seconds)
 				}
 				body["seconds"] = seconds
 			}
-			if len(args) > 3 {
-				return errors.New("usage: ah pairing on [seconds]")
-			}
 			return r.simple(ctx, http.MethodPost, "/v1/pairing", body)
 		default:
-			return errors.New("usage: ah pairing [on [seconds] | off]")
+			return fmt.Errorf("ah pairing does not take %q\nusage: ah pairing [on [seconds] | off]", args[1])
 		}
 	case "candidates":
 		if len(args) != 1 {
-			return errors.New("usage: ah candidates")
+			return fmt.Errorf("ah candidates takes no arguments, got %s\nusage: ah candidates",
+				strings.Join(args[1:], " "))
 		}
 		return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	case "nodes":

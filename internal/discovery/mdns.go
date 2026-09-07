@@ -606,14 +606,29 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 			}
 			return fmt.Errorf("read mDNS packet: %w", err)
 		}
-		announcements := ParseAnnouncements(buffer[:read])
-		if len(announcements) == 0 {
-			continue
-		}
-		source := from.Addr()
-		for _, handle := range handlers {
-			handle(ctx, source, announcements)
-		}
+		dispatch(ctx, from, buffer[:read], handlers)
+	}
+}
+
+// dispatch parses one packet and gives it to every handler, with the address it
+// arrived from.
+//
+// Separate from the read loop so the source can be tested without a socket. The
+// source is the one thing in a packet the sender did not choose, so it is what
+// the candidate layer checks a claimed address against; passing the wrong one —
+// or the zero value — would leave that check comparing an announcement to
+// nothing. What this does not cover is the socket read itself.
+func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers []PacketHandler) {
+	announcements := ParseAnnouncements(packet)
+	if len(announcements) == 0 {
+		return
+	}
+	// Passed as it arrived. Normalising a v4-mapped sender and stripping a zone
+	// is the comparing side's job, and doing it in both places would leave
+	// neither one load-bearing.
+	source := from.Addr()
+	for _, handle := range handlers {
+		handle(ctx, source, announcements)
 	}
 }
 
