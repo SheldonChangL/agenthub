@@ -131,6 +131,11 @@ func (a *Announcer) Run(ctx context.Context) {
 		// Checked before announcing and again after each tick, so a window that
 		// closed between ticks stops the very next announcement.
 		a.announceIfOpen(ctx)
+		// The interval is measured from the announcement, not from the last
+		// tick. Without this a wake that lands just before a pending tick sends
+		// two packets moments apart — observed on a live pair, seven seconds
+		// between them — and the interval exists to space announcements out.
+		ticker.Reset(a.interval)
 		select {
 		case <-ctx.Done():
 			return
