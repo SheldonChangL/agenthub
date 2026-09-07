@@ -64,6 +64,18 @@ func TestOnlyTheBoundAddressIsAnnounced(t *testing.T) {
 			"[::ffff:192.168.161.2]:7483", lan,
 			[]netip.Addr{netip.MustParseAddr("192.168.161.2")}, 7483,
 		},
+		// The zone has to be refused before Unmap discards it, or this spelling
+		// arrives at the policy as a plain v4 address with the zone gone.
+		"a zoned mapped address announces nothing": {
+			"[::ffff:192.168.161.2%en0]:7483", lan, nil, 7483,
+		},
+		// A v4 link-local address is what two machines self-assign on a direct
+		// cable with no DHCP, and it is reachable on that segment. The policy
+		// counts it private, so it is announced.
+		"a v4 link-local address is announced": {
+			"169.254.10.5:7483", lan,
+			[]netip.Addr{netip.MustParseAddr("169.254.10.5")}, 7483,
+		},
 		"a name announces nothing": {
 			"localhost:7463", lan, nil, 7463,
 		},
