@@ -69,8 +69,16 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 		// neither is a single address to put in an announcement.
 		return netip.Addr{}, false
 	}
+	// Unmapped, because ::ffff:192.168.1.5 and 192.168.1.5 are the same address
+	// written two ways and do not compare equal. The receiving side checks an
+	// announced address against the datagram's source, so announcing the mapped
+	// spelling would fail that check.
 	parsed = parsed.Unmap()
-	if !parsed.IsValid() || parsed.IsLoopback() || parsed.IsUnspecified() {
+	// Loopback is the case this whole function exists for. The delivery policy
+	// accepts it — it has to, since a node delivers to itself over loopback —
+	// so nothing below would catch it, and announcing it would tell a peer to
+	// connect to its own machine.
+	if parsed.IsLoopback() {
 		return netip.Addr{}, false
 	}
 	// An IPv6 link-local address counts as private, so it can be bound, but it
@@ -80,11 +88,12 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	if parsed.Is6() && parsed.IsLinkLocalUnicast() {
 		return netip.Addr{}, false
 	}
-	// The policy is the last gate, and the only one for a zoned address: it
-	// refuses one by name ("carries a zone; give the address without %zone"),
-	// which is also how delivery refuses it. A check here as well would be a
-	// second answer to the same question, and the one that stopped being
-	// load-bearing would be the one nobody noticed had rotted.
+	// The policy has the last word, and is the only word on everything else:
+	// it refuses the unspecified address and a zoned one by name, and refuses
+	// anything outside the ranges this build will deliver to. Repeating any of
+	// that here would be a second answer to the same question, and the copy
+	// that stopped being load-bearing would be the one nobody noticed had
+	// rotted.
 	if policy(netip.AddrPortFrom(parsed, uint16(port)).String()) != nil { // #nosec G115 -- checked non-zero above
 		return netip.Addr{}, false
 	}
