@@ -215,7 +215,10 @@ jobs:
           # ordinary clone. This file is how someone holding the download finds
           # the code and the run that produced it.
           {
-            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            # The attempt, not just the run: a re-run moves what the bare URL
+            # resolves to, while this file describes one particular build.
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+            echo "ref=${GITHUB_REF}"
             echo "built_revision=${GITHUB_SHA}"
             echo "event=${GITHUB_EVENT_NAME}"
             echo "pr_head=${PR_HEAD_SHA:-}"

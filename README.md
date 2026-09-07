@@ -75,10 +75,11 @@ points at code nobody ran.
 
 CI builds all three for six platforms and attaches them to each run, with a
 `SHA256SUMS` and a `BUILD` file naming the run and the revision. The artifact
-zip records the executable bit, and `gh run download` and `unzip` both keep it;
-a graphical extractor may not, in which case `chmod +x`. On a pull request the
-revision inside the binary is the ephemeral merge commit GitHub built, not a
-commit on the branch — `BUILD` records both.
+zip records the executable bit, and `gh run download`, `unzip` and Archive
+Utility all keep it. `actions/download-artifact` does not — it extracts without
+applying modes — so a workflow that consumes these has to `chmod +x` them. On a
+pull request the revision inside the binary is the ephemeral merge commit
+GitHub built, not a commit on the branch; `BUILD` records both.
 
 ## Run locally
 

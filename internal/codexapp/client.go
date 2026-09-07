@@ -1,7 +1,6 @@
 package codexapp
 
 import (
-	"agenthub.local/agenthub/internal/buildinfo"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"time"
 	"unicode"
 
+	"agenthub.local/agenthub/internal/buildinfo"
 	"agenthub.local/agenthub/internal/model"
 )
 
