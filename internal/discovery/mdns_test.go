@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/text/secure/precis"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -455,41 +456,119 @@ func TestAnUnannounceableFingerprintIsRefusedNotDropped(t *testing.T) {
 	}
 }
 
-// A label has to be one. Unicode classifies several code points as letters or
-// symbols that render as nothing at all, and IsGraphic admits every one: a name
-// of braille blanks looks empty, and a name padded with Hangul fillers looks
-// exactly like the row above it.
-func TestALabelMustBeVisible(t *testing.T) {
-	dropped := map[string]string{
-		"a braille blank":        "⠀",
-		"a braille blank inside": "lap⠀top",
-		"a hangul filler":        "ㅤ",
-		"a non-breaking space":   " ",
-		// Inside a name rather than instead of one: a space variant between
-		// two visible words passes every other check here.
-		"a non-breaking space inside": "lap top",
-		"an ideographic space inside": "lap　top",
-		"an ideographic space":        "　",
-		"a zero-width space":          "lap​top",
-		"stacked marks":               "e" + "́́́́́́",
+// A label has to be one, and two labels that look the same have to compare the
+// same. PRECIS Nickname is the rule; what matters here is which inputs it
+// refuses, which it repairs, and which it leaves alone.
+func TestALabelIsNormalisedOrRefused(t *testing.T) {
+	refused := map[string]string{
+		"a braille blank":             "⠀",
+		"a braille blank inside":      "lap⠀top",
+		"a hangul filler":             "ㅤ",
+		"a zero-width space":          "lap\u200btop",
+		"a right-to-left override":    "laptop\u202egnp.exe",
+		"a variation selector":        "laptop\ufe0e",
+		"a combining grapheme joiner": "lap\u034ftop",
+		"a soft hyphen":               "lap\u00adtop",
+		"a newline":                   "lap\ntop",
+		"invalid utf-8":               "lap\xff\xfetop",
 		"nothing but spaces":          "     ",
+		"empty":                       "",
 	}
-	for name, value := range dropped {
-		t.Run(name, func(t *testing.T) {
+	for name, value := range refused {
+		t.Run("refused: "+name, func(t *testing.T) {
 			if got := printableField(value); got != "" {
 				t.Errorf("printableField(%q) = %q, want it dropped", value, got)
 			}
 		})
 	}
-	// And names people actually have, in the scripts they actually use.
+
+	// Repaired rather than refused: these are how one name is written two ways,
+	// and normalising them is what stops "laptop" and "laptop " being two rows
+	// that look like one.
+	repaired := map[string][2]string{
+		"a non-breaking space": {"lap\u00a0top", "lap top"},
+		"an ideographic space": {"lap\u3000top", "lap top"},
+		"a trailing space":     {"laptop ", "laptop"},
+		"a leading space":      {" laptop", "laptop"},
+		"a double space":       {"lap  top", "lap top"},
+		"decomposed":           {"cafe\u0301", "café"},
+	}
+	for name, pair := range repaired {
+		t.Run("repaired: "+name, func(t *testing.T) {
+			if got := printableField(pair[0]); got != pair[1] {
+				t.Errorf("printableField(%q) = %q, want %q", pair[0], got, pair[1])
+			}
+		})
+	}
+
+	// Names people have, in the scripts they use. Persian needs U+200C to spell
+	// ordinary words and Tibetan stacks combining marks by design — a
+	// hand-written rule against zero-width characters or mark stacks refuses
+	// both, which is why this is PRECIS and not a hand-written rule.
 	kept := []string{
 		"sheldon's laptop", "build-server-2", "café", "雪登的筆電",
 		"laptop 💻", "MacBook Pro (16-inch)", "linux/amd64",
+		"لپ\u200cتاپ", "བསྒྲུབས", "שֶּׁ", "Ноутбук", "노트북",
 	}
 	for _, value := range kept {
 		if got := printableField(value); got != value {
-			t.Errorf("printableField(%q) = %q; a legitimate label was dropped", value, got)
+			t.Errorf("printableField(%q) = %q; a legitimate label was changed or dropped", value, got)
 		}
+	}
+}
+
+// Normalisation can make a value longer — U+3231 becomes three characters — so
+// the bound has to be applied to what will be stored and shown, not to what
+// arrived.
+func TestTheBoundAppliesToTheNormalisedValue(t *testing.T) {
+	// 30 bytes in, 50 out: under the bound before, over it after.
+	// 21 characters at 3 bytes in, 3 characters at 5 bytes out: 63 bytes
+	// becomes 105, so it is under the bound before normalisation and over it
+	// after.
+	compact := strings.Repeat("㈱", 21)
+	if len(compact) > MaxCandidateFieldLength {
+		t.Fatalf("the input is already over the bound at %d bytes; pick a shorter one", len(compact))
+	}
+	expanded, err := precis.Nickname.String(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expanded) <= MaxCandidateFieldLength {
+		t.Fatalf("normalisation produced %d bytes; this test needs an input that grows past %d",
+			len(expanded), MaxCandidateFieldLength)
+	}
+	if got := printableField(compact); got != "" {
+		t.Errorf("printableField() = %q (%d bytes), over the %d bound after normalisation",
+			got, len(got), MaxCandidateFieldLength)
+	}
+}
+
+// Two spellings of one label have to compare equal, or an impersonator simply
+// picks the other spelling.
+func TestLabelsCompareByMeaningNotBytes(t *testing.T) {
+	for name, pair := range map[string][2]string{
+		"case":        {"Laptop", "laptop"},
+		"composition": {"café", "cafe\u0301"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if fieldKey(pair[0]) != fieldKey(pair[1]) {
+				t.Errorf("%q and %q compare differently", pair[0], pair[1])
+			}
+		})
+	}
+	for name, pair := range map[string][2]string{
+		"grouping": {"1223 03EA 5E96", "122303EA5E96"},
+		"case":     {"1223 03ea", "1223 03EA"},
+	} {
+		t.Run("fingerprint "+name, func(t *testing.T) {
+			if comparableFingerprint(pair[0]) != comparableFingerprint(pair[1]) {
+				t.Errorf("%q and %q compare differently", pair[0], pair[1])
+			}
+		})
+	}
+	// And two genuinely different labels stay different.
+	if fieldKey("laptop") == fieldKey("desktop") {
+		t.Error("different names compare equal")
 	}
 }
 

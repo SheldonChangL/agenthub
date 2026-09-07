@@ -91,6 +91,13 @@ func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announce
 		if !announcement.Offering() {
 			continue
 		}
+		// Before the reduction, not after. A multi-homed node announces every
+		// address it has in one packet, and only one of them is the one the
+		// datagram came from — keeping the first and checking afterwards drops
+		// the node entirely, which is every dual-stack machine on the network.
+		if source.IsValid() && !announcedFrom(announcement.Address, source) {
+			continue
+		}
 		if _, repeated := seenInPacket[announcement.NodeID]; repeated {
 			continue
 		}
@@ -122,14 +129,6 @@ func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announce
 	return changed, full
 }
 
-// Observe records one announcement from a node offering to pair.
-//
-// It reports whether the list changed, which is what a caller logs on: a
-// candidate re-announcing every second should not produce a line every second.
-func (c *Candidates) Observe(ctx context.Context, announcement Announcement) (bool, error) {
-	return c.observe(ctx, netip.Addr{}, announcement)
-}
-
 func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcement Announcement) (bool, error) {
 	if !announcement.Offering() || announcement.Address == "" {
 		return false, nil
@@ -159,23 +158,26 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	}
 
 	c.mu.Lock()
-	existing, known := c.seen[announcement.NodeID]
-	if !known {
-		c.expire()
-		existing, known = c.seen[announcement.NodeID]
-	}
+	c.expire()
+	_, known := c.seen[announcement.NodeID]
 	if !known && len(c.seen) >= MaxCandidates {
 		c.mu.Unlock()
 		return false, ErrCandidatesFull
 	}
 	c.mu.Unlock()
 
-	paired, err := c.paired(ctx, announcement.NodeID)
-	if err != nil {
-		return false, err
-	}
-	if paired {
-		return false, nil
+	// Only for a row that is not there yet. A listed candidate's paired status
+	// was checked when it was inserted, and pairing with one calls Forget — so
+	// asking again on every refresh would be one database read per packet per
+	// row, which is the amplification this file exists to avoid.
+	if !known {
+		paired, err := c.paired(ctx, announcement.NodeID)
+		if err != nil {
+			return false, err
+		}
+		if paired {
+			return false, nil
+		}
 	}
 
 	c.mu.Lock()
@@ -183,22 +185,36 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	c.expire()
 
 	now := c.now()
-	existing, known = c.seen[announcement.NodeID]
+	existing, known := c.seen[announcement.NodeID]
 	if !known && len(c.seen) >= MaxCandidates {
 		return false, ErrCandidatesFull
 	}
 	if known {
-		// The address and the fingerprint are fixed at the first sighting and
-		// do not move while the row lives.
+		// The address and the fingerprint are fixed at the first sighting and do
+		// not move while the row lives. Anyone on the group can read a
+		// candidate's id — every node broadcasts it — so if the newest packet
+		// won, an attacker would rewrite the row the owner is looking at to
+		// point at themselves and the owner would click the name they
+		// recognise.
 		//
-		// Anyone on the group can read a candidate's id and then send offers
-		// under it. If the newest packet won, an attacker would rewrite the row
-		// the owner is looking at to point at themselves, and the owner would
-		// click the name they recognise. A node that genuinely moves is found
-		// again after its TTL, which is the cost of that not being possible.
+		// A packet that disagrees does not refresh the row either. That is the
+		// difference between pinning and first-writer-wins: without it a forger
+		// keeps a row alive after the machine it names has gone, and a node
+		// that genuinely moved could never expire because its own new packets
+		// kept the stale row young. Now the stale row goes quiet and dies on
+		// schedule, and the mover reappears at its new address.
 		//
-		// Only the timestamp advances, so this is also what keeps a forger from
-		// turning every packet into a change a caller logs.
+		// Disagreement is not silent. Someone claiming this id is either the
+		// node moving or an impersonator, and the person choosing a row is the
+		// only one who can tell.
+		if announcement.Address != existing.Address || announcement.Fingerprint != existing.Fingerprint {
+			if !existing.Contested {
+				existing.Contested = true
+				c.seen[announcement.NodeID] = existing
+				return true, nil
+			}
+			return false, nil
+		}
 		existing.LastSeen = now
 		c.seen[announcement.NodeID] = existing
 		return false, nil
@@ -227,7 +243,11 @@ func announcedFrom(address string, source netip.Addr) bool {
 	if err != nil {
 		return false
 	}
-	return announced.Unmap() == source.Unmap()
+	// Unmap because a dual-stack socket reports an IPv4 sender as ::ffff:a.b.c.d
+	// while the A record parses as a.b.c.d. WithZone("") because a link-local
+	// source arrives as fe80::1%en0 and an AAAA record cannot carry the zone,
+	// so comparing them with it would refuse every IPv6 link-local node.
+	return announced.Unmap().WithZone("") == source.Unmap().WithZone("")
 }
 
 // List returns the candidates still within their TTL, oldest sighting first so
@@ -247,13 +267,17 @@ func (c *Candidates) List() []Candidate {
 	prints := map[string]int{}
 	for _, candidate := range c.seen {
 		out = append(out, candidate)
+		// Compared by the profile's own key rather than by bytes: "café"
+		// composed and decomposed are different bytes and the same name, and so
+		// are "Laptop" and "laptop". An impersonator would use exactly those.
 		if candidate.DisplayName != "" {
-			names[candidate.DisplayName]++
+			names[fieldKey(candidate.DisplayName)]++
 		}
-		prints[candidate.Fingerprint]++
+		prints[comparableFingerprint(candidate.Fingerprint)]++
 	}
 	for i := range out {
-		out[i].Duplicate = names[out[i].DisplayName] > 1 || prints[out[i].Fingerprint] > 1
+		sharedName := out[i].DisplayName != "" && names[fieldKey(out[i].DisplayName)] > 1
+		out[i].Duplicate = sharedName || prints[comparableFingerprint(out[i].Fingerprint)] > 1
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].FirstSeen.Equal(out[j].FirstSeen) {

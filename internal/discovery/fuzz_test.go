@@ -3,7 +3,6 @@ package discovery
 import (
 	"net/netip"
 	"testing"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -72,9 +71,15 @@ func FuzzParseAnnouncements(f *testing.F) {
 				if !utf8.ValidString(value) {
 					t.Fatalf("%s is not valid UTF-8: %q", field, value)
 				}
+				// Whatever the packet said, what comes out is what PRECIS
+				// Nickname produces: idempotent under the profile, and with no
+				// braille blank, which PRECIS itself admits.
+				if again := printableField(value); again != value {
+					t.Fatalf("%s is not already normalised: %q became %q", field, value, again)
+				}
 				for _, r := range value {
-					if !unicode.IsGraphic(r) || (unicode.IsSpace(r) && r != ' ') || invisible(r) {
-						t.Fatalf("%s carries %q, which is not a label: %q", field, r, value)
+					if r == brailleBlank {
+						t.Fatalf("%s carries a braille blank: %q", field, value)
 					}
 				}
 			}

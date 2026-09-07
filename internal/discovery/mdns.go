@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/text/secure/precis"
 	"log"
 	"net"
 	"net/netip"
@@ -28,8 +29,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -108,6 +107,12 @@ type Candidate struct {
 	// shared with another row. Two candidates claiming one fingerprint means at
 	// least one is lying, and a person needs to see that rather than pick.
 	Duplicate bool
+	// Contested marks a row that something has since announced different
+	// details for, under the same node id. Either the node moved or someone is
+	// impersonating it, and nothing here can tell which — but pairing with a
+	// row in this state means comparing the fingerprint especially carefully,
+	// so it must reach the person rather than be resolved by a rule.
+	Contested bool
 }
 
 // Offering reports whether an announcement was made by a node asking to pair.
@@ -356,83 +361,75 @@ func ParseAnnouncements(packet []byte) []Announcement {
 	return announcements
 }
 
-// printableField keeps a peer-supplied label only if it is one.
+// printableField keeps a peer-supplied label only if it is one, and returns the
+// normalised form.
 //
-// Empty for anything over the bound, not valid UTF-8, carrying a character that
-// is not printable, or made of nothing a person can see. A newline in a display
-// name is what turns one row of a candidate list into two, and the second row is
-// the sender's — the same reasoning as the presence path's cwd and status
-// fields, with two additions that path does not need.
+// The rules are PRECIS Nickname (RFC 8266), which is the standard answer to
+// exactly this question: what may a human-readable identifier chosen by someone
+// else contain. Hand-rolling it went wrong twice here. unicode.IsGraphic admits
+// U+FFFD, so arbitrary bytes read as printable. A deny list of invisible code
+// points cannot be finished, and worse, the obvious hand-written rules delete
+// real names: a cap on combining marks refuses Tibetan and pointed Hebrew, and
+// refusing every zero-width character refuses Persian, which needs U+200C to
+// spell ordinary words.
 //
-// unicode.IsGraphic alone is not enough here. Ranging over invalid UTF-8 yields
-// U+FFFD, which is category So and therefore "graphic", so a field of arbitrary
-// bytes passes: neither printable nor stable once it is marshalled to JSON. And
-// IsGraphic admits every space Unicode has — U+00A0, U+3000, U+2800 braille
-// blank, the Hangul fillers — so a name of nothing but invisible characters
-// passes as well, which on a screen is a row with no name that is not the same
-// as a row with no name.
+// PRECIS also normalises rather than merely judging: NBSP and the ideographic
+// space become an ordinary space, NFD becomes NFC, runs of spaces collapse, and
+// leading and trailing spaces go. That matters as much as the rejection, since
+// "laptop" and "laptop " are two rows that look like one.
+//
+// It admits U+2800, the braille blank, which renders as nothing — so that one
+// is still refused here. It also refuses emoji ZWJ sequences under its
+// contextual rules, so a display name of "👨‍💻" is dropped; that is a real
+// limitation and preferable to writing the rules again.
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
 	}
-	if !utf8.ValidString(value) {
+	clean, err := precis.Nickname.String(value)
+	if err != nil || clean == "" {
 		return ""
 	}
-	visible := false
-	marks := 0
-	for _, r := range value {
-		if !unicode.IsGraphic(r) {
-			return ""
-		}
-		// One ordinary space is a space. Any other separator is a space
-		// pretending not to be one.
-		if unicode.IsSpace(r) && r != ' ' {
-			return ""
-		}
-		if invisible(r) {
-			return ""
-		}
-		// A stack of combining marks renders as a smear over its neighbour and
-		// can be made to overflow the row it is in. Two is an accent and a
-		// tone; twenty is an attack.
-		if unicode.Is(unicode.Mn, r) {
-			marks++
-			if marks > 2 {
-				return ""
-			}
-			continue
-		}
-		marks = 0
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
-			visible = true
-		}
-	}
-	if !visible {
+	// Normalisation can lengthen a string, so the bound is applied to what will
+	// actually be stored and shown.
+	if len(clean) > MaxCandidateFieldLength {
 		return ""
 	}
-	return value
+	for _, r := range clean {
+		if r == brailleBlank {
+			return ""
+		}
+	}
+	return clean
 }
 
-// invisible reports the code points that render as nothing while Unicode
-// classifies them as something a person can see.
+// brailleBlank renders as nothing and PRECIS admits it: it is a symbol, so it
+// is neither a space nor a control character by any classification. A name made
+// of these looks empty, or looks exactly like the row above it.
+const brailleBlank = '\u2800'
+
+// fieldKey is what two labels are compared by when deciding whether one row is
+// impersonating another.
 //
-// unicode.IsSpace does not cover them and neither does IsGraphic: U+2800 is a
-// symbol, the Hangul fillers are letters. Each renders as blank, so each is a
-// way to build a name that looks empty, or one that looks exactly like another
-// candidate's. The list cannot be exhaustive — Unicode keeps growing — but
-// these are the ones used for this.
-func invisible(r rune) bool {
-	switch r {
-	case '\u2800', // braille pattern blank
-		'\u3164', // hangul filler
-		'\u115f', // hangul choseong filler
-		'\u1160', // hangul jungseong filler
-		'\uffa0', // halfwidth hangul filler
-		'\u17b4', // khmer vowel inherent aq
-		'\u17b5': // khmer vowel inherent aa
-		return true
+// Byte equality is not it: "café" composed and decomposed are different bytes,
+// and so are "Laptop" and "laptop". PRECIS supplies the comparison that goes
+// with the profile.
+func fieldKey(value string) string {
+	key, err := precis.Nickname.CompareKey(value)
+	if err != nil {
+		return value
 	}
-	return false
+	return key
+}
+
+// comparableFingerprint compares two announced fingerprints the way a person
+// would.
+//
+// The grouping and the case are presentation: "1223 03EA" and "122303ea" are
+// one fingerprint written twice, and an impersonator would pick the spelling
+// that differs.
+func comparableFingerprint(value string) string {
+	return strings.ToUpper(strings.ReplaceAll(value, " ", ""))
 }
 
 // MulticastGroupV4 is the standard IPv4 mDNS group.

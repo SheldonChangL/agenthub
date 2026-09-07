@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// observeOne drives the unexported path the way a caller with no source
+// address would. Production callers always have one — ObserveAll takes it —
+// so this exists for the cases where the source is not what is being tested.
+func observeOne(c *Candidates, announcement Announcement) (bool, error) {
+	return c.observe(context.Background(), netip.Addr{}, announcement)
+}
+
 func offering(nodeID, address, name string) Announcement {
 	return Announcement{
 		NodeID: nodeID, Address: address,
@@ -48,7 +55,7 @@ func newTestCandidates(t *testing.T, paired ...string) (*Candidates, *trustProbe
 // this node trusts — the reason discovery has never been allowed to add rows.
 func TestObservingACandidateNeverConsultsOrChangesTrustBeyondAsking(t *testing.T) {
 	c, probe, _ := newTestCandidates(t)
-	changed, err := c.Observe(context.Background(), offering("node_stranger00000000", "192.168.1.9:7463", "their laptop"))
+	changed, err := observeOne(c, offering("node_stranger00000000", "192.168.1.9:7463", "their laptop"))
 	if err != nil || !changed {
 		t.Fatalf("Observe() = %v, %v", changed, err)
 	}
@@ -68,7 +75,7 @@ func TestObservingACandidateNeverConsultsOrChangesTrustBeyondAsking(t *testing.T
 // its address recorded by peers that know it, not a row on someone's screen.
 func TestANodeThatIsNotOfferingIsNotACandidate(t *testing.T) {
 	c, probe, _ := newTestCandidates(t)
-	changed, err := c.Observe(context.Background(), Announcement{
+	changed, err := observeOne(c, Announcement{
 		NodeID: "node_quiet0000000000", Address: "192.168.1.9:7463",
 	})
 	if err != nil {
@@ -96,7 +103,7 @@ func TestAnIDThatIsNotAnIDIsNotACandidate(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, probe, _ := newTestCandidates(t)
-			changed, err := c.Observe(context.Background(), offering(id, "192.168.1.9:7463", "hostile"))
+			changed, err := observeOne(c, offering(id, "192.168.1.9:7463", "hostile"))
 			if err != nil || changed {
 				t.Fatalf("Observe() = %v, %v", changed, err)
 			}
@@ -114,7 +121,7 @@ func TestAnIDThatIsNotAnIDIsNotACandidate(t *testing.T) {
 // worse, noise that could occupy a slot in a bounded list.
 func TestAnAlreadyPairedNodeIsNotACandidate(t *testing.T) {
 	c, _, _ := newTestCandidates(t, "node_known0000000000")
-	if changed, err := c.Observe(context.Background(),
+	if changed, err := observeOne(c,
 		offering("node_known0000000000", "192.168.1.9:7463", "known")); err != nil || changed {
 		t.Fatalf("Observe() = %v, %v; a paired node was listed", changed, err)
 	}
@@ -133,7 +140,7 @@ func TestAnAddressThePolicyRefusesIsNotACandidate(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := c.Observe(context.Background(),
+	if _, err := observeOne(c,
 		offering("node_public000000000", "8.8.8.8:7463", "somewhere")); err != nil {
 		t.Fatal(err)
 	}
@@ -162,11 +169,86 @@ func TestAnOfferMustComeFromWhereItSaysItIs(t *testing.T) {
 	}
 }
 
+// A multi-homed node announces every address it has in one packet, and only one
+// of them is the one the datagram came from. Choosing a record before checking
+// the source drops the node entirely — which is every dual-stack machine.
+func TestAMultiHomedNodeIsListedAtTheAddressItAnnouncedFrom(t *testing.T) {
+	c, _, _ := newTestCandidates(t)
+	source := netip.MustParseAddr("192.168.1.9")
+	// The matching record is not first, which is the case that fails if the
+	// reduction picks before it checks.
+	if _, err := c.ObserveAll(context.Background(), source, []Announcement{
+		offering("node_multi0000000000", "[2001:db8::1]:7463", "laptop"),
+		offering("node_multi0000000000", "192.168.1.20:7463", "laptop"),
+		offering("node_multi0000000000", "192.168.1.9:7463", "laptop"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v; a multi-homed node is one candidate", listed)
+	}
+	if listed[0].Address != "192.168.1.9:7463" {
+		t.Errorf("address = %q, want the one the packet came from", listed[0].Address)
+	}
+}
+
+// A dual-stack socket reports an IPv4 sender as ::ffff:a.b.c.d while the A
+// record parses as a.b.c.d, and a link-local source carries a zone an AAAA
+// record cannot. Comparing them literally refuses both.
+func TestTheSourceComparisonHandlesMappedAndZonedAddresses(t *testing.T) {
+	for name, c := range map[string]struct {
+		announced string
+		source    string
+	}{
+		"an IPv4 sender on a dual-stack socket": {"192.168.1.9:7463", "::ffff:192.168.1.9"},
+		"a link-local source with a zone":       {"[fe80::1]:7463", "fe80::1%en0"},
+		"an ordinary IPv4 pair":                 {"192.168.1.9:7463", "192.168.1.9"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source, err := netip.ParseAddr(c.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !announcedFrom(c.announced, source) {
+				t.Errorf("announcedFrom(%q, %q) = false; a legitimate node was excluded", c.announced, c.source)
+			}
+		})
+	}
+	// And a genuine mismatch is still a mismatch.
+	if announcedFrom("192.168.1.20:7463", netip.MustParseAddr("192.168.1.9")) {
+		t.Error("an address that is not the source was accepted")
+	}
+}
+
+// A listed candidate's paired status was checked when it was inserted, and
+// pairing with one calls Forget. Asking again on every packet is a database
+// read per packet per row.
+func TestARefreshDoesNotAskTheTrustStoreAgain(t *testing.T) {
+	c, probe, clock := newTestCandidates(t)
+	announcement := offering("node_steady000000000", "192.168.1.9:7463", "steady")
+	if _, err := observeOne(c, announcement); err != nil {
+		t.Fatal(err)
+	}
+	if probe.reads != 1 {
+		t.Fatalf("the first sighting cost %d reads, want 1", probe.reads)
+	}
+	for i := 0; i < 50; i++ {
+		*clock = clock.Add(time.Second)
+		if _, err := observeOne(c, announcement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if probe.reads != 1 {
+		t.Errorf("50 refreshes cost %d trust reads in total, want 1", probe.reads)
+	}
+}
+
 // Nothing announces that it has stopped offering, so the only thing that
 // removes a row is time.
 func TestACandidateStopsBeingListedWhenItGoesQuiet(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
-	if _, err := c.Observe(context.Background(),
+	if _, err := observeOne(c,
 		offering("node_brief0000000000", "192.168.1.9:7463", "brief")); err != nil {
 		t.Fatal(err)
 	}
@@ -180,24 +262,29 @@ func TestACandidateStopsBeingListedWhenItGoesQuiet(t *testing.T) {
 	}
 }
 
-// Anyone on the group can read a candidate's id and then send offers under it.
-// If the newest packet won, an attacker would rewrite the row the owner is
-// looking at to point at themselves, and the owner would click the name they
-// recognise.
+// Anyone on the group can read a candidate's id — every node broadcasts it — so
+// a forger can send offers under one. If the newest packet won, the row the
+// owner is looking at would point at the forger and the owner would click the
+// name they recognise.
 func TestAForgerCannotRewriteTheRowSomeoneIsAboutToClick(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
 	genuine := offering("node_genuine00000000", "192.168.1.9:7463", "sheldon's laptop")
-	if _, err := c.Observe(context.Background(), genuine); err != nil {
+	if _, err := observeOne(c, genuine); err != nil {
 		t.Fatal(err)
 	}
-
 	forged := genuine
 	forged.Address = "192.168.1.66:7463"
 	forged.Fingerprint = "DEAD BEEF DEAD BEEF DEAD BEEF"
+
+	// The genuine node keeps announcing, as a node in pairing mode does, and the
+	// forger interleaves.
 	changes := 0
-	for i := 0; i < 100; i++ {
-		*clock = clock.Add(time.Second)
-		changed, err := c.Observe(context.Background(), forged)
+	for i := 0; i < 60; i++ {
+		*clock = clock.Add(10 * time.Second)
+		if _, err := observeOne(c, genuine); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := observeOne(c, forged)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -205,6 +292,7 @@ func TestAForgerCannotRewriteTheRowSomeoneIsAboutToClick(t *testing.T) {
 			changes++
 		}
 	}
+
 	listed := c.List()
 	if len(listed) != 1 {
 		t.Fatalf("list = %+v", listed)
@@ -215,8 +303,101 @@ func TestAForgerCannotRewriteTheRowSomeoneIsAboutToClick(t *testing.T) {
 	if listed[0].Fingerprint != genuine.Fingerprint {
 		t.Errorf("fingerprint = %q; the forger replaced what a person compares", listed[0].Fingerprint)
 	}
-	if changes != 0 {
-		t.Errorf("%d forged packets each counted as a change; that is a log line per packet", changes)
+	// The disagreement is shown once, not swallowed and not logged per packet.
+	if !listed[0].Contested {
+		t.Error("something else claimed this id and the row does not say so")
+	}
+	if changes != 1 {
+		t.Errorf("%d changes from 60 forged packets; want exactly one, when the row became contested", changes)
+	}
+}
+
+// A forger must not be able to keep a departed node's row alive. Refreshing on
+// any packet under the id does exactly that, and the row would still carry the
+// address and fingerprint the owner recognises long after that machine left.
+//
+// What a forger can always do is announce an id nobody is using — including one
+// that has expired — and be listed as the unverified claim every candidate is.
+// That is not something this list can prevent and not what it is for: the
+// fingerprint comparison in the handshake is. What it must prevent is a forged
+// packet inheriting a row someone already trusts the look of.
+func TestAForgerCannotKeepADepartedNodesRowAlive(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	start := *clock
+	genuine := offering("node_gone00000000000", "192.168.1.9:7463", "went home")
+	if _, err := observeOne(c, genuine); err != nil {
+		t.Fatal(err)
+	}
+	forged := genuine
+	forged.Address = "192.168.1.66:7463"
+	forged.Fingerprint = "DEAD BEEF DEAD BEEF DEAD BEEF"
+	for i := 0; i < 30; i++ {
+		*clock = clock.Add(10 * time.Second)
+		if _, err := observeOne(c, forged); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := c.List()
+	for _, candidate := range listed {
+		if candidate.Address == genuine.Address || candidate.Fingerprint == genuine.Fingerprint {
+			t.Errorf("the departed node's details are still listed %v later: %+v", 300*time.Second, candidate)
+		}
+	}
+	// Whatever is listed now is the forger's own claim rather than an inherited
+	// row: its first sighting is after the original one expired.
+	for _, candidate := range listed {
+		if !candidate.FirstSeen.After(start) {
+			t.Errorf("a row survived from before the expiry: %+v", candidate)
+		}
+	}
+}
+
+// A node that genuinely moves — a new DHCP lease, wifi to ethernet — has to
+// come back. Its own packets must not keep the stale row young, or it can never
+// be paired with again.
+func TestANodeThatMovesReappearsAtItsNewAddress(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	before := offering("node_mover0000000000", "192.168.1.9:7463", "laptop")
+	if _, err := observeOne(c, before); err != nil {
+		t.Fatal(err)
+	}
+	after := before
+	after.Address = "192.168.1.40:7463"
+	for i := 0; i < 20; i++ {
+		*clock = clock.Add(10 * time.Second)
+		if _, err := observeOne(c, after); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v; the mover should be listed exactly once", listed)
+	}
+	if listed[0].Address != after.Address {
+		t.Errorf("address = %q, want %q; the stale row never expired", listed[0].Address, after.Address)
+	}
+}
+
+// An attacker who claims a victim's id before the victim opens pairing mode
+// must not silently own the row. Ids are public, so first-writer-wins is as
+// forgeable as last-writer-wins; what matters is that the person is told.
+func TestClaimingAnIDFirstDoesNotSilentlyOwnTheRow(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	attacker := offering("node_victim000000000", "192.168.1.66:7463", "sheldon's laptop")
+	if _, err := observeOne(c, attacker); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(5 * time.Second)
+	victim := offering("node_victim000000000", "192.168.1.9:7463", "sheldon's laptop")
+	if _, err := observeOne(c, victim); err != nil {
+		t.Fatal(err)
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v", listed)
+	}
+	if !listed[0].Contested {
+		t.Error("two machines claimed this id and the row does not say so")
 	}
 }
 
@@ -246,12 +427,12 @@ func TestOneTrustReadPerNodePerPacket(t *testing.T) {
 func TestAFloodCannotPushOutTheCandidateSomeoneIsLookingFor(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
 	wanted := offering("node_wanted000000000", "192.168.1.9:7463", "the one")
-	if _, err := c.Observe(context.Background(), wanted); err != nil {
+	if _, err := observeOne(c, wanted); err != nil {
 		t.Fatal(err)
 	}
 	full := 0
 	for i := 0; i < MaxCandidates*4; i++ {
-		_, err := c.Observe(context.Background(),
+		_, err := observeOne(c,
 			offering(fmt.Sprintf("node_flood%011d", i), "192.168.1.10:7463", "flood"))
 		if errors.Is(err, ErrCandidatesFull) {
 			full++
@@ -284,7 +465,7 @@ func TestAFloodCannotPushOutTheCandidateSomeoneIsLookingFor(t *testing.T) {
 	// And it survives the flood: the flood expires, the refreshed one does not.
 	for i := 0; i < 3; i++ {
 		*clock = clock.Add(CandidateTTL / 2)
-		if _, err := c.Observe(context.Background(), wanted); err != nil {
+		if _, err := observeOne(c, wanted); err != nil {
 			t.Fatalf("a listed candidate could not refresh at the bound: %v", err)
 		}
 	}
@@ -300,18 +481,18 @@ func TestAFloodCannotPushOutTheCandidateSomeoneIsLookingFor(t *testing.T) {
 func TestOnlyAFirstSightingIsAChange(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
 	announcement := offering("node_steady000000000", "192.168.1.9:7463", "steady")
-	if changed, _ := c.Observe(context.Background(), announcement); !changed {
+	if changed, _ := observeOne(c, announcement); !changed {
 		t.Fatal("the first sighting was not a change")
 	}
 	for i := 0; i < 10; i++ {
 		*clock = clock.Add(time.Second)
-		if changed, _ := c.Observe(context.Background(), announcement); changed {
+		if changed, _ := observeOne(c, announcement); changed {
 			t.Fatal("a re-announcement was reported as a change")
 		}
 	}
 	// Including one that renames itself: that is the forgery case, not a rename.
 	announcement.DisplayName = "renamed"
-	if changed, _ := c.Observe(context.Background(), announcement); changed {
+	if changed, _ := observeOne(c, announcement); changed {
 		t.Error("a changed label was accepted as a change to a listed row")
 	}
 }
@@ -321,12 +502,14 @@ func TestOnlyAFirstSightingIsAChange(t *testing.T) {
 func TestACloneIsMarkedRatherThanGuessedAt(t *testing.T) {
 	c, _, clock := newTestCandidates(t)
 	genuine := offering("node_genuine00000000", "192.168.1.9:7463", "sheldon's laptop")
-	if _, err := c.Observe(context.Background(), genuine); err != nil {
+	if _, err := observeOne(c, genuine); err != nil {
 		t.Fatal(err)
 	}
 	*clock = clock.Add(time.Second)
+	// The same name, a different fingerprint: only the name half can catch it.
 	clone := offering("node_clone0000000000", "192.168.1.66:7463", "sheldon's laptop")
-	if _, err := c.Observe(context.Background(), clone); err != nil {
+	clone.Fingerprint = "DEAD BEEF DEAD BEEF DEAD BEEF"
+	if _, err := observeOne(c, clone); err != nil {
 		t.Fatal(err)
 	}
 	listed := c.List()
@@ -335,7 +518,49 @@ func TestACloneIsMarkedRatherThanGuessedAt(t *testing.T) {
 	}
 	for _, candidate := range listed {
 		if !candidate.Duplicate {
-			t.Errorf("%s shares its name and fingerprint with another row and is not marked", candidate.NodeID)
+			t.Errorf("%s shares its display name with another row and is not marked", candidate.NodeID)
+		}
+	}
+}
+
+// The other half: a different name, the same fingerprint. This is the one that
+// matters most — two rows cannot honestly claim one key.
+func TestASharedFingerprintIsMarked(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	genuine := offering("node_genuine00000000", "192.168.1.9:7463", "sheldon's laptop")
+	if _, err := observeOne(c, genuine); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(time.Second)
+	// A different name, and the fingerprint written the other way, which is how
+	// an impersonator would dodge a comparison by bytes.
+	clone := offering("node_clone0000000000", "192.168.1.66:7463", "build server")
+	clone.Fingerprint = "122303ea5e96543a2dd8bfea"
+	if _, err := observeOne(c, clone); err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range c.List() {
+		if !candidate.Duplicate {
+			t.Errorf("%s claims a fingerprint another row claims and is not marked", candidate.NodeID)
+		}
+	}
+}
+
+// A row on its own is not a duplicate, and neither are two rows that share
+// nothing — including two with no display name at all.
+func TestDistinctRowsAreNotMarked(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	for i, id := range []string{"node_first0000000000", "node_second000000000"} {
+		*clock = clock.Add(time.Second)
+		announcement := offering(id, "192.168.1.9:7463", "")
+		announcement.Fingerprint = fmt.Sprintf("AAAA BBBB CCCC DDDD EEEE %04d", i)
+		if _, err := observeOne(c, announcement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, candidate := range c.List() {
+		if candidate.Duplicate {
+			t.Errorf("%s shares nothing with another row and is marked: %+v", candidate.NodeID, candidate)
 		}
 	}
 }
@@ -348,7 +573,7 @@ func TestTheListIsStableAsPacketsArrive(t *testing.T) {
 		id := fmt.Sprintf("node_ordered%09d", i)
 		want = append(want, id)
 		*clock = clock.Add(time.Second)
-		if _, err := c.Observe(context.Background(), offering(id, "192.168.1.9:7463", id)); err != nil {
+		if _, err := observeOne(c, offering(id, "192.168.1.9:7463", id)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -367,7 +592,7 @@ func TestTheListIsStableAsPacketsArrive(t *testing.T) {
 	assertOrder("after the first sightings")
 	// The one seen first re-announces; it must not move to the end.
 	*clock = clock.Add(time.Second)
-	if _, err := c.Observe(context.Background(), offering(want[0], "192.168.1.9:7463", want[0])); err != nil {
+	if _, err := observeOne(c, offering(want[0], "192.168.1.9:7463", want[0])); err != nil {
 		t.Fatal(err)
 	}
 	assertOrder("after a refresh")
@@ -377,7 +602,7 @@ func TestTheListIsStableAsPacketsArrive(t *testing.T) {
 // with it twice.
 func TestForgettingACandidateRemovesIt(t *testing.T) {
 	c, _, _ := newTestCandidates(t)
-	if _, err := c.Observe(context.Background(),
+	if _, err := observeOne(c,
 		offering("node_paired000000000", "192.168.1.9:7463", "soon a peer")); err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +632,7 @@ func TestTheBoundHoldsWhenNewCandidatesArriveAtOnce(t *testing.T) {
 			defer wait.Done()
 			for i := 0; i < 40; i++ {
 				id := fmt.Sprintf("node_burst%03d%08d", worker, i)
-				_, _ = c.Observe(context.Background(), offering(id, "192.168.1.9:7463", "burst"))
+				_, _ = observeOne(c, offering(id, "192.168.1.9:7463", "burst"))
 			}
 		}(worker)
 	}
@@ -430,7 +655,7 @@ func TestConcurrentUse(t *testing.T) {
 			defer wait.Done()
 			for i := 0; i < 200; i++ {
 				id := fmt.Sprintf("node_race%03d%08d", worker, i%20)
-				_, _ = c.Observe(context.Background(), offering(id, "192.168.1.9:7463", "racer"))
+				_, _ = observeOne(c, offering(id, "192.168.1.9:7463", "racer"))
 				_ = c.List()
 				_ = c.Full()
 				c.Forget(id)
