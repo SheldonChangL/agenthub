@@ -266,3 +266,47 @@ func TestACancelledLoopDoesNotAnnounceOnceMore(t *testing.T) {
 		t.Errorf("%d announcements from a loop that was cancelled before it started", sent)
 	}
 }
+
+// The interval is measured from the announcement, not from the ticker's own
+// schedule. A wake landing just before a pending tick would otherwise send two
+// packets moments apart, which is what the interval exists to prevent — seen on
+// a live pair as seven seconds between them.
+//
+// Timing-based, so the margins are wide: the wake lands at roughly nine tenths
+// of an interval, and the check covers the third of an interval after it, in
+// which the un-reset ticker would certainly have fired.
+func TestTheIntervalIsMeasuredFromTheAnnouncementNotTheTick(t *testing.T) {
+	a, mode, sink, _ := newTestAnnouncer(t)
+	const interval = 600 * time.Millisecond
+	a.interval = interval
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.Run(ctx)
+
+	// Let the loop settle with the window closed, so a tick is imminent and
+	// nothing has been announced yet.
+	time.Sleep(interval * 9 / 10)
+	if sent := sink.count(); sent != 0 {
+		t.Fatalf("%d announcements before the window opened", sent)
+	}
+	if _, err := mode.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	a.Wake()
+
+	// The wake's own announcement.
+	deadline := time.Now().Add(2 * time.Second)
+	for sink.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if sink.count() == 0 {
+		t.Fatal("the wake announced nothing")
+	}
+	// The tick that was pending when the wake arrived must have been pushed
+	// out, not merely delayed by a few milliseconds.
+	time.Sleep(interval / 3)
+	if sent := sink.count(); sent != 1 {
+		t.Errorf("%d announcements within a third of an interval after the wake, want 1; "+
+			"the pending tick was not pushed out", sent)
+	}
+}

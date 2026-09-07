@@ -231,9 +231,16 @@ func TestAnUnrepresentableWindowIsRefusedRatherThanWrapped(t *testing.T) {
 	for _, seconds := range []int64{
 		// Just past the point where the multiplication overflows.
 		int64(math.MaxInt64/int64(time.Second)) + 1,
-		// And the value that produced a plausible-looking window.
+		// The value that produced a plausible-looking window.
 		18446744104,
 		math.MaxInt64,
+		// And the same thing downwards, which the first version of this fix
+		// missed by bounding one side only: -18446744043 wrapped to
+		// 30.709551616s, and math.MinInt64 to exactly zero, which Open reads as
+		// "no preference" and answers with a five-minute window.
+		-18446744043,
+		math.MinInt64,
+		-1,
 	} {
 		response := perform(t, handler, http.MethodPost, "/v1/pairing", map[string]int64{"seconds": seconds})
 		if response.Code != http.StatusBadRequest {
@@ -243,14 +250,15 @@ func TestAnUnrepresentableWindowIsRefusedRatherThanWrapped(t *testing.T) {
 			t.Fatalf("seconds=%d opened a window this node cannot represent", seconds)
 		}
 	}
-	// A negative duration is refused too, by the same bounds rather than by a
-	// guard of its own.
-	response := perform(t, handler, http.MethodPost, "/v1/pairing", map[string]int{"seconds": -1})
-	if response.Code != http.StatusBadRequest {
-		t.Errorf("seconds=-1 gave %d %s, want 400", response.Code, response.Body.String())
-	}
-	if mode.IsOpen() {
-		t.Error("a negative window opened")
+	// The usable bounds still work, so the check above is not simply refusing
+	// everything. 900 is the maximum and is exercised nowhere else through the
+	// handler, which is where an off-by-one in the comparison would hide.
+	for _, seconds := range []int{int(pairing.MinWindow / time.Second), 900} {
+		response := perform(t, handler, http.MethodPost, "/v1/pairing", map[string]int{"seconds": seconds})
+		if response.Code != http.StatusOK {
+			t.Errorf("seconds=%d gave %d %s, want 200", seconds, response.Code, response.Body.String())
+		}
+		mode.Close()
 	}
 }
 

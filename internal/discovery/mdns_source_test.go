@@ -6,12 +6,15 @@ import (
 	"testing"
 )
 
-// The source address is the one field in a packet the sender did not choose,
-// which is why the candidate layer compares a claimed address against it. If
-// the wrong address reached the handler — or the zero value — that check would
-// be comparing an announcement to nothing, and a forger could claim any
-// address it liked. The read loop is one line away from doing exactly that, so
-// the source has to be pinned rather than assumed.
+// The candidate layer compares a claimed address against the address the
+// datagram actually came from. If the wrong address reached the handler — or
+// the zero value — that check would be comparing an announcement to nothing,
+// and a sender could claim any address it liked. The read loop is one line away
+// from doing exactly that, so the source has to be pinned rather than assumed.
+//
+// The check this feeds is not proof of origin: a raw socket can forge a source
+// address on a local segment. It rules out an ordinary UDP sender claiming
+// someone else's address, which is the cheap version of that attack.
 func TestThePacketsSourceAddressReachesEveryHandler(t *testing.T) {
 	from := netip.MustParseAddrPort("192.168.4.7:5353")
 	packet, err := buildAnnouncement("node_sourcecheck0000", "agenthub-test", 7463,

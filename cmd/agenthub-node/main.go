@@ -143,24 +143,38 @@ func run() error {
 		// API answers with what this announcer is actually managing to do: an
 		// open window on a node with no announceable address is the one failure
 		// an owner cannot see from the other machine.
-		peerPort, err := listenPort(*peerListenAddress)
+		peerAddresses, peerPort, err := pairing.PeerEndpoint(deliveryPolicy, *peerListenAddress)
 		if err != nil {
-			return fmt.Errorf("read the peer listener's port for announcements: %w", err)
+			return fmt.Errorf("read the peer listener for announcements: %w", err)
 		}
 		announcer = pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
-			node.ID, node.ID, peerPort,
-			pairing.LocalAddresses(deliveryPolicy, peerPort),
+			node.ID, node.ID, peerPort, peerAddresses,
 			discovery.Offer{
 				DisplayName: node.DisplayName,
 				Platform:    node.Platform,
 				Fingerprint: node.Fingerprint,
 			})
+		// A field the announcement cannot carry is dropped silently, so this
+		// node would believe it announces a name while appearing nameless in
+		// everyone else's list. Said here because the value is this machine's
+		// own and the owner can change it.
+		for label, value := range map[string]string{
+			"display name": node.DisplayName,
+			"platform":     node.Platform,
+		} {
+			if value != "" && discovery.Announceable(value) == "" {
+				log.Printf("pairing announcements will carry no %s: %q cannot be announced, "+
+					"so this node will appear without one in other machines' candidate lists",
+					label, value)
+			}
+		}
 		if !announcer.Announceable() {
 			// Said at startup, not only when someone tries to pair: this is a
 			// configuration that cannot pair over the network, and the owner
 			// should learn that before opening a window that announces nothing.
-			log.Print("pairing mode will have no address to announce: " +
-				"-peer-listen is on loopback or -allow-lan is off, so no peer could reach this node")
+			log.Printf("pairing mode will have no address to announce: the peer listener is on %s, "+
+				"which no other machine can reach. Pairing over the network needs -peer-listen "+
+				"on this machine's own network address, together with -allow-lan", *peerListenAddress)
 		}
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
@@ -376,7 +390,7 @@ func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler 
 	said := make(map[string]time.Time, 2)
 	// Throttled per condition rather than globally, so a real error is not
 	// swallowed by a full list that is being reported.
-	atMostHourly := func(condition, message string, args ...any) {
+	atMostPerMinute := func(condition, message string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
 		if last, seen := said[condition]; seen && time.Since(last) < time.Minute {
@@ -389,37 +403,13 @@ func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler 
 		changed, err := candidates.ObserveAll(ctx, source, announcements)
 		switch {
 		case errors.Is(err, discovery.ErrCandidatesFull):
-			atMostHourly("full",
+			atMostPerMinute("full",
 				"the pairing candidate list is full at %d; a machine opening pairing mode now will not appear",
 				discovery.MaxCandidates)
 		case err != nil:
-			atMostHourly("error", "could not read pairing offers: %v", err)
+			atMostPerMinute("error", "could not read pairing offers: %v", err)
 		case changed > 0:
 			log.Printf("%d new pairing candidate(s)", changed)
 		}
 	}
-}
-
-// listenPort reads the port a listen address names, which is what an
-// announcement has to carry: a peer needs the port this node answers TLS on,
-// not the one multicast arrived from.
-func listenPort(address string) (int, error) {
-	_, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return 0, err
-	}
-	// LookupPort rather than Atoi, because a listen address may name a service
-	// ("localhost:https") and the listener itself accepts one. Refusing what the
-	// listener accepts would stop the node over an address that works.
-	parsed, err := net.LookupPort("tcp", port)
-	if err != nil {
-		return 0, fmt.Errorf("port %q in %q is not a port this node can announce: %w", port, address, err)
-	}
-	// Port zero asks the kernel to choose, so the number here is not the one the
-	// listener ends up on — announcing it would invite peers to connect to
-	// nothing. The peer listener does not support it either way.
-	if parsed == 0 {
-		return 0, fmt.Errorf("the peer listener must name a fixed port, not 0, so an announcement can carry it")
-	}
-	return parsed, nil
 }
