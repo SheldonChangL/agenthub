@@ -1,0 +1,230 @@
+name: Release
+
+# A tag is the trigger, and the only one that publishes. workflow_dispatch runs
+# the identical build and packaging so the whole path can be exercised without
+# creating a release nobody wanted: the acceptance for this workflow is "push a
+# tag and get downloadable files", and rehearsing that must not mean tagging
+# something first to find out the YAML is wrong.
+#
+# Nothing here runs on a pull request. A fork's PR cannot reach the token that
+# publishes, because no pull_request trigger exists to reach it with.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build as, e.g. v0.1.0. Nothing is published."
+        required: true
+        type: string
+
+# Read by default; only the publishing job asks for more, and only for the
+# duration of that job.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GOSEC_VERSION: v2.29.0
+  GOVULNCHECK_VERSION: v1.7.0
+
+jobs:
+  # A tag is not a promise that the code was ever tested: it can be pushed at
+  # any commit, including one that never passed CI. The gates that guard main
+  # run again here against the exact tree being released.
+  verify:
+    name: gates at the tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
+      - name: govulncheck
+        run: |
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          "$(go env GOPATH)/bin/govulncheck" ./...
+      - name: gosec
+        run: |
+          go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+          "$(go env GOPATH)/bin/gosec" -quiet ./...
+
+  build:
+    name: package ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: resolve the tag being built
+        id: version
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${DISPATCH_TAG:-${GITHUB_REF_NAME}}"
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "refusing to build \"$tag\": a release tag starts with v and a digit"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "building $tag"
+
+      - name: build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          suffix=""
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
+          bundle="agenthub_${TAG}_${GOOS}_${GOARCH}"
+          mkdir -p "stage/${bundle}"
+          for command in agenthub-node ah agenthub-mcp; do
+            # -X is what makes `ah --version` answer with the tag instead of a
+            # revision. Everything else about the build matches CI's, so a
+            # release binary differs from a CI one only in that string.
+            go build -trimpath \
+              -ldflags "-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}" \
+              -o "stage/${bundle}/${command}${suffix}" "./cmd/${command}"
+          done
+          cp README.md "stage/${bundle}/"
+          echo "bundle=$bundle" >> "$GITHUB_ENV"
+
+      # The tag has to be what the binary says, or the release is mislabelled in
+      # the one place a user looks. Only the native pair can run here; the
+      # -ldflags value is identical for every platform, so this holds for all of
+      # them or none.
+      - name: the binary reports the tag
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          reported=$("./stage/${bundle}/ah" --version)
+          echo "$reported"
+          case "$reported" in
+            *"modified source"*)
+              echo "the tree was not clean at this tag: $reported"; git status --porcelain; exit 1 ;;
+          esac
+          case "$reported" in
+            "ah ${TAG} "*) ;;
+            *) echo "ah --version does not lead with ${TAG}"; exit 1 ;;
+          esac
+
+      # tar for the platforms whose users expect it, and because the executable
+      # bit survives it. zip for Windows, where tar is not the convention and
+      # the bit means nothing.
+      - name: archive
+        env:
+          GOOS: ${{ matrix.goos }}
+        run: |
+          mkdir -p dist
+          if [ "$GOOS" = "windows" ]; then
+            (cd stage && zip -q -r "../dist/${bundle}.zip" "$bundle")
+          else
+            tar -C stage -czf "dist/${bundle}.tar.gz" "$bundle"
+          fi
+          # Named for the archive rather than left as a bare SHA256SUMS: six
+          # jobs upload into one directory later, and six files of the same
+          # name would be one file.
+          (cd dist && sha256sum "${bundle}."* > "${bundle}.sha256")
+          cat "dist/${bundle}.sha256"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    # The one job that can write, and only when a tag was actually pushed. A
+    # workflow_dispatch run has built and checked everything above and stops
+    # here, which is what makes a rehearsal safe to run at any time.
+    if: github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      # One list, over the archives themselves, so a downloader checks what they
+      # downloaded rather than a per-platform file they would have to find. The
+      # per-platform .sha256 files from the build jobs are folded into it and
+      # not published separately: two lists that must agree eventually will not.
+      - name: one checksum list for the release
+        run: |
+          cd dist
+          rm -f ./*.sha256
+          # Listed explicitly rather than with `./*`: the shell creates the
+          # output file before it expands the glob, so `sha256sum ./*` would
+          # checksum the empty SHA256SUMS it is in the middle of writing.
+          shopt -s nullglob
+          archives=(agenthub_*.tar.gz agenthub_*.zip)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "no archives were downloaded; nothing to publish"; exit 1
+          fi
+          sha256sum "${archives[@]}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes=$(mktemp)
+          {
+            echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT})."
+            echo
+            echo "Every binary reports this tag: \`ah --version\` says \`ah ${TAG} …\`, the node logs it at startup, and \`agenthub-mcp\` sends it at initialize."
+            echo
+            echo "Verify a download against \`SHA256SUMS\`:"
+            echo
+            echo '```sh'
+            echo "sha256sum -c SHA256SUMS --ignore-missing"
+            echo '```'
+            echo
+            echo "\`agenthub-node\` serves the owner's API on loopback only. Sharing with another machine is the peer listener, with \`-allow-lan\` and \`-peer-listen\`; see the README."
+          } > "$notes"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes-file "$notes" \
+            --verify-tag \
+            dist/*

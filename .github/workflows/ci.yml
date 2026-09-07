@@ -202,7 +202,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           suffix=""
-          if [ "${{ matrix.goos }}" = "windows" ]; then suffix=".exe"; fi
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
           mkdir -p dist
           for command in agenthub-node ah agenthub-mcp; do
             # -trimpath so the binary does not carry this runner's paths, and
@@ -225,9 +225,16 @@ jobs:
             echo "platform=${GOOS}/${GOARCH}"
           } > dist/BUILD
           # The checksums travel with the binaries: a downloader can check what
-          # they got without a second source. Release adds a signed manifest;
-          # this is the artifact-level answer to "is this the file CI built".
-          (cd dist && sha256sum * > SHA256SUMS)
+          # they got without a second source. Listed explicitly rather than with
+          # a bare glob: the shell creates SHA256SUMS before it expands the
+          # pattern, so on a re-run the file would checksum itself — as the
+          # empty string, which is a puzzle for whoever verifies it.
+          (
+            cd dist
+            shopt -s nullglob
+            built=(agenthub-node* ah* agenthub-mcp* BUILD)
+            sha256sum "${built[@]}" > SHA256SUMS
+          )
           cat dist/SHA256SUMS
 
       # The version each binary reports has to be the code it was built from.
@@ -311,16 +318,19 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # An array because the two forms are a different number of arguments:
+          # one revision range, or two revisions. Unquoted word splitting did
+          # the same thing by accident.
           if [ -n "${BASE_SHA}" ]; then
-            range="${BASE_SHA}...HEAD"
+            range=("${BASE_SHA}...HEAD")
           elif git rev-parse --verify -q HEAD~1 >/dev/null; then
-            range="HEAD~1 HEAD"
+            range=(HEAD~1 HEAD)
           else
             echo "no earlier revision to compare against; nothing to check"
             exit 0
           fi
-          echo "checking ${range}"
-          git diff --check ${range} -- . ':(exclude)desktop/frontend/wailsjs'
+          echo "checking ${range[*]}"
+          git diff --check "${range[@]}" -- . ':(exclude)desktop/frontend/wailsjs'
       # The broker and MCP contracts are consumed by other implementations. A
       # JSON file that no longer parses breaks them before any Go test notices.
       - name: broker and MCP contracts parse
