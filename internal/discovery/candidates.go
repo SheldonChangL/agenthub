@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 )
 
@@ -78,10 +79,15 @@ func NewCandidates(paired func(ctx context.Context, nodeID string) (bool, error)
 //
 // source is the address the datagram came from. A node's announced address must
 // be one it is actually answering at; an offer claiming to be somewhere else is
-// how one host sprays a list with candidates that all point at it. A zero
-// source disables the check, which is for tests and for callers that genuinely
-// do not have it.
+// how one host sprays a list with candidates that all point at it.
+//
+// A caller holding a packet always has its source, so an invalid one is a bug
+// in the caller rather than a case to tolerate — and tolerating it would
+// silently disable the check.
 func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announcements []Announcement) (int, error) {
+	if !source.IsValid() {
+		return 0, errors.New("the datagram's source address is required to observe offers")
+	}
 	// First offer per node id wins within a packet. A node with six addresses
 	// in one datagram is one candidate, not six, and the sender does not get to
 	// choose which by ordering — see the address pinning in observe.
@@ -142,6 +148,14 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	if model.ValidateNodeID(announcement.NodeID) != nil {
 		return false, nil
 	}
+	// The fingerprint is canonical by the time it is stored, whichever way the
+	// announcement was built: comparison between rows is equality, and that
+	// only means anything if every value went through the same parser.
+	canonical, err := identity.ParseFingerprint(announcement.Fingerprint)
+	if err != nil {
+		return false, nil
+	}
+	announcement.Fingerprint = canonical
 	// An offer has to come from where it says it is. Without this, one host
 	// sprays a list full of candidates that all resolve to itself, and the
 	// owner picks one of them.
@@ -165,6 +179,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		return false, ErrCandidatesFull
 	}
 	c.mu.Unlock()
+	// Whether the trust store was asked, which is not the same as whether the
+	// row existed a moment ago: the row can be forgotten — pairing does exactly
+	// that — or expire between the two sections below, and inserting then would
+	// list a peer this owner has already paired with, never to be re-checked
+	// because refreshes do not ask again.
+	askedTrustStore := !known
 
 	// Only for a row that is not there yet. A listed candidate's paired status
 	// was checked when it was inserted, and pairing with one calls Forget — so
@@ -186,6 +206,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 
 	now := c.now()
 	existing, known := c.seen[announcement.NodeID]
+	if !known && !askedTrustStore {
+		// The row went away while the trust store was not being asked. Drop
+		// this packet rather than insert unchecked; a node in pairing mode
+		// announces again in seconds, and that one takes the full path.
+		return false, nil
+	}
 	if !known && len(c.seen) >= MaxCandidates {
 		return false, ErrCandidatesFull
 	}
@@ -207,12 +233,25 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		// Disagreement is not silent. Someone claiming this id is either the
 		// node moving or an impersonator, and the person choosing a row is the
 		// only one who can tell.
-		if announcement.Address != existing.Address || announcement.Fingerprint != existing.Fingerprint {
+		switch {
+		case announcement.Fingerprint != existing.Fingerprint,
+			differentAddressSameFamily(announcement.Address, existing.Address):
+			// Someone else is claiming this id, or the node moved: either way
+			// the person choosing a row has to be told rather than have it
+			// resolved by a rule that favours whoever announced first.
 			if !existing.Contested {
 				existing.Contested = true
 				c.seen[announcement.NodeID] = existing
 				return true, nil
 			}
+			return false, nil
+		case announcement.Address != existing.Address:
+			// The same node on its other address family. A dual-stack machine
+			// announces on both groups, and each datagram reduces to the
+			// address matching its own source — so this is the ordinary case,
+			// not a conflict. Neither contested nor used to refresh: the row
+			// stays pinned to the family it was first seen on, and that
+			// family's packets keep it alive.
 			return false, nil
 		}
 		existing.LastSeen = now
@@ -229,6 +268,33 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		LastSeen:    now,
 	}
 	return true, nil
+}
+
+// differentAddressSameFamily reports an address change within one family, which
+// is a node moving or someone claiming its id — as opposed to the same node
+// seen over its other family, which is neither.
+func differentAddressSameFamily(announced, existing string) bool {
+	a, aOK := hostOf(announced)
+	b, bOK := hostOf(existing)
+	if !aOK || !bOK {
+		return announced != existing
+	}
+	if a.Is4() != b.Is4() {
+		return false
+	}
+	return a != b
+}
+
+func hostOf(address string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return parsed.Unmap().WithZone(""), true
 }
 
 // announcedFrom reports whether an announced address names the host the packet
@@ -273,11 +339,11 @@ func (c *Candidates) List() []Candidate {
 		if candidate.DisplayName != "" {
 			names[fieldKey(candidate.DisplayName)]++
 		}
-		prints[comparableFingerprint(candidate.Fingerprint)]++
+		prints[candidate.Fingerprint]++
 	}
 	for i := range out {
 		sharedName := out[i].DisplayName != "" && names[fieldKey(out[i].DisplayName)] > 1
-		out[i].Duplicate = sharedName || prints[comparableFingerprint(out[i].Fingerprint)] > 1
+		out[i].Duplicate = sharedName || prints[out[i].Fingerprint] > 1
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].FirstSeen.Equal(out[j].FirstSeen) {
