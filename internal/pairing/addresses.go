@@ -62,36 +62,29 @@ func PeerEndpoint(policy func(address string) error, peerListen string) (Address
 // at startup and the process does not survive losing it, so unlike a walk over
 // interfaces there is nothing here that changes while the node runs.
 func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, bool) {
-	// A wildcard listener has no single address to announce. ValidatePeerListen
-	// refuses one beyond loopback, so this is the loopback wildcard, which a
-	// peer could not reach anyway.
-	if host == "" {
-		return netip.Addr{}, false
-	}
 	parsed, err := netip.ParseAddr(host)
 	if err != nil {
-		// A name, which ValidatePeerListen refuses beyond loopback because it
-		// can resolve somewhere else later. Whatever it resolves to now is not
-		// something to put in an announcement.
+		// Either a name or the wildcard. ValidatePeerListen refuses both beyond
+		// loopback — a name because it can resolve somewhere else later — and
+		// neither is a single address to put in an announcement.
 		return netip.Addr{}, false
 	}
 	parsed = parsed.Unmap()
 	if !parsed.IsValid() || parsed.IsLoopback() || parsed.IsUnspecified() {
 		return netip.Addr{}, false
 	}
-	// A zone names an interface on this machine and means nothing to the peer
-	// reading the packet. ValidatePeerListen refuses one beyond loopback, so
-	// this is belt and braces — but announcing a zoned address is never right,
-	// and stripping the zone silently would announce an ambiguous one.
-	if parsed.Zone() != "" {
-		return netip.Addr{}, false
-	}
 	// An IPv6 link-local address counts as private, so it can be bound, but it
-	// is ambiguous without a zone — and a zone is exactly what cannot travel.
-	// There is nothing a peer could do with it.
+	// is ambiguous without a zone — and a zone names an interface on this
+	// machine, so it is exactly what cannot travel in a packet. There is
+	// nothing a peer could do with one.
 	if parsed.Is6() && parsed.IsLinkLocalUnicast() {
 		return netip.Addr{}, false
 	}
+	// The policy is the last gate, and the only one for a zoned address: it
+	// refuses one by name ("carries a zone; give the address without %zone"),
+	// which is also how delivery refuses it. A check here as well would be a
+	// second answer to the same question, and the one that stopped being
+	// load-bearing would be the one nobody noticed had rotted.
 	if policy(netip.AddrPortFrom(parsed, uint16(port)).String()) != nil { // #nosec G115 -- checked non-zero above
 		return netip.Addr{}, false
 	}
