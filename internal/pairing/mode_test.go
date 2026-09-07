@@ -186,3 +186,33 @@ func TestConcurrentUse(t *testing.T) {
 	}
 	wait.Wait()
 }
+
+// The window is measured, not read off a wall clock. Converting to UTC before
+// comparing would strip the monotonic reading, and an NTP correction while a
+// window was open would then shorten or lengthen it — a step backwards holding
+// this machine advertising past the moment the owner was shown.
+func TestTheWindowIsMeasuredOnTheMonotonicClock(t *testing.T) {
+	m := NewMode()
+	if _, err := m.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	openedAt, expiresAt := m.openedAt, m.expiresAt
+	m.mu.Unlock()
+	// Round(0) is how a time is stripped of its monotonic reading, so a value
+	// that carries one differs from its own stripped copy.
+	for name, stored := range map[string]time.Time{"openedAt": openedAt, "expiresAt": expiresAt} {
+		if stored.Round(0).Equal(stored) && stored.Round(0) == stored {
+			t.Errorf("%s has no monotonic reading, so the window runs on the wall clock", name)
+		}
+	}
+	// What is presented carries none of it: a monotonic reading means nothing
+	// to whoever reads the JSON, and time.Time marshals the wall clock anyway.
+	state := m.State()
+	if state.ExpiresAt.Round(0) != state.ExpiresAt || state.OpenedAt.Round(0) != state.OpenedAt {
+		t.Error("the presented state carries a monotonic reading")
+	}
+	if state.ExpiresAt.Location() != time.UTC || state.OpenedAt.Location() != time.UTC {
+		t.Errorf("the presented state is not in UTC: %+v", state)
+	}
+}
