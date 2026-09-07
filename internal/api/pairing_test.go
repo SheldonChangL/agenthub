@@ -366,3 +366,36 @@ func TestTheCountdownComesFromTheWindowsOwnClock(t *testing.T) {
 			body.Remaining)
 	}
 }
+
+// The three pairing pieces are wired together or not at all. Half-wired, the
+// handlers would answer some questions and panic on others, and a panic in an
+// HTTP handler is a 200 with an empty body to whoever asked.
+func TestPairingIsRefusedRatherThanHalfWired(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "half.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	mode := pairing.NewMode()
+	candidates := discovery.NewCandidates(node.ID, store.IsPaired, func(string) error { return nil })
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+		WithPairing(mode, candidates, nil))
+
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/v1/pairing"},
+		{http.MethodPost, "/v1/pairing"},
+		{http.MethodDelete, "/v1/pairing"},
+		{http.MethodGet, "/v1/pairing/candidates"},
+	} {
+		response := perform(t, server.Handler(), request.method, request.path, nil)
+		if response.Code != http.StatusConflict {
+			t.Errorf("%s %s = %d %s, want 409", request.method, request.path,
+				response.Code, response.Body.String())
+		}
+	}
+	if mode.IsOpen() {
+		t.Error("a half-wired node opened a pairing window")
+	}
+}
