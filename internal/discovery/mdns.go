@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -103,6 +104,10 @@ type Candidate struct {
 	// its owner closes pairing mode, since nothing announces a withdrawal.
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// Duplicate marks a row whose display name or announced fingerprint is
+	// shared with another row. Two candidates claiming one fingerprint means at
+	// least one is lying, and a person needs to see that rather than pick.
+	Duplicate bool
 }
 
 // Offering reports whether an announcement was made by a node asking to pair.
@@ -285,15 +290,14 @@ func ParseAnnouncements(packet []byte) []Announcement {
 				// dropped rather than truncated: a name cut off mid-way is a
 				// different name, and showing one would be worse than showing
 				// none.
-				switch {
-				case strings.HasPrefix(entry, nodeIDKey):
-					nodeIDs[name] = strings.TrimPrefix(entry, nodeIDKey)
-				case strings.HasPrefix(entry, displayNameKey):
-					displayNames[name] = printableField(strings.TrimPrefix(entry, displayNameKey))
-				case strings.HasPrefix(entry, platformKey):
-					platforms[name] = printableField(strings.TrimPrefix(entry, platformKey))
-				case strings.HasPrefix(entry, fingerprintKey):
-					fingerprints[name] = printableField(strings.TrimPrefix(entry, fingerprintKey))
+				if after, found := strings.CutPrefix(entry, nodeIDKey); found {
+					nodeIDs[name] = after
+				} else if after, found := strings.CutPrefix(entry, displayNameKey); found {
+					displayNames[name] = printableField(after)
+				} else if after, found := strings.CutPrefix(entry, platformKey); found {
+					platforms[name] = printableField(after)
+				} else if after, found := strings.CutPrefix(entry, fingerprintKey); found {
+					fingerprints[name] = printableField(after)
 				}
 			}
 		case *dnsmessage.AResource:
@@ -354,20 +358,81 @@ func ParseAnnouncements(packet []byte) []Announcement {
 
 // printableField keeps a peer-supplied label only if it is one.
 //
-// Empty for anything over the bound or carrying a character that is not
-// printable. A newline in a display name is what turns one row of a candidate
-// list into two, and the second row is the sender's — the same reasoning as
-// the presence path's cwd and status fields.
+// Empty for anything over the bound, not valid UTF-8, carrying a character that
+// is not printable, or made of nothing a person can see. A newline in a display
+// name is what turns one row of a candidate list into two, and the second row is
+// the sender's — the same reasoning as the presence path's cwd and status
+// fields, with two additions that path does not need.
+//
+// unicode.IsGraphic alone is not enough here. Ranging over invalid UTF-8 yields
+// U+FFFD, which is category So and therefore "graphic", so a field of arbitrary
+// bytes passes: neither printable nor stable once it is marshalled to JSON. And
+// IsGraphic admits every space Unicode has — U+00A0, U+3000, U+2800 braille
+// blank, the Hangul fillers — so a name of nothing but invisible characters
+// passes as well, which on a screen is a row with no name that is not the same
+// as a row with no name.
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
 	}
+	if !utf8.ValidString(value) {
+		return ""
+	}
+	visible := false
+	marks := 0
 	for _, r := range value {
 		if !unicode.IsGraphic(r) {
 			return ""
 		}
+		// One ordinary space is a space. Any other separator is a space
+		// pretending not to be one.
+		if unicode.IsSpace(r) && r != ' ' {
+			return ""
+		}
+		if invisible(r) {
+			return ""
+		}
+		// A stack of combining marks renders as a smear over its neighbour and
+		// can be made to overflow the row it is in. Two is an accent and a
+		// tone; twenty is an attack.
+		if unicode.Is(unicode.Mn, r) {
+			marks++
+			if marks > 2 {
+				return ""
+			}
+			continue
+		}
+		marks = 0
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			visible = true
+		}
+	}
+	if !visible {
+		return ""
 	}
 	return value
+}
+
+// invisible reports the code points that render as nothing while Unicode
+// classifies them as something a person can see.
+//
+// unicode.IsSpace does not cover them and neither does IsGraphic: U+2800 is a
+// symbol, the Hangul fillers are letters. Each renders as blank, so each is a
+// way to build a name that looks empty, or one that looks exactly like another
+// candidate's. The list cannot be exhaustive — Unicode keeps growing — but
+// these are the ones used for this.
+func invisible(r rune) bool {
+	switch r {
+	case '\u2800', // braille pattern blank
+		'\u3164', // hangul filler
+		'\u115f', // hangul choseong filler
+		'\u1160', // hangul jungseong filler
+		'\uffa0', // halfwidth hangul filler
+		'\u17b4', // khmer vowel inherent aq
+		'\u17b5': // khmer vowel inherent aa
+		return true
+	}
+	return false
 }
 
 // MulticastGroupV4 is the standard IPv4 mDNS group.
@@ -431,6 +496,8 @@ type Offer struct {
 	Fingerprint string
 }
 
+// Announce writes this node's own service record to the group, saying only where
+// it is. A node that has not opened pairing mode announces exactly this.
 func Announce(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr) error {
 	return AnnounceOffering(ctx, group, nodeID, instance, port, addresses, Offer{})
 }
@@ -491,10 +558,19 @@ func buildAnnouncement(nodeID, instance string, port int, addresses []netip.Addr
 	// what it announced before this existed: its id, so peers it has already
 	// paired with can find its address.
 	if offer.Fingerprint != "" {
+		// Refused rather than dropped. Dropping it would announce the name and
+		// platform of a node that reads as not offering: this node would
+		// believe it was discoverable for pairing, nobody would see it as a
+		// candidate, and it would have leaked two labels for nothing.
+		fingerprint := printableField(offer.Fingerprint)
+		if fingerprint == "" {
+			return nil, fmt.Errorf("refusing to announce: the fingerprint is not a printable label within %d bytes",
+				MaxCandidateFieldLength)
+		}
+		txt = append(txt, fingerprintKey+fingerprint)
 		for key, value := range map[string]string{
 			displayNameKey: offer.DisplayName,
 			platformKey:    offer.Platform,
-			fingerprintKey: offer.Fingerprint,
 		} {
 			if clean := printableField(value); clean != "" {
 				txt = append(txt, key+clean)

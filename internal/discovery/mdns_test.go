@@ -404,10 +404,6 @@ func TestAHostileOfferCannotWriteToTheReader(t *testing.T) {
 			DisplayName: strings.Repeat("a", MaxCandidateFieldLength+1),
 			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
 		},
-		"a fingerprint that is prose": {
-			DisplayName: "laptop",
-			Fingerprint: "trust me\nthis is fine",
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			packet, err := buildAnnouncement("node_hostile00000000", "agenthub-test", 7463,
@@ -430,6 +426,70 @@ func TestAHostileOfferCannotWriteToTheReader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A node whose own fingerprint is not a label must not announce at all.
+//
+// Dropping it would announce this node's name and platform in a packet that
+// reads as "not offering": it would believe it was discoverable for pairing,
+// nobody would list it, and it would have leaked two labels for nothing.
+func TestAnUnannounceableFingerprintIsRefusedNotDropped(t *testing.T) {
+	for name, fingerprint := range map[string]string{
+		"prose with a newline": "trust me\nthis is fine",
+		"over the bound":       strings.Repeat("A", MaxCandidateFieldLength+1),
+		"invisible":            "\u00a0\u3000",
+		"invalid utf-8":        "\xff\xfe",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildAnnouncement("node_offering0000000", "agenthub-test", 7463,
+				[]netip.Addr{netip.MustParseAddr("192.168.1.42")},
+				Offer{DisplayName: "laptop", Platform: "linux/amd64", Fingerprint: fingerprint})
+			if err == nil {
+				t.Fatal("announced anyway")
+			}
+			if !strings.Contains(err.Error(), "fingerprint") {
+				t.Errorf("the refusal does not say what was wrong: %v", err)
+			}
+		})
+	}
+}
+
+// A label has to be one. Unicode classifies several code points as letters or
+// symbols that render as nothing at all, and IsGraphic admits every one: a name
+// of braille blanks looks empty, and a name padded with Hangul fillers looks
+// exactly like the row above it.
+func TestALabelMustBeVisible(t *testing.T) {
+	dropped := map[string]string{
+		"a braille blank":        "⠀",
+		"a braille blank inside": "lap⠀top",
+		"a hangul filler":        "ㅤ",
+		"a non-breaking space":   " ",
+		// Inside a name rather than instead of one: a space variant between
+		// two visible words passes every other check here.
+		"a non-breaking space inside": "lap top",
+		"an ideographic space inside": "lap　top",
+		"an ideographic space":        "　",
+		"a zero-width space":          "lap​top",
+		"stacked marks":               "e" + "́́́́́́",
+		"nothing but spaces":          "     ",
+	}
+	for name, value := range dropped {
+		t.Run(name, func(t *testing.T) {
+			if got := printableField(value); got != "" {
+				t.Errorf("printableField(%q) = %q, want it dropped", value, got)
+			}
+		})
+	}
+	// And names people actually have, in the scripts they actually use.
+	kept := []string{
+		"sheldon's laptop", "build-server-2", "café", "雪登的筆電",
+		"laptop 💻", "MacBook Pro (16-inch)", "linux/amd64",
+	}
+	for _, value := range kept {
+		if got := printableField(value); got != value {
+			t.Errorf("printableField(%q) = %q; a legitimate label was dropped", value, got)
+		}
 	}
 }
 

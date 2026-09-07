@@ -3,6 +3,8 @@ package discovery
 import (
 	"net/netip"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 )
 
 // FuzzParseAnnouncements guards the one place this package reads bytes an
@@ -21,6 +23,15 @@ func FuzzParseAnnouncements(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(valid)
+	// An offering seed as well: the fields a candidate carries are parsed by
+	// the same code path and are the ones an attacker chooses.
+	offeringSeed, err := buildAnnouncement("node_offering0000000", "agenthub-seed", 7463,
+		[]netip.Addr{netip.MustParseAddr("192.168.1.42")},
+		Offer{DisplayName: "laptop", Platform: "linux/amd64", Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA"})
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(offeringSeed)
 	f.Add(valid[:len(valid)/2])
 	f.Add(valid[:12])
 	f.Add([]byte{})
@@ -42,6 +53,30 @@ func FuzzParseAnnouncements(f *testing.F) {
 			}
 			if _, err := netip.ParseAddrPort(announcement.Address); err != nil {
 				t.Fatalf("parser returned an unusable address %q: %v", announcement.Address, err)
+			}
+			// The three candidate fields reach a person's screen, so whatever
+			// the packet said, what comes out has to be a label: valid UTF-8,
+			// within the bound, and nothing that moves a cursor or renders as
+			// nothing.
+			for field, value := range map[string]string{
+				"display name": announcement.DisplayName,
+				"platform":     announcement.Platform,
+				"fingerprint":  announcement.Fingerprint,
+			} {
+				if value == "" {
+					continue
+				}
+				if len(value) > MaxCandidateFieldLength {
+					t.Fatalf("%s is %d bytes, over the %d bound: %q", field, len(value), MaxCandidateFieldLength, value)
+				}
+				if !utf8.ValidString(value) {
+					t.Fatalf("%s is not valid UTF-8: %q", field, value)
+				}
+				for _, r := range value {
+					if !unicode.IsGraphic(r) || (unicode.IsSpace(r) && r != ' ') || invisible(r) {
+						t.Fatalf("%s carries %q, which is not a label: %q", field, r, value)
+					}
+				}
 			}
 		}
 	})
