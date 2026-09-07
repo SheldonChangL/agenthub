@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -310,5 +311,71 @@ func TestTheRejoinIntervalOutpacesACandidateExpiring(t *testing.T) {
 	if RejoinInterval*2 > CandidateTTL {
 		t.Errorf("re-checking every %v against a %v candidate lifetime leaves no room",
 			RejoinInterval, CandidateTTL)
+	}
+}
+
+// The membership is re-checked for the listener's whole life, not once at
+// startup. Without the loop, an interface plugged in a minute later is never
+// joined and a peer announcing onto it is never heard — which looks, from both
+// machines, exactly like the peer not announcing.
+func TestTheMembershipIsRecheckedUntilTheListenerStops(t *testing.T) {
+	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15361")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.ListenMulticastUDP("udp4", nil, target)
+	if err != nil {
+		t.Skipf("cannot join the group on this machine: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	joins := newMembership(connection, target)
+	var checks atomic.Int64
+	joins.rejoin = func() []string {
+		checks.Add(1)
+		return nil
+	}
+	joins.every = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		joins.keepFresh(ctx, done)
+		close(finished)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for checks.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := checks.Load(); got < 3 {
+		cancel()
+		t.Fatalf("the membership was re-checked %d times in two seconds; the loop is not running", got)
+	}
+
+	// And it stops with the listener rather than outliving it: a goroutine per
+	// Listen call that never returns is a leak.
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Error("the refresher did not stop when the context was cancelled")
+	}
+
+	// The done channel stops it too, which is what closes it when Listen
+	// returns on a read error rather than on cancellation.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	stopped := make(chan struct{})
+	go func() {
+		joins.keepFresh(ctx2, done)
+		close(stopped)
+	}()
+	close(done)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Error("the refresher ignored the done channel, so it outlives Listen")
 	}
 }

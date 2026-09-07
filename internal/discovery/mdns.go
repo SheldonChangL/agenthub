@@ -705,10 +705,21 @@ const RejoinInterval = CandidateTTL / 3
 type membership struct {
 	packet *ipv4.PacketConn
 	group  *net.UDPAddr
+	// rejoin is the work a tick does, and every is how often. Fields so a test
+	// can watch the loop doing it without waiting half a minute — the same seam
+	// the announce loop uses for its own send.
+	rejoin func() []string
+	every  time.Duration
 }
 
 func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
-	return &membership{packet: ipv4.NewPacketConn(connection), group: group}
+	m := &membership{
+		packet: ipv4.NewPacketConn(connection),
+		group:  group,
+		every:  RejoinInterval,
+	}
+	m.rejoin = m.refresh
+	return m
 }
 
 // refresh attempts every eligible interface and reports the ones that were not
@@ -745,7 +756,7 @@ func (m *membership) refresh() []string {
 
 // keepFresh re-checks the membership until the listener stops.
 func (m *membership) keepFresh(ctx context.Context, done <-chan struct{}) {
-	ticker := time.NewTicker(RejoinInterval)
+	ticker := time.NewTicker(m.every)
 	defer ticker.Stop()
 	for {
 		select {
@@ -754,7 +765,7 @@ func (m *membership) keepFresh(ctx context.Context, done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
-			if added := m.refresh(); len(added) > 0 {
+			if added := m.rejoin(); len(added) > 0 {
 				// Logged only when it changes: an interface appearing is worth
 				// a line, and the same list every thirty seconds is not.
 				log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
