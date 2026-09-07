@@ -141,6 +141,19 @@ func TestNothingIsAnnouncedWithoutAnAddress(t *testing.T) {
 	}
 }
 
+// discovery.RejoinInterval is chosen against these two numbers and cannot
+// reference them — pairing imports discovery, not the other way round — so its
+// test writes them down. If either changes here, that one has to change too.
+func TestTheNumbersDiscoveryWritesDownAreStillOurs(t *testing.T) {
+	if MinWindow != 30*time.Second {
+		t.Errorf("MinWindow is %v; internal/discovery/egress_test.go assumes 30s", MinWindow)
+	}
+	if AnnounceInterval != 20*time.Second {
+		t.Errorf("AnnounceInterval is %v; internal/discovery/egress_test.go assumes 20s",
+			AnnounceInterval)
+	}
+}
+
 // The interval has to be short enough that a listener does not see a machine
 // flicker: a candidate is dropped CandidateTTL after its last packet, and mDNS
 // is UDP on a network that drops some.

@@ -27,6 +27,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -593,33 +595,13 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 		return fmt.Errorf("join mDNS group %q: %w", group, err)
 	}
 	defer func() { _ = connection.Close() }()
-	// The nil interface above joins one interface — the system's choice, which
-	// is the default route's. Measured on this machine: a datagram sent out of
-	// a second interface was not heard by that join at all. So a peer whose own
-	// listener is on a direct cable announces onto the cable, correctly, and
-	// this node would never hear it.
-	//
-	// Refreshed on a ticker, not only here, because interfaces appear after a
-	// process starts: an owner plugs in a USB Ethernet adapter and runs a cable
-	// to the machine they want to pair with, which is the case this feature is
-	// for. A membership taken only at startup would leave the other node
-	// announcing correctly onto a wire nobody is listening to.
 	// The closer must not outlive this function. Without the done channel it
 	// stays parked on ctx.Done() after a read error returns, which is a leaked
 	// goroutine per Listen call. The membership refresher is bounded the same
 	// way, for the same reason.
 	done := make(chan struct{})
 	defer close(done)
-	// Named for what it is rather than "group", which is this function's own
-	// parameter for the group's address.
-	joins := newMembership(connection, address)
-	if added := joins.refresh(); len(added) > 0 {
-		// "Joined", not "listening on": several of these have no address of
-		// their own and will never carry an announcement. What is true is that
-		// this socket now has a membership there.
-		log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
-	}
-	go joins.keepFresh(ctx, done)
+	subscribe(ctx, done, connection, address)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -682,13 +664,47 @@ type Offer struct {
 	Fingerprint string
 }
 
+// subscribe joins the group everywhere a peer's announcement could arrive, and
+// keeps doing so for as long as the listener runs.
+//
+// A function of its own, and a variable, so a test can see that Listen calls it
+// and can watch what it is asked to do. The alternative here was a test that
+// read this file for the call, which `if false { … }` around it defeats — and
+// which fails a refactor that is correct.
+//
+// The nil interface ListenMulticastUDP was given joins one interface: the
+// system's choice, which is the default route's. Measured — a datagram sent out
+// of a second interface was not heard by that join at all. So a peer whose own
+// listener is on a direct cable announces onto the cable, correctly, and this
+// node would never hear it.
+//
+// Re-checked on a ticker rather than only once, because interfaces appear after
+// a process starts: an owner plugs in a USB Ethernet adapter and runs a cable to
+// the machine they want to pair with, which is the case this feature is for.
+var subscribe = func(ctx context.Context, done <-chan struct{}, connection *net.UDPConn, group *net.UDPAddr) {
+	joins := newMembership(connection, group)
+	if added := joins.refresh(); len(added) > 0 {
+		// "Joined", not "listening on": what is true is that this socket now
+		// has a membership on each of these.
+		log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
+	}
+	go joins.keepFresh(ctx, done)
+}
+
 // RejoinInterval is how often the group membership is re-checked for interfaces
 // that have appeared since the process started.
 //
-// A third of CandidateTTL, so an interface plugged in while a peer is
-// announcing is joined before that peer's row would have expired had it been
-// heard — the owner does not have to know to restart anything.
-const RejoinInterval = CandidateTTL / 3
+// Bounded by the shortest window a peer can open, not by CandidateTTL: an
+// unjoined interface has no row to expire, so the TTL says nothing about this.
+// A peer may open a window for as little as thirty seconds and announces every
+// twenty, so a check every ten leaves at least one announcement inside the
+// shortest window even when the interface appears just after a check. The cost
+// is one interface enumeration.
+//
+// The pairing package owns those two numbers and imports this one, so they
+// cannot be named here; the test writes them down and pairing's own test pins
+// them.
+const RejoinInterval = 10 * time.Second
 
 // membership keeps this socket subscribed to the group on every interface that
 // could carry it, not only the one the default route uses.
@@ -710,31 +726,45 @@ type membership struct {
 	// the announce loop uses for its own send.
 	rejoin func() []string
 	every  time.Duration
+	// join is the syscall, injected for the same reason: a test needs to see
+	// which interfaces were offered, and to make one of them fail.
+	join func(*net.Interface, *net.UDPAddr) error
+
+	mu sync.Mutex
+	// reported is the set of failures already logged, so a condition that
+	// recurs every tick is one line rather than one line a tick.
+	reported map[string]struct{}
 }
 
 func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
+	packet := ipv4.NewPacketConn(connection)
 	m := &membership{
-		packet: ipv4.NewPacketConn(connection),
+		packet: packet,
 		group:  group,
 		every:  RejoinInterval,
+		join: func(iface *net.Interface, group *net.UDPAddr) error {
+			return packet.JoinGroup(iface, group)
+		},
 	}
 	m.rejoin = m.refresh
 	return m
 }
 
-// refresh attempts every eligible interface and reports the ones that were not
-// already joined.
+// refresh attempts every interface that could carry a peer's announcement and
+// reports the ones that were not already joined.
 //
-// No record is kept of what has been joined, because the kernel keeps it: a
+// No record is kept of what has been joined, because the kernel keeps one: a
 // duplicate join fails, so a repeat call reports nothing and the log stays
-// quiet, and there is nothing to go stale. A cache here would be an
-// optimisation whose one distinctive behaviour is harmful — an interface
-// destroyed and re-created at the same index would be skipped as already
-// joined, which is precisely the case this refresh exists for.
+// quiet. A cache here would be an optimisation whose one distinctive behaviour
+// is harmful — an interface destroyed and re-created at the same index would be
+// skipped as already joined, which is precisely the case this refresh exists
+// for.
 //
-// A failure is not reported per interface. Most of them are expected: the
-// membership the system already took refuses to be duplicated, and interfaces
-// with no IPv4 stack refuse outright.
+// Most join failures are expected and are not reported: the membership the
+// system already took refuses to be duplicated, and an interface with no IPv4
+// stack refuses outright. Anything else earns one line, because a machine at
+// its multicast membership limit fails here — Linux allows twenty by default —
+// and the interface that was just plugged in may be the one refused.
 func (m *membership) refresh() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -743,15 +773,64 @@ func (m *membership) refresh() []string {
 	var added []string
 	for i := range interfaces {
 		iface := &interfaces[i]
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+		if !canCarryAnnouncements(iface) {
 			continue
 		}
-		if err := m.packet.JoinGroup(iface, m.group); err != nil {
-			continue
+		err := m.join(iface, m.group)
+		switch {
+		case err == nil:
+			added = append(added, iface.Name)
+		case errors.Is(err, syscall.EADDRINUSE), errors.Is(err, syscall.EAFNOSUPPORT),
+			errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ENODEV):
+			// Expected: already joined, or no IPv4 on this device.
+		default:
+			m.reportOnce(fmt.Sprintf("could not listen for announcements on %s: %v", iface.Name, err))
 		}
-		added = append(added, iface.Name)
 	}
 	return added
+}
+
+// canCarryAnnouncements reports whether an interface is one a peer's
+// announcement could legitimately arrive on.
+//
+// Loopback and point-to-point are excluded, and excluding them is a security
+// property rather than tidiness.
+//
+// Nothing legitimate ever announces from loopback — reachableAt refuses to — so
+// every packet a loopback membership can receive is a forgery. Joining lo0 was
+// measured to let any local process put a chosen display name and fingerprint
+// on the owner's candidate list: a second user on a shared machine, who cannot
+// read the first user's files, can do it, and can do it under the default
+// loopback-only policy, which is the one configuration where a LAN-sourced
+// forgery is refused. The source check that makes discovery safe is exactly the
+// check loopback voids, since a forger there trivially sends from the address it
+// claims.
+//
+// A point-to-point interface — a VPN tunnel — carries the MULTICAST flag on
+// macOS and for OpenVPN on Linux, so the flags alone do not exclude it. It has
+// an address but no segment a peer could answer on, and joining it widens the
+// population that can inject a row from one local network to every VPN the host
+// is attached to.
+func canCarryAnnouncements(iface *net.Interface) bool {
+	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+		return false
+	}
+	return iface.Flags&net.FlagLoopback == 0 && iface.Flags&net.FlagPointToPoint == 0
+}
+
+// reportOnce logs a message the first time it is seen, so a condition that
+// recurs on every refresh does not become a line every RejoinInterval.
+func (m *membership) reportOnce(message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reported == nil {
+		m.reported = map[string]struct{}{}
+	}
+	if _, seen := m.reported[message]; seen {
+		return
+	}
+	m.reported[message] = struct{}{}
+	log.Print(message)
 }
 
 // keepFresh re-checks the membership until the listener stops.
@@ -850,10 +929,10 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list interfaces to announce from %v: %w", address, err)
 	}
+	// Found first, judged second, so the reason can name the interface rather
+	// than reporting "nothing holds this" about an address the machine has.
+	var holder *net.Interface
 	for i := range interfaces {
-		if interfaces[i].Flags&net.FlagUp == 0 || interfaces[i].Flags&net.FlagMulticast == 0 {
-			continue
-		}
 		addrs, err := interfaces[i].Addrs()
 		if err != nil {
 			continue
@@ -865,13 +944,31 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 			}
 			held, ok := netip.AddrFromSlice(prefix.IP)
 			if ok && held.Unmap() == address {
-				return &interfaces[i], nil
+				holder = &interfaces[i]
 			}
 		}
 	}
-	return nil, fmt.Errorf(
-		"no interface on this machine holds %v and can send multicast, so an announcement "+
-			"from it could not be received", address)
+	switch {
+	case holder == nil:
+		return nil, fmt.Errorf("no interface on this machine holds %v, so an announcement "+
+			"naming it could not come from it", address)
+	case holder.Flags&net.FlagUp == 0:
+		return nil, fmt.Errorf("%s holds %v but is down", holder.Name, address)
+	case holder.Flags&net.FlagPointToPoint != 0:
+		// The case the flags alone miss: a tunnel carries MULTICAST on macOS
+		// and for OpenVPN on Linux, so without this an announcement is sent and
+		// goes nowhere a peer could answer from, and the send reports success.
+		return nil, fmt.Errorf("%s holds %v but is a point-to-point interface — a tunnel — "+
+			"which has no local network segment for a peer to answer on. Pairing by hand with "+
+			"`ah pair` works over it", holder.Name, address)
+	case holder.Flags&net.FlagMulticast == 0:
+		return nil, fmt.Errorf("%s holds %v but cannot carry a multicast packet, so no "+
+			"announcement could leave by it", holder.Name, address)
+	case holder.Flags&net.FlagLoopback != 0:
+		return nil, fmt.Errorf("%s holds %v, which is loopback and reaches no other machine",
+			holder.Name, address)
+	}
+	return holder, nil
 }
 
 // AnnounceOffering announces this node, and — when the offer is non-empty —

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -305,13 +304,23 @@ func TestRefreshingTheMembershipReportsOnlyWhatIsNew(t *testing.T) {
 }
 
 // The refresh has to be frequent enough that an interface appearing while a
-// peer is announcing is joined before that peer's row would have expired had it
-// been heard. Otherwise an owner who plugs in a cable waits without knowing
-// what for.
-func TestTheRejoinIntervalOutpacesACandidateExpiring(t *testing.T) {
-	if RejoinInterval*2 > CandidateTTL {
-		t.Errorf("re-checking every %v against a %v candidate lifetime leaves no room",
-			RejoinInterval, CandidateTTL)
+// peer is announcing is joined while that peer is still announcing. The bound
+// is the shortest window a peer can open — an unjoined interface has no
+// candidate row, so the row lifetime says nothing about it.
+//
+// The two numbers live in the pairing package, which imports this one, so they
+// are written here rather than referenced. pairing's own tests pin them.
+func TestTheRejoinIntervalFitsInsideTheShortestWindow(t *testing.T) {
+	const (
+		shortestWindow = 30 * time.Second // pairing.MinWindow
+		peerAnnounces  = 20 * time.Second // pairing.AnnounceInterval
+	)
+	// A check, then the interface appears, then the next check: an owner should
+	// still catch an announcement before the window closes.
+	if RejoinInterval+peerAnnounces > shortestWindow {
+		t.Errorf("re-checking every %v, against a peer announcing every %v inside a window as "+
+			"short as %v, can miss the window entirely",
+			RejoinInterval, peerAnnounces, shortestWindow)
 	}
 }
 
@@ -381,34 +390,60 @@ func TestTheMembershipIsRecheckedUntilTheListenerStops(t *testing.T) {
 	}
 }
 
-// Listen has to start the refresher, not merely take a membership once.
+// Listen has to subscribe, and the subscription has to keep running — not be
+// taken once and forgotten.
 //
-// A source-level assertion, which is not how a behaviour is normally pinned —
-// but the loop is started inside Listen with no seam to observe it through, and
-// the alternative was inventing one that exists only for this test. Deleting
-// the line is otherwise invisible to the whole suite, and what it deletes is
-// the fix for a node never hearing a peer on an interface plugged in after
-// startup. The repo does this elsewhere for the same reason: see
-// desktop/frontend_test.go, which reads main.js for the sinks it must not use.
-func TestListenStartsTheMembershipRefresher(t *testing.T) {
-	source, err := os.ReadFile("mdns.go")
-	if err != nil {
-		t.Fatalf("read mdns.go: %v", err)
+// This replaces a test that read mdns.go for the call. That one was defeated by
+// wrapping the call in `if false`, and would have failed a correct refactor;
+// asserting a required call at a particular place is what a seam is for, and
+// subscribe is now that seam.
+func TestListenSubscribesForTheListenersWholeLife(t *testing.T) {
+	original := subscribe
+	t.Cleanup(func() { subscribe = original })
+
+	type call struct {
+		ctx  context.Context
+		done <-chan struct{}
 	}
-	body := string(source)
-	start := strings.Index(body, "func Listen(")
-	if start < 0 {
-		t.Fatal("Listen is not in mdns.go; this test is looking in the wrong place")
+	calls := make(chan call, 4)
+	subscribe = func(ctx context.Context, done <-chan struct{}, _ *net.UDPConn, _ *net.UDPAddr) {
+		calls <- call{ctx, done}
 	}
-	end := strings.Index(body[start:], "\n}\n")
-	if end < 0 {
-		t.Fatal("could not find the end of Listen")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listening := make(chan error, 1)
+	go func() { listening <- Listen(ctx, "224.0.0.251:15370") }()
+
+	var got call
+	select {
+	case got = <-calls:
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("Listen never subscribed, so no interface beyond the default route is ever joined")
 	}
-	listen := body[start : start+end]
-	for _, required := range []string{"newMembership(", "keepFresh("} {
-		if !strings.Contains(listen, required) {
-			t.Errorf("Listen does not call %s, so the group membership is never re-checked and "+
-				"an interface that appears after startup is never joined", required)
-		}
+	// The context and the done channel are what stop the refresher. Handing it
+	// either an already-cancelled context or a closed channel would make it
+	// return at once, which is the same as never starting it.
+	if got.ctx.Err() != nil {
+		t.Errorf("Listen subscribed with an already-cancelled context: %v", got.ctx.Err())
+	}
+	select {
+	case <-got.done:
+		t.Error("Listen subscribed with an already-closed done channel")
+	default:
+	}
+
+	// And the channel closes when Listen returns, so the refresher stops with it.
+	cancel()
+	select {
+	case <-listening:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Listen did not return after cancellation")
+	}
+	select {
+	case <-got.done:
+	case <-time.After(time.Second):
+		t.Error("the done channel handed to subscribe was not closed when Listen returned")
 	}
 }

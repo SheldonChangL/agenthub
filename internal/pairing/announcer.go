@@ -114,12 +114,27 @@ func (a *Announcer) Status() Status {
 	// Read directly rather than from the last attempt: this is the field an
 	// owner looks at to understand why nothing is going out, and it should
 	// answer before the loop has ticked even once.
+	// The same answer the API gets, from the same place, and asked whenever no
+	// failure has been recorded — not only when there is no address at all.
+	// Gating it on a zero count is what let the two disagree: an address on an
+	// interface that cannot carry a multicast packet made POST refuse with a
+	// reason while GET reported one announceable address and nothing wrong.
+	//
+	// This walks the machine's interfaces, on a loopback-only API a UI polls
+	// every few seconds. That is one enumeration per poll, which is cheap, and
+	// the alternative — answering from what was true at startup — is the whole
+	// class of bug this PR has been about.
+	unannounceable := a.Unannounceable()
+	if status.LastError == "" {
+		status.LastError = unannounceable
+	}
 	status.Addresses = len(a.addresses())
-	if status.Addresses == 0 && status.LastError == "" {
-		// The same answer the API gets, from the same place: two ways of saying
-		// why nothing is going out would eventually disagree, and the one an
-		// owner reads is this one.
-		status.LastError = a.Unannounceable()
+	if unannounceable != "" {
+		// None of them can be used, so none is announceable. Reporting the
+		// count that exists alongside a reason none works invites a reader to
+		// believe the number. A recorded send failure does not zero it: that is
+		// one attempt, not a statement about the configuration.
+		status.Addresses = 0
 	}
 	return status
 }
