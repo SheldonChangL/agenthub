@@ -2,6 +2,7 @@ package pairing
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"sync"
 	"testing"
@@ -139,5 +140,129 @@ func TestTheIntervalLeavesRoomForLostPackets(t *testing.T) {
 	if AnnounceInterval*3 > discovery.CandidateTTL {
 		t.Errorf("announcing every %v against a %v TTL leaves no room for a lost packet",
 			AnnounceInterval, discovery.CandidateTTL)
+	}
+}
+
+// Opening the window has to put a packet on the wire now, not at the next tick.
+// The interval is twenty seconds and the shortest window this node allows is
+// thirty, so waiting would spend most of a short window silent while the owner
+// watched a countdown at the other machine.
+func TestWakeAnnouncesWithoutWaitingForTheTick(t *testing.T) {
+	a, mode, sink, _ := newTestAnnouncer(t)
+	// An interval far longer than this test: nothing here can be explained by a
+	// tick having arrived.
+	a.interval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go a.Run(ctx)
+
+	// The loop announces once at the top, before its first tick, so wait for
+	// the closed-window pass to be over before opening.
+	time.Sleep(20 * time.Millisecond)
+	if sent := sink.count(); sent != 0 {
+		t.Fatalf("%d announcements before the window opened", sent)
+	}
+	if _, err := mode.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	a.Wake()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for sink.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if sent := sink.count(); sent == 0 {
+		t.Fatal("opening the window announced nothing until the next tick, an interval away")
+	}
+	// Waking twice before the loop reads the first is one announcement, not
+	// two: a caller that presses the button repeatedly must not amplify.
+	a.Wake()
+	a.Wake()
+	time.Sleep(20 * time.Millisecond)
+	if sent := sink.count(); sent > 3 {
+		t.Errorf("%d announcements after two extra wakes; a wake is not a queue", sent)
+	}
+}
+
+// "Open" and "announcing" are different facts, and the gap between them is
+// where the one failure an owner cannot see lives: a node whose peer listener
+// is on loopback opens a window, announces nothing, and looks fine from here
+// while the other machine waits for a candidate that never arrives.
+func TestStatusSaysWhetherAnythingIsActuallyBeingAnnounced(t *testing.T) {
+	a, mode, _, _ := newTestAnnouncer(t)
+	if status := a.Status(); status.Addresses != 1 {
+		t.Errorf("announceableAddresses = %d on a node with one address", status.Addresses)
+	}
+	if !a.Announceable() {
+		t.Error("Announceable() is false on a node with an address")
+	}
+	if status := a.Status(); !status.LastAttempt.IsZero() || !status.LastSuccess.IsZero() {
+		t.Errorf("a loop that has not run reports having tried: %+v", status)
+	}
+
+	// A node with nothing to announce says so, and says why.
+	a.addresses = func() []netip.Addr { return nil }
+	if a.Announceable() {
+		t.Error("Announceable() is true on a node with no address")
+	}
+	if status := a.Status(); status.Addresses != 0 {
+		t.Errorf("announceableAddresses = %d with no address", status.Addresses)
+	}
+	if _, err := mode.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	a.announceIfOpen(context.Background())
+	status := a.Status()
+	if status.LastAttempt.IsZero() {
+		t.Error("an attempt that announced nothing was not recorded as an attempt")
+	}
+	if !status.LastSuccess.IsZero() {
+		t.Error("an attempt that announced nothing was recorded as a success")
+	}
+	if status.LastError == "" {
+		t.Error("nothing is being announced and the status gives no reason")
+	}
+
+	// Then the address comes back. The success is recorded and the reason clears.
+	a.addresses = func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("192.168.1.9")} }
+	a.announceIfOpen(context.Background())
+	if status := a.Status(); status.LastSuccess.IsZero() || status.LastError != "" {
+		t.Errorf("a successful announcement left the status at %+v", status)
+	}
+
+	// And a failure afterwards keeps the last success, so an owner can see that
+	// this was working until something changed.
+	succeeded := a.Status().LastSuccess
+	a.announce = func(context.Context, string, string, string, int, []netip.Addr, discovery.Offer) error {
+		return errTestAnnounce
+	}
+	a.announceIfOpen(context.Background())
+	status = a.Status()
+	if !status.LastSuccess.Equal(succeeded) {
+		t.Errorf("lastAnnouncedAt moved from %v to %v on a failure", succeeded, status.LastSuccess)
+	}
+	if status.LastError != errTestAnnounce.Error() {
+		t.Errorf("lastError = %q, want the failure from the send", status.LastError)
+	}
+}
+
+var errTestAnnounce = errors.New("the network is down")
+
+// A tick and a cancellation ready at the same moment must not send one more
+// packet: the process was told to stop advertising, and select picks at random
+// between two ready cases.
+func TestACancelledLoopDoesNotAnnounceOnceMore(t *testing.T) {
+	a, mode, sink, _ := newTestAnnouncer(t)
+	if _, err := mode.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// Both the wake and the tick are ready before Run is entered.
+	a.Wake()
+	a.interval = time.Nanosecond
+	a.Run(ctx)
+	if sent := sink.count(); sent != 0 {
+		t.Errorf("%d announcements from a loop that was cancelled before it started", sent)
 	}
 }

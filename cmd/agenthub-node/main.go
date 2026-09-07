@@ -1,7 +1,6 @@
 package main
 
 import (
-	"agenthub.local/agenthub/internal/pairing"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -14,8 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agenthub.local/agenthub/internal/api"
@@ -24,6 +23,7 @@ import (
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/nodeconfig"
+	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 	"agenthub.local/agenthub/internal/transport"
@@ -134,12 +134,35 @@ func run() error {
 	// rather than answering with an empty list: "nobody is advertising" and
 	// "this node is not looking" are different facts.
 	options := []api.Option{api.WithDeliveryPolicy(deliveryPolicy)}
-	var pairingMode *pairing.Mode
 	var candidates *discovery.Candidates
+	var announcer *pairing.Announcer
 	if *discover {
-		pairingMode = pairing.NewMode()
+		pairingMode := pairing.NewMode()
 		candidates = discovery.NewCandidates(node.ID, store.IsPaired, deliveryPolicy)
-		options = append(options, api.WithPairing(pairingMode, candidates))
+		// Built before the API rather than beside the listen loop, because the
+		// API answers with what this announcer is actually managing to do: an
+		// open window on a node with no announceable address is the one failure
+		// an owner cannot see from the other machine.
+		peerPort, err := listenPort(*peerListenAddress)
+		if err != nil {
+			return fmt.Errorf("read the peer listener's port for announcements: %w", err)
+		}
+		announcer = pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
+			node.ID, node.ID, peerPort,
+			pairing.LocalAddresses(deliveryPolicy, peerPort),
+			discovery.Offer{
+				DisplayName: node.DisplayName,
+				Platform:    node.Platform,
+				Fingerprint: node.Fingerprint,
+			})
+		if !announcer.Announceable() {
+			// Said at startup, not only when someone tries to pair: this is a
+			// configuration that cannot pair over the network, and the owner
+			// should learn that before opening a window that announces nothing.
+			log.Print("pairing mode will have no address to announce: " +
+				"-peer-listen is on loopback or -allow-lan is off, so no peer could reach this node")
+		}
+		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := &http.Server{
@@ -238,18 +261,6 @@ func run() error {
 		// owner opens the window. A loop started on demand is a loop that can
 		// be started twice; what must be certain is that a closed window
 		// announces nothing, and that is one condition in one place.
-		peerPort, err := listenPort(*peerListenAddress)
-		if err != nil {
-			return fmt.Errorf("read the peer listener's port for announcements: %w", err)
-		}
-		announcer := pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
-			node.ID, node.ID, peerPort,
-			pairing.LocalAddresses(deliveryPolicy, peerPort),
-			discovery.Offer{
-				DisplayName: node.DisplayName,
-				Platform:    node.Platform,
-				Fingerprint: node.Fingerprint,
-			})
 		go announcer.Run(publishCtx)
 	}
 	log.Printf("listening on http://%s", *listenAddress)
@@ -354,17 +365,35 @@ func (s *stringList) Set(value string) error {
 // candidateHandler feeds offers from unpaired nodes to the candidate list.
 //
 // Errors are logged rather than returned: one bad packet on a multicast group
-// anyone can write to must not stop this node listening. A full list is logged
-// once per packet at most, which is the condition an owner needs to see.
+// anyone can write to must not stop this node listening.
+//
+// The recurring conditions are logged at most once a minute. Whoever filled the
+// list can keep sending, and a line per packet would turn a bounded list — the
+// thing the candidate layer exists to keep bounded — into unbounded log
+// output, which is the same flood by another route.
 func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler {
+	var mu sync.Mutex
+	said := make(map[string]time.Time, 2)
+	// Throttled per condition rather than globally, so a real error is not
+	// swallowed by a full list that is being reported.
+	atMostHourly := func(condition, message string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if last, seen := said[condition]; seen && time.Since(last) < time.Minute {
+			return
+		}
+		said[condition] = time.Now()
+		log.Printf(message, args...)
+	}
 	return func(ctx context.Context, source netip.Addr, announcements []discovery.Announcement) {
 		changed, err := candidates.ObserveAll(ctx, source, announcements)
 		switch {
 		case errors.Is(err, discovery.ErrCandidatesFull):
-			log.Printf("the pairing candidate list is full at %d; a machine opening pairing mode now will not appear",
+			atMostHourly("full",
+				"the pairing candidate list is full at %d; a machine opening pairing mode now will not appear",
 				discovery.MaxCandidates)
 		case err != nil:
-			log.Printf("could not read pairing offers: %v", err)
+			atMostHourly("error", "could not read pairing offers: %v", err)
 		case changed > 0:
 			log.Printf("%d new pairing candidate(s)", changed)
 		}
@@ -379,9 +408,18 @@ func listenPort(address string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	parsed, err := strconv.Atoi(port)
+	// LookupPort rather than Atoi, because a listen address may name a service
+	// ("localhost:https") and the listener itself accepts one. Refusing what the
+	// listener accepts would stop the node over an address that works.
+	parsed, err := net.LookupPort("tcp", port)
 	if err != nil {
-		return 0, fmt.Errorf("port %q is not a number", port)
+		return 0, fmt.Errorf("port %q in %q is not a port this node can announce: %w", port, address, err)
+	}
+	// Port zero asks the kernel to choose, so the number here is not the one the
+	// listener ends up on — announcing it would invite peers to connect to
+	// nothing. The peer listener does not support it either way.
+	if parsed == 0 {
+		return 0, fmt.Errorf("the peer listener must name a fixed port, not 0, so an announcement can carry it")
 	}
 	return parsed, nil
 }

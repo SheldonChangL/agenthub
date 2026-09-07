@@ -45,6 +45,7 @@ type Server struct {
 	// then say so rather than pretending an empty list is an answer.
 	pairing    *pairing.Mode
 	candidates *discovery.Candidates
+	announcer  PairingAnnouncer
 	// refused remembers which stored snapshot was last reported as unservable,
 	// per peer, so a reader that polls /v1/peers — every agent_list call does —
 	// does not write the same line again for as long as the row sits there.
@@ -62,10 +63,11 @@ type Option func(*Server)
 // endpoints then refuse rather than answer with an empty list, since "nobody is
 // out there" and "this node is not looking" are different answers and only one
 // of them means the owner should keep waiting.
-func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates) Option {
+func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer PairingAnnouncer) Option {
 	return func(s *Server) {
 		s.pairing = mode
 		s.candidates = candidates
+		s.announcer = announcer
 	}
 }
 

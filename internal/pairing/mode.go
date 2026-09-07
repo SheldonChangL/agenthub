@@ -80,7 +80,16 @@ type Mode struct {
 }
 
 func NewMode() *Mode {
-	return &Mode{now: time.Now}
+	return NewModeWithClock(time.Now)
+}
+
+// NewModeWithClock is NewMode against a clock the caller supplies.
+//
+// Exported so a test elsewhere can put the boundary where it wants it rather
+// than sleeping up to it, and so a caller that must present a countdown reads
+// the same clock the expiry was computed from — see Now.
+func NewModeWithClock(now func() time.Time) *Mode {
+	return &Mode{now: now}
 }
 
 // Open starts or extends the window.
@@ -102,7 +111,12 @@ func (m *Mode) Open(window time.Duration) (State, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.now().UTC()
+	// Not .UTC() here: that strips the monotonic reading, which would leave the
+	// window's length at the mercy of the wall clock. An NTP correction while a
+	// window is open would then shorten or lengthen it, and a step backwards
+	// would hold this machine advertising past the moment the owner was shown.
+	// Converted to UTC in state(), where it is being read rather than compared.
+	now := m.now()
 	if !m.isOpen(now) {
 		m.openedAt = now
 	}
@@ -117,14 +131,14 @@ func (m *Mode) Close() State {
 	defer m.mu.Unlock()
 	m.openedAt = time.Time{}
 	m.expiresAt = time.Time{}
-	return m.state(m.now().UTC())
+	return m.state(m.now())
 }
 
 // State reports the window, having first let the clock close it.
 func (m *Mode) State() State {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.state(m.now().UTC())
+	return m.state(m.now())
 }
 
 // Open reports whether the window is open, which is the question the announce
@@ -133,16 +147,26 @@ func (m *Mode) IsOpen() bool {
 	return m.State().Open
 }
 
+// Now is the clock this window is measured against, for a caller computing how
+// much of it is left. Exported so that answer comes from the same clock as the
+// expiry it is subtracted from, rather than from time.Now() beside it.
+func (m *Mode) Now() time.Time {
+	return m.now()
+}
+
+// state answers from the stored times without changing them. An expired window
+// is reported as closed and its times are left alone rather than cleared: they
+// are never read while closed, and a read that quietly writes is one a caller
+// has to think about.
 func (m *Mode) state(now time.Time) State {
 	if !m.isOpen(now) {
-		// Cleared rather than reported as an expired window: a closed window
-		// has no expiry, and leaving one behind invites a reader to subtract
-		// two times and get a negative countdown.
-		m.openedAt = time.Time{}
-		m.expiresAt = time.Time{}
+		// A closed window has no expiry. Reporting one invites a reader to
+		// subtract two times and show a negative countdown.
 		return State{}
 	}
-	return State{Open: true, OpenedAt: m.openedAt, ExpiresAt: m.expiresAt}
+	// Presented in UTC. The stored values carry a monotonic reading, which is
+	// what measures the window but means nothing to whoever reads the JSON.
+	return State{Open: true, OpenedAt: m.openedAt.UTC(), ExpiresAt: m.expiresAt.UTC()}
 }
 
 func (m *Mode) isOpen(now time.Time) bool {
