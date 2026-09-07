@@ -2,9 +2,14 @@ package discovery
 
 import (
 	"context"
+	"errors"
+	"net"
+	"net/netip"
 	"sort"
 	"sync"
 	"time"
+
+	"agenthub.local/agenthub/internal/model"
 )
 
 // CandidateTTL is how long a candidate stays listed after its last packet.
@@ -23,7 +28,18 @@ const CandidateTTL = 90 * time.Second
 // rather than evicting existing ones: evicting would let a flood push the
 // machine the owner is actually looking for off the list, which is the outcome
 // an attacker wants. Candidates already listed keep refreshing normally.
+//
+// Refusing has its own failure, and it is why ErrCandidatesFull exists: a
+// colleague who opens pairing mode while the list is full never appears. Silent
+// invisibility is worse than a visible refusal, so the caller is told, and the
+// owner can be shown that the list is full and pair by hand instead.
 const MaxCandidates = 64
+
+// ErrCandidatesFull reports that a new candidate could not be listed.
+//
+// Returned rather than swallowed so a UI can say "the list is full" instead of
+// showing a short list that looks complete.
+var ErrCandidatesFull = errors.New("the candidate list is full")
 
 // Candidates is what the owner sees while looking for a machine to pair with.
 //
@@ -52,27 +68,113 @@ func NewCandidates(paired func(ctx context.Context, nodeID string) (bool, error)
 	}
 }
 
-// Observe records an announcement from a node offering to pair.
+// ObserveAll records every offer in one packet.
+//
+// One datagram can carry hundreds of address records for a handful of node ids,
+// so the packet is reduced to one offer per node before anything asks the trust
+// store — the same reasoning as ApplyAll, for the same reason: a trust read per
+// record hands anyone who can send multicast a way to drive database reads at
+// packet rate.
+//
+// source is the address the datagram came from. A node's announced address must
+// be one it is actually answering at; an offer claiming to be somewhere else is
+// how one host sprays a list with candidates that all point at it. A zero
+// source disables the check, which is for tests and for callers that genuinely
+// do not have it.
+func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announcements []Announcement) (int, error) {
+	// First offer per node id wins within a packet. A node with six addresses
+	// in one datagram is one candidate, not six, and the sender does not get to
+	// choose which by ordering — see the address pinning in observe.
+	offers := make([]Announcement, 0, len(announcements))
+	seenInPacket := make(map[string]struct{}, len(announcements))
+	for _, announcement := range announcements {
+		if !announcement.Offering() {
+			continue
+		}
+		if _, repeated := seenInPacket[announcement.NodeID]; repeated {
+			continue
+		}
+		seenInPacket[announcement.NodeID] = struct{}{}
+		offers = append(offers, announcement)
+	}
+	if len(offers) == 0 {
+		return 0, nil
+	}
+
+	changed := 0
+	var full error
+	for _, offer := range offers {
+		didChange, err := c.observe(ctx, source, offer)
+		if errors.Is(err, ErrCandidatesFull) {
+			// Recorded and carried out, but the rest of the packet is still
+			// worth reading: an already-listed candidate refreshing is not
+			// affected by the list being full.
+			full = err
+			continue
+		}
+		if err != nil {
+			return changed, err
+		}
+		if didChange {
+			changed++
+		}
+	}
+	return changed, full
+}
+
+// Observe records one announcement from a node offering to pair.
 //
 // It reports whether the list changed, which is what a caller logs on: a
 // candidate re-announcing every second should not produce a line every second.
 func (c *Candidates) Observe(ctx context.Context, announcement Announcement) (bool, error) {
-	if !announcement.Offering() || announcement.NodeID == "" || announcement.Address == "" {
+	return c.observe(ctx, netip.Addr{}, announcement)
+}
+
+func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcement Announcement) (bool, error) {
+	if !announcement.Offering() || announcement.Address == "" {
 		return false, nil
 	}
-	// A node this owner already paired with is not a candidate. Checked before
-	// anything is stored, so a paired node's announcements cannot occupy a slot
-	// in a bounded list.
+	// The id is the map key and a field on a person's screen, so it has to be
+	// an id. Before this list existed a hostile id was inert — it could only
+	// fail to match the trust store — and now it is displayed, which is what
+	// ValidateNodeID exists to stop: "node_a" and "node_a " and a lookalike
+	// built from non-ASCII characters must not be three rows that look like
+	// one.
+	if model.ValidateNodeID(announcement.NodeID) != nil {
+		return false, nil
+	}
+	// An offer has to come from where it says it is. Without this, one host
+	// sprays a list full of candidates that all resolve to itself, and the
+	// owner picks one of them.
+	if source.IsValid() && !announcedFrom(announcement.Address, source) {
+		return false, nil
+	}
+	// The cheap, local checks first, and the bound before any of them reaches
+	// the trust store: a full list must not still cost a database read per
+	// packet.
+	if err := c.policy(announcement.Address); err != nil {
+		// Not logged here: on a shared network this is most packets, and the
+		// caller decides what is worth saying.
+		return false, nil
+	}
+
+	c.mu.Lock()
+	existing, known := c.seen[announcement.NodeID]
+	if !known {
+		c.expire()
+		existing, known = c.seen[announcement.NodeID]
+	}
+	if !known && len(c.seen) >= MaxCandidates {
+		c.mu.Unlock()
+		return false, ErrCandidatesFull
+	}
+	c.mu.Unlock()
+
 	paired, err := c.paired(ctx, announcement.NodeID)
 	if err != nil {
 		return false, err
 	}
 	if paired {
-		return false, nil
-	}
-	if err := c.policy(announcement.Address); err != nil {
-		// Not logged here: on a shared network this is most packets, and the
-		// caller decides what is worth saying.
 		return false, nil
 	}
 
@@ -81,11 +183,27 @@ func (c *Candidates) Observe(ctx context.Context, announcement Announcement) (bo
 	c.expire()
 
 	now := c.now()
-	existing, known := c.seen[announcement.NodeID]
+	existing, known = c.seen[announcement.NodeID]
 	if !known && len(c.seen) >= MaxCandidates {
+		return false, ErrCandidatesFull
+	}
+	if known {
+		// The address and the fingerprint are fixed at the first sighting and
+		// do not move while the row lives.
+		//
+		// Anyone on the group can read a candidate's id and then send offers
+		// under it. If the newest packet won, an attacker would rewrite the row
+		// the owner is looking at to point at themselves, and the owner would
+		// click the name they recognise. A node that genuinely moves is found
+		// again after its TTL, which is the cost of that not being possible.
+		//
+		// Only the timestamp advances, so this is also what keeps a forger from
+		// turning every packet into a change a caller logs.
+		existing.LastSeen = now
+		c.seen[announcement.NodeID] = existing
 		return false, nil
 	}
-	candidate := Candidate{
+	c.seen[announcement.NodeID] = Candidate{
 		NodeID:      announcement.NodeID,
 		Address:     announcement.Address,
 		DisplayName: announcement.DisplayName,
@@ -94,30 +212,48 @@ func (c *Candidates) Observe(ctx context.Context, announcement Announcement) (bo
 		FirstSeen:   now,
 		LastSeen:    now,
 	}
-	if known {
-		candidate.FirstSeen = existing.FirstSeen
-	}
-	c.seen[announcement.NodeID] = candidate
+	return true, nil
+}
 
-	// "Changed" means a person looking at the list would see something
-	// different. A refreshed timestamp is not that.
-	return !known ||
-		existing.Address != candidate.Address ||
-		existing.DisplayName != candidate.DisplayName ||
-		existing.Platform != candidate.Platform ||
-		existing.Fingerprint != candidate.Fingerprint, nil
+// announcedFrom reports whether an announced address names the host the packet
+// came from. The port is not compared: a node answers peers on a different port
+// than it sends multicast from.
+func announcedFrom(address string, source netip.Addr) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	announced, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return announced.Unmap() == source.Unmap()
 }
 
 // List returns the candidates still within their TTL, oldest sighting first so
 // the order does not jump around as packets arrive.
+//
+// A row whose display name or announced fingerprint matches another's is marked
+// Duplicate. That is not a guess about which is genuine — it cannot be one —
+// but it is the signal a person needs: two rows claiming the same fingerprint
+// means at least one of them is lying, and the answer is not to pick either.
 func (c *Candidates) List() []Candidate {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.expire()
 
 	out := make([]Candidate, 0, len(c.seen))
+	names := map[string]int{}
+	prints := map[string]int{}
 	for _, candidate := range c.seen {
 		out = append(out, candidate)
+		if candidate.DisplayName != "" {
+			names[candidate.DisplayName]++
+		}
+		prints[candidate.Fingerprint]++
+	}
+	for i := range out {
+		out[i].Duplicate = names[out[i].DisplayName] > 1 || prints[out[i].Fingerprint] > 1
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if !out[i].FirstSeen.Equal(out[j].FirstSeen) {
@@ -126,6 +262,15 @@ func (c *Candidates) List() []Candidate {
 		return out[i].NodeID < out[j].NodeID
 	})
 	return out
+}
+
+// Full reports whether the list is at its bound, so a caller can say so rather
+// than showing a short list that looks complete.
+func (c *Candidates) Full() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.expire()
+	return len(c.seen) >= MaxCandidates
 }
 
 // Forget drops a candidate. Pairing with one calls this: it has become a peer,
