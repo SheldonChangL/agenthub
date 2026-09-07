@@ -26,7 +26,6 @@ func TestEveryBuildSaysWhichCodeItIs(t *testing.T) {
 		info     *debug.BuildInfo
 		ok       bool
 		want     string
-		wantNot  string
 		contains []string
 	}{
 		"a release build says its tag": {
@@ -44,7 +43,12 @@ func TestEveryBuildSaysWhichCodeItIs(t *testing.T) {
 		"a tagged build of a dirty tree is not that tag alone": {
 			release: "v0.2.0", info: stamped(revision, true), ok: true,
 			contains: []string{"v0.2.0", "modified source", "0123456789ab"},
-			wantNot:  "",
+		},
+		// -X takes whatever it is given, and a blank version reads as a bug in
+		// the program rather than in the build that produced it.
+		"a release of nothing but spaces is not a release": {
+			release: "   ", info: stamped(revision, false), ok: true,
+			contains: []string{"unreleased", "0123456789ab"},
 		},
 		"an unstamped build admits it": {
 			release: "", info: nil, ok: false,
@@ -105,6 +109,6 @@ func TestTheLineNamesTheProgramAndThePlatform(t *testing.T) {
 		}
 	}
 	if strings.Contains(line, "  ") || strings.HasSuffix(line, " )") {
-		t.Errorf("Line() = %q; the platform was not trimmed", line)
+		t.Errorf("Line() = %q; it has empty space where a field should be", line)
 	}
 }
