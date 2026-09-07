@@ -48,7 +48,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go vet ./...
-      - run: go test -race ./...
+      # -count=1 because the point is to run them, not to learn that a cache
+      # entry from a main build says they passed.
+      - run: go test -race -count=1 ./...
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
@@ -88,10 +90,15 @@ jobs:
           DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           tag="${DISPATCH_TAG:-${GITHUB_REF_NAME}}"
-          case "$tag" in
-            v[0-9]*) ;;
-            *) echo "refusing to build \"$tag\": a release tag starts with v and a digit"; exit 1 ;;
-          esac
+          # A grammar, not a prefix. A prefix check admitted "v1 with space",
+          # which breaks -ldflags, "v1/../x", which climbs out of the staging
+          # directory, and a value with a newline, which writes extra keys into
+          # $GITHUB_OUTPUT. Nothing here can execute — the value arrives through
+          # env: and is only ever quoted — but none of those should build.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "refusing to build \"$tag\": want vMAJOR.MINOR.PATCH with an optional -suffix"
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "building $tag"
 
@@ -102,6 +109,16 @@ jobs:
           CGO_ENABLED: "0"
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          # Checked before anything is written: the version check below reads
+          # "modified source" for any untracked path, so a build directory that
+          # is not ignored would fail this job with a message about the source
+          # tree rather than about itself. /stage/ and /dist/ are in .gitignore
+          # for that reason, and this says so if one of them stops being.
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the tree is not clean before the build:"
+            git status --porcelain
+            exit 1
+          fi
           suffix=""
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
           bundle="agenthub_${TAG}_${GOOS}_${GOARCH}"
@@ -167,17 +184,20 @@ jobs:
     name: publish the release
     needs: build
     runs-on: ubuntu-latest
-    # The one job that can write, and only when a tag was actually pushed. A
-    # workflow_dispatch run has built and checked everything above and stops
-    # here, which is what makes a rehearsal safe to run at any time.
-    if: github.event_name == 'push'
+    # This job runs on a rehearsal too, and that is the point: gathering six
+    # uploads, folding their checksum files into one list, and assembling the
+    # notes is the half no local run can cover. Only the last step — the one
+    # that creates the release — is gated on a tag actually having been pushed.
+    #
+    # It grants write for both events. A dispatch already requires write access
+    # to start, and this job runs no repository code: gh and coreutils over
+    # artifacts the run itself produced.
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
+      # No checkout: `gh release create --repo` uses the API for everything,
+      # including --verify-tag, so the one job that can write never has the
+      # repository tree on disk.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-*
@@ -192,9 +212,11 @@ jobs:
         run: |
           cd dist
           rm -f ./*.sha256
-          # Listed explicitly rather than with `./*`: the shell creates the
-          # output file before it expands the glob, so `sha256sum ./*` would
-          # checksum the empty SHA256SUMS it is in the middle of writing.
+          # Listed explicitly rather than with `./*`: on a second run in this
+          # directory the glob would match the previous SHA256SUMS, which the
+          # redirect has already truncated, and record the hash of the empty
+          # string. The directory is fresh per run today, so this is about not
+          # depending on that.
           shopt -s nullglob
           archives=(agenthub_*.tar.gz agenthub_*.zip)
           if [ ${#archives[@]} -eq 0 ]; then
@@ -203,10 +225,9 @@ jobs:
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
 
-      - name: publish
+      - name: assemble the release notes
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
         run: |
           notes=$(mktemp)
           {
@@ -220,8 +241,27 @@ jobs:
             echo "sha256sum -c SHA256SUMS --ignore-missing"
             echo '```'
             echo
+            # On the page as well as in the file: someone deciding whether to
+            # trust a download should not have to download something first.
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
             echo "\`agenthub-node\` serves the owner's API on loopback only. Sharing with another machine is the peer listener, with \`-allow-lan\` and \`-peer-listen\`; see the README."
           } > "$notes"
+          echo "notes=$notes" >> "$GITHUB_ENV"
+          echo "--- release notes ---"
+          cat "$notes"
+          echo "--- files that would be attached ---"
+          ls -l dist
+
+      # The only step a tag adds. Everything above it has run on the rehearsal.
+      - name: publish
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \

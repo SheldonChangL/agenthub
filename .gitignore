@@ -1,6 +1,7 @@
 /bin/
 /data/
 /dist/
+/stage/
 /work/
 *.db
 *.db-shm
