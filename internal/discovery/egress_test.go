@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -377,5 +378,37 @@ func TestTheMembershipIsRecheckedUntilTheListenerStops(t *testing.T) {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
 		t.Error("the refresher ignored the done channel, so it outlives Listen")
+	}
+}
+
+// Listen has to start the refresher, not merely take a membership once.
+//
+// A source-level assertion, which is not how a behaviour is normally pinned —
+// but the loop is started inside Listen with no seam to observe it through, and
+// the alternative was inventing one that exists only for this test. Deleting
+// the line is otherwise invisible to the whole suite, and what it deletes is
+// the fix for a node never hearing a peer on an interface plugged in after
+// startup. The repo does this elsewhere for the same reason: see
+// desktop/frontend_test.go, which reads main.js for the sinks it must not use.
+func TestListenStartsTheMembershipRefresher(t *testing.T) {
+	source, err := os.ReadFile("mdns.go")
+	if err != nil {
+		t.Fatalf("read mdns.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "func Listen(")
+	if start < 0 {
+		t.Fatal("Listen is not in mdns.go; this test is looking in the wrong place")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("could not find the end of Listen")
+	}
+	listen := body[start : start+end]
+	for _, required := range []string{"newMembership(", "keepFresh("} {
+		if !strings.Contains(listen, required) {
+			t.Errorf("Listen does not call %s, so the group membership is never re-checked and "+
+				"an interface that appears after startup is never joined", required)
+		}
 	}
 }
