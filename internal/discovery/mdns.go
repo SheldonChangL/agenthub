@@ -1073,10 +1073,23 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 			}
 		}
 	}
+	return chooseHolder(holders, address)
+}
+
+// chooseHolder picks the interface to announce from, out of every one holding
+// the address.
+//
+// Separate from the walk so the multiple-holder case can be tested: no address
+// on this machine sits on two interfaces, so taking whichever came last in the
+// enumeration went unnoticed — the same way the tunnel branch did.
+func chooseHolder(holders []*net.Interface, address netip.Addr) (*net.Interface, error) {
 	if len(holders) == 0 {
 		return nil, announceableFrom(nil, address)
 	}
-	// One usable holder is enough, and it is the one to announce from.
+	// One usable holder is enough, and it is the one to announce from. Taking
+	// the last instead meant a machine holding the address on a good interface
+	// could be refused because the same address is also on a loopback alias or
+	// a tunnel — how keepalived and anycast setups are built.
 	var refused error
 	for _, holder := range holders {
 		err := announceableFrom(holder, address)
