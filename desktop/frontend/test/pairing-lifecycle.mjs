@@ -154,12 +154,18 @@ await loadPairing();
 await settle();
 const callsBefore = pairingCalls.length;
 countdownTick.fn();
+// Read before settling. Once the reload lands the panel is closed and the
+// countdown is empty for that reason, which would make this assertion pass
+// whatever the tick had written.
+if (el("pairing-countdown").serialize().includes("0:00")) {
+  failures.push('an expired window rendered "0:00"');
+}
+if (!el("pairing-headline").serialize().includes("已到期")) {
+  failures.push("an expired countdown did not say the window had expired");
+}
 await settle();
 if (pairingCalls.length === callsBefore) {
   failures.push("an expired countdown did not ask the node whether the window had closed");
-}
-if (el("pairing-countdown").serialize().includes("0:00")) {
-  failures.push('an expired window rendered "0:00"');
 }
 
 // 6. The open button asks for the node's own default rather than a duration of
