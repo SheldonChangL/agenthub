@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -95,6 +96,36 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodPut, "/v1/sessions/"+url.PathEscape(args[1])+"/visibility", map[string]any{"visibility": visibility})
 	case "audience":
 		return r.audience(ctx, args)
+	case "pairing":
+		// `ah pairing` reads, `ah pairing on [seconds]` opens, `ah pairing off`
+		// closes. Reading is the default because the question asked most often
+		// is "am I advertising right now".
+		switch {
+		case len(args) == 1:
+			return r.simple(ctx, http.MethodGet, "/v1/pairing", nil)
+		case args[1] == "off":
+			return r.simple(ctx, http.MethodDelete, "/v1/pairing", nil)
+		case args[1] == "on":
+			body := map[string]int{}
+			if len(args) == 3 {
+				seconds, err := strconv.Atoi(args[2])
+				if err != nil || seconds < 0 {
+					return fmt.Errorf("usage: ah pairing on [seconds]")
+				}
+				body["seconds"] = seconds
+			}
+			if len(args) > 3 {
+				return errors.New("usage: ah pairing on [seconds]")
+			}
+			return r.simple(ctx, http.MethodPost, "/v1/pairing", body)
+		default:
+			return errors.New("usage: ah pairing [on [seconds] | off]")
+		}
+	case "candidates":
+		if len(args) != 1 {
+			return errors.New("usage: ah candidates")
+		}
+		return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	case "nodes":
 		return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
 	case "pair":
@@ -504,7 +535,10 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
-	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat,")
+	_, _ = fmt.Fprintln(output, "          pairing, candidates")
+	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
+	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")

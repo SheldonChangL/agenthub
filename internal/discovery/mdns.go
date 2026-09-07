@@ -546,7 +546,32 @@ func MulticastGroupV4() string { return multicastAddressV4 }
 func MulticastGroupV6() string { return multicastAddressV6 }
 
 // Listen joins the mDNS group and applies announcements until ctx is done.
-func (b *Browser) Listen(ctx context.Context, group string) error {
+// Handler adapts a Browser to Listen: it records the addresses of peers this
+// owner has already paired with and ignores everything else.
+func (b *Browser) Handler() PacketHandler {
+	return func(ctx context.Context, _ netip.Addr, announcements []Announcement) {
+		if _, err := b.ApplyAll(ctx, announcements); err != nil {
+			log.Printf("discovery could not apply announcements: %v", err)
+		}
+	}
+}
+
+// PacketHandler is given every packet this node receives on the group, with the
+// address it came from.
+//
+// The source is passed rather than dropped because two of the checks that make
+// discovery safe need it: an announced address has to be one the announcing host
+// is actually answering at, and without the source a single host can fill a
+// candidate list with entries that all resolve to itself.
+type PacketHandler func(ctx context.Context, source netip.Addr, announcements []Announcement)
+
+// Listen joins the group and hands every packet to each handler.
+//
+// More than one handler because a packet is two different things at once: an
+// address for a peer this owner has already paired with, and an offer from one
+// they have not. Parsed once and given to both, rather than parsed twice or
+// routed by guessing which it is.
+func Listen(ctx context.Context, group string, handlers ...PacketHandler) error {
 	address, err := net.ResolveUDPAddr("udp", group)
 	if err != nil {
 		return fmt.Errorf("resolve mDNS group %q: %w", group, err)
@@ -574,15 +599,20 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		read, _, err := connection.ReadFrom(buffer)
+		read, from, err := connection.ReadFromUDPAddrPort(buffer)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("read mDNS packet: %w", err)
 		}
-		if _, err := b.ApplyAll(ctx, ParseAnnouncements(buffer[:read])); err != nil {
-			log.Printf("discovery could not apply announcements: %v", err)
+		announcements := ParseAnnouncements(buffer[:read])
+		if len(announcements) == 0 {
+			continue
+		}
+		source := from.Addr()
+		for _, handle := range handlers {
+			handle(ctx, source, announcements)
 		}
 	}
 }

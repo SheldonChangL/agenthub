@@ -48,6 +48,10 @@ var ErrCandidatesFull = errors.New("the candidate list is full")
 // appearing in this list changes no audience and no trust record. The whole
 // list is throwaway state: it lives in memory, and a restart empties it.
 type Candidates struct {
+	// localNodeID is this node's own id. Its announcements come back on the
+	// loopback of the multicast group it sends to, and a machine offering to
+	// pair with itself is a row that can only waste the owner's time.
+	localNodeID string
 	// paired reports whether a node is already in the trust store, so the list
 	// shows what the owner might still want rather than what they have.
 	paired func(ctx context.Context, nodeID string) (bool, error)
@@ -60,12 +64,13 @@ type Candidates struct {
 	seen map[string]Candidate
 }
 
-func NewCandidates(paired func(ctx context.Context, nodeID string) (bool, error), policy AddressPolicy) *Candidates {
+func NewCandidates(localNodeID string, paired func(ctx context.Context, nodeID string) (bool, error), policy AddressPolicy) *Candidates {
 	return &Candidates{
-		paired: paired,
-		policy: policy,
-		now:    func() time.Time { return time.Now().UTC() },
-		seen:   map[string]Candidate{},
+		localNodeID: localNodeID,
+		paired:      paired,
+		policy:      policy,
+		now:         func() time.Time { return time.Now().UTC() },
+		seen:        map[string]Candidate{},
 	}
 }
 
@@ -146,6 +151,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	// built from non-ASCII characters must not be three rows that look like
 	// one.
 	if model.ValidateNodeID(announcement.NodeID) != nil {
+		return false, nil
+	}
+	// This node's own announcement, returned by the multicast loopback. Checked
+	// before anything else it would cost: it is the one id guaranteed to be
+	// announcing whenever this list is being filled.
+	if announcement.NodeID == c.localNodeID {
 		return false, nil
 	}
 	// The fingerprint is canonical by the time it is stored, whichever way the

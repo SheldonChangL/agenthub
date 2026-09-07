@@ -1,6 +1,7 @@
 package main
 
 import (
+	"agenthub.local/agenthub/internal/pairing"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -9,9 +10,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -126,7 +129,19 @@ func run() error {
 	}
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
-	apiServer := api.NewServer(store, service, heartbeats, node, api.WithDeliveryPolicy(deliveryPolicy))
+	// Pairing mode and the candidate list exist only when this node is
+	// listening on the local network. Without -discover the endpoints say that
+	// rather than answering with an empty list: "nobody is advertising" and
+	// "this node is not looking" are different facts.
+	options := []api.Option{api.WithDeliveryPolicy(deliveryPolicy)}
+	var pairingMode *pairing.Mode
+	var candidates *discovery.Candidates
+	if *discover {
+		pairingMode = pairing.NewMode()
+		candidates = discovery.NewCandidates(node.ID, store.IsPaired, deliveryPolicy)
+		options = append(options, api.WithPairing(pairingMode, candidates))
+	}
+	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := &http.Server{
 		Addr:              *listenAddress,
 		Handler:           apiServer.Handler(),
@@ -208,11 +223,34 @@ func run() error {
 	// recorded when pairing, and whoever forged the packet does not hold it.
 	if *discover {
 		browser := discovery.NewBrowser(store, deliveryPolicy)
+		// One packet, two readers: an address for a peer already paired, and an
+		// offer from one that is not. Parsed once by Listen and given to both.
 		go func() {
-			if err := browser.Listen(publishCtx, discovery.MulticastGroupV4()); err != nil {
+			if err := discovery.Listen(publishCtx, discovery.MulticastGroupV4(),
+				browser.Handler(),
+				candidateHandler(candidates),
+			); err != nil {
 				log.Printf("discovery stopped: %v", err)
 			}
 		}()
+
+		// The announcer runs for the process's life and says nothing until the
+		// owner opens the window. A loop started on demand is a loop that can
+		// be started twice; what must be certain is that a closed window
+		// announces nothing, and that is one condition in one place.
+		peerPort, err := listenPort(*peerListenAddress)
+		if err != nil {
+			return fmt.Errorf("read the peer listener's port for announcements: %w", err)
+		}
+		announcer := pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
+			node.ID, node.ID, peerPort,
+			pairing.LocalAddresses(deliveryPolicy, peerPort),
+			discovery.Offer{
+				DisplayName: node.DisplayName,
+				Platform:    node.Platform,
+				Fingerprint: node.Fingerprint,
+			})
+		go announcer.Run(publishCtx)
 	}
 	log.Printf("listening on http://%s", *listenAddress)
 	log.Printf("peer listener on https://%s", *peerListenAddress)
@@ -311,4 +349,39 @@ func (s *stringList) String() string { return strings.Join(*s, ",") }
 func (s *stringList) Set(value string) error {
 	*s = append(*s, value)
 	return nil
+}
+
+// candidateHandler feeds offers from unpaired nodes to the candidate list.
+//
+// Errors are logged rather than returned: one bad packet on a multicast group
+// anyone can write to must not stop this node listening. A full list is logged
+// once per packet at most, which is the condition an owner needs to see.
+func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler {
+	return func(ctx context.Context, source netip.Addr, announcements []discovery.Announcement) {
+		changed, err := candidates.ObserveAll(ctx, source, announcements)
+		switch {
+		case errors.Is(err, discovery.ErrCandidatesFull):
+			log.Printf("the pairing candidate list is full at %d; a machine opening pairing mode now will not appear",
+				discovery.MaxCandidates)
+		case err != nil:
+			log.Printf("could not read pairing offers: %v", err)
+		case changed > 0:
+			log.Printf("%d new pairing candidate(s)", changed)
+		}
+	}
+}
+
+// listenPort reads the port a listen address names, which is what an
+// announcement has to carry: a peer needs the port this node answers TLS on,
+// not the one multicast arrived from.
+func listenPort(address string) (int, error) {
+	_, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.Atoi(port)
+	if err != nil {
+		return 0, fmt.Errorf("port %q is not a number", port)
+	}
+	return parsed, nil
 }

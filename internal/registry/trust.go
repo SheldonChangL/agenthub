@@ -180,6 +180,21 @@ func (r *Registry) RevokeNode(ctx context.Context, nodeID string) error {
 	return nil
 }
 
+// IsPaired answers only whether a node is in the trust store.
+//
+// Separate from TrustedNode because the candidate list asks this per packet and
+// has no use for the row: reading the key, the fingerprint and the address to
+// discard them is work an attacker can drive by sending multicast.
+func (r *Registry) IsPaired(ctx context.Context, nodeID string) (bool, error) {
+	var present int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM trusted_nodes WHERE node_id = ?)`, nodeID).Scan(&present)
+	if err != nil {
+		return false, fmt.Errorf("check whether node %q is paired: %w", nodeID, err)
+	}
+	return present == 1, nil
+}
+
 func (r *Registry) TrustedNode(ctx context.Context, nodeID string) (TrustedNode, error) {
 	var node TrustedNode
 	var pairedMS, lastSeenMS int64

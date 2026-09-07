@@ -18,6 +18,8 @@ func observeOne(c *Candidates, announcement Announcement) (bool, error) {
 	return c.observe(context.Background(), netip.Addr{}, announcement)
 }
 
+const localTestNode = "node_thismachine0000"
+
 func offering(nodeID, address, name string) Announcement {
 	return Announcement{
 		NodeID: nodeID, Address: address,
@@ -46,7 +48,7 @@ func newTestCandidates(t *testing.T, paired ...string) (*Candidates, *trustProbe
 		probe.paired[id] = struct{}{}
 	}
 	clock := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
-	c := NewCandidates(probe.isPaired, func(string) error { return nil })
+	c := NewCandidates(localTestNode, probe.isPaired, func(string) error { return nil })
 	c.now = func() time.Time { return clock }
 	return c, probe, &clock
 }
@@ -134,7 +136,7 @@ func TestAnAlreadyPairedNodeIsNotACandidate(t *testing.T) {
 // an invitation to pair with something unreachable.
 func TestAnAddressThePolicyRefusesIsNotACandidate(t *testing.T) {
 	probe := &trustProbe{paired: map[string]struct{}{}}
-	c := NewCandidates(probe.isPaired, func(address string) error {
+	c := NewCandidates(localTestNode, probe.isPaired, func(address string) error {
 		if strings.HasPrefix(address, "8.8.") {
 			return errors.New("not a private address")
 		}
@@ -705,7 +707,7 @@ func TestForgettingACandidateRemovesIt(t *testing.T) {
 // different new nodes are in flight at once, which is the normal case on a busy
 // group — without it the list can overshoot by however many were racing.
 func TestTheBoundHoldsWhenNewCandidatesArriveAtOnce(t *testing.T) {
-	c := NewCandidates(
+	c := NewCandidates(localTestNode,
 		func(context.Context, string) (bool, error) {
 			// A trust store is a database; the window this opens is the point.
 			time.Sleep(time.Microsecond)
@@ -732,7 +734,7 @@ func TestTheBoundHoldsWhenNewCandidatesArriveAtOnce(t *testing.T) {
 
 // The list is read by an HTTP handler while packets arrive on a UDP socket.
 func TestConcurrentUse(t *testing.T) {
-	c := NewCandidates(
+	c := NewCandidates(localTestNode,
 		func(context.Context, string) (bool, error) { return false, nil },
 		func(string) error { return nil },
 	)
@@ -828,7 +830,7 @@ func TestADualStackNodeDoesNotContestItself(t *testing.T) {
 // with, and refreshes never ask again.
 func TestARowVanishingMidObserveDoesNotInsertUnchecked(t *testing.T) {
 	probe := &trustProbe{paired: map[string]struct{}{"node_racing000000000": {}}}
-	c := NewCandidates(probe.isPaired, func(string) error { return nil })
+	c := NewCandidates(localTestNode, probe.isPaired, func(string) error { return nil })
 	clock := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 	c.now = func() time.Time { return clock }
 
@@ -906,5 +908,24 @@ func TestAFingerprintThatIsNotOneIsNotACandidate(t *testing.T) {
 	listed := c.List()
 	if len(listed) != 1 || listed[0].Contested {
 		t.Errorf("two spellings of one fingerprint were treated as a conflict: %+v", listed)
+	}
+}
+
+// A node's own announcements come back on the loopback of the group it sends
+// to. It must not offer to pair with itself: that row can only waste the time
+// of whoever is reading the list.
+func TestANodeIsNotItsOwnCandidate(t *testing.T) {
+	c, probe, _ := newTestCandidates(t)
+	changed, err := observeOne(c, offering(localTestNode, "192.168.1.9:7463", "this machine"))
+	if err != nil || changed {
+		t.Fatalf("Observe() = %v, %v", changed, err)
+	}
+	if listed := c.List(); len(listed) != 0 {
+		t.Errorf("this node listed itself: %+v", listed)
+	}
+	// And it costs nothing to reject: this is the one id guaranteed to be
+	// announcing whenever the list is being filled.
+	if probe.reads != 0 {
+		t.Errorf("rejecting our own announcement cost %d trust reads", probe.reads)
 	}
 }
