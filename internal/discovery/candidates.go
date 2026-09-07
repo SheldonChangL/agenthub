@@ -255,10 +255,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 			// in the same family.
 			return c.contest(announcement.NodeID, existing)
 		case relateAddresses(announcement.Address, existing.Address) == addressOtherFamily:
-			// The same id seen over the other address family. A dual-stack
-			// machine announces on both groups and each datagram reduces to the
-			// address matching its own source, so this is the ordinary case for
-			// one node — and it is indistinguishable, at this layer, from
+			// The same id seen over the other address family. This build
+			// announces and listens on the IPv4 group only, so it does not
+			// produce this itself — a v6 row here comes from another
+			// implementation, or from a v6 group this build later joins, and
+			// each datagram reduces to the address matching its own source. It
+			// is indistinguishable, at this layer, from
 			// someone claiming the id from the family this row is not pinned to.
 			// It is deliberately not flagged: flagging it would mark every
 			// dual-stack machine on the network, which would make the flag

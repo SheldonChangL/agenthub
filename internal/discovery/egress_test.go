@@ -155,3 +155,61 @@ func TestAnnouncingFromAnAddressThisMachineDoesNotHaveIsAnError(t *testing.T) {
 		t.Errorf("the error does not name the address: %v", got)
 	}
 }
+
+// A datagram has to leave by the interface holding the address it advertises,
+// which is a different question from what source it carries.
+//
+// The group is joined on one interface only, so a packet that leaves by any
+// other is not heard at all. On macOS this passes whether or not the multicast
+// interface option is set — binding the source selects the interface there, as
+// measured. It is the platforms where egress follows the route to the group
+// that this guards: without the option a packet announcing an address on a
+// second interface leaves by the default one, carrying a source that matches
+// its own claim, and is accepted by a receiver that cannot reach the address.
+func TestAnAnnouncementLeavesByTheInterfaceHoldingItsAddress(t *testing.T) {
+	addresses := localV4Addresses(t)
+	if len(addresses) < 2 {
+		t.Skip("needs two interfaces with IPv4 addresses; with one, every route leads there anyway")
+	}
+	const group = "224.0.0.251:15358"
+	target, err := net.ResolveUDPAddr("udp", group)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, address := range addresses {
+		t.Run(address.String(), func(t *testing.T) {
+			iface, err := interfaceHolding(address)
+			if err != nil {
+				t.Fatalf("interfaceHolding(%v): %v", address, err)
+			}
+			// Joined on this interface alone.
+			listener, err := net.ListenMulticastUDP("udp4", iface, target)
+			if err != nil {
+				t.Skipf("cannot join %s only: %v", iface.Name, err)
+			}
+			defer func() { _ = listener.Close() }()
+
+			if err := AnnounceOffering(context.Background(), group,
+				"node_iface000000000", "agenthub-iface", 7463, []netip.Addr{address},
+				Offer{DisplayName: "iface", Platform: "test",
+					Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA"}); err != nil {
+				t.Fatalf("AnnounceOffering from %v: %v", address, err)
+			}
+
+			_ = listener.SetReadDeadline(time.Now().Add(2 * time.Second))
+			buffer := make([]byte, maxPacket)
+			read, from, err := listener.ReadFromUDPAddrPort(buffer)
+			if err != nil {
+				t.Fatalf("an announcement for %v never reached a join on %s, the interface that "+
+					"holds it: %v", address, iface.Name, err)
+			}
+			if from.Addr().Unmap() != address {
+				t.Errorf("the datagram came from %v, want %v", from.Addr(), address)
+			}
+			if got := ParseAnnouncements(buffer[:read]); len(got) == 0 {
+				t.Error("the packet heard on the right interface carried no announcement")
+			}
+		})
+	}
+}

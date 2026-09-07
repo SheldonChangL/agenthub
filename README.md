@@ -252,13 +252,26 @@ of them means the owner should keep waiting.
 
 Advertising also needs somewhere for a peer to connect back to, and that is the
 peer listener's own bound address — so it needs `-allow-lan` *and* a
-`-peer-listen` on this machine's network address rather than on loopback.
-Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when the
-listener is on loopback, because announcing any other address would advertise
-one nothing is listening on: the peer would see a candidate that looks right,
-with a matching fingerprint, and get a refused connection. `GET /v1/pairing`
-carries `announcing` for the same reason — an open window and a machine that is
-actually sending packets are separate facts.
+`-peer-listen` on this machine's network address. What gets announced is that
+one address, sent from that address and out of the interface holding it, because
+a receiver lists an offer only when the address it carries is the address the
+datagram came from.
+
+Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when there is
+no such address, and the message says which case applies: a loopback listener
+that no other machine can reach, an IPv6 listener that is perfectly reachable
+but cannot be discovered while announcements go out on the IPv4 group, an
+address this build's delivery policy will not use, or one that is not a single
+address at all. Announcing anything else would advertise an address nothing is
+listening on — the peer would see a candidate that looks right, with a matching
+fingerprint, and get a refused connection.
+
+A node with `-discover` joins the group on every interface that can carry it, so
+a peer whose own listener is on a second interface — a direct cable, say, with
+`-treat-as-private` — is heard rather than silently missed. `GET /v1/pairing`
+carries `announcing` because an open window and a machine that is actually
+sending packets are separate facts: it reports how many addresses this node can
+announce, when it last tried and last succeeded, and why not.
 
 Nothing in the candidate list is verified and appearing in it grants nothing.
 The fingerprint shown is the one announced, which is a hint for finding the

@@ -428,6 +428,10 @@ func Announceable(value string) string {
 	return printableField(value)
 }
 
+// printableField keeps a peer-supplied label only if it is safe to show.
+//
+// See the block above Announceable for what this rejects and why; the two are
+// the same function, one exported for a node to ask about its own values.
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
@@ -718,10 +722,11 @@ func joinEveryInterface(connection *net.UDPConn, group *net.UDPAddr) {
 // successful announcement with no error — an open window that nobody could ever
 // see.
 //
-// Both halves matter, and setting only one is worse than setting neither.
-// Choosing the source without choosing the interface would put a packet on the
-// wrong wire whose source matches its own claim, so a receiver on a segment
-// that cannot reach the address would accept the row instead of dropping it.
+// Both halves are set, and setting only the source is worse than setting
+// neither where it does not also select the interface: the packet then goes out
+// on the wrong wire with a source matching its own claim, so a receiver on a
+// segment that cannot reach the address accepts the row rather than dropping
+// it. See SetMulticastInterface below for what was measured where.
 //
 // A nil-local dial is kept for the case with no single address to send from,
 // which is the multi-address form this package no longer uses for offers.
@@ -742,9 +747,14 @@ func dialGroup(target *net.UDPAddr, addresses []netip.Addr) (*net.UDPConn, error
 	if err != nil {
 		return nil, fmt.Errorf("dial mDNS group %q from %v: %w", target, source, err)
 	}
-	// Binding the source is not enough on its own: the outgoing interface for a
-	// multicast datagram is a separate socket option, and without it the kernel
-	// still uses the route to the group.
+	// The outgoing interface for a multicast datagram is a socket option of its
+	// own, separate from the bound source. On macOS, binding the source was
+	// measured to be enough — a datagram bound to an address on a second
+	// interface arrived at a join on that interface only. On platforms where
+	// egress follows the route to the group instead, it is not, and the packet
+	// would leave by the default interface carrying a source that matches its
+	// own claim: a receiver on a segment that cannot reach the address would
+	// then accept the row rather than drop it. Set for that reason.
 	if err := ipv4.NewPacketConn(connection).SetMulticastInterface(iface); err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("send announcements for %v on %s: %w", source, iface.Name, err)
