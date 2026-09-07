@@ -639,14 +639,41 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 // What the check rules out is a sender using an ordinary UDP socket to claim
 // somebody else's address. What this does not cover is the socket read itself.
 func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers []PacketHandler) {
-	announcements := ParseAnnouncements(packet)
-	if len(announcements) == 0 {
-		return
-	}
 	// Passed as it arrived. Normalising a v4-mapped sender and stripping a zone
 	// is the comparing side's job, and doing it in both places would leave
 	// neither one load-bearing.
 	source := from.Addr()
+	// A datagram from loopback is refused here, and this is the only place that
+	// can refuse it.
+	//
+	// IP_MULTICAST_LOOP hands a copy of every outgoing multicast datagram back
+	// to local sockets that have joined the group, and the copy is matched
+	// against the membership of the interface it was *sent* on — the source
+	// address is not consulted. So a local process sending to the group from
+	// 127.0.0.1 is delivered to this socket through its ordinary membership on
+	// the default interface. Measured: the row lands even when nothing has
+	// joined loopback at all, so which interfaces are joined cannot prevent it.
+	// The write even reports EADDRNOTAVAIL and the copy arrives regardless.
+	//
+	// Without this, any unprivileged local process — a second user on a shared
+	// machine, who cannot read the first user's files — could put a chosen
+	// display name and fingerprint on the owner's candidate list, and could do
+	// it under the default loopback-only policy, which is the configuration
+	// where a forgery from the local network is refused. The source check the
+	// candidate layer relies on is void here, because a forger on loopback
+	// trivially sends from the address it claims.
+	//
+	// Nothing legitimate is dropped: reachableAt refuses to announce a loopback
+	// address, and dialGroup binds the source to the address being advertised,
+	// so this node's own announcements arrive from its real address and its
+	// self-exclusion still sees them.
+	if source.Unmap().IsLoopback() {
+		return
+	}
+	announcements := ParseAnnouncements(packet)
+	if len(announcements) == 0 {
+		return
+	}
 	for _, handle := range handlers {
 		handle(ctx, source, announcements)
 	}
