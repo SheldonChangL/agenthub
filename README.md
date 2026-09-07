@@ -260,18 +260,22 @@ datagram came from.
 Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when there is
 no such address, and the message says which case applies: a loopback listener
 that no other machine can reach, an IPv6 listener that is perfectly reachable
-but cannot be discovered while announcements go out on the IPv4 group, an
-address this build's delivery policy will not use, or one that is not a single
-address at all. Announcing anything else would advertise an address nothing is
-listening on — the peer would see a candidate that looks right, with a matching
-fingerprint, and get a refused connection.
+but cannot be discovered while announcements go out on the IPv4 group, a
+`-peer-listen` naming a host rather than one address, or an address whose
+interface cannot carry a multicast packet — a point-to-point or VPN interface,
+where the address is fine and the announcement has nowhere to go. That last one
+is checked when the window is asked for rather than at startup, because an
+interface can lose the ability after boot. Announcing anyway would advertise an
+address nothing is listening on: the peer would see a candidate that looks
+right, with a matching fingerprint, and get a refused connection.
 
-A node with `-discover` joins the group on every interface that can carry it, so
-a peer whose own listener is on a second interface — a direct cable, say, with
-`-treat-as-private` — is heard rather than silently missed. `GET /v1/pairing`
-carries `announcing` because an open window and a machine that is actually
-sending packets are separate facts: it reports how many addresses this node can
-announce, when it last tried and last succeeded, and why not.
+A node with `-discover` joins the group on every interface that can carry it,
+re-checked every 30 seconds so an adapter plugged in after startup is picked up
+without a restart — which is how a peer whose own listener is on a direct cable
+gets heard rather than silently missed. `GET /v1/pairing` carries `announcing`
+because an open window and a machine that is actually sending packets are
+separate facts: it reports how many addresses this node can announce, when it
+last tried and last succeeded, and why nothing is going out.
 
 Nothing in the candidate list is verified and appearing in it grants nothing.
 The fingerprint shown is the one announced, which is a hint for finding the

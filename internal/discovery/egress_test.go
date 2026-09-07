@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/netip"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +13,21 @@ import (
 
 // localV4Addresses lists this machine's usable v4 addresses, one per interface,
 // so the test can announce from each of them.
+// These three tests hear this machine's own announcements, which needs the
+// multicast loopback the receiving socket has on Unix. On Windows the option is
+// receiver-side and net.ListenMulticastUDP clears it, so a node there does not
+// hear itself and these would fail for a reason that says nothing about the
+// code. Skipped rather than left to fail on the Windows runs in
+// docs/verification.md; what they prove is checked on the platforms where a
+// node can observe its own packet.
+func requireSelfHeardMulticast(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows clears multicast loopback on the receiving socket, so a node cannot " +
+			"hear its own announcement; this checks the sender by hearing it")
+	}
+}
+
 func localV4Addresses(t *testing.T) []netip.Addr {
 	t.Helper()
 	interfaces, err := net.Interfaces()
@@ -21,6 +37,12 @@ func localV4Addresses(t *testing.T) []netip.Addr {
 	var found []netip.Addr
 	for _, iface := range interfaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		// A point-to-point interface — a VPN tunnel, usually — has an address
+		// but no segment a peer could answer on, and on a machine where one is
+		// up it would fail these tests for a reason that is about the machine.
+		if iface.Flags&net.FlagPointToPoint != 0 {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -58,6 +80,7 @@ func localV4Addresses(t *testing.T) []netip.Addr {
 // successful announcement and reported no error. On a machine with two
 // interfaces this test fails outright against that code.
 func TestAnAnnouncementIsHeardFromTheAddressItNames(t *testing.T) {
+	requireSelfHeardMulticast(t)
 	addresses := localV4Addresses(t)
 	if len(addresses) == 0 {
 		t.Skip("this machine has no non-loopback IPv4 address on a multicast interface")
@@ -167,6 +190,7 @@ func TestAnnouncingFromAnAddressThisMachineDoesNotHaveIsAnError(t *testing.T) {
 // second interface leaves by the default one, carrying a source that matches
 // its own claim, and is accepted by a receiver that cannot reach the address.
 func TestAnAnnouncementLeavesByTheInterfaceHoldingItsAddress(t *testing.T) {
+	requireSelfHeardMulticast(t)
 	addresses := localV4Addresses(t)
 	if len(addresses) < 2 {
 		t.Skip("needs two interfaces with IPv4 addresses; with one, every route leads there anyway")
@@ -211,5 +235,79 @@ func TestAnAnnouncementLeavesByTheInterfaceHoldingItsAddress(t *testing.T) {
 				t.Error("the packet heard on the right interface carried no announcement")
 			}
 		})
+	}
+}
+
+// An announcement carries exactly one IPv4 address, because that address is
+// both what it is sent from and what the receiver checks it against. Anything
+// else has to be refused at the call rather than sent the old way: a nil-local
+// dial here is the bug this file exists for, reported as a success.
+func TestAnAnnouncementRefusesWhatItCannotSendCorrectly(t *testing.T) {
+	for name, addresses := range map[string][]netip.Addr{
+		"none": nil,
+		"two": {
+			netip.MustParseAddr("192.168.1.5"),
+			netip.MustParseAddr("192.168.1.6"),
+		},
+		// v6 cannot be announced at all: the group and the listener are v4, so
+		// the packet would carry an AAAA record and a v4 source and be dropped
+		// by every receiver.
+		"ipv6": {netip.MustParseAddr("fd00::1")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := AnnounceOffering(context.Background(), "224.0.0.251:15359",
+				"node_refuse000000000", "agenthub-refuse", 7463, addresses,
+				Offer{DisplayName: "refuse", Platform: "test",
+					Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA"})
+			if err == nil {
+				t.Fatalf("announcing %v reported success", addresses)
+			}
+		})
+	}
+}
+
+// The membership is re-checked on a ticker, so an interface that appears after
+// the process started is joined without anyone restarting anything: an owner
+// plugs in a USB Ethernet adapter and runs a cable to the machine they want to
+// pair with, which is the case this whole feature is for.
+//
+// A new interface cannot be conjured in a test, so what is pinned here is the
+// property that makes the ticker safe to run: a refresh joins only what it has
+// not joined, and reports only that. Otherwise it would either re-join every
+// interface every tick or log the same line forever.
+func TestRefreshingTheMembershipReportsOnlyWhatIsNew(t *testing.T) {
+	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15360")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.ListenMulticastUDP("udp4", nil, target)
+	if err != nil {
+		t.Skipf("cannot join the group on this machine: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	joins := newMembership(connection, target)
+	first := joins.refresh()
+	if len(first) == 0 {
+		t.Skip("no interface beyond the socket's own join accepted a membership here")
+	}
+	if second := joins.refresh(); len(second) != 0 {
+		t.Errorf("a second refresh reported %v as newly joined", second)
+	}
+	// And it did not forget them, which is what makes the second answer empty
+	// for the right reason.
+	if len(joins.joined) != len(first) {
+		t.Errorf("tracking %d interfaces after joining %d", len(joins.joined), len(first))
+	}
+}
+
+// The refresh has to be frequent enough that an interface appearing while a
+// peer is announcing is joined before that peer's row would have expired had it
+// been heard. Otherwise an owner who plugs in a cable waits without knowing
+// what for.
+func TestTheRejoinIntervalOutpacesACandidateExpiring(t *testing.T) {
+	if RejoinInterval*2 > CandidateTTL {
+		t.Errorf("re-checking every %v against a %v candidate lifetime leaves no room",
+			RejoinInterval, CandidateTTL)
 	}
 }

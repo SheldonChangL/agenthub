@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,10 @@ func newTestAnnouncer(t *testing.T) (*Announcer, *Mode, *recorder, *testClock) {
 		discovery.Offer{DisplayName: "laptop", Platform: "linux/amd64",
 			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA"})
 	a.announce = sink.record
+	// The test's address is chosen, not one this machine holds, so the live
+	// interface check would refuse it for a reason that is true of the test
+	// machine and irrelevant to what is under test.
+	a.canAnnounceFrom = func(netip.Addr) error { return nil }
 	a.interval = time.Millisecond
 	return a, mode, sink, clock
 }
@@ -196,8 +201,8 @@ func TestStatusSaysWhetherAnythingIsActuallyBeingAnnounced(t *testing.T) {
 	if status := a.Status(); status.Addresses != 1 {
 		t.Errorf("announceableAddresses = %d on a node with one address", status.Addresses)
 	}
-	if !a.Announceable() {
-		t.Error("Announceable() is false on a node with an address")
+	if reason := a.Unannounceable(); reason != "" {
+		t.Errorf("a node with an address says it cannot announce: %q", reason)
 	}
 	if status := a.Status(); !status.LastAttempt.IsZero() || !status.LastSuccess.IsZero() {
 		t.Errorf("a loop that has not run reports having tried: %+v", status)
@@ -205,8 +210,8 @@ func TestStatusSaysWhetherAnythingIsActuallyBeingAnnounced(t *testing.T) {
 
 	// A node with nothing to announce says so, and says why.
 	a.addresses = func() []netip.Addr { return nil }
-	if a.Announceable() {
-		t.Error("Announceable() is true on a node with no address")
+	if a.Unannounceable() == "" {
+		t.Error("a node with no address gave no reason, which the API reads as permission")
 	}
 	if status := a.Status(); status.Addresses != 0 {
 		t.Errorf("announceableAddresses = %d with no address", status.Addresses)
@@ -311,5 +316,57 @@ func TestTheIntervalIsMeasuredFromTheAnnouncementNotTheTick(t *testing.T) {
 	if sent := sink.count(); sent != 1 {
 		t.Errorf("%d announcements within a third of an interval after the wake, want 1; "+
 			"the pending tick was not pushed out", sent)
+	}
+}
+
+// The API asks this one question before opening a window, so an empty answer is
+// read as permission. It must never be empty for a node that cannot announce —
+// including the case the type does not enforce: no address and no reason
+// recorded at startup.
+func TestNoReasonIsNeverMistakenForPermission(t *testing.T) {
+	a, _, _, _ := newTestAnnouncer(t)
+	// An endpoint with no address and nothing said about why. PeerEndpoint does
+	// not produce this, but the Announcer is what the API asks, and it must not
+	// depend on a promise made elsewhere.
+	a.addresses = func() []netip.Addr { return nil }
+	a.unannounceable = ""
+	if a.Unannounceable() == "" {
+		t.Error("a node with no address and no recorded reason answered as if it could announce")
+	}
+	if status := a.Status(); status.LastError == "" {
+		t.Error("the status gives no reason either, so nothing would explain the silence")
+	}
+
+	// The recorded reason is preferred, because it names the configuration.
+	a.unannounceable = "the peer listener is on loopback"
+	if got := a.Unannounceable(); got != "the peer listener is on loopback" {
+		t.Errorf("Unannounceable() = %q, want the recorded reason", got)
+	}
+	if got := a.Status().LastError; got != "the peer listener is on loopback" {
+		t.Errorf("status LastError = %q, want the recorded reason", got)
+	}
+}
+
+// An address can outlive the interface's ability to carry a multicast packet —
+// a point-to-point or WireGuard interface never had it. Answered when the
+// window is asked for, not from what was true at startup, or every announcement
+// fails while the window says open.
+func TestAnAddressThatCannotSendMulticastIsRefusedAtTheWindow(t *testing.T) {
+	a, _, _, _ := newTestAnnouncer(t)
+	a.canAnnounceFrom = func(netip.Addr) error {
+		return errors.New("no interface on this machine holds 10.8.0.2 and can send multicast")
+	}
+	reason := a.Unannounceable()
+	if reason == "" {
+		t.Fatal("an address nothing can send from was treated as announceable")
+	}
+	if !strings.Contains(reason, "multicast") {
+		t.Errorf("Unannounceable() = %q, want the machine's own reason", reason)
+	}
+	// And the recorded startup reason does not mask it: the address is there,
+	// so the configuration was fine and something changed since.
+	a.unannounceable = "the peer listener is on loopback"
+	if got := a.Unannounceable(); got == "the peer listener is on loopback" {
+		t.Error("a live failure was reported as the startup configuration")
 	}
 }

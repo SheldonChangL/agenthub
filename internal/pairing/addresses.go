@@ -83,18 +83,21 @@ type Endpoint struct {
 // is fixed for the process's life as a matter of configuration: it is whatever
 // -peer-listen named. If the machine later loses that address the listener does
 // not fail — a bound TCP socket keeps accepting nothing rather than erroring —
-// so this answer can become stale. What it cannot become is wrong about which
-// address was asked for, and a stale address is undeliverable rather than
-// misdirected: a receiver drops an announcement that does not come from the
-// address it names.
+// so this answer can go stale.
+//
+// What a stale answer produces is a refusal, not a wrong announcement. Every
+// send looks up the interface holding the address, so a lost address means no
+// packet leaves and the reason appears in the announce status; and the API asks
+// the same question before opening a window. Nothing is sent naming an address
+// this machine no longer has.
 func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, string) {
 	parsed, err := netip.ParseAddr(host)
 	if err != nil {
 		// Either a name or the wildcard. ValidatePeerListen refuses both beyond
 		// loopback — a name because it can resolve somewhere else later — and
 		// neither is a single address to put in an announcement.
-		return netip.Addr{}, "the peer listener does not name a single address, " +
-			"so there is no one address to announce"
+		return netip.Addr{}, "the peer listener names a host rather than one address " +
+			"(a name, or every interface), and an announcement carries one address"
 	}
 	// A zone names an interface on this machine, so it cannot travel in a
 	// packet. Asked before Unmap, which discards it: ::ffff:192.168.1.5%en0
@@ -140,6 +143,12 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// Repeating any of it here would be a second answer to the same question,
 	// and the copy that stopped being load-bearing would be the one nobody
 	// noticed had rotted.
+	//
+	// In the shipped binary this is unreachable, and deliberately kept anyway.
+	// nodeconfig.ValidatePeerListen applies the same ranges before the process
+	// starts, so an owner never sees this refusal; what it guards against is
+	// the two drifting apart, which is exactly the bug that would announce an
+	// address this build refuses to deliver to.
 	if err := policy(netip.AddrPortFrom(parsed, uint16(port)).String()); err != nil { // #nosec G115 -- LookupPort bounds this to 0-65535
 		return netip.Addr{}, "this build will not use the peer listener's address: " + err.Error()
 	}

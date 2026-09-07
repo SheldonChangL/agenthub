@@ -384,6 +384,17 @@ func ParseAnnouncements(packet []byte) []Announcement {
 	return announcements
 }
 
+// Announceable reports what an offer field would actually carry, which is the
+// empty string when this node's own value cannot be announced.
+//
+// Exported so a node can find that out about itself at startup rather than
+// leaving the owner to notice that their machine appears in someone else's
+// candidate list with no name. A display name is the hostname, and a hostname
+// can be longer than MaxCandidateFieldLength or hold something PRECIS refuses.
+func Announceable(value string) string {
+	return printableField(value)
+}
+
 // printableField keeps a peer-supplied label only if it is one, and returns the
 // normalised form.
 //
@@ -417,21 +428,6 @@ func ParseAnnouncements(packet []byte) []Announcement {
 // а in "lаptop" is a different letter, and no normalisation makes it the same
 // one; mixed-script detection would, and is not done here. The fingerprint
 // comparison in the handshake is what separates two rows that read alike.
-// Announceable reports what an offer field would actually carry, which is the
-// empty string when this node's own value cannot be announced.
-//
-// Exported so a node can find that out about itself at startup rather than
-// leaving the owner to notice that their machine appears in someone else's
-// candidate list with no name. A display name is the hostname, and a hostname
-// can be longer than MaxCandidateFieldLength or hold something PRECIS refuses.
-func Announceable(value string) string {
-	return printableField(value)
-}
-
-// printableField keeps a peer-supplied label only if it is safe to show.
-//
-// See the block above Announceable for what this rejects and why; the two are
-// the same function, one exported for a node to ask about its own values.
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
@@ -562,7 +558,6 @@ func MulticastGroupV4() string { return multicastAddressV4 }
 // MulticastGroupV6 is the standard IPv6 mDNS group.
 func MulticastGroupV6() string { return multicastAddressV6 }
 
-// Listen joins the mDNS group and applies announcements until ctx is done.
 // Handler adapts a Browser to Listen: it records the addresses of peers this
 // owner has already paired with and ignores everything else.
 func (b *Browser) Handler() PacketHandler {
@@ -603,12 +598,28 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 	// a second interface was not heard by that join at all. So a peer whose own
 	// listener is on a direct cable announces onto the cable, correctly, and
 	// this node would never hear it.
-	joinEveryInterface(connection, address)
+	//
+	// Refreshed on a ticker, not only here, because interfaces appear after a
+	// process starts: an owner plugs in a USB Ethernet adapter and runs a cable
+	// to the machine they want to pair with, which is the case this feature is
+	// for. A membership taken only at startup would leave the other node
+	// announcing correctly onto a wire nobody is listening to.
 	// The closer must not outlive this function. Without the done channel it
 	// stays parked on ctx.Done() after a read error returns, which is a leaked
-	// goroutine per Listen call.
+	// goroutine per Listen call. The membership refresher is bounded the same
+	// way, for the same reason.
 	done := make(chan struct{})
 	defer close(done)
+	// Named for what it is rather than "group", which is this function's own
+	// parameter for the group's address.
+	joins := newMembership(connection, address)
+	if added := joins.refresh(); len(added) > 0 {
+		// "Joined", not "listening on": several of these have no address of
+		// their own and will never carry an announcement. What is true is that
+		// this socket now has a membership there.
+		log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
+	}
+	go joins.keepFresh(ctx, done)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -659,7 +670,6 @@ func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers 
 	}
 }
 
-// Announce writes this node's own service record to the group.
 // Offer is what a node says about itself while pairing mode is open.
 //
 // Fingerprint travels; the public key does not. A key on a multicast group is a
@@ -672,40 +682,88 @@ type Offer struct {
 	Fingerprint string
 }
 
-// joinEveryInterface subscribes to the group on every interface that could
-// carry it, not only the one the default route uses.
+// RejoinInterval is how often the group membership is re-checked for interfaces
+// that have appeared since the process started.
 //
-// Best-effort by design. The join the socket already has is what discovery ran
-// on before this, so a machine where every extra join fails is no worse off,
-// and one interface refusing must not stop the others. Interfaces the system
-// already joined report an error here, which is why nothing is logged per
-// interface.
+// A third of CandidateTTL, so an interface plugged in while a peer is
+// announcing is joined before that peer's row would have expired had it been
+// heard — the owner does not have to know to restart anything.
+const RejoinInterval = CandidateTTL / 3
+
+// membership keeps this socket subscribed to the group on every interface that
+// could carry it, not only the one the default route uses.
+//
+// Best-effort by design. The join the socket already has from
+// ListenMulticastUDP is what discovery ran on before any of this, so a machine
+// where every extra join fails is no worse off, and one interface refusing must
+// not stop the others.
 //
 // Joining widely grants nothing. Every packet still goes through the same
 // checks: an offer must name the address it came from, its node id must be
 // unpaired and well formed, and its address must be one the delivery policy
 // accepts. What arrives on one more interface is one more set of claims.
-func joinEveryInterface(connection *net.UDPConn, group *net.UDPAddr) {
+type membership struct {
+	packet *ipv4.PacketConn
+	group  *net.UDPAddr
+	// joined is by index, so an interface renamed or re-created is treated as
+	// new. Kept so a refresh logs what changed rather than the same line on
+	// every tick.
+	joined map[int]string
+}
+
+func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
+	return &membership{
+		packet: ipv4.NewPacketConn(connection),
+		group:  group,
+		joined: map[int]string{},
+	}
+}
+
+// refresh joins any interface not already joined, and reports which.
+func (m *membership) refresh() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		return
+		return nil
 	}
-	packet := ipv4.NewPacketConn(connection)
-	joined := 0
+	var added []string
 	for i := range interfaces {
-		if interfaces[i].Flags&net.FlagUp == 0 || interfaces[i].Flags&net.FlagMulticast == 0 {
+		iface := &interfaces[i]
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
 			continue
 		}
-		if err := packet.JoinGroup(&interfaces[i], group); err == nil {
-			joined++
+		if _, already := m.joined[iface.Index]; already {
+			continue
+		}
+		// An interface the system already joined refuses here, which is
+		// expected and is why the error is not reported: the membership it
+		// refuses to duplicate is one this socket already has.
+		if err := m.packet.JoinGroup(iface, m.group); err != nil {
+			continue
+		}
+		m.joined[iface.Index] = iface.Name
+		added = append(added, iface.Name)
+	}
+	return added
+}
+
+// keepFresh re-checks the membership until the listener stops.
+func (m *membership) keepFresh(ctx context.Context, done <-chan struct{}) {
+	ticker := time.NewTicker(RejoinInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			if added := m.refresh(); len(added) > 0 {
+				// Logged only when it changes: an interface appearing is worth
+				// a line, and the same list every thirty seconds is not.
+				log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
+			}
 		}
 	}
-	if joined == 0 {
-		// Not an error: the socket's own join may already cover the only
-		// interface this machine has, which is the ordinary single-NIC case.
-		return
-	}
-	log.Printf("listening for announcements on %d additional interface(s)", joined)
 }
 
 // dialGroup opens the socket an announcement leaves by.
@@ -728,15 +786,15 @@ func joinEveryInterface(connection *net.UDPConn, group *net.UDPAddr) {
 // segment that cannot reach the address accepts the row rather than dropping
 // it. See SetMulticastInterface below for what was measured where.
 //
-// A nil-local dial is kept for the case with no single address to send from,
-// which is the multi-address form this package no longer uses for offers.
+// Anything this cannot send correctly is refused rather than sent the old way.
+// A nil-local dial here would be the bug above, one branch away and reported as
+// a success: nothing in this package needs it, and a caller that grew a second
+// address should find out at the call rather than on someone else's screen.
 func dialGroup(target *net.UDPAddr, addresses []netip.Addr) (*net.UDPConn, error) {
 	if len(addresses) != 1 || !addresses[0].Is4() {
-		connection, err := net.DialUDP("udp", nil, target)
-		if err != nil {
-			return nil, fmt.Errorf("dial mDNS group %q: %w", target, err)
-		}
-		return connection, nil
+		return nil, fmt.Errorf(
+			"an announcement carries exactly one IPv4 address, which is the one it is sent "+
+				"from and the one a receiver checks it against; got %v", addresses)
 	}
 	source := addresses[0]
 	iface, err := interfaceHolding(source)
@@ -760,6 +818,18 @@ func dialGroup(target *net.UDPAddr, addresses []netip.Addr) (*net.UDPConn, error
 		return nil, fmt.Errorf("send announcements for %v on %s: %w", source, iface.Name, err)
 	}
 	return connection, nil
+}
+
+// CanAnnounceFrom reports why an announcement could not be sent from an
+// address, or nil when it could.
+//
+// Asked live rather than answered from startup, because the answer changes:
+// an interface can lose the address, lose multicast, or go away, and a node
+// that opens a pairing window an hour later should be told the truth then
+// rather than what was true at boot.
+func CanAnnounceFrom(address netip.Addr) error {
+	_, err := interfaceHolding(address)
+	return err
 }
 
 // interfaceHolding finds the interface that carries an address.
@@ -794,12 +864,6 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 	return nil, fmt.Errorf(
 		"no interface on this machine holds %v and can send multicast, so an announcement "+
 			"from it could not be received", address)
-}
-
-// Announce writes this node's own service record to the group, saying only where
-// it is. A node that has not opened pairing mode announces exactly this.
-func Announce(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr) error {
-	return AnnounceOffering(ctx, group, nodeID, instance, port, addresses, Offer{})
 }
 
 // AnnounceOffering announces this node, and — when the offer is non-empty —
