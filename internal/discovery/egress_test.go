@@ -798,3 +798,119 @@ func TestSubscribingJoinsNowAndKeepsJoining(t *testing.T) {
 	cancel()
 	close(done)
 }
+
+// An address can sit on more than one interface, and one usable holder is
+// enough. Taking whichever came last in the enumeration went unnoticed because
+// no address on this machine is on two interfaces — so the choice is tested on
+// interfaces the test supplies.
+func TestAUsableHolderIsChosenWhateverElseHoldsTheAddress(t *testing.T) {
+	address := netip.MustParseAddr("10.0.0.5")
+	usable := net.FlagUp | net.FlagMulticast | net.FlagBroadcast
+	good := &net.Interface{Name: "eth0", Flags: usable}
+	alias := &net.Interface{Name: "lo0", Flags: usable | net.FlagLoopback}
+	tunnel := &net.Interface{Name: "utun3", Flags: usable | net.FlagPointToPoint}
+
+	// Whatever the order, and whatever else holds it, the usable one wins.
+	for name, holders := range map[string][]*net.Interface{
+		"good first":           {good, alias},
+		"good last":            {alias, good},
+		"between two unusable": {tunnel, good, alias},
+		"only one, and usable": {good},
+	} {
+		t.Run(name, func(t *testing.T) {
+			chosen, err := chooseHolder(holders, address)
+			if err != nil {
+				t.Fatalf("chooseHolder(%v) = %v", names(holders), err)
+			}
+			if chosen != good {
+				t.Errorf("chose %s, want eth0", chosen.Name)
+			}
+		})
+	}
+
+	// With no usable holder the reason comes from one of them, and names it —
+	// not "nothing holds this", which would be false.
+	_, err := chooseHolder([]*net.Interface{alias, tunnel}, address)
+	if err == nil {
+		t.Fatal("an address held only by a loopback alias and a tunnel was accepted")
+	}
+	if !strings.Contains(err.Error(), "lo0") && !strings.Contains(err.Error(), "utun3") {
+		t.Errorf("the reason names no interface: %v", err)
+	}
+	if strings.Contains(err.Error(), "no interface on this machine holds") {
+		t.Errorf("an address the machine holds was reported as unheld: %v", err)
+	}
+
+	// And nothing holding it is still its own answer.
+	if _, err := chooseHolder(nil, address); err == nil {
+		t.Error("an address nothing holds was accepted")
+	} else if !strings.Contains(err.Error(), "no interface") {
+		t.Errorf("reason for an unheld address = %v", err)
+	}
+}
+
+func names(interfaces []*net.Interface) []string {
+	out := make([]string, 0, len(interfaces))
+	for _, iface := range interfaces {
+		out = append(out, iface.Name)
+	}
+	return out
+}
+
+// The log names interfaces an announcement could arrive on, which is not the
+// same set as the ones that accepted a join.
+//
+// Measured on this machine: four interfaces with no address of any kind joined
+// successfully, while en0 — the only one with an IPv4 address, and the only one
+// a peer could be on — was refused as a duplicate of the socket's own
+// membership. A line listing the four read as evidence the join was working.
+func TestOnlyInterfacesThatCouldDeliverAreNamed(t *testing.T) {
+	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15393")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.ListenMulticastUDP("udp4", nil, target)
+	if err != nil {
+		t.Skipf("cannot join the group here: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	joins := newMembership(connection, target)
+	// Every join succeeds, so what is left deciding the names is the address.
+	joins.join = func(*net.Interface, *net.UDPAddr) error { return nil }
+	named := joins.refresh()
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("cannot list interfaces: %v", err)
+	}
+	byName := map[string]*net.Interface{}
+	var eligible, withAddress int
+	for i := range interfaces {
+		iface := &interfaces[i]
+		byName[iface.Name] = iface
+		if !canCarryAnnouncements(iface) {
+			continue
+		}
+		eligible++
+		if hasIPv4(iface) {
+			withAddress++
+		}
+	}
+	if eligible == 0 {
+		t.Skip("no interface here could carry an announcement")
+	}
+	if eligible == withAddress {
+		t.Log("every eligible interface here holds an address, so the filter is not exercised")
+	}
+	if len(named) != withAddress {
+		t.Errorf("named %v (%d) but %d eligible interfaces hold an IPv4 address",
+			named, len(named), withAddress)
+	}
+	for _, name := range named {
+		if iface := byName[name]; iface != nil && !hasIPv4(iface) {
+			t.Errorf("%s was named though it holds no IPv4 address, so nothing can arrive on it",
+				name)
+		}
+	}
+}

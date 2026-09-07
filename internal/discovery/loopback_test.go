@@ -98,9 +98,13 @@ func TestALocalProcessCannotPutARowOnTheList(t *testing.T) {
 }
 
 // An offer naming a loopback address is an offer to connect to the reader's own
-// machine, and nothing legitimate sends one — the announcing side refuses to
-// put a loopback address in a packet. Checked separately from the source,
-// because the two are different claims and a forger controls both.
+// machine, and it is not listed.
+//
+// What refuses it is the source comparison, not a check on the address itself:
+// the offer says 127.0.0.1 and the datagram came from somewhere else, so they
+// do not match. Worth pinning because it is the reason a separate loopback
+// address check would be dead code — an offer naming loopback either came from
+// loopback, and is refused for that, or did not, and is refused for this.
 func TestAnOfferNamingLoopbackIsNotListed(t *testing.T) {
 	candidates := NewCandidates("node_local0000000000",
 		func(context.Context, string) (bool, error) { return false, nil },
