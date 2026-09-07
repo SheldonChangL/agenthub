@@ -36,6 +36,11 @@ const scope = new Function(
 const { renderPairing, candidateRow, prefillPairFrom, state } = scope;
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The window's three parts, which are separate elements so the countdown can
+// tick without the rows being rebuilt.
+const panel = () =>
+  el("pairing-headline").serialize() + el("pairing-countdown").serialize() +
+  el("pairing-detail").serialize();
 
 const hostile = {
   nodeId: 'node_evil<img src=x onerror="alert(1)">',
@@ -137,7 +142,7 @@ if (!unnamed.includes("（未提供名稱）")) {
 state.busy = false;
 state.pairing = { availability: "off", candidates: [], error: "DISCOVERY_DISABLED: not listening" };
 renderPairing();
-const off = el("pairing-state").serialize() + el("candidate-rows").serialize();
+const off = panel() + el("candidate-rows").serialize();
 if (off.includes("目前沒有看到任何機器在廣播")) {
   failures.push('a node that is not looking was rendered as "nobody is advertising"');
 }
@@ -150,12 +155,21 @@ if (!el("btn-pairing-on").disabled) {
 
 state.pairing = { availability: "unknown", candidates: [], error: "connection refused" };
 renderPairing();
-const unknown = el("pairing-state").serialize() + el("pairing-note").serialize();
+const unknown = panel() + el("pairing-note").serialize() + el("candidate-rows").serialize();
 if (unknown.includes("-discover")) {
   failures.push("an unreachable node was blamed on a missing flag");
 }
 if (unknown.includes("目前沒有看到任何機器在廣播")) {
   failures.push("a failed read was rendered as a fact about the network");
+}
+// The heading "正在廣播的機器" stands over this region either way, so an empty
+// region under it reads as "nobody is advertising". Both non-"on" states have
+// to say why the region is empty instead.
+if (!unknown.includes("不可信")) {
+  failures.push("the empty candidate region does not explain itself when the read failed");
+}
+if (!off.includes("沒有在看")) {
+  failures.push("the empty candidate region does not explain itself when discovery is off");
 }
 if (!unknown.includes("connection refused")) {
   failures.push("the reason the read failed was not shown");
@@ -172,14 +186,61 @@ state.pairing = {
   },
   candidates: [],
 };
-state.pairingReadAt = Date.now();
+state.pairingReadAt = performance.now();
 renderPairing();
-const silent = el("pairing-state").serialize();
+const silent = panel();
 if (!silent.includes("實際上什麼都沒有送出")) {
   failures.push("an open window that announces nothing was rendered as advertising");
 }
+// The headline must not assert advertising from an open window: carrying the
+// announce status exists precisely because the second does not follow.
+if (silent.includes("正在廣播，")) {
+  failures.push('the headline says "正在廣播" for a window that announces nothing');
+}
 if (!silent.includes("4:00")) {
   failures.push(`the countdown is missing or wrong: ${silent}`);
+}
+// The countdown lives in its own element so a tick does not rebuild the rows.
+if (!el("pairing-countdown").serialize().includes("4:00")) {
+  failures.push("the countdown is not in its own element, so ticking it redraws the rows");
+}
+
+// 4b. An address that exists does not mean anything is getting out. A node
+//     whose every send fails is exactly as silent, and hiding lastError behind
+//     the zero-address case makes that invisible.
+state.pairing = {
+  availability: "on",
+  state: {
+    open: true, remainingSeconds: 240,
+    announcing: { announceableAddresses: 1, lastError: "sendto: network is unreachable" },
+  },
+  candidates: [],
+};
+state.pairingReadAt = performance.now();
+renderPairing();
+const failing = panel();
+if (!failing.includes("sendto: network is unreachable")) {
+  failures.push("a node whose announcements are failing reported no error");
+}
+if (failing.includes("最後一次廣播：")) {
+  failures.push("a failing announcer was described as having announced");
+}
+
+// 4c. A window whose count has reached zero must not keep claiming it is open
+//     with 0:00 left until the next poll arrives.
+state.pairing = {
+  availability: "on",
+  state: { open: true, remainingSeconds: 0, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+state.pairingReadAt = performance.now();
+renderPairing();
+const expired = panel();
+if (expired.includes("0:00")) {
+  failures.push('an expired window was rendered as "剩 0:00"');
+}
+if (!expired.includes("已到期")) {
+  failures.push("an expired window was not described as expired");
 }
 
 // 5. A full list is a condition an attacker can hold this node in, so the owner
@@ -195,6 +256,11 @@ renderPairing();
 const full = el("candidate-rows").serialize() + el("candidate-notice").serialize();
 if (!full.includes("候選清單已滿")) {
   failures.push("a full candidate list was not reported");
+}
+// Before the rows, not after them: it changes how every row beneath it should
+// be read, and an attacker can hold the list full.
+if (full.indexOf("候選清單已滿") > full.indexOf("candidaterow")) {
+  failures.push("the full-list warning is below the rows it qualifies");
 }
 if (!full.includes("nothing here has been verified")) {
   failures.push("the node's own notice about the list was not shown");
@@ -223,6 +289,29 @@ if (!note.includes("沒有經過任何驗證")) {
 }
 if (!note.includes("ah node")) {
   failures.push("the prefill note does not say where the public key has to come from");
+}
+// The announced fingerprint must not appear in the dialog. One line above the
+// field the note tells the owner not to fill from the list, it is the exact
+// string to type.
+if (note.includes(hostile.fingerprint)) {
+  failures.push("the dialog prints the announced fingerprint beside the field it says not to fill");
+}
+// Trust is keyed on the node id, and the node only checks that the key matches
+// the fingerprint — never that either belongs to this id.
+if (!note.includes("節點 ID")) {
+  failures.push("the dialog does not ask the owner to compare the node id");
+}
+// A flagged row is flagged in the dialog too: the row is where impersonation is
+// visible, and the dialog is where trust is granted.
+if (!note.includes("身分有爭用")) {
+  failures.push("a contested candidate lost its flag on the way into the dialog");
+}
+const cleanNote = (() => {
+  prefillPairFrom({ ...hostile, contested: false, duplicate: false });
+  return el("pair-prefill-note").serialize();
+})();
+if (cleanNote.includes("身分有爭用") || cleanNote.includes("名稱或指紋重複")) {
+  failures.push("an unflagged candidate was described as flagged");
 }
 if (el("pair-prefill-note").classList.contains("hidden")) {
   failures.push("the prefill note was left hidden");

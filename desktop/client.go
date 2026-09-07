@@ -107,8 +107,10 @@ type Candidate struct {
 // a different question from whether the window is open.
 //
 // Carried into the UI because the gap between the two is where the one failure
-// an owner cannot see from the other machine lives: a node with no address a
-// peer could reach opens a window, announces nothing, and looks fine here.
+// an owner cannot see from the other machine lives. The node refuses to open a
+// window when it has no address to announce, so the gap opens afterwards: an
+// interface goes away, or every send starts failing, and the window stays open
+// saying nothing while the other machine waits.
 type AnnounceStatus struct {
 	Addresses   int       `json:"announceableAddresses"`
 	LastAttempt time.Time `json:"lastAttemptAt,omitzero"`
@@ -122,8 +124,8 @@ type PairingState struct {
 	OpenedAt  time.Time `json:"openedAt,omitzero"`
 	ExpiresAt time.Time `json:"expiresAt,omitzero"`
 	// Remaining is what a UI counts down. Taken from the node rather than
-	// computed here, so the countdown and the expiry beside it come from the
-	// clock the window was actually measured against.
+	// subtracted from ExpiresAt here, because the node measured the window
+	// against its own clock and this process need not agree with it.
 	Remaining  int            `json:"remainingSeconds"`
 	Announcing AnnounceStatus `json:"announcing"`
 }
