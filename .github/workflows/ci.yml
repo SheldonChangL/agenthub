@@ -199,8 +199,8 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -euo pipefail
           suffix=""
           if [ "${{ matrix.goos }}" = "windows" ]; then suffix=".exe"; fi
           mkdir -p dist
@@ -209,6 +209,18 @@ jobs:
             # so two builds of one commit are byte-identical.
             go build -trimpath -o "dist/${command}${suffix}" "./cmd/${command}"
           done
+          # On a pull request the revision stamped into these binaries is the
+          # ephemeral merge commit: it exists only under refs/pull/N/merge, it
+          # changes whenever main moves, and it cannot be resolved from an
+          # ordinary clone. This file is how someone holding the download finds
+          # the code and the run that produced it.
+          {
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "built_revision=${GITHUB_SHA}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "pr_head=${PR_HEAD_SHA:-}"
+            echo "platform=${GOOS}/${GOARCH}"
+          } > dist/BUILD
           # The checksums travel with the binaries: a downloader can check what
           # they got without a second source. Release adds a signed manifest;
           # this is the artifact-level answer to "is this the file CI built".
@@ -222,10 +234,18 @@ jobs:
       - name: the binary knows which commit it is
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: |
-          set -euo pipefail
           reported=$(./dist/ah --version)
           echo "$reported"
           case "$reported" in
+            # Checked before the revision, and it is the arm that earns its
+            # keep: the revision matches whether or not the tree was clean, so
+            # without this the day dist/ leaves .gitignore — or any step writes
+            # into the workspace — every artifact would be stamped "modified
+            # source" and this job would stay green.
+            *"modified source"*)
+              echo "the tree was not clean when this was built: $reported"
+              git status --porcelain
+              exit 1 ;;
             *"${GITHUB_SHA:0:12}"*) ;;
             *) echo "ah --version does not name this commit (${GITHUB_SHA:0:12})"; exit 1 ;;
           esac

@@ -35,6 +35,10 @@ func Version() string {
 }
 
 func describe(release string, info *debug.BuildInfo, ok bool) string {
+	// Trimmed because -X takes whatever it is given: a release of spaces would
+	// otherwise report a version that is blank, which reads as a bug in the
+	// program rather than in the build that produced it.
+	release = strings.TrimSpace(release)
 	revision, modified, stamped := vcs(info, ok)
 	switch {
 	case release != "" && stamped && modified:
@@ -79,5 +83,5 @@ func short(revision string) string {
 
 // Line is what a program prints when asked its version, or logs at startup.
 func Line(program string) string {
-	return fmt.Sprintf("%s %s (%s)", program, Version(), strings.TrimSpace(platform()))
+	return fmt.Sprintf("%s %s (%s)", program, Version(), platform())
 }

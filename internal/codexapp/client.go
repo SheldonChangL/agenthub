@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"agenthub.local/agenthub/internal/buildinfo"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -38,7 +39,7 @@ type InitializeResult struct {
 func (c *Client) Initialize(ctx context.Context) (InitializeResult, error) {
 	var result InitializeResult
 	params := map[string]any{
-		"clientInfo": map[string]string{"name": "agenthub", "version": "0.1.0"},
+		"clientInfo": map[string]string{"name": "agenthub", "version": buildinfo.Version()},
 	}
 	if err := c.call(ctx, "initialize", params, &result); err != nil {
 		return InitializeResult{}, err
