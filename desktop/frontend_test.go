@@ -244,3 +244,28 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		t.Error("style.css never mentions #candidate-rows")
 	}
 }
+
+// TestFrontendPairingPanelSurvivesTheSequences drives the whole module —
+// wiring, polls and handlers — through the orderings a render-only check cannot
+// reach.
+//
+// The other render checks slice the source at the wiring marker, so
+// loadPairing, both intervals and the button handlers were executed by nothing.
+// Three defects lived in exactly that gap: a stale poll overwriting a fresher
+// one, an expired window counting 0:00 until the next read, and a countdown
+// tick rebuilding the candidate rows — which replaces the row an owner is about
+// to click.
+func TestFrontendPairingPanelSurvivesTheSequences(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the pairing lifecycle check")
+	}
+	script := filepath.Join("frontend", "test", "pairing-lifecycle.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pairing lifecycle check failed: %v\n%s", err, output)
+	}
+}
