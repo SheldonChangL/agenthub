@@ -21,18 +21,20 @@ const AnnounceInterval = 20 * time.Second
 // Addresses reports where this node answers peer traffic, for the announcement
 // to carry.
 //
-// A function rather than a value because a machine's addresses change while it
-// is running — a laptop moving from wifi to ethernet keeps its identity and
-// loses its address — and an announcement carrying yesterday's address is an
-// invitation to connect to nothing.
+// A function rather than a value because the announce loop asks on every tick
+// and a test needs to change the answer between two of them. What PeerEndpoint
+// returns is in fact constant for the process's life — it is the peer
+// listener's own bound address — so nothing in production varies here.
 type Addresses func() []netip.Addr
 
 // Status is what actually happened, as opposed to what was asked for.
 //
 // An open window and a machine that is advertising are different facts, and the
-// gap between them is silent otherwise: a node whose peer listener is on
-// loopback has no address a peer could use, so it announces nothing while the
-// window says open, and the only sign is a log line nobody is reading.
+// gap between them would be silent otherwise. The API refuses to open a window
+// on a node that cannot announce, so the gap opens afterwards: every send
+// starts failing, or the owner is reading the state of a node that could never
+// announce in the first place and needs to be told why rather than shown a
+// zero.
 type Status struct {
 	// Addresses is how many this node would announce right now. Zero is the
 	// whole explanation when nothing is going out.
@@ -59,6 +61,11 @@ type Announcer struct {
 	// discovery.AnnounceOffering.
 	announce func(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr, offer discovery.Offer) error
 	interval time.Duration
+	// unannounceable is why this node has nothing to announce, when it has
+	// nothing. Reported rather than left as a bare zero, because "no address"
+	// and "an address announcements cannot carry" send an owner to change
+	// different things.
+	unannounceable string
 	// wake lets opening the window announce at once rather than at the next
 	// tick. Buffered so a caller never blocks and a second wake before the loop
 	// reads the first is not two announcements.
@@ -68,13 +75,14 @@ type Announcer struct {
 	status Status
 }
 
-func NewAnnouncer(mode *Mode, group, nodeID, instance string, port int, addresses Addresses, offer discovery.Offer) *Announcer {
+func NewAnnouncer(mode *Mode, group, nodeID, instance string, endpoint Endpoint, offer discovery.Offer) *Announcer {
 	return &Announcer{
 		mode: mode, group: group, nodeID: nodeID, instance: instance,
-		port: port, addresses: addresses, offer: offer,
-		announce: discovery.AnnounceOffering,
-		interval: AnnounceInterval,
-		wake:     make(chan struct{}, 1),
+		port: endpoint.Port, addresses: endpoint.Addresses, offer: offer,
+		unannounceable: endpoint.Unannounceable,
+		announce:       discovery.AnnounceOffering,
+		interval:       AnnounceInterval,
+		wake:           make(chan struct{}, 1),
 	}
 }
 
@@ -100,7 +108,19 @@ func (a *Announcer) Status() Status {
 	// owner looks at to understand why nothing is going out, and it should
 	// answer before the loop has ticked even once.
 	status.Addresses = len(a.addresses())
+	if status.Addresses == 0 && status.LastError == "" {
+		status.LastError = a.unannounceable
+	}
 	return status
+}
+
+// Unannounceable is why this node cannot be announced, or the empty string when
+// it can be. Used by the API to refuse a window with the actual reason.
+func (a *Announcer) Unannounceable() string {
+	if len(a.addresses()) > 0 {
+		return ""
+	}
+	return a.unannounceable
 }
 
 // Announceable reports whether this node has an address a peer could reach it
@@ -158,8 +178,11 @@ func (a *Announcer) announceIfOpen(ctx context.Context) {
 		// this machine as a candidate nobody can reach. Recorded rather than
 		// only logged: an owner asking why nothing is happening reads the API,
 		// not the log.
-		a.record(Status{LastAttempt: now,
-			LastError: "this node has no address a peer could reach, so nothing is being announced"})
+		reason := a.unannounceable
+		if reason == "" {
+			reason = "this node has no address to announce"
+		}
+		a.record(Status{LastAttempt: now, LastError: reason})
 		return
 	}
 	if err := a.announce(ctx, a.group, a.nodeID, a.instance, a.port, addresses, a.offer); err != nil {

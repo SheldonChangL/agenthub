@@ -3,6 +3,7 @@ package pairing
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"agenthub.local/agenthub/internal/transport"
@@ -43,7 +44,7 @@ func TestOnlyTheBoundAddressIsAnnounced(t *testing.T) {
 		"a mapped loopback announces nothing": {
 			"[::ffff:127.0.0.1]:7463", lan, nil, 7463,
 		},
-		"the loopback wildcard announces nothing": {
+		"the all-interfaces wildcard announces nothing": {
 			":7463", lan, nil, 7463,
 		},
 		// The unspecified address binds every interface, including any public
@@ -95,14 +96,23 @@ func TestOnlyTheBoundAddressIsAnnounced(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			addresses, port, err := PeerEndpoint(testCase.policy, testCase.peerListen)
+			endpoint, err := PeerEndpoint(testCase.policy, testCase.peerListen)
 			if err != nil {
 				t.Fatalf("PeerEndpoint(%q) error = %v", testCase.peerListen, err)
 			}
-			if port != testCase.wantPort {
-				t.Errorf("port = %d, want %d", port, testCase.wantPort)
+			if endpoint.Port != testCase.wantPort {
+				t.Errorf("port = %d, want %d", endpoint.Port, testCase.wantPort)
 			}
-			got := addresses()
+			got := endpoint.Addresses()
+			// Anything not announced has to come with a reason an owner can
+			// act on: "loopback" and "IPv6" are different problems.
+			if len(testCase.want) == 0 && endpoint.Unannounceable == "" {
+				t.Error("nothing is announced and no reason was given")
+			}
+			if len(testCase.want) > 0 && endpoint.Unannounceable != "" {
+				t.Errorf("an announceable endpoint carries a reason not to be: %q",
+					endpoint.Unannounceable)
+			}
 			if len(got) != len(testCase.want) {
 				t.Fatalf("announced %v, want %v", got, testCase.want)
 			}
@@ -137,11 +147,11 @@ func TestAPeerListenerThatCannotBeAnnouncedIsAnError(t *testing.T) {
 		"empty":        "",
 	} {
 		t.Run(name, func(t *testing.T) {
-			addresses, port, err := PeerEndpoint(transport.PrivateNetworks(nil), peerListen)
+			endpoint, err := PeerEndpoint(transport.PrivateNetworks(nil), peerListen)
 			if err == nil {
-				t.Errorf("PeerEndpoint(%q) = %v, %d, want an error", peerListen, addresses(), port)
+				t.Errorf("PeerEndpoint(%q) = %+v, want an error", peerListen, endpoint)
 			}
-			if addresses != nil {
+			if endpoint.Addresses != nil {
 				t.Error("a refused peer listener still produced an address function")
 			}
 		})
@@ -152,11 +162,16 @@ func TestAPeerListenerThatCannotBeAnnouncedIsAnError(t *testing.T) {
 // panicking or falling back to the unfiltered address.
 func TestAPolicyThatRefusesEverythingLeavesNothingToAnnounce(t *testing.T) {
 	refuseAll := func(string) error { return errors.New("no") }
-	addresses, _, err := PeerEndpoint(refuseAll, "192.168.161.2:7483")
+	endpoint, err := PeerEndpoint(refuseAll, "192.168.161.2:7483")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := addresses(); len(got) != 0 {
+	if got := endpoint.Addresses(); len(got) != 0 {
 		t.Errorf("announced %v against a policy that refuses everything", got)
+	}
+	// And the reason quotes the policy, so an owner is not left guessing which
+	// of several rules refused their address.
+	if !strings.Contains(endpoint.Unannounceable, "no") {
+		t.Errorf("the reason does not carry the policy's own words: %q", endpoint.Unannounceable)
 	}
 }
