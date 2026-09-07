@@ -376,6 +376,25 @@ func TestAnAddressThatCannotSendMulticastIsRefusedAtTheWindow(t *testing.T) {
 	if !strings.Contains(reason, "multicast") {
 		t.Errorf("Unannounceable() = %q, want the machine's own reason", reason)
 	}
+	// And the status agrees. Reporting one announceable address next to a
+	// reason none can be used invites a reader to believe the number — which is
+	// how POST came to refuse while GET reported nothing wrong.
+	status := a.Status()
+	if status.Addresses != 0 {
+		t.Errorf("announceableAddresses = %d beside a reason nothing can be announced",
+			status.Addresses)
+	}
+	if !strings.Contains(status.LastError, "multicast") {
+		t.Errorf("status LastError = %q, want the same reason the API gets", status.LastError)
+	}
+
+	// A recorded send failure is one attempt, not a statement about the
+	// configuration, so it does not zero the count.
+	a.canAnnounceFrom = func(netip.Addr) error { return nil }
+	a.record(Status{LastAttempt: time.Now(), LastError: "sendto: host is down"})
+	if status := a.Status(); status.Addresses != 1 {
+		t.Errorf("announceableAddresses = %d after one failed send, want 1", status.Addresses)
+	}
 	// And the recorded startup reason does not mask it: the address is there,
 	// so the configuration was fine and something changed since.
 	a.unannounceable = "the peer listener is on loopback"

@@ -654,3 +654,56 @@ func TestAnUnexpectedJoinFailureIsReportedOnceNotEveryTick(t *testing.T) {
 		t.Errorf("an expected join failure was logged: %s", logged.String())
 	}
 }
+
+// Every way an interface can fail to carry an announcement, on flags this test
+// chooses rather than flags this machine happens to have.
+//
+// The tunnel case is why: none of this machine's point-to-point interfaces
+// carries an IPv4 address, so a test that walks real interfaces never reached
+// that branch — and removing it passed the suite while three places of prose
+// said it was the case being caught.
+func TestEveryReasonAnInterfaceCannotAnnounce(t *testing.T) {
+	address := netip.MustParseAddr("10.8.0.2")
+	usable := net.FlagUp | net.FlagMulticast | net.FlagBroadcast
+
+	for name, testCase := range map[string]struct {
+		holder    *net.Interface
+		wantInErr string
+	}{
+		"nothing holds it": {nil, "no interface"},
+		"down": {
+			&net.Interface{Name: "en9", Flags: net.FlagMulticast}, "is down",
+		},
+		// A tunnel carries MULTICAST, so the flags alone do not exclude it.
+		"a tunnel": {
+			&net.Interface{Name: "utun3", Flags: usable | net.FlagPointToPoint}, "point-to-point",
+		},
+		"loopback": {
+			&net.Interface{Name: "lo0", Flags: usable | net.FlagLoopback}, "loopback",
+		},
+		"no multicast": {
+			&net.Interface{Name: "wg0", Flags: net.FlagUp}, "multicast",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := announceableFrom(testCase.holder, address)
+			if err == nil {
+				t.Fatalf("%+v was accepted for announcing %v", testCase.holder, address)
+			}
+			if !strings.Contains(err.Error(), testCase.wantInErr) {
+				t.Errorf("reason = %q, want it to mention %q", err, testCase.wantInErr)
+			}
+			// An owner needs to know which interface, not just that one of
+			// them is wrong.
+			if testCase.holder != nil && !strings.Contains(err.Error(), testCase.holder.Name) {
+				t.Errorf("reason = %q, want it to name %s", err, testCase.holder.Name)
+			}
+		})
+	}
+
+	// And an ordinary interface is accepted, so the rule is not simply
+	// refusing everything.
+	if err := announceableFrom(&net.Interface{Name: "en0", Flags: usable}, address); err != nil {
+		t.Errorf("an ordinary interface was refused: %v", err)
+	}
+}
