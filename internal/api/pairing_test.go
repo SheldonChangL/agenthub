@@ -268,17 +268,18 @@ func TestAnUnrepresentableWindowIsRefusedRatherThanWrapped(t *testing.T) {
 // never appear.
 func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	handler, mode, _, announcer := pairingServerWithAnnouncer(t)
-	announcer.reason = "the peer listener is on loopback, which no other machine can reach"
+	// The reason a real node gives, remedy included — see reachableAt. The
+	// handler adds nothing to it, so the string has to carry the fix itself.
+	announcer.reason = "the peer listener is on loopback, which no other machine can reach. " +
+		"Restart the node with -allow-lan and -peer-listen on one of this machine's network addresses"
 
 	response := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("response = %d %s, want 409", response.Code, response.Body.String())
 	}
-	// The message has to name the fix, because the fix is a restart with
-	// different arguments and nothing in the UI can apply it.
 	// The refusal carries the node's own reason, so an owner is told which of
-	// several possible causes applies rather than a message covering all of
-	// them — and names the flag that changes it.
+	// several possible causes applies, and that reason carries its own remedy —
+	// nothing in the UI can restart the node.
 	for _, want := range []string{"loopback", "-peer-listen"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Errorf("the refusal does not name %q: %s", want, response.Body.String())
@@ -289,6 +290,25 @@ func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	}
 	if announcer.wakeCount() != 0 {
 		t.Error("a refused open still asked the announcer to announce")
+	}
+
+	// And no remedy is appended to every reason. The fixes differ: a loopback
+	// listener needs a restart with a different address, while an address on a
+	// VPN tunnel is configured correctly and needs the machine on a network —
+	// telling that owner to change -peer-listen sends them to change the one
+	// thing that is right.
+	announcer.reason = "utun3 holds 10.8.0.2 but is a point-to-point interface — a tunnel — " +
+		"which has no local network segment for a peer to answer on"
+	tunnel := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
+	if tunnel.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s, want 409", tunnel.Code, tunnel.Body.String())
+	}
+	if strings.Contains(tunnel.Body.String(), "-peer-listen") {
+		t.Errorf("a tunnel refusal tells the owner to change -peer-listen, which is correct "+
+			"as configured: %s", tunnel.Body.String())
+	}
+	if !strings.Contains(tunnel.Body.String(), "tunnel") {
+		t.Errorf("the refusal lost the node's reason: %s", tunnel.Body.String())
 	}
 }
 

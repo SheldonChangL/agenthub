@@ -1,13 +1,17 @@
 package discovery
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net"
 	"net/netip"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -244,24 +248,42 @@ func TestAnAnnouncementLeavesByTheInterfaceHoldingItsAddress(t *testing.T) {
 // else has to be refused at the call rather than sent the old way: a nil-local
 // dial here is the bug this file exists for, reported as a success.
 func TestAnAnnouncementRefusesWhatItCannotSendCorrectly(t *testing.T) {
-	for name, addresses := range map[string][]netip.Addr{
-		"none": nil,
-		"two": {
-			netip.MustParseAddr("192.168.1.5"),
-			netip.MustParseAddr("192.168.1.6"),
-		},
+	// Held addresses, so the count is what refuses these and not the interface
+	// lookup behind it. With addresses the machine does not have, every case
+	// failed for the wrong reason and the count check was unpinned: changing
+	// `len(addresses) != 1` to `== 0` passed the whole suite.
+	held := localV4Addresses(t)
+	if len(held) == 0 {
+		t.Skip("this machine has no usable IPv4 address to announce from")
+	}
+	two := []netip.Addr{held[0], held[0]}
+	if len(held) > 1 {
+		two = []netip.Addr{held[0], held[1]}
+	}
+
+	for name, testCase := range map[string]struct {
+		addresses []netip.Addr
+		wantInErr string
+	}{
+		"none": {nil, "exactly one"},
+		"two":  {two, "exactly one"},
 		// v6 cannot be announced at all: the group and the listener are v4, so
 		// the packet would carry an AAAA record and a v4 source and be dropped
 		// by every receiver.
-		"ipv6": {netip.MustParseAddr("fd00::1")},
+		"ipv6": {[]netip.Addr{netip.MustParseAddr("fd00::1")}, "exactly one"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := AnnounceOffering(context.Background(), "224.0.0.251:15359",
-				"node_refuse000000000", "agenthub-refuse", 7463, addresses,
+				"node_refuse000000000", "agenthub-refuse", 7463, testCase.addresses,
 				Offer{DisplayName: "refuse", Platform: "test",
 					Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA"})
 			if err == nil {
-				t.Fatalf("announcing %v reported success", addresses)
+				t.Fatalf("announcing %v reported success", testCase.addresses)
+			}
+			if !strings.Contains(err.Error(), testCase.wantInErr) {
+				t.Errorf("refused %v with %q, want it to mention %q; that means something "+
+					"other than the address count did the refusing",
+					testCase.addresses, err, testCase.wantInErr)
 			}
 		})
 	}
@@ -445,5 +467,190 @@ func TestListenSubscribesForTheListenersWholeLife(t *testing.T) {
 	case <-got.done:
 	case <-time.After(time.Second):
 		t.Error("the done channel handed to subscribe was not closed when Listen returned")
+	}
+}
+
+// A membership on loopback is one only a forgery can use.
+//
+// Nothing legitimate announces from loopback — the announcing side refuses to —
+// so every packet such a membership can receive was written by something local
+// that chose what to say. And the check that makes discovery safe, that an
+// offer must come from the address it names, is trivially satisfied there.
+//
+// Measured before this rule existed: a datagram from 127.0.0.1 was received and
+// listed with a chosen display name and fingerprint, under the default
+// loopback-only policy — the configuration where a forgery from the local
+// network is refused. A second user on a shared machine, who cannot read the
+// first user's files, could put a row on their candidate list.
+//
+// A tunnel is excluded for a weaker but real reason: it has an address and no
+// segment a peer could answer on, and joining it widens who can inject from one
+// network to every VPN the host is attached to.
+func TestNothingIsJoinedThatOnlyAForgeryCouldUse(t *testing.T) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("cannot list interfaces: %v", err)
+	}
+
+	var sawLoopback, sawTunnel bool
+	for i := range interfaces {
+		iface := &interfaces[i]
+		multicastCapable := iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagMulticast != 0
+		switch {
+		case iface.Flags&net.FlagLoopback != 0 && multicastCapable:
+			sawLoopback = true
+			if canCarryAnnouncements(iface) {
+				t.Errorf("%s is loopback and would be joined; every packet it can receive "+
+					"is a local forgery", iface.Name)
+			}
+		case iface.Flags&net.FlagPointToPoint != 0 && multicastCapable:
+			sawTunnel = true
+			if canCarryAnnouncements(iface) {
+				t.Errorf("%s is point-to-point and would be joined; it has no segment a peer "+
+					"could answer on", iface.Name)
+			}
+		}
+	}
+	// Said out loud, because on a machine with neither this test proves nothing
+	// and should not read as though it did.
+	if !sawLoopback {
+		t.Log("no multicast-capable loopback interface here; that half is not exercised")
+	}
+	if !sawTunnel {
+		t.Log("no multicast-capable point-to-point interface here; that half is not exercised")
+	}
+
+	// And something is still joined, so the rule is not simply refusing
+	// everything — which would pass every assertion above.
+	var ordinary int
+	for i := range interfaces {
+		if canCarryAnnouncements(&interfaces[i]) {
+			ordinary++
+		}
+	}
+	if ordinary == 0 {
+		t.Error("no interface at all would be joined, so no peer could ever be heard")
+	}
+}
+
+// An interface holding the address is not enough: it has to be one an
+// announcement can leave by, and the reason has to say which of the several
+// ways it is not.
+//
+// The case that made this necessary: utun0 on this machine is
+// UP,POINTOPOINT,RUNNING,MULTICAST, so a WireGuard or OpenVPN listener passed a
+// check on the flags alone — the exact configuration three places of prose
+// claimed was refused.
+func TestTheRefusalNamesWhyTheInterfaceCannotAnnounce(t *testing.T) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("cannot list interfaces: %v", err)
+	}
+
+	// An address nothing holds is a different answer from an address held by an
+	// interface that cannot carry the packet, and an owner acts differently on
+	// each.
+	_, err = interfaceHolding(netip.MustParseAddr("203.0.113.99"))
+	if err == nil {
+		t.Fatal("an address this machine does not hold was accepted")
+	}
+	if !strings.Contains(err.Error(), "no interface") {
+		t.Errorf("reason for an unheld address = %q", err)
+	}
+
+	for i := range interfaces {
+		iface := &interfaces[i]
+		if iface.Flags&net.FlagPointToPoint == 0 && iface.Flags&net.FlagLoopback == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			prefix, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			held, ok := netip.AddrFromSlice(prefix.IP)
+			if !ok || !held.Unmap().Is4() {
+				continue
+			}
+			_, err := interfaceHolding(held.Unmap())
+			if err == nil {
+				t.Errorf("%v on %s was accepted for announcing", held, iface.Name)
+				continue
+			}
+			// The interface is named, so the owner knows which one, and the
+			// kind of problem is named, so they know what to change.
+			if !strings.Contains(err.Error(), iface.Name) {
+				t.Errorf("the reason for %v does not name %s: %v", held, iface.Name, err)
+			}
+			want := "loopback"
+			if iface.Flags&net.FlagPointToPoint != 0 {
+				want = "point-to-point"
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the reason for %v on %s does not say %q: %v",
+					held, iface.Name, want, err)
+			}
+		}
+	}
+}
+
+// A join failure that is not one of the expected ones is worth saying, once. A
+// Linux host at its twenty-membership limit fails here, and the interface just
+// plugged in — the one this whole loop exists for — may be the one refused.
+func TestAnUnexpectedJoinFailureIsReportedOnceNotEveryTick(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15371")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.ListenMulticastUDP("udp4", nil, target)
+	if err != nil {
+		t.Skipf("cannot join the group here: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	joins := newMembership(connection, target)
+	joins.join = func(*net.Interface, *net.UDPAddr) error {
+		return syscall.ENOBUFS
+	}
+	count := func() int { return strings.Count(logged.String(), "could not listen for announcements") }
+
+	if added := joins.refresh(); len(added) != 0 {
+		t.Errorf("a failing join reported %v as joined", added)
+	}
+	// One line per interface, not one per tick: which interface failed is the
+	// useful part, and there is one such line for each.
+	first := count()
+	if first == 0 {
+		t.Fatalf("an unexpected join failure was never reported: %q", logged.String())
+	}
+	for tick := 0; tick < 4; tick++ {
+		if added := joins.refresh(); len(added) != 0 {
+			t.Errorf("a failing join reported %v as joined", added)
+		}
+	}
+	if got := count(); got != first {
+		t.Errorf("five refreshes logged %d lines where one logged %d; the condition repeats "+
+			"every %v forever", got, first, RejoinInterval)
+	}
+
+	// The expected ones stay silent: they are what a duplicate join and an
+	// interface with no IPv4 stack return, on every tick, forever.
+	logged.Reset()
+	joins.join = func(*net.Interface, *net.UDPAddr) error { return syscall.EADDRINUSE }
+	joins.refresh()
+	if logged.Len() != 0 {
+		t.Errorf("an expected join failure was logged: %s", logged.String())
 	}
 }

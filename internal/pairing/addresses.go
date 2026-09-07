@@ -97,7 +97,8 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 		// loopback — a name because it can resolve somewhere else later — and
 		// neither is a single address to put in an announcement.
 		return netip.Addr{}, "the peer listener names a host rather than one address " +
-			"(a name, or every interface), and an announcement carries one address"
+			"(a name, or every interface), and an announcement carries one address. Restart the " +
+			"node with -peer-listen on one of this machine's network addresses"
 	}
 	// A zone names an interface on this machine, so it cannot travel in a
 	// packet. Asked before Unmap, which discards it: ::ffff:192.168.1.5%en0
@@ -105,7 +106,8 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// already gone, and be announced.
 	if parsed.Zone() != "" {
 		return netip.Addr{}, "the peer listener's address carries a %zone, which names an " +
-			"interface on this machine and means nothing to another one"
+			"interface on this machine and means nothing to another one. Restart the node with " +
+			"-peer-listen giving the address without %zone"
 	}
 	// Unmapped, because ::ffff:192.168.1.5 and 192.168.1.5 are the same address
 	// written two ways and do not compare equal. The receiving side checks an
@@ -117,7 +119,9 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// so nothing below would catch it, and announcing it would tell a peer to
 	// connect to its own machine.
 	if parsed.IsLoopback() {
-		return netip.Addr{}, "the peer listener is on loopback, which no other machine can reach"
+		return netip.Addr{}, "the peer listener is on loopback, which no other machine can reach. " +
+			"Restart the node with -allow-lan and -peer-listen on one of this machine's network " +
+			"addresses"
 	}
 	// Announcements go out on the IPv4 group and are read from it, so an IPv6
 	// address cannot be discovered however reachable it is: the packet would
