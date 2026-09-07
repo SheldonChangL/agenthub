@@ -705,21 +705,25 @@ const RejoinInterval = CandidateTTL / 3
 type membership struct {
 	packet *ipv4.PacketConn
 	group  *net.UDPAddr
-	// joined is by index, so an interface renamed or re-created is treated as
-	// new. Kept so a refresh logs what changed rather than the same line on
-	// every tick.
-	joined map[int]string
 }
 
 func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
-	return &membership{
-		packet: ipv4.NewPacketConn(connection),
-		group:  group,
-		joined: map[int]string{},
-	}
+	return &membership{packet: ipv4.NewPacketConn(connection), group: group}
 }
 
-// refresh joins any interface not already joined, and reports which.
+// refresh attempts every eligible interface and reports the ones that were not
+// already joined.
+//
+// No record is kept of what has been joined, because the kernel keeps it: a
+// duplicate join fails, so a repeat call reports nothing and the log stays
+// quiet, and there is nothing to go stale. A cache here would be an
+// optimisation whose one distinctive behaviour is harmful — an interface
+// destroyed and re-created at the same index would be skipped as already
+// joined, which is precisely the case this refresh exists for.
+//
+// A failure is not reported per interface. Most of them are expected: the
+// membership the system already took refuses to be duplicated, and interfaces
+// with no IPv4 stack refuse outright.
 func (m *membership) refresh() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -731,16 +735,9 @@ func (m *membership) refresh() []string {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
 			continue
 		}
-		if _, already := m.joined[iface.Index]; already {
-			continue
-		}
-		// An interface the system already joined refuses here, which is
-		// expected and is why the error is not reported: the membership it
-		// refuses to duplicate is one this socket already has.
 		if err := m.packet.JoinGroup(iface, m.group); err != nil {
 			continue
 		}
-		m.joined[iface.Index] = iface.Name
 		added = append(added, iface.Name)
 	}
 	return added

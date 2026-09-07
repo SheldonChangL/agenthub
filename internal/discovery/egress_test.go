@@ -272,9 +272,10 @@ func TestAnAnnouncementRefusesWhatItCannotSendCorrectly(t *testing.T) {
 // pair with, which is the case this whole feature is for.
 //
 // A new interface cannot be conjured in a test, so what is pinned here is the
-// property that makes the ticker safe to run: a refresh joins only what it has
-// not joined, and reports only that. Otherwise it would either re-join every
-// interface every tick or log the same line forever.
+// property that makes the ticker safe to run every thirty seconds: a repeat
+// refresh reports nothing. The kernel is what guarantees it — a duplicate join
+// fails — which is why no record is kept here of what was joined. Without the
+// property the log would repeat the same line forever.
 func TestRefreshingTheMembershipReportsOnlyWhatIsNew(t *testing.T) {
 	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15360")
 	if err != nil {
@@ -294,10 +295,10 @@ func TestRefreshingTheMembershipReportsOnlyWhatIsNew(t *testing.T) {
 	if second := joins.refresh(); len(second) != 0 {
 		t.Errorf("a second refresh reported %v as newly joined", second)
 	}
-	// And it did not forget them, which is what makes the second answer empty
-	// for the right reason.
-	if len(joins.joined) != len(first) {
-		t.Errorf("tracking %d interfaces after joining %d", len(joins.joined), len(first))
+	// A third, to be sure the first answer was not simply the socket warming
+	// up: the property has to hold for every tick, not just the second one.
+	if third := joins.refresh(); len(third) != 0 {
+		t.Errorf("a third refresh reported %v as newly joined", third)
 	}
 }
 
