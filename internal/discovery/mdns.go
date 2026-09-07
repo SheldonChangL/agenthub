@@ -24,9 +24,11 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -43,8 +45,24 @@ const (
 	// can make this node parse per packet.
 	maxPacket = 9000
 
-	// nodeIDKey is the TXT record key carrying the announcing node's id.
-	nodeIDKey = "node="
+	// TXT record keys. A node announcing itself as a pairing candidate carries
+	// the last three as well; a node merely being findable by peers it has
+	// already paired with carries only the id.
+	nodeIDKey      = "node="
+	displayNameKey = "name="
+	platformKey    = "platform="
+	fingerprintKey = "fp="
+
+	// MaxCandidateFieldLength bounds each human-readable field an announcement
+	// carries.
+	//
+	// These reach a person's screen in the candidate list, and every one of them
+	// is chosen by whoever sent the packet — on a multicast group anyone on the
+	// network can write to. The presence path learned this the hard way (#76):
+	// an unbounded field is a place to write to the reader, not a label. A DNS
+	// TXT string cannot exceed 255 bytes anyway; this is smaller because a
+	// display name that does not fit on a line is not a display name.
+	MaxCandidateFieldLength = 64
 )
 
 // Announcement is one peer's claim about where it can be reached.
@@ -54,6 +72,45 @@ const (
 type Announcement struct {
 	NodeID  string
 	Address string
+
+	// The three fields below appear only when the sender announced itself as a
+	// pairing candidate. Every one of them is the sender's claim about itself.
+	//
+	// Fingerprint especially: it is what a person compares out of band, and a
+	// sender is free to put someone else's here. It is a hint for finding the
+	// right row in a list, never evidence. What makes pairing safe is comparing
+	// the fingerprint of the key that actually arrives in the handshake, on
+	// both machines — see #62.
+	DisplayName string
+	Platform    string
+	Fingerprint string
+}
+
+// Candidate reports that a node is offering to pair.
+//
+// Separate from Announcement because the two are answers to different
+// questions: an Announcement says where a node claims to be, and the browser
+// uses it only for nodes already paired. A Candidate is an unpaired node
+// asking to be found, which is information for a person rather than for the
+// address book.
+type Candidate struct {
+	NodeID      string
+	Address     string
+	DisplayName string
+	Platform    string
+	Fingerprint string
+	// FirstSeen and LastSeen bound how long a candidate stays on screen after
+	// its owner closes pairing mode, since nothing announces a withdrawal.
+	FirstSeen time.Time
+	LastSeen  time.Time
+}
+
+// Offering reports whether an announcement was made by a node asking to pair.
+//
+// A node that is merely findable — the case discovery already served — carries
+// its id and nothing else.
+func (a Announcement) Offering() bool {
+	return a.Fingerprint != ""
 }
 
 // Resolver applies announcements to the trust store.
@@ -211,6 +268,9 @@ func ParseAnnouncements(packet []byte) []Announcement {
 	}
 	services := map[string]service{}
 	nodeIDs := map[string]string{}
+	displayNames := map[string]string{}
+	platforms := map[string]string{}
+	fingerprints := map[string]string{}
 	addresses := map[string][]netip.Addr{}
 
 	collect := func(header dnsmessage.ResourceHeader, body dnsmessage.ResourceBody) {
@@ -220,8 +280,20 @@ func ParseAnnouncements(packet []byte) []Announcement {
 			services[name] = service{target: strings.ToLower(resource.Target.String()), port: resource.Port}
 		case *dnsmessage.TXTResource:
 			for _, entry := range resource.TXT {
-				if after, found := strings.CutPrefix(entry, nodeIDKey); found {
-					nodeIDs[name] = after
+				// Each value is bounded and stripped of anything that is not
+				// printable before it is kept. A field that fails either is
+				// dropped rather than truncated: a name cut off mid-way is a
+				// different name, and showing one would be worse than showing
+				// none.
+				switch {
+				case strings.HasPrefix(entry, nodeIDKey):
+					nodeIDs[name] = strings.TrimPrefix(entry, nodeIDKey)
+				case strings.HasPrefix(entry, displayNameKey):
+					displayNames[name] = printableField(strings.TrimPrefix(entry, displayNameKey))
+				case strings.HasPrefix(entry, platformKey):
+					platforms[name] = printableField(strings.TrimPrefix(entry, platformKey))
+				case strings.HasPrefix(entry, fingerprintKey):
+					fingerprints[name] = printableField(strings.TrimPrefix(entry, fingerprintKey))
 				}
 			}
 		case *dnsmessage.AResource:
@@ -269,12 +341,33 @@ func ParseAnnouncements(packet []byte) []Announcement {
 				continue
 			}
 			announcements = append(announcements, Announcement{
-				NodeID:  nodeID,
-				Address: net.JoinHostPort(addr.Unmap().String(), strconv.Itoa(int(svc.port))),
+				NodeID:      nodeID,
+				Address:     net.JoinHostPort(addr.Unmap().String(), strconv.Itoa(int(svc.port))),
+				DisplayName: displayNames[name],
+				Platform:    platforms[name],
+				Fingerprint: fingerprints[name],
 			})
 		}
 	}
 	return announcements
+}
+
+// printableField keeps a peer-supplied label only if it is one.
+//
+// Empty for anything over the bound or carrying a character that is not
+// printable. A newline in a display name is what turns one row of a candidate
+// list into two, and the second row is the sender's — the same reasoning as
+// the presence path's cwd and status fields.
+func printableField(value string) string {
+	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
+		return ""
+	}
+	for _, r := range value {
+		if !unicode.IsGraphic(r) {
+			return ""
+		}
+	}
+	return value
 }
 
 // MulticastGroupV4 is the standard IPv4 mDNS group.
@@ -326,8 +419,26 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 }
 
 // Announce writes this node's own service record to the group.
+// Offer is what a node says about itself while pairing mode is open.
+//
+// Fingerprint travels; the public key does not. A key on a multicast group is a
+// key an attacker can replace, and a fingerprint is useless to them for the
+// same reason it is useful here: it only means something next to the key that
+// arrives in the handshake, compared on both machines by a person.
+type Offer struct {
+	DisplayName string
+	Platform    string
+	Fingerprint string
+}
+
 func Announce(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr) error {
-	packet, err := buildAnnouncement(nodeID, instance, port, addresses)
+	return AnnounceOffering(ctx, group, nodeID, instance, port, addresses, Offer{})
+}
+
+// AnnounceOffering announces this node, and — when the offer is non-empty —
+// says it is willing to pair.
+func AnnounceOffering(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr, offer Offer) error {
+	packet, err := buildAnnouncement(nodeID, instance, port, addresses, offer)
 	if err != nil {
 		return err
 	}
@@ -351,7 +462,7 @@ func Announce(ctx context.Context, group, nodeID, instance string, port int, add
 	return nil
 }
 
-func buildAnnouncement(nodeID, instance string, port int, addresses []netip.Addr) ([]byte, error) {
+func buildAnnouncement(nodeID, instance string, port int, addresses []netip.Addr, offer Offer) ([]byte, error) {
 	if port <= 0 || port > 65535 {
 		return nil, fmt.Errorf("port %d is outside the representable range", port)
 	}
@@ -375,7 +486,23 @@ func buildAnnouncement(nodeID, instance string, port int, addresses []netip.Addr
 	}); err != nil {
 		return nil, err
 	}
-	if err := builder.TXTResource(header, dnsmessage.TXTResource{TXT: []string{nodeIDKey + nodeID}}); err != nil {
+	txt := []string{nodeIDKey + nodeID}
+	// Only when offering. A node that is not in pairing mode announces exactly
+	// what it announced before this existed: its id, so peers it has already
+	// paired with can find its address.
+	if offer.Fingerprint != "" {
+		for key, value := range map[string]string{
+			displayNameKey: offer.DisplayName,
+			platformKey:    offer.Platform,
+			fingerprintKey: offer.Fingerprint,
+		} {
+			if clean := printableField(value); clean != "" {
+				txt = append(txt, key+clean)
+			}
+		}
+		sort.Strings(txt)
+	}
+	if err := builder.TXTResource(header, dnsmessage.TXTResource{TXT: txt}); err != nil {
 		return nil, err
 	}
 	addressHeader := dnsmessage.ResourceHeader{Name: hostName, Class: dnsmessage.ClassINET, TTL: 120}

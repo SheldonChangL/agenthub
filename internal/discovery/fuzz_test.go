@@ -16,7 +16,7 @@ import (
 // entirely, and dropping it is the caller's job, not the parser's.
 func FuzzParseAnnouncements(f *testing.F) {
 	valid, err := buildAnnouncement("node_paired000000000", "agenthub-seed", 7463,
-		[]netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::1")})
+		[]netip.Addr{netip.MustParseAddr("192.0.2.10"), netip.MustParseAddr("2001:db8::1")}, Offer{})
 	if err != nil {
 		f.Fatal(err)
 	}
