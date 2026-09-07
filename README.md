@@ -240,6 +240,26 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
+| `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
+| `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
+| `DELETE` | `/v1/pairing` | Stop advertising now |
+| `GET` | `/v1/pairing/candidates` | Machines advertising right now. Every field is the sender's own claim |
+
+The four pairing endpoints exist only under `-discover`; without it they answer
+`409 DISCOVERY_DISABLED` rather than an empty list, because "nobody is
+advertising" and "this node is not looking" are different answers and only one
+of them means the owner should keep waiting. Advertising also needs an address a
+peer could reach — `-allow-lan` and a `-peer-listen` on this machine's network
+address rather than loopback — and opening the window is refused with
+`409 NO_ANNOUNCEABLE_ADDRESS` when there is none, since a window that announces
+nothing looks identical to one nobody has answered. `GET /v1/pairing` carries
+`announcing` for the same reason: an open window and a machine that is actually
+sending packets are separate facts.
+
+Nothing in the candidate list is verified and appearing in it grants nothing.
+The fingerprint shown is the one announced, which is a hint for finding the
+right row and never evidence; what settles identity is comparing the
+fingerprint of the key that arrives in the handshake, on both machines.
 
 The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, and `POST /v1/messages`. It is never the owner's API.
 
