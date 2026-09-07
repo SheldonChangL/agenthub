@@ -23,10 +23,10 @@ import (
 // answers from it, and building a live announcer to check an error message
 // would mean joining a multicast group in a unit test.
 type fakeAnnouncer struct {
-	mu           sync.Mutex
-	announceable bool
-	status       pairing.Status
-	wakes        int
+	mu     sync.Mutex
+	reason string
+	status pairing.Status
+	wakes  int
 }
 
 func (f *fakeAnnouncer) Status() pairing.Status {
@@ -35,10 +35,10 @@ func (f *fakeAnnouncer) Status() pairing.Status {
 	return f.status
 }
 
-func (f *fakeAnnouncer) Announceable() bool {
+func (f *fakeAnnouncer) Unannounceable() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.announceable
+	return f.reason
 }
 
 func (f *fakeAnnouncer) Wake() {
@@ -79,7 +79,7 @@ func pairingHandler(t *testing.T, mode *pairing.Mode) (http.Handler, *discovery.
 	t.Cleanup(func() { _ = store.Close() })
 	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 	candidates := discovery.NewCandidates(node.ID, store.IsPaired, func(string) error { return nil })
-	announcer := &fakeAnnouncer{announceable: true}
+	announcer := &fakeAnnouncer{}
 	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
 		WithPairing(mode, candidates, announcer))
 	return server.Handler(), candidates, announcer
@@ -268,7 +268,7 @@ func TestAnUnrepresentableWindowIsRefusedRatherThanWrapped(t *testing.T) {
 // never appear.
 func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	handler, mode, _, announcer := pairingServerWithAnnouncer(t)
-	announcer.announceable = false
+	announcer.reason = "the peer listener is on loopback, which no other machine can reach"
 
 	response := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
 	if response.Code != http.StatusConflict {
@@ -276,7 +276,10 @@ func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	}
 	// The message has to name the fix, because the fix is a restart with
 	// different arguments and nothing in the UI can apply it.
-	for _, want := range []string{"-allow-lan", "-peer-listen"} {
+	// The refusal carries the node's own reason, so an owner is told which of
+	// several possible causes applies rather than a message covering all of
+	// them — and names the flag that changes it.
+	for _, want := range []string{"loopback", "-peer-listen"} {
 		if !strings.Contains(response.Body.String(), want) {
 			t.Errorf("the refusal does not name %q: %s", want, response.Body.String())
 		}

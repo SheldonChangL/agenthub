@@ -18,10 +18,11 @@ type PairingAnnouncer interface {
 	// Status is what the loop last managed to do, which is not the same
 	// question as whether the window is open.
 	Status() pairing.Status
-	// Announceable reports whether this node has any address a peer could
-	// reach. Asked before opening, so an owner is told pairing cannot work here
-	// instead of being handed a window that announces nothing.
-	Announceable() bool
+	// Unannounceable says why this node cannot be announced, in words an owner
+	// can act on, and is empty when it can be. Asked before opening, so an
+	// owner is told what to change instead of being handed a window that
+	// announces nothing.
+	Unannounceable() string
 	// Wake announces now rather than at the next tick.
 	Wake()
 }
@@ -96,12 +97,15 @@ func (s *Server) openPairing(w http.ResponseWriter, r *http.Request) {
 	// announce is a window that does nothing while saying it is open. Checked
 	// here as well as reported in the state, since this is the moment an owner
 	// is waiting for an answer.
-	if !s.announcer.Announceable() {
+	if reason := s.announcer.Unannounceable(); reason != "" {
+		// The reason comes from the node's own configuration, so the answer
+		// names the actual cause: loopback, an IPv6 listener, and an address
+		// this build will not use are three different problems with three
+		// different fixes, and a single message for all of them would send the
+		// owner to change the wrong thing.
 		writeError(w, http.StatusConflict, "NO_ANNOUNCEABLE_ADDRESS",
-			"this node's peer listener is not on an address another machine could reach, so "+
-				"opening pairing mode would announce nothing. Pairing over the network needs the "+
-				"node restarted with -peer-listen on this machine's own network address rather "+
-				"than on loopback, together with -allow-lan")
+			"opening pairing mode would announce nothing: "+reason+
+				". Restarting the node with a different -peer-listen is what changes this")
 		return
 	}
 	state, err := s.pairing.Open(time.Duration(input.Seconds) * time.Second)

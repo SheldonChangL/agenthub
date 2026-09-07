@@ -143,12 +143,12 @@ func run() error {
 		// API answers with what this announcer is actually managing to do: an
 		// open window on a node with no announceable address is the one failure
 		// an owner cannot see from the other machine.
-		peerAddresses, peerPort, err := pairing.PeerEndpoint(deliveryPolicy, *peerListenAddress)
+		endpoint, err := pairing.PeerEndpoint(deliveryPolicy, *peerListenAddress)
 		if err != nil {
 			return fmt.Errorf("read the peer listener for announcements: %w", err)
 		}
 		announcer = pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
-			node.ID, node.ID, peerPort, peerAddresses,
+			node.ID, node.ID, endpoint,
 			discovery.Offer{
 				DisplayName: node.DisplayName,
 				Platform:    node.Platform,
@@ -168,13 +168,14 @@ func run() error {
 					label, value)
 			}
 		}
-		if !announcer.Announceable() {
+		if reason := announcer.Unannounceable(); reason != "" {
 			// Said at startup, not only when someone tries to pair: this is a
 			// configuration that cannot pair over the network, and the owner
 			// should learn that before opening a window that announces nothing.
-			log.Printf("pairing mode will have no address to announce: the peer listener is on %s, "+
-				"which no other machine can reach. Pairing over the network needs -peer-listen "+
-				"on this machine's own network address, together with -allow-lan", *peerListenAddress)
+			// The reason comes from the endpoint so it names the actual cause —
+			// loopback and IPv6 are different problems with different fixes.
+			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s",
+				*peerListenAddress, reason)
 		}
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}

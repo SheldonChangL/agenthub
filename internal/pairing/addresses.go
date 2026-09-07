@@ -28,46 +28,81 @@ import (
 // address, so that one policy still decides all three of where this node
 // delivers, which addresses it records, and which it announces. If they
 // disagreed, an owner could be handed an address this build would never use.
-func PeerEndpoint(policy func(address string) error, peerListen string) (Addresses, int, error) {
+func PeerEndpoint(policy func(address string) error, peerListen string) (Endpoint, error) {
 	host, portText, err := net.SplitHostPort(peerListen)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read the peer listener %q: %w", peerListen, err)
+		return Endpoint{}, fmt.Errorf("read the peer listener %q: %w", peerListen, err)
 	}
 	// LookupPort rather than Atoi, because a listen address may name a service
 	// ("localhost:https") and net.Listen accepts one. Refusing what the
 	// listener accepts would stop the node over an address that works.
 	port, err := net.LookupPort("tcp", portText)
 	if err != nil {
-		return nil, 0, fmt.Errorf("port %q in %q is not a port this node can announce: %w",
+		return Endpoint{}, fmt.Errorf("port %q in %q is not a port this node can announce: %w",
 			portText, peerListen, err)
 	}
 	// Port zero asks the kernel to choose, so this number is not the one the
 	// listener ends up on; announcing it would invite a connection to nothing.
 	if port == 0 {
-		return nil, 0, fmt.Errorf(
+		return Endpoint{}, fmt.Errorf(
 			"the peer listener %q must name a fixed port, not 0, so an announcement can carry it", peerListen)
 	}
-	address, announceable := reachableAt(policy, host, port)
-	return func() []netip.Addr {
-		if !announceable {
-			return nil
-		}
-		return []netip.Addr{address}
-	}, port, nil
+	address, unannounceable := reachableAt(policy, host, port)
+	endpoint := Endpoint{Port: port, Unannounceable: unannounceable}
+	if unannounceable != "" {
+		endpoint.Addresses = func() []netip.Addr { return nil }
+		return endpoint, nil
+	}
+	endpoint.Addresses = func() []netip.Addr { return []netip.Addr{address} }
+	return endpoint, nil
 }
 
-// reachableAt decides whether the bound address is one a peer could dial.
+// Endpoint is where a peer could reach this node, and — when nowhere — why.
 //
-// Answered once rather than on every announcement: the peer listener is bound
-// at startup and the process does not survive losing it, so unlike a walk over
-// interfaces there is nothing here that changes while the node runs.
-func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, bool) {
+// The reason travels with the answer because every message about it has to name
+// the actual cause. A peer listener on loopback is unreachable; one on an IPv6
+// address is perfectly reachable and merely cannot be discovered, since
+// announcements go out on the IPv4 group. Telling an owner the second is the
+// first sends them to change the wrong thing.
+type Endpoint struct {
+	// Addresses is what an announcement carries: the one bound address, or
+	// nothing. Never nil, so a caller need not check before calling it.
+	Addresses Addresses
+	// Port is the port the peer listener answers on, which is what a peer
+	// dials — not the port a multicast packet arrived from.
+	Port int
+	// Unannounceable is why this node cannot be announced, in words an owner
+	// can act on. Empty when it can be.
+	Unannounceable string
+}
+
+// reachableAt decides whether the bound address is one a peer could find this
+// node at, and says why not when it is not.
+//
+// Answered once rather than on every announcement. The peer listener's address
+// is fixed for the process's life as a matter of configuration: it is whatever
+// -peer-listen named. If the machine later loses that address the listener does
+// not fail — a bound TCP socket keeps accepting nothing rather than erroring —
+// so this answer can become stale. What it cannot become is wrong about which
+// address was asked for, and a stale address is undeliverable rather than
+// misdirected: a receiver drops an announcement that does not come from the
+// address it names.
+func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, string) {
 	parsed, err := netip.ParseAddr(host)
 	if err != nil {
 		// Either a name or the wildcard. ValidatePeerListen refuses both beyond
 		// loopback — a name because it can resolve somewhere else later — and
 		// neither is a single address to put in an announcement.
-		return netip.Addr{}, false
+		return netip.Addr{}, "the peer listener does not name a single address, " +
+			"so there is no one address to announce"
+	}
+	// A zone names an interface on this machine, so it cannot travel in a
+	// packet. Asked before Unmap, which discards it: ::ffff:192.168.1.5%en0
+	// would otherwise arrive at the policy as a plain v4 address with the zone
+	// already gone, and be announced.
+	if parsed.Zone() != "" {
+		return netip.Addr{}, "the peer listener's address carries a %zone, which names an " +
+			"interface on this machine and means nothing to another one"
 	}
 	// Unmapped, because ::ffff:192.168.1.5 and 192.168.1.5 are the same address
 	// written two ways and do not compare equal. The receiving side checks an
@@ -79,23 +114,34 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// so nothing below would catch it, and announcing it would tell a peer to
 	// connect to its own machine.
 	if parsed.IsLoopback() {
-		return netip.Addr{}, false
+		return netip.Addr{}, "the peer listener is on loopback, which no other machine can reach"
 	}
-	// An IPv6 link-local address counts as private, so it can be bound, but it
-	// is ambiguous without a zone — and a zone names an interface on this
-	// machine, so it is exactly what cannot travel in a packet. There is
-	// nothing a peer could do with one.
-	if parsed.Is6() && parsed.IsLinkLocalUnicast() {
-		return netip.Addr{}, false
+	// Announcements go out on the IPv4 group and are read from it, so an IPv6
+	// address cannot be discovered however reachable it is: the packet would
+	// carry an AAAA record and a v4 source, and every receiver drops an
+	// announcement whose address is not the address it came from. Verified by
+	// building the packet and observing the drop.
+	//
+	// This covers link-local v6 as a special case of the same thing — which it
+	// would need anyway, being ambiguous without a zone, and a zone names an
+	// interface on this machine so it cannot travel in a packet.
+	//
+	// A v6 peer listener still works for everything else. It is pairing by
+	// announcement that cannot reach it, and `ah pair` does not need to.
+	if parsed.Is6() {
+		return netip.Addr{}, "the peer listener is on an IPv6 address, and announcements go out " +
+			"on the IPv4 group, so no other machine could discover this one. It is reachable: " +
+			"pairing by hand with `ah pair` works"
 	}
-	// The policy has the last word, and is the only word on everything else:
-	// it refuses the unspecified address and a zoned one by name, and refuses
-	// anything outside the ranges this build will deliver to. Repeating any of
-	// that here would be a second answer to the same question, and the copy
-	// that stopped being load-bearing would be the one nobody noticed had
-	// rotted.
-	if policy(netip.AddrPortFrom(parsed, uint16(port)).String()) != nil { // #nosec G115 -- checked non-zero above
-		return netip.Addr{}, false
+	// The policy has the last word, and is the only word on everything else.
+	// PrivateNetworks refuses the unspecified address explicitly and refuses
+	// anything outside the ranges this build will deliver to; LoopbackOnly
+	// refuses all of that as a consequence of refusing anything but loopback.
+	// Repeating any of it here would be a second answer to the same question,
+	// and the copy that stopped being load-bearing would be the one nobody
+	// noticed had rotted.
+	if err := policy(netip.AddrPortFrom(parsed, uint16(port)).String()); err != nil { // #nosec G115 -- LookupPort bounds this to 0-65535
+		return netip.Addr{}, "this build will not use the peer listener's address: " + err.Error()
 	}
-	return parsed, true
+	return parsed, ""
 }

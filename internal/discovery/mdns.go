@@ -32,6 +32,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/ipv4"
 	"golang.org/x/text/secure/precis"
 	"golang.org/x/text/unicode/norm"
 
@@ -593,6 +594,12 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 		return fmt.Errorf("join mDNS group %q: %w", group, err)
 	}
 	defer func() { _ = connection.Close() }()
+	// The nil interface above joins one interface — the system's choice, which
+	// is the default route's. Measured on this machine: a datagram sent out of
+	// a second interface was not heard by that join at all. So a peer whose own
+	// listener is on a direct cable announces onto the cable, correctly, and
+	// this node would never hear it.
+	joinEveryInterface(connection, address)
 	// The closer must not outlive this function. Without the done channel it
 	// stays parked on ctx.Done() after a read error returns, which is a leaked
 	// goroutine per Listen call.
@@ -661,6 +668,124 @@ type Offer struct {
 	Fingerprint string
 }
 
+// joinEveryInterface subscribes to the group on every interface that could
+// carry it, not only the one the default route uses.
+//
+// Best-effort by design. The join the socket already has is what discovery ran
+// on before this, so a machine where every extra join fails is no worse off,
+// and one interface refusing must not stop the others. Interfaces the system
+// already joined report an error here, which is why nothing is logged per
+// interface.
+//
+// Joining widely grants nothing. Every packet still goes through the same
+// checks: an offer must name the address it came from, its node id must be
+// unpaired and well formed, and its address must be one the delivery policy
+// accepts. What arrives on one more interface is one more set of claims.
+func joinEveryInterface(connection *net.UDPConn, group *net.UDPAddr) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return
+	}
+	packet := ipv4.NewPacketConn(connection)
+	joined := 0
+	for i := range interfaces {
+		if interfaces[i].Flags&net.FlagUp == 0 || interfaces[i].Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		if err := packet.JoinGroup(&interfaces[i], group); err == nil {
+			joined++
+		}
+	}
+	if joined == 0 {
+		// Not an error: the socket's own join may already cover the only
+		// interface this machine has, which is the ordinary single-NIC case.
+		return
+	}
+	log.Printf("listening for announcements on %d additional interface(s)", joined)
+}
+
+// dialGroup opens the socket an announcement leaves by.
+//
+// A receiver accepts an announcement only when the address it carries is the
+// address the datagram came from — see the source check in Candidates.observe.
+// So the packet has to leave by the interface that holds the address being
+// advertised, not by whichever one the default route happens to pick.
+//
+// This is not hypothetical. With a peer listener on a direct cable
+// (122.122.122.1 on en8) and wifi as the default route, net.DialUDP with a nil
+// local address sent from 192.168.161.2, every receiver dropped the packet for
+// naming an address it did not come from, and the announcing node reported a
+// successful announcement with no error — an open window that nobody could ever
+// see.
+//
+// Both halves matter, and setting only one is worse than setting neither.
+// Choosing the source without choosing the interface would put a packet on the
+// wrong wire whose source matches its own claim, so a receiver on a segment
+// that cannot reach the address would accept the row instead of dropping it.
+//
+// A nil-local dial is kept for the case with no single address to send from,
+// which is the multi-address form this package no longer uses for offers.
+func dialGroup(target *net.UDPAddr, addresses []netip.Addr) (*net.UDPConn, error) {
+	if len(addresses) != 1 || !addresses[0].Is4() {
+		connection, err := net.DialUDP("udp", nil, target)
+		if err != nil {
+			return nil, fmt.Errorf("dial mDNS group %q: %w", target, err)
+		}
+		return connection, nil
+	}
+	source := addresses[0]
+	iface, err := interfaceHolding(source)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := net.DialUDP("udp4", &net.UDPAddr{IP: source.AsSlice()}, target)
+	if err != nil {
+		return nil, fmt.Errorf("dial mDNS group %q from %v: %w", target, source, err)
+	}
+	// Binding the source is not enough on its own: the outgoing interface for a
+	// multicast datagram is a separate socket option, and without it the kernel
+	// still uses the route to the group.
+	if err := ipv4.NewPacketConn(connection).SetMulticastInterface(iface); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("send announcements for %v on %s: %w", source, iface.Name, err)
+	}
+	return connection, nil
+}
+
+// interfaceHolding finds the interface that carries an address.
+//
+// An error rather than a fallback: the fallback is the behaviour that made a
+// node announce an address no receiver would accept, and reporting success for
+// it is what made that invisible.
+func interfaceHolding(address netip.Addr) (*net.Interface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list interfaces to announce from %v: %w", address, err)
+	}
+	for i := range interfaces {
+		if interfaces[i].Flags&net.FlagUp == 0 || interfaces[i].Flags&net.FlagMulticast == 0 {
+			continue
+		}
+		addrs, err := interfaces[i].Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			prefix, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			held, ok := netip.AddrFromSlice(prefix.IP)
+			if ok && held.Unmap() == address {
+				return &interfaces[i], nil
+			}
+		}
+	}
+	return nil, fmt.Errorf(
+		"no interface on this machine holds %v and can send multicast, so an announcement "+
+			"from it could not be received", address)
+}
+
 // Announce writes this node's own service record to the group, saying only where
 // it is. A node that has not opened pairing mode announces exactly this.
 func Announce(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr) error {
@@ -678,9 +803,9 @@ func AnnounceOffering(ctx context.Context, group, nodeID, instance string, port 
 	if err != nil {
 		return fmt.Errorf("resolve mDNS group %q: %w", group, err)
 	}
-	connection, err := net.DialUDP("udp", nil, target)
+	connection, err := dialGroup(target, addresses)
 	if err != nil {
-		return fmt.Errorf("dial mDNS group %q: %w", group, err)
+		return err
 	}
 	defer func() { _ = connection.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
