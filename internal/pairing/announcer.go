@@ -42,7 +42,9 @@ type Status struct {
 	// LastAttempt and LastSuccess are absent until the loop has run.
 	LastAttempt time.Time `json:"lastAttemptAt,omitzero"`
 	LastSuccess time.Time `json:"lastAnnouncedAt,omitzero"`
-	// LastError is the reason the last attempt failed, if it did.
+	// LastError is why nothing is going out: the reason the last attempt failed,
+	// or — before any attempt, and whenever there is no address at all — the
+	// reason this node cannot be announced in the first place.
 	LastError string `json:"lastError,omitempty"`
 }
 
@@ -60,7 +62,11 @@ type Announcer struct {
 	// announce is the call under test. Production passes
 	// discovery.AnnounceOffering.
 	announce func(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr, offer discovery.Offer) error
-	interval time.Duration
+	// canAnnounceFrom asks whether the machine could still send from an
+	// address. Injected for the same reason announce is: a test's addresses are
+	// chosen, not held by the machine running it.
+	canAnnounceFrom func(netip.Addr) error
+	interval        time.Duration
 	// unannounceable is why this node has nothing to announce, when it has
 	// nothing. Reported rather than left as a bare zero, because "no address"
 	// and "an address announcements cannot carry" send an owner to change
@@ -79,10 +85,11 @@ func NewAnnouncer(mode *Mode, group, nodeID, instance string, endpoint Endpoint,
 	return &Announcer{
 		mode: mode, group: group, nodeID: nodeID, instance: instance,
 		port: endpoint.Port, addresses: endpoint.Addresses, offer: offer,
-		unannounceable: endpoint.Unannounceable,
-		announce:       discovery.AnnounceOffering,
-		interval:       AnnounceInterval,
-		wake:           make(chan struct{}, 1),
+		unannounceable:  endpoint.Unannounceable,
+		announce:        discovery.AnnounceOffering,
+		canAnnounceFrom: discovery.CanAnnounceFrom,
+		interval:        AnnounceInterval,
+		wake:            make(chan struct{}, 1),
 	}
 }
 
@@ -109,28 +116,41 @@ func (a *Announcer) Status() Status {
 	// answer before the loop has ticked even once.
 	status.Addresses = len(a.addresses())
 	if status.Addresses == 0 && status.LastError == "" {
-		status.LastError = a.unannounceable
+		// The same answer the API gets, from the same place: two ways of saying
+		// why nothing is going out would eventually disagree, and the one an
+		// owner reads is this one.
+		status.LastError = a.Unannounceable()
 	}
 	return status
 }
 
 // Unannounceable is why this node cannot be announced, or the empty string when
 // it can be. Used by the API to refuse a window with the actual reason.
-func (a *Announcer) Unannounceable() string {
-	if len(a.addresses()) > 0 {
-		return ""
-	}
-	return a.unannounceable
-}
-
-// Announceable reports whether this node has an address a peer could reach it
-// at — which is its peer listener's own bound address, and nothing else. See
-// PeerEndpoint for why the two are not the same question.
 //
-// Asked before opening a window, so an owner is told that pairing cannot work
-// on this configuration instead of being given a window that announces nothing.
-func (a *Announcer) Announceable() bool {
-	return len(a.addresses()) > 0
+// It never answers "" for a node that cannot announce. The reason recorded at
+// startup is preferred because it names the configuration, but a node with no
+// address and no recorded reason still gets one: the caller uses this to decide
+// whether to open a window, and a missing explanation must not read as
+// permission.
+func (a *Announcer) Unannounceable() string {
+	addresses := a.addresses()
+	if len(addresses) == 0 {
+		if a.unannounceable != "" {
+			return a.unannounceable
+		}
+		return "this node has no address to announce"
+	}
+	// Asked of the machine as it is now, not as it was at startup. An address
+	// can survive on an interface that has lost multicast — a WireGuard or
+	// point-to-point interface never had it — and then every announcement
+	// fails while the window says open. This runs only when someone tries to
+	// open one, so it is cheap to be current.
+	for _, address := range addresses {
+		if err := a.canAnnounceFrom(address); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
 }
 
 // Run announces on every tick the window is open, and says nothing on every

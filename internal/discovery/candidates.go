@@ -48,9 +48,14 @@ var ErrCandidatesFull = errors.New("the candidate list is full")
 // appearing in this list changes no audience and no trust record. The whole
 // list is throwaway state: it lives in memory, and a restart empties it.
 type Candidates struct {
-	// localNodeID is this node's own id. Its announcements come back on the
-	// loopback of the multicast group it sends to, and a machine offering to
-	// pair with itself is a row that can only waste the owner's time.
+	// localNodeID is this node's own id, so it can be left out of the list: a
+	// machine offering to pair with itself is a row that can only waste the
+	// owner's time.
+	//
+	// On Unix its own announcements come back on the multicast loopback of the
+	// group it sends to, which is what makes the check necessary. On Windows
+	// the receiving socket has that loopback cleared, so they never arrive and
+	// the check is simply never exercised there.
 	localNodeID string
 	// paired reports whether a node is already in the trust store, so the list
 	// shows what the owner might still want rather than what they have.

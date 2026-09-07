@@ -98,11 +98,11 @@ func (s *Server) openPairing(w http.ResponseWriter, r *http.Request) {
 	// here as well as reported in the state, since this is the moment an owner
 	// is waiting for an answer.
 	if reason := s.announcer.Unannounceable(); reason != "" {
-		// The reason comes from the node's own configuration, so the answer
-		// names the actual cause: loopback, an IPv6 listener, and an address
-		// this build will not use are three different problems with three
-		// different fixes, and a single message for all of them would send the
-		// owner to change the wrong thing.
+		// The reason comes from the node itself, so the answer names the actual
+		// cause: a loopback listener, an IPv6 one, a listener naming a host
+		// rather than an address, and an interface that cannot carry multicast
+		// are different problems with different fixes, and a single message for
+		// all of them would send the owner to change the wrong thing.
 		writeError(w, http.StatusConflict, "NO_ANNOUNCEABLE_ADDRESS",
 			"opening pairing mode would announce nothing: "+reason+
 				". Restarting the node with a different -peer-listen is what changes this")
