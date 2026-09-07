@@ -404,3 +404,53 @@ table.peer-sessions td.mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
+
+/* ---------------- pairing mode and candidates ---------------- */
+
+.pairingpanel {
+  border-top: 1px solid var(--line);
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pairing-state {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pairing-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pairing-actions button {
+  flex: 1;
+}
+
+.candidaterow {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* The full fingerprint, monospaced and wrapping rather than truncated:
+   comparing a prefix is exactly what a forger can defeat, so the whole thing
+   has to be readable. */
+.candidaterow .fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}
+
+.candidaterow button {
+  align-self: flex-start;
+  margin-top: 4px;
+}

@@ -80,6 +80,54 @@ type NodeIdentity struct {
 	Fingerprint string    `json:"fingerprint,omitempty"`
 }
 
+// Candidate is one machine currently advertising that it is willing to pair.
+//
+// Every field is a claim by whoever sent the packet, on a multicast group
+// anyone on the segment can write to. Nothing here has been verified, and
+// appearing in this list grants nothing: no trust, no session, no audience.
+// Fingerprint especially is the announced one — a hint for finding the right
+// row, never evidence of which machine it is.
+type Candidate struct {
+	NodeID      string    `json:"nodeId"`
+	Address     string    `json:"address"`
+	DisplayName string    `json:"displayName,omitempty"`
+	Platform    string    `json:"platform,omitempty"`
+	Fingerprint string    `json:"fingerprint"`
+	FirstSeen   time.Time `json:"firstSeen"`
+	LastSeen    time.Time `json:"lastSeen"`
+	// Duplicate: another row claims this display name or this fingerprint,
+	// which is what an impersonation attempt looks like from here.
+	Duplicate bool `json:"duplicate,omitempty"`
+	// Contested: something has announced different details under this node id
+	// since it was first seen.
+	Contested bool `json:"contested,omitempty"`
+}
+
+// AnnounceStatus is what this node's announce loop last managed to do, which is
+// a different question from whether the window is open.
+//
+// Carried into the UI because the gap between the two is where the one failure
+// an owner cannot see from the other machine lives: a node with no address a
+// peer could reach opens a window, announces nothing, and looks fine here.
+type AnnounceStatus struct {
+	Addresses   int       `json:"announceableAddresses"`
+	LastAttempt time.Time `json:"lastAttemptAt,omitzero"`
+	LastSuccess time.Time `json:"lastAnnouncedAt,omitzero"`
+	LastError   string    `json:"lastError,omitempty"`
+}
+
+// PairingState is the advertising window.
+type PairingState struct {
+	Open      bool      `json:"open"`
+	OpenedAt  time.Time `json:"openedAt,omitzero"`
+	ExpiresAt time.Time `json:"expiresAt,omitzero"`
+	// Remaining is what a UI counts down. Taken from the node rather than
+	// computed here, so the countdown and the expiry beside it come from the
+	// clock the window was actually measured against.
+	Remaining  int            `json:"remainingSeconds"`
+	Announcing AnnounceStatus `json:"announcing"`
+}
+
 type client struct {
 	baseURL string
 	http    *http.Client
@@ -206,6 +254,59 @@ func (c *client) peers(ctx context.Context) ([]Peer, error) {
 		decoded.Peers = []Peer{}
 	}
 	return decoded.Peers, nil
+}
+
+func (c *client) pairingState(ctx context.Context) (PairingState, error) {
+	return c.decodePairingState(ctx, http.MethodGet, nil)
+}
+
+// openPairing starts the window. Seconds of zero means the node's default.
+func (c *client) openPairing(ctx context.Context, seconds int) (PairingState, error) {
+	var input any
+	if seconds > 0 {
+		input = map[string]int{"seconds": seconds}
+	}
+	return c.decodePairingState(ctx, http.MethodPost, input)
+}
+
+func (c *client) closePairing(ctx context.Context) (PairingState, error) {
+	return c.decodePairingState(ctx, http.MethodDelete, nil)
+}
+
+func (c *client) decodePairingState(ctx context.Context, method string, input any) (PairingState, error) {
+	body, err := c.request(ctx, method, "/v1/pairing", input)
+	if err != nil {
+		return PairingState{}, err
+	}
+	var state PairingState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return PairingState{}, fmt.Errorf("decode pairing state: %w", err)
+	}
+	return state, nil
+}
+
+// candidates lists the machines advertising right now, with the node's own
+// notice about what the list is worth.
+func (c *client) candidates(ctx context.Context) ([]Candidate, bool, string, error) {
+	body, err := c.request(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
+	if err != nil {
+		return nil, false, "", err
+	}
+	var decoded struct {
+		Candidates []Candidate `json:"candidates"`
+		// Full means an attacker could be holding the list at its limit, so the
+		// machine the owner is looking for may be missing for that reason
+		// rather than because it is not advertising.
+		Full   bool   `json:"full"`
+		Notice string `json:"notice"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, false, "", fmt.Errorf("decode pairing candidates: %w", err)
+	}
+	if decoded.Candidates == nil {
+		decoded.Candidates = []Candidate{}
+	}
+	return decoded.Candidates, decoded.Full, decoded.Notice, nil
 }
 
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {

@@ -159,3 +159,28 @@ func TestFrontendEveryElementLookupHasAnElement(t *testing.T) {
 		t.Fatal("no el(\"...\") lookups found; this test would pass vacuously")
 	}
 }
+
+// TestFrontendRendersHostileCandidateMetadataAsText covers the pairing panel,
+// whose input is the least trustworthy in the app.
+//
+// A peer's session metadata at least arrives authenticated: the signature is
+// verified and the envelope must name this node. A pairing candidate arrives on
+// a multicast group anyone on the segment can write to, unsigned, from a
+// machine this owner has no relationship with. Every field is whatever the
+// sender typed. The check also pins that the panel never presents a claim as a
+// fact, and that clicking a row cannot pre-confirm a fingerprint nobody
+// compared.
+func TestFrontendRendersHostileCandidateMetadataAsText(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the pairing panel render check")
+	}
+	script := filepath.Join("frontend", "test", "render-hostile-candidate.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pairing panel render check failed: %v\n%s", err, output)
+	}
+}
