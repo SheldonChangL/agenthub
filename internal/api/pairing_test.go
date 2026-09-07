@@ -1,182 +1,171 @@
 package api
 
 import (
+	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/protocol"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"net/http"
+	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	"agenthub.local/agenthub/internal/identity"
-	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/discovery"
+	"agenthub.local/agenthub/internal/pairing"
+	"agenthub.local/agenthub/internal/registry"
 )
 
-func peerKey(t *testing.T) (string, string) {
+func pairingServer(t *testing.T) (http.Handler, *pairing.Mode, *discovery.Candidates) {
 	t.Helper()
-	public, _, err := ed25519.GenerateKey(nil)
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "pairing.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return identity.EncodePublicKey(public), identity.Fingerprint(public)
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	mode := pairing.NewMode()
+	candidates := discovery.NewCandidates(node.ID, store.IsPaired, func(string) error { return nil })
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+		WithPairing(mode, candidates))
+	return server.Handler(), mode, candidates
 }
 
-func TestPairingRequiresTheFingerprintToBelongToTheKey(t *testing.T) {
+// Without -discover this node can neither advertise nor see anyone. Answering
+// with an empty list would tell the owner to keep waiting for something that is
+// never coming.
+func TestPairingEndpointsSayWhenDiscoveryIsOff(t *testing.T) {
 	_, handler := testServer(t)
-	key, fingerprint := peerKey(t)
-	otherKey, _ := peerKey(t)
-
-	// The caller says it verified one key but sends another: that is exactly
-	// the substitution the fingerprint comparison exists to catch.
-	mismatch := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-		"nodeId": "node_peer0000000000000", "displayName": "peer", "platform": "linux/amd64",
-		"publicKey": otherKey, "confirmedFingerprint": fingerprint,
-	})
-	if mismatch.Code != http.StatusBadRequest {
-		t.Fatalf("response = %d %s, want 400", mismatch.Code, mismatch.Body.String())
-	}
-	var decoded struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(mismatch.Body.Bytes(), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Error.Code != "FINGERPRINT_MISMATCH" {
-		t.Errorf("code = %q", decoded.Error.Code)
-	}
-
-	accepted := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-		"nodeId": "node_peer0000000000000", "displayName": "peer", "platform": "linux/amd64",
-		"publicKey": key, "confirmedFingerprint": fingerprint,
-	})
-	if accepted.Code != http.StatusCreated {
-		t.Fatalf("response = %d %s, want 201", accepted.Code, accepted.Body.String())
-	}
-}
-
-// Spacing and case are presentation. A person reading a fingerprint aloud must
-// not fail a pairing over whitespace.
-func TestPairingAcceptsAnyPresentationOfTheSameFingerprint(t *testing.T) {
-	key, fingerprint := peerKey(t)
-
-	for name, confirmed := range map[string]string{
-		"as displayed": fingerprint,
-		"lower case":   toLower(fingerprint),
-		"no spaces":    stripSpaces(fingerprint),
+	for name, request := range map[string]struct {
+		method, path string
+	}{
+		"state":      {http.MethodGet, "/v1/pairing"},
+		"open":       {http.MethodPost, "/v1/pairing"},
+		"close":      {http.MethodDelete, "/v1/pairing"},
+		"candidates": {http.MethodGet, "/v1/pairing/candidates"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, handler := testServer(t)
-			response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-				"nodeId": "node_peer0000000000000", "displayName": "peer", "platform": "linux/amd64",
-				"publicKey": key, "confirmedFingerprint": confirmed,
-			})
-			if response.Code != http.StatusCreated {
-				t.Errorf("response = %d %s", response.Code, response.Body.String())
+			response := perform(t, handler, request.method, request.path, nil)
+			if response.Code != http.StatusConflict {
+				t.Fatalf("response = %d %s; want 409", response.Code, response.Body.String())
+			}
+			for _, want := range []string{"-discover", "ah pair"} {
+				if !strings.Contains(response.Body.String(), want) {
+					t.Errorf("the refusal does not mention %q: %s", want, response.Body.String())
+				}
 			}
 		})
 	}
 }
 
-func TestPairingRefusesSelfAndMalformedKeys(t *testing.T) {
-	_, handler := testServer(t)
-	key, fingerprint := peerKey(t)
+// Closed until asked, open for a bounded time, and closed again by the clock.
+func TestPairingModeOpensAndCloses(t *testing.T) {
+	handler, mode, _ := pairingServer(t)
 
-	self := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-		"nodeId": testNodeID, "displayName": "me", "platform": "darwin/arm64",
-		"publicKey": key, "confirmedFingerprint": fingerprint,
-	})
-	if self.Code != http.StatusBadRequest {
-		t.Errorf("pairing with self = %d %s", self.Code, self.Body.String())
+	state := perform(t, handler, http.MethodGet, "/v1/pairing", nil)
+	if state.Code != http.StatusOK {
+		t.Fatalf("state = %d %s", state.Code, state.Body.String())
 	}
-
-	malformed := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-		"nodeId": "node_peer0000000000000", "displayName": "peer", "platform": "linux/amd64",
-		"publicKey": "not-a-key", "confirmedFingerprint": fingerprint,
-	})
-	if malformed.Code != http.StatusBadRequest {
-		t.Errorf("malformed key = %d %s", malformed.Code, malformed.Body.String())
-	}
-}
-
-// Revoking a node must take away the access it held, in one step.
-func TestRevokeEndpointRemovesTrustAndGrants(t *testing.T) {
-	store, handler := testServer(t)
-	id := seedSession(t, store, "granted")
-	key, fingerprint := peerKey(t)
-	const peerID = "node_peer0000000000000"
-
-	if response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-		"nodeId": peerID, "displayName": "peer", "platform": "linux/amd64",
-		"publicKey": key, "confirmedFingerprint": fingerprint,
-	}); response.Code != http.StatusCreated {
-		t.Fatalf("pair = %d %s", response.Code, response.Body.String())
-	}
-	if response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience", map[string]any{
-		"mode": "selected", "nodes": []string{peerID},
-	}); response.Code != http.StatusOK {
-		t.Fatalf("grant = %d %s", response.Code, response.Body.String())
-	}
-
-	if response := perform(t, handler, http.MethodDelete, "/v1/nodes/"+peerID, nil); response.Code != http.StatusNoContent {
-		t.Fatalf("revoke = %d %s", response.Code, response.Body.String())
-	}
-
-	audience, err := store.GetAudience(testContext(), id)
-	if err != nil {
+	var body map[string]any
+	if err := json.Unmarshal(state.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if audience.PublishesTo(peerID) {
-		t.Error("a revoked node kept its grant")
+	if body["open"] != false {
+		t.Errorf("a fresh node reports pairing mode %v", body["open"])
 	}
-	if audience.Mode != model.AudienceSelected {
-		t.Errorf("mode changed to %q; revoking one node must not rewrite the policy", audience.Mode)
+
+	opened := perform(t, handler, http.MethodPost, "/v1/pairing", map[string]int{"seconds": 60})
+	if opened.Code != http.StatusOK {
+		t.Fatalf("open = %d %s", opened.Code, opened.Body.String())
+	}
+	if err := json.Unmarshal(opened.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["open"] != true || body["expiresAt"] == nil {
+		t.Errorf("open response = %v", body)
+	}
+	if !mode.IsOpen() {
+		t.Error("the endpoint answered open but the mode is closed")
+	}
+
+	closed := perform(t, handler, http.MethodDelete, "/v1/pairing", nil)
+	if closed.Code != http.StatusOK {
+		t.Fatalf("close = %d %s", closed.Code, closed.Body.String())
+	}
+	if mode.IsOpen() {
+		t.Error("close did not close")
 	}
 }
 
-func toLower(value string) string     { return strings.ToLower(value) }
-func stripSpaces(value string) string { return strings.ReplaceAll(value, " ", "") }
-func testContext() context.Context    { return context.Background() }
-
-// A malformed node identifier is the caller's mistake, not a server failure.
-// It used to reach the database and come back as a 500 with the constraint text.
-func TestPairingRejectsMalformedNodeIDsAsBadRequests(t *testing.T) {
-	_, handler := testServer(t)
-	key, fingerprint := peerKey(t)
-
-	for name, nodeID := range map[string]string{
-		"too short":      "node_short",
-		"trailing space": "node_peer0000000000000 ",
-		"inner space":    "node peer 00000000000",
-		"full width":     "node_ｆａｋｅ0123456789",
-		"separator":      "node_a/node_b00000000",
+// An owner who asks for an hour is told the answer, rather than given fifteen
+// minutes and left believing they have an hour.
+func TestAWindowOutsideTheBoundsIsRefused(t *testing.T) {
+	handler, mode, _ := pairingServer(t)
+	for name, seconds := range map[string]int{
+		"an hour":  3600,
+		"a second": 1,
+		"negative": -1,
 	} {
 		t.Run(name, func(t *testing.T) {
-			response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
-				"nodeId": nodeID, "displayName": "peer", "platform": "linux/amd64",
-				"publicKey": key, "confirmedFingerprint": fingerprint,
-			})
+			response := perform(t, handler, http.MethodPost, "/v1/pairing", map[string]int{"seconds": seconds})
 			if response.Code != http.StatusBadRequest {
-				t.Errorf("response = %d %s, want 400", response.Code, response.Body.String())
+				t.Fatalf("response = %d %s; want 400", response.Code, response.Body.String())
 			}
-			if strings.Contains(response.Body.String(), "CHECK") {
-				t.Errorf("the response leaked a database constraint: %s", response.Body.String())
+			if mode.IsOpen() {
+				t.Error("a refused window opened anyway")
 			}
 		})
 	}
+	// And no body at all is the common case: whatever the default is.
+	if response := perform(t, handler, http.MethodPost, "/v1/pairing", nil); response.Code != http.StatusOK {
+		t.Errorf("opening without a duration = %d %s", response.Code, response.Body.String())
+	}
 }
 
-// Granting access to a node nobody paired with stores an authorization that
-// takes effect the moment that node is ever trusted.
-func TestAudienceRejectsUnpairedNodes(t *testing.T) {
-	store, handler := testServer(t)
-	id := seedSession(t, store, "unpaired-grant")
+// The list is claims, and the answer has to say so — it is read by a person
+// about to decide which machine to trust.
+func TestCandidatesAreServedWithTheirProvenance(t *testing.T) {
+	handler, mode, candidates := pairingServer(t)
+	if _, err := mode.Open(time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := candidates.ObserveAll(context.Background(), netip.MustParseAddr("192.168.1.9"),
+		[]discovery.Announcement{{
+			NodeID: "node_candidate000000", Address: "192.168.1.9:7463",
+			DisplayName: "their laptop", Platform: "linux/amd64",
+			Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+		}}); err != nil {
+		t.Fatal(err)
+	}
 
-	response := perform(t, handler, http.MethodPut, "/v1/sessions/"+id+"/audience", map[string]any{
-		"mode": "selected", "nodes": []string{"node_never_paired0000"},
-	})
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("response = %d %s, want 400", response.Code, response.Body.String())
+	response := perform(t, handler, http.MethodGet, "/v1/pairing/candidates", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("candidates = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Candidates []struct {
+			NodeID      string `json:"nodeId"`
+			Fingerprint string `json:"fingerprint"`
+		} `json:"candidates"`
+		Full   bool   `json:"full"`
+		Notice string `json:"notice"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Candidates) != 1 || body.Candidates[0].NodeID != "node_candidate000000" {
+		t.Fatalf("candidates = %+v", body.Candidates)
+	}
+	if body.Full {
+		t.Error("a list of one reports itself full")
+	}
+	// The notice is the difference between a list of machines and a list of
+	// claims, and it is what a reader needs before picking a row.
+	for _, want := range []string{"chosen by whoever sent the packet", "never as proof", "both machines"} {
+		if !strings.Contains(body.Notice, want) {
+			t.Errorf("the notice does not say %q: %s", want, body.Notice)
+		}
 	}
 }
