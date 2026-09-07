@@ -402,3 +402,45 @@ func TestAnAddressThatCannotSendMulticastIsRefusedAtTheWindow(t *testing.T) {
 		t.Error("a live failure was reported as the startup configuration")
 	}
 }
+
+// A one-off send failure and a configuration that cannot announce are different
+// facts, and when both are present the configuration is the one to show: it
+// explains the state and it outlasts the attempt.
+//
+// The ordering that got this wrong: a send failed once with "no buffer space
+// available", then the interface stopped carrying multicast. The status kept the
+// buffer message next to a zeroed count while the API refused with the
+// interface reason, sending an owner to look at buffers for a problem that was
+// an interface.
+func TestAConfigurationProblemOutranksAFailedSend(t *testing.T) {
+	a, _, _, _ := newTestAnnouncer(t)
+
+	// A send failure recorded first, while the configuration is still fine.
+	a.record(Status{LastAttempt: time.Now(), LastError: "write announcement: no buffer space available"})
+	if status := a.Status(); status.Addresses != 1 {
+		t.Errorf("announceableAddresses = %d after one failed send, want 1", status.Addresses)
+	} else if !strings.Contains(status.LastError, "buffer") {
+		t.Errorf("LastError = %q, want the failed send while the configuration is fine",
+			status.LastError)
+	}
+
+	// Then the interface stops carrying multicast.
+	a.canAnnounceFrom = func(netip.Addr) error {
+		return errors.New("en0 holds 192.168.1.50 but cannot carry a multicast packet")
+	}
+	status := a.Status()
+	if !strings.Contains(status.LastError, "multicast") {
+		t.Errorf("LastError = %q, want the configuration reason rather than the stale send",
+			status.LastError)
+	}
+	if strings.Contains(status.LastError, "buffer") {
+		t.Error("the stale send failure survived alongside a configuration that cannot announce")
+	}
+	if status.Addresses != 0 {
+		t.Errorf("announceableAddresses = %d beside a reason none can be used", status.Addresses)
+	}
+	// And the API is told the same thing.
+	if reason := a.Unannounceable(); reason != status.LastError {
+		t.Errorf("the API is told %q while the status says %q", reason, status.LastError)
+	}
+}

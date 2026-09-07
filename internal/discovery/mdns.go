@@ -709,8 +709,18 @@ type Offer struct {
 // a process starts: an owner plugs in a USB Ethernet adapter and runs a cable to
 // the machine they want to pair with, which is the case this feature is for.
 var subscribe = func(ctx context.Context, done <-chan struct{}, connection *net.UDPConn, group *net.UDPAddr) {
-	joins := newMembership(connection, group)
-	if added := joins.refresh(); len(added) > 0 {
+	subscribeGroup(ctx, done, newMembership(connection, group))
+}
+
+// subscribeGroup joins now and keeps joining.
+//
+// Separate from the variable above so both halves are covered. Replacing
+// subscribe with a recorder proves Listen calls it and hands it a live context,
+// and nothing else — reducing this body to nothing passed the whole suite,
+// which is how the multi-interface join came to have no coverage at all despite
+// being the point of the change.
+func subscribeGroup(ctx context.Context, done <-chan struct{}, joins *membership) {
+	if added := joins.rejoin(); len(added) > 0 {
 		// "Joined", not "listening on": what is true is that this socket now
 		// has a membership on each of these.
 		log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
@@ -724,9 +734,13 @@ var subscribe = func(ctx context.Context, done <-chan struct{}, connection *net.
 // Bounded by the shortest window a peer can open, not by CandidateTTL: an
 // unjoined interface has no row to expire, so the TTL says nothing about this.
 // A peer may open a window for as little as thirty seconds and announces every
-// twenty, so a check every ten leaves at least one announcement inside the
-// shortest window even when the interface appears just after a check. The cost
-// is one interface enumeration.
+// twenty.
+//
+// What ten seconds buys is a bound on the delay, not a guarantee: an interface
+// appearing late in a short window can still be joined after that peer's last
+// announcement, so the shortest windows remain a matter of timing. Ten is the
+// point where the delay is small next to the interval a peer announces at,
+// while the cost stays one interface enumeration.
 //
 // The pairing package owns those two numbers and imports this one, so they
 // cannot be named here; the test writes them down and pairing's own test pins
@@ -797,12 +811,18 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 //
 // Most join failures are expected and are not reported: the membership the
 // system already took refuses to be duplicated, and an interface with no IPv4
-// stack refuses outright. Anything else earns one line, because a machine at
-// its multicast membership limit fails here — Linux allows twenty by default —
-// and the interface that was just plugged in may be the one refused.
+// stack at all refuses with EAFNOSUPPORT. Having no IPv4 *address* is not what
+// decides it — measured on this machine, four address-less interfaces joined
+// while five others refused — so the returned names are filtered by address
+// rather than by whether the join worked. Anything unexpected earns one line,
+// because a machine at its multicast membership limit fails here (Linux allows
+// twenty by default) and the interface just plugged in may be the one refused.
 func (m *membership) refresh() []string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
+		m.reportOnce("interfaces", fmt.Sprintf(
+			"could not list this machine's interfaces, so no announcement can be heard on one "+
+				"that appears later: %v", err))
 		return nil
 	}
 	var added []string
@@ -814,12 +834,21 @@ func (m *membership) refresh() []string {
 		err := m.join(iface, m.group)
 		switch {
 		case err == nil:
-			added = append(added, iface.Name)
+			// Named for the log only when the interface has an IPv4 address of
+			// its own. On this machine four address-less interfaces join
+			// successfully while en0 — the only one with an address, and the
+			// only one an announcement can arrive on — is refused as a
+			// duplicate of the socket's own membership and never named. A line
+			// listing the four read as evidence the join was doing something.
+			if hasIPv4(iface) {
+				added = append(added, iface.Name)
+			}
 		case errors.Is(err, syscall.EADDRINUSE), errors.Is(err, syscall.EAFNOSUPPORT),
 			errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ENODEV):
 			// Expected: already joined, or no IPv4 on this device.
 		default:
-			m.reportOnce(fmt.Sprintf("could not listen for announcements on %s: %v", iface.Name, err))
+			m.reportOnce(iface.Name,
+				fmt.Sprintf("could not listen for announcements on %s: %v", iface.Name, err))
 		}
 	}
 	return added
@@ -847,24 +876,80 @@ func (m *membership) refresh() []string {
 // population that can inject a row from one local network to every VPN the host
 // is attached to.
 func canCarryAnnouncements(iface *net.Interface) bool {
-	if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagMulticast == 0 {
+	return refuseFlags(iface) == nil
+}
+
+// refuseFlags is the one rule about an interface's flags, and says which flag
+// refused.
+//
+// One function because there were two, kept in step by hand: the membership
+// asked a boolean and the announcing side asked for a reason, and nothing made
+// them agree. Two mutations survived on that — dropping the up check and the
+// multicast check from the membership's copy — because only the reason-shaped
+// one was tested.
+func refuseFlags(iface *net.Interface) error {
+	switch {
+	case iface.Flags&net.FlagUp == 0:
+		return fmt.Errorf("%s is down", iface.Name)
+	case iface.Flags&net.FlagPointToPoint != 0:
+		// A tunnel carries MULTICAST on macOS and for OpenVPN on Linux, so the
+		// other flags do not exclude it. What a tun-mode tunnel lacks is
+		// multicast delivery: the two ends can reach each other over TCP, which
+		// is why `ah pair` works across one, but a datagram sent to a group
+		// gets nowhere.
+		return fmt.Errorf("%s is a point-to-point interface — a tunnel — which carries no "+
+			"multicast, so an announcement sent on it would reach nobody. Pairing by hand "+
+			"with `ah pair` works over it", iface.Name)
+	case iface.Flags&net.FlagLoopback != 0:
+		// Nothing legitimate announces from loopback, so a membership there
+		// could only receive a forgery. The forgery arrives through the default
+		// interface's membership regardless — see dispatch, which is what
+		// actually refuses it — but joining an interface no announcement can
+		// legitimately arrive on serves nothing.
+		return fmt.Errorf("%s is loopback and reaches no other machine", iface.Name)
+	case iface.Flags&net.FlagMulticast == 0:
+		return fmt.Errorf("%s cannot carry a multicast packet", iface.Name)
+	}
+	return nil
+}
+
+// hasIPv4 reports whether an interface holds an IPv4 address, which is what
+// decides whether an announcement could arrive on it. Not the same question as
+// whether a join succeeds: an address-less interface joins on this machine, and
+// several address-less ones refuse.
+func hasIPv4(iface *net.Interface) bool {
+	addrs, err := iface.Addrs()
+	if err != nil {
 		return false
 	}
-	return iface.Flags&net.FlagLoopback == 0 && iface.Flags&net.FlagPointToPoint == 0
+	for _, addr := range addrs {
+		prefix, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if parsed, ok := netip.AddrFromSlice(prefix.IP); ok && parsed.Unmap().Is4() {
+			return true
+		}
+	}
+	return false
 }
 
 // reportOnce logs a message the first time it is seen, so a condition that
 // recurs on every refresh does not become a line every RejoinInterval.
-func (m *membership) reportOnce(message string) {
+// Keyed on the interface rather than on the message, so the set is bounded by
+// the interfaces this machine has had rather than growing with every distinct
+// errno text. A host churning veths or ppp units would otherwise accumulate one
+// entry per name per error for the process's life.
+func (m *membership) reportOnce(key, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.reported == nil {
 		m.reported = map[string]struct{}{}
 	}
-	if _, seen := m.reported[message]; seen {
+	if _, seen := m.reported[key]; seen {
 		return
 	}
-	m.reported[message] = struct{}{}
+	m.reported[key] = struct{}{}
 	log.Print(message)
 }
 
@@ -881,7 +966,7 @@ func (m *membership) keepFresh(ctx context.Context, done <-chan struct{}) {
 		case <-ticker.C:
 			if added := m.rejoin(); len(added) > 0 {
 				// Logged only when it changes: an interface appearing is worth
-				// a line, and the same list every thirty seconds is not.
+				// a line, and the same list every RejoinInterval is not.
 				log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
 			}
 		}
@@ -964,9 +1049,13 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list interfaces to announce from %v: %w", address, err)
 	}
-	// Found first, judged second, so the reason can name the interface rather
-	// than reporting "nothing holds this" about an address the machine has.
-	var holder *net.Interface
+	// Every holder, not one. An address can sit on two interfaces — a virtual
+	// address on a physical interface and a loopback alias, which is how
+	// keepalived and anycast setups are built — and taking whichever came last
+	// in the enumeration meant a machine that holds the address on a perfectly
+	// good interface could be refused because the same address is also on a
+	// tunnel.
+	var holders []*net.Interface
 	for i := range interfaces {
 		addrs, err := interfaces[i].Addrs()
 		if err != nil {
@@ -979,14 +1068,26 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 			}
 			held, ok := netip.AddrFromSlice(prefix.IP)
 			if ok && held.Unmap() == address {
-				holder = &interfaces[i]
+				holders = append(holders, &interfaces[i])
+				break
 			}
 		}
 	}
-	if err := announceableFrom(holder, address); err != nil {
-		return nil, err
+	if len(holders) == 0 {
+		return nil, announceableFrom(nil, address)
 	}
-	return holder, nil
+	// One usable holder is enough, and it is the one to announce from.
+	var refused error
+	for _, holder := range holders {
+		err := announceableFrom(holder, address)
+		if err == nil {
+			return holder, nil
+		}
+		if refused == nil {
+			refused = err
+		}
+	}
+	return nil, refused
 }
 
 // announceableFrom judges an interface that holds the address.
@@ -997,25 +1098,12 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 // have one, which is how the tunnel branch went untested while three places of
 // prose claimed it was the case being caught.
 func announceableFrom(holder *net.Interface, address netip.Addr) error {
-	switch {
-	case holder == nil:
+	if holder == nil {
 		return fmt.Errorf("no interface on this machine holds %v, so an announcement "+
 			"naming it could not come from it", address)
-	case holder.Flags&net.FlagUp == 0:
-		return fmt.Errorf("%s holds %v but is down", holder.Name, address)
-	case holder.Flags&net.FlagPointToPoint != 0:
-		// The case the flags alone miss: a tunnel carries MULTICAST on macOS
-		// and for OpenVPN on Linux, so without this an announcement is sent and
-		// goes nowhere a peer could answer from, and the send reports success.
-		return fmt.Errorf("%s holds %v but is a point-to-point interface — a tunnel — "+
-			"which has no local network segment for a peer to answer on. Pairing by hand with "+
-			"`ah pair` works over it", holder.Name, address)
-	case holder.Flags&net.FlagLoopback != 0:
-		return fmt.Errorf("%s holds %v, which is loopback and reaches no other machine",
-			holder.Name, address)
-	case holder.Flags&net.FlagMulticast == 0:
-		return fmt.Errorf("%s holds %v but cannot carry a multicast packet, so no "+
-			"announcement could leave by it", holder.Name, address)
+	}
+	if err := refuseFlags(holder); err != nil {
+		return fmt.Errorf("%v is held by %w", address, err)
 	}
 	return nil
 }

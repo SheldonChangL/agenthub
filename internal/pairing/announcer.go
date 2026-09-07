@@ -120,21 +120,26 @@ func (a *Announcer) Status() Status {
 	// interface that cannot carry a multicast packet made POST refuse with a
 	// reason while GET reported one announceable address and nothing wrong.
 	//
-	// This walks the machine's interfaces, on a loopback-only API a UI polls
-	// every few seconds. That is one enumeration per poll, which is cheap, and
-	// the alternative — answering from what was true at startup — is the whole
-	// class of bug this PR has been about.
-	unannounceable := a.Unannounceable()
-	if status.LastError == "" {
-		status.LastError = unannounceable
-	}
+	// This walks the machine's interfaces — one enumeration plus an address
+	// read per interface, measured at well under a millisecond on a
+	// twenty-four-interface machine — on a loopback-only API a UI polls every
+	// few seconds. The alternative, answering from what was true at startup, is
+	// the whole class of bug this PR has been about.
 	status.Addresses = len(a.addresses())
-	if unannounceable != "" {
-		// None of them can be used, so none is announceable. Reporting the
-		// count that exists alongside a reason none works invites a reader to
-		// believe the number. A recorded send failure does not zero it: that is
-		// one attempt, not a statement about the configuration.
+	switch unannounceable := a.Unannounceable(); {
+	case unannounceable != "":
+		// The configuration wins over a recorded attempt, because it explains
+		// the state and outlasts it. Filling LastError only when it was empty
+		// left the two disagreeing the other way: a send that failed once with
+		// "no buffer space available" stayed on screen next to a zeroed count,
+		// while POST refused with "cannot carry a multicast packet" — sending
+		// the owner to look at buffers for a problem that is an interface.
+		status.LastError = unannounceable
+		// And none of the addresses can be used, so none is announceable.
 		status.Addresses = 0
+	case status.LastError != "":
+		// A recorded send failure, with the configuration fine. The count
+		// stands: that was one attempt, not a statement about this node.
 	}
 	return status
 }

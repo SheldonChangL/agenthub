@@ -295,7 +295,7 @@ func TestAnAnnouncementRefusesWhatItCannotSendCorrectly(t *testing.T) {
 // pair with, which is the case this whole feature is for.
 //
 // A new interface cannot be conjured in a test, so what is pinned here is the
-// property that makes the ticker safe to run every thirty seconds: a repeat
+// property that makes the ticker safe to run every RejoinInterval: a repeat
 // refresh reports nothing. The kernel is what guarantees it — a duplicate join
 // fails — which is why no record is kept here of what was joined. Without the
 // property the log would repeat the same line forever.
@@ -337,11 +337,20 @@ func TestTheRejoinIntervalFitsInsideTheShortestWindow(t *testing.T) {
 		shortestWindow = 30 * time.Second // pairing.MinWindow
 		peerAnnounces  = 20 * time.Second // pairing.AnnounceInterval
 	)
-	// A check, then the interface appears, then the next check: an owner should
-	// still catch an announcement before the window closes.
+	// The delay a late-appearing interface costs has to be small next to the
+	// interval a peer announces at, or joining it gains nothing. This is a
+	// bound on the delay and not a guarantee of catching a window: an interface
+	// appearing after a peer's last announcement is joined too late whatever
+	// the number, which is why the assertion is about proportion.
+	if RejoinInterval > peerAnnounces/2 {
+		t.Errorf("re-checking every %v against a peer announcing every %v: an interface can "+
+			"miss more than half the announcements in a window", RejoinInterval, peerAnnounces)
+	}
+	// And it must leave room inside the shortest window for the check plus one
+	// announcement, or the shortest windows can never work at all.
 	if RejoinInterval+peerAnnounces > shortestWindow {
 		t.Errorf("re-checking every %v, against a peer announcing every %v inside a window as "+
-			"short as %v, can miss the window entirely",
+			"short as %v, leaves no room at all",
 			RejoinInterval, peerAnnounces, shortestWindow)
 	}
 }
@@ -706,4 +715,86 @@ func TestEveryReasonAnInterfaceCannotAnnounce(t *testing.T) {
 	if err := announceableFrom(&net.Interface{Name: "en0", Flags: usable}, address); err != nil {
 		t.Errorf("an ordinary interface was refused: %v", err)
 	}
+}
+
+// The two shapes of the flag rule have to agree, always.
+//
+// They were two functions kept in step by hand — the membership asked a
+// boolean, the announcing side asked for a reason — and nothing made them
+// match. Two mutations survived on that: dropping the up check and the
+// multicast check from the membership's copy, because only the reason-shaped
+// one was tested. They are one function now, and this is what would notice if
+// they were separated again.
+func TestBothAnswersAboutAnInterfaceAgree(t *testing.T) {
+	usable := net.FlagUp | net.FlagMulticast | net.FlagBroadcast
+	address := netip.MustParseAddr("10.0.0.5")
+
+	// Every combination of the four flags that decide this.
+	for _, up := range []net.Flags{0, net.FlagUp} {
+		for _, multicast := range []net.Flags{0, net.FlagMulticast} {
+			for _, loopback := range []net.Flags{0, net.FlagLoopback} {
+				for _, p2p := range []net.Flags{0, net.FlagPointToPoint} {
+					iface := &net.Interface{Name: "probe0", Flags: up | multicast | loopback | p2p}
+					joinable := canCarryAnnouncements(iface)
+					announceable := announceableFrom(iface, address) == nil
+					if joinable != announceable {
+						t.Errorf("flags %v: joined=%v but announceable=%v; the two answers "+
+							"have come apart", iface.Flags, joinable, announceable)
+					}
+				}
+			}
+		}
+	}
+	// And an ordinary interface is accepted by both, so this is not agreement
+	// on refusing everything.
+	ordinary := &net.Interface{Name: "en0", Flags: usable}
+	if !canCarryAnnouncements(ordinary) {
+		t.Error("an ordinary interface would not be joined")
+	}
+	if err := announceableFrom(ordinary, address); err != nil {
+		t.Errorf("an ordinary interface cannot announce: %v", err)
+	}
+}
+
+// subscribeGroup has to join now and keep joining. Reducing its body to nothing
+// passed the whole suite before this existed, which is how the multi-interface
+// join — the point of the change — came to have no coverage at all.
+func TestSubscribingJoinsNowAndKeepsJoining(t *testing.T) {
+	target, err := net.ResolveUDPAddr("udp", "224.0.0.251:15392")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.ListenMulticastUDP("udp4", nil, target)
+	if err != nil {
+		t.Skipf("cannot join the group here: %v", err)
+	}
+	defer func() { _ = connection.Close() }()
+
+	joins := newMembership(connection, target)
+	var refreshes atomic.Int64
+	joins.rejoin = func() []string {
+		refreshes.Add(1)
+		return nil
+	}
+	joins.every = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	subscribeGroup(ctx, done, joins)
+
+	// The first join is synchronous, so a peer already announcing is heard
+	// without waiting for a tick.
+	if got := refreshes.Load(); got != 1 {
+		t.Errorf("subscribing joined %d times before returning, want 1", got)
+	}
+	// And it keeps going.
+	deadline := time.Now().Add(2 * time.Second)
+	for refreshes.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := refreshes.Load(); got < 3 {
+		t.Errorf("joined %d times in two seconds; the refresher is not running", got)
+	}
+	cancel()
+	close(done)
 }
