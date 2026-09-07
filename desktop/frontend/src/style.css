@@ -483,7 +483,11 @@ table.peer-sessions td.mono {
 
 #candidate-rows {
   overflow-y: auto;
-  max-height: 42vh;
+  /* Chosen by measuring, not by taste: at 42vh a full list of 64 rows pushed
+     the "pair a new node" button 52px below the fold on an 800px-tall window.
+     At 32vh the whole panel fits, and the sidebar scrolls anyway for a shorter
+     window or a long list of paired nodes. */
+  max-height: 32vh;
 }
 
 .pairing-state .line {
