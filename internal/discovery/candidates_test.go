@@ -667,3 +667,156 @@ func TestConcurrentUse(t *testing.T) {
 		t.Errorf("the bound did not hold under concurrency: %d", len(c.List()))
 	}
 }
+
+// A dual-stack node announces on both multicast groups, and each datagram
+// reduces to the address matching its own source. That is one node, not a
+// contested id — and if it read as one, every dual-stack machine would be
+// marked the moment the IPv6 group is listened on.
+func TestADualStackNodeDoesNotContestItself(t *testing.T) {
+	c, _, clock := newTestCandidates(t)
+	records := []Announcement{
+		offering("node_dual00000000000", "192.168.1.9:7463", "laptop"),
+		offering("node_dual00000000000", "[fe80::1]:7463", "laptop"),
+	}
+	if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("192.168.1.9"), records); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(time.Second)
+	if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("fe80::1%en0"), records); err != nil {
+		t.Fatal(err)
+	}
+	listed := c.List()
+	if len(listed) != 1 {
+		t.Fatalf("list = %+v; one node is one row", listed)
+	}
+	if listed[0].Contested {
+		t.Error("a node announcing on both address families contested itself")
+	}
+	// The row stays on the family it was first seen on. The other family's
+	// packets are neither a conflict nor a reason to move it: whichever is
+	// shown has to be one the owner can reach, and swapping under them as
+	// packets arrive is how a row points somewhere else between looking and
+	// clicking.
+	if listed[0].Address != "192.168.1.9:7463" {
+		t.Errorf("address = %q; the row moved to the other family", listed[0].Address)
+	}
+	// A row lives on the family it was first seen on. Packets from the other
+	// family neither conflict with it nor keep it alive: if the node stops
+	// answering on the family the row names, the row has to expire rather than
+	// be held open by traffic pointing somewhere the owner cannot reach.
+	for i := 0; i < 10; i++ {
+		*clock = clock.Add(CandidateTTL / 4)
+		if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("fe80::1%en0"), records); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remaining := c.List()
+	if len(remaining) != 1 {
+		t.Fatalf("list = %+v; the node is still announcing, so it is still one row", remaining)
+	}
+	// The v4 row expired and the node reappeared at what it is now reachable
+	// at. What must not happen is the v4 address being held open by v6 traffic,
+	// leaving the owner an address they cannot connect to.
+	if remaining[0].Address != "[fe80::1]:7463" {
+		t.Errorf("address = %q; a row was kept alive by packets from the other family", remaining[0].Address)
+	}
+	if remaining[0].Contested {
+		t.Error("reappearing on the other family after expiry was treated as a conflict")
+	}
+
+	// And a genuine move within one family still contests.
+	moved := offering("node_dual00000000000", "[fe80::2]:7463", "laptop")
+	if _, err := c.ObserveAll(context.Background(), netip.MustParseAddr("fe80::2%en0"), []Announcement{moved}); err != nil {
+		t.Fatal(err)
+	}
+	if !c.List()[0].Contested {
+		t.Error("an address change within one family was not contested")
+	}
+}
+
+// The paired check is skipped for a row that is already listed. If the row goes
+// away between that decision and the insert — pairing calls Forget, and expiry
+// is on a timer — inserting would list a peer this owner has already paired
+// with, and refreshes never ask again.
+func TestARowVanishingMidObserveDoesNotInsertUnchecked(t *testing.T) {
+	probe := &trustProbe{paired: map[string]struct{}{"node_racing000000000": {}}}
+	c := NewCandidates(probe.isPaired, func(string) error { return nil })
+	clock := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return clock }
+
+	announcement := offering("node_racing000000000", "192.168.1.9:7463", "racer")
+	// Seed the row directly, as an earlier packet would have, then arrange for
+	// it to be gone by the second lock section.
+	c.seen[announcement.NodeID] = Candidate{
+		NodeID: announcement.NodeID, Address: announcement.Address,
+		Fingerprint: announcement.Fingerprint,
+		FirstSeen:   clock, LastSeen: clock,
+	}
+	calls := 0
+	c.now = func() time.Time {
+		calls++
+		if calls > 1 {
+			// By the second expire() the row has aged out.
+			return clock.Add(CandidateTTL * 2)
+		}
+		return clock
+	}
+	changed, err := observeOne(c, announcement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("a row was inserted after vanishing mid-observe")
+	}
+	if len(c.List()) != 0 {
+		t.Errorf("a paired node was listed without a trust read: %+v", c.List())
+	}
+}
+
+// A caller holding a packet always has its source, so an invalid one is a bug
+// rather than a case to tolerate — tolerating it disables the anti-spray check.
+func TestObserveAllRequiresASource(t *testing.T) {
+	c, _, _ := newTestCandidates(t)
+	if _, err := c.ObserveAll(context.Background(), netip.Addr{}, []Announcement{
+		offering("node_any00000000000", "192.168.1.9:7463", "any"),
+	}); err == nil {
+		t.Error("observed a packet with no source address")
+	}
+}
+
+// A fingerprint reaches this type canonical whichever way the announcement was
+// built, or comparison between rows means nothing.
+func TestAFingerprintThatIsNotOneIsNotACandidate(t *testing.T) {
+	c, _, _ := newTestCandidates(t)
+	for name, fingerprint := range map[string]string{
+		"a letter O for a zero": "1223 O3EA 5E96 543A 2DD8 BFEA",
+		"prose":                 "trust me",
+		"too short":             "1223 03EA",
+	} {
+		t.Run(name, func(t *testing.T) {
+			announcement := offering("node_badfp0000000000", "192.168.1.9:7463", "hostile")
+			announcement.Fingerprint = fingerprint
+			if _, err := observeOne(c, announcement); err != nil {
+				t.Fatal(err)
+			}
+			if len(c.List()) != 0 {
+				t.Errorf("listed with a fingerprint that is not one: %+v", c.List())
+			}
+		})
+	}
+	// And one written the other way is the same fingerprint, so it is one row.
+	first := offering("node_spelled00000000", "192.168.1.9:7463", "laptop")
+	first.Fingerprint = "1223 03EA 5E96 543A 2DD8 BFEA"
+	second := first
+	second.Fingerprint = "122303ea5e96543a2dd8bfea"
+	if _, err := observeOne(c, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observeOne(c, second); err != nil {
+		t.Fatal(err)
+	}
+	listed := c.List()
+	if len(listed) != 1 || listed[0].Contested {
+		t.Errorf("two spellings of one fingerprint were treated as a conflict: %+v", listed)
+	}
+}

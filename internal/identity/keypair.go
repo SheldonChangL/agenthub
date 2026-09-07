@@ -48,6 +48,52 @@ func Fingerprint(public ed25519.PublicKey) string {
 	return strings.Join(groups, " ")
 }
 
+// ParseFingerprint reads a fingerprint written by a person or a peer and returns
+// the canonical form, or an error.
+//
+// A fingerprint is twelve bytes of a SHA-256 digest, and the grouping and the
+// case are presentation. Anything else is not a fingerprint: "1223 O3EA" with a
+// letter O is a different string that looks identical, and left as free text it
+// is a way to make two rows in a list look like one.
+//
+// Accepts any spacing and either case; refuses anything that is not exactly 24
+// hexadecimal digits.
+func ParseFingerprint(value string) (string, error) {
+	var digits strings.Builder
+	digits.Grow(fingerprintDigits)
+	for _, r := range value {
+		if r == ' ' {
+			continue
+		}
+		switch {
+		case r >= '0' && r <= '9', r >= 'A' && r <= 'F':
+			digits.WriteRune(r)
+		case r >= 'a' && r <= 'f':
+			digits.WriteRune(r - 'a' + 'A')
+		default:
+			return "", fmt.Errorf("fingerprint has %q, which is not a hexadecimal digit", r)
+		}
+		if digits.Len() > fingerprintDigits {
+			return "", fmt.Errorf("fingerprint is longer than %d hexadecimal digits", fingerprintDigits)
+		}
+	}
+	if digits.Len() != fingerprintDigits {
+		return "", fmt.Errorf("fingerprint has %d hexadecimal digits, want %d", digits.Len(), fingerprintDigits)
+	}
+	// Every digit is ASCII, so a byte index is a character index.
+	hex := digits.String()
+	groups := make([]string, 0, fingerprintGroups)
+	for i := 0; i < fingerprintGroups; i++ {
+		groups = append(groups, hex[i*4:i*4+4])
+	}
+	return strings.Join(groups, " "), nil
+}
+
+const (
+	fingerprintGroups = 6
+	fingerprintDigits = fingerprintGroups * 4
+)
+
 // EncodePublicKey renders a public key for transport and storage.
 func EncodePublicKey(public ed25519.PublicKey) string {
 	return base64.StdEncoding.EncodeToString(public)

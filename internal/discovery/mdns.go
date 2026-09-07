@@ -18,6 +18,7 @@
 package discovery
 
 import (
+	"agenthub.local/agenthub/internal/identity"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
@@ -302,7 +305,11 @@ func ParseAnnouncements(packet []byte) []Announcement {
 				} else if after, found := strings.CutPrefix(entry, platformKey); found {
 					platforms[name] = printableField(after)
 				} else if after, found := strings.CutPrefix(entry, fingerprintKey); found {
-					fingerprints[name] = printableField(after)
+					// Parsed, not sanitised. A fingerprint is twelve bytes of a
+					// digest; anything else is a string that looks like one.
+					if canonical, err := identity.ParseFingerprint(after); err == nil {
+						fingerprints[name] = canonical
+					}
 				}
 			}
 		case *dnsmessage.AResource:
@@ -386,8 +393,41 @@ func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
 	}
+	// Before anything else: strings.Map below replaces an invalid byte with
+	// U+FFFD, which PRECIS then accepts because it is a symbol. Checking here
+	// keeps arbitrary bytes from being laundered into a valid label.
+	if !utf8.ValidString(value) {
+		return ""
+	}
+	// Variation selectors are Default_Ignorable, so PRECIS refuses them — and
+	// they are how a phone or a Mac writes ❤️, ☕️, ⚠️ and every keycap. Dropping
+	// the selector keeps the character, which is what the person typed.
+	value = strings.Map(func(r rune) rune {
+		if r == '\ufe0e' || r == '\ufe0f' {
+			return -1
+		}
+		return r
+	}, value)
 	clean, err := precis.Nickname.String(value)
-	if err != nil || clean == "" {
+	if err != nil {
+		// A ZWJ sequence — 👨‍💻 — violates a contextual rule. Joining is
+		// presentation, so the sequence is retried without it rather than the
+		// whole name being dropped. ZWNJ is left alone: in Persian it is not
+		// presentation, it is spelling.
+		if !strings.ContainsRune(value, '\u200d') {
+			return ""
+		}
+		clean, err = precis.Nickname.String(strings.ReplaceAll(value, "\u200d", ""))
+		if err != nil {
+			return ""
+		}
+	}
+	if clean == "" {
+		return ""
+	}
+	// A name of nothing but combining marks passes PRECIS and renders as the
+	// same empty row the braille blank was refused for.
+	if !hasBase(clean) {
 		return ""
 	}
 	// Normalisation can lengthen a string, so the bound is applied to what will
@@ -403,6 +443,17 @@ func printableField(value string) string {
 	return clean
 }
 
+// hasBase reports whether a value has anything for its marks to attach to.
+// Combining marks alone are a row with no visible name.
+func hasBase(value string) bool {
+	for _, r := range value {
+		if !unicode.Is(unicode.Mn, r) && !unicode.Is(unicode.Me, r) && !unicode.Is(unicode.Mc, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // brailleBlank renders as nothing and PRECIS admits it: it is a symbol, so it
 // is neither a space nor a control character by any classification. A name made
 // of these looks empty, or looks exactly like the row above it.
@@ -415,21 +466,22 @@ const brailleBlank = '\u2800'
 // and so are "Laptop" and "laptop". PRECIS supplies the comparison that goes
 // with the profile.
 func fieldKey(value string) string {
-	key, err := precis.Nickname.CompareKey(value)
+	// Typographic variants first: macOS puts U+2019 in "Sheldon's MacBook", and
+	// an impersonator would send the ASCII apostrophe. Same for the dashes.
+	folded := strings.Map(func(r rune) rune {
+		switch r {
+		case '\u2018', '\u2019', '\u02bc':
+			return '\''
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2212':
+			return '-'
+		}
+		return r
+	}, value)
+	key, err := precis.Nickname.CompareKey(folded)
 	if err != nil {
-		return value
+		return folded
 	}
 	return key
-}
-
-// comparableFingerprint compares two announced fingerprints the way a person
-// would.
-//
-// The grouping and the case are presentation: "1223 03EA" and "122303ea" are
-// one fingerprint written twice, and an impersonator would pick the spelling
-// that differs.
-func comparableFingerprint(value string) string {
-	return strings.ToUpper(strings.ReplaceAll(value, " ", ""))
 }
 
 // MulticastGroupV4 is the standard IPv4 mDNS group.
@@ -559,10 +611,9 @@ func buildAnnouncement(nodeID, instance string, port int, addresses []netip.Addr
 		// platform of a node that reads as not offering: this node would
 		// believe it was discoverable for pairing, nobody would see it as a
 		// candidate, and it would have leaked two labels for nothing.
-		fingerprint := printableField(offer.Fingerprint)
-		if fingerprint == "" {
-			return nil, fmt.Errorf("refusing to announce: the fingerprint is not a printable label within %d bytes",
-				MaxCandidateFieldLength)
+		fingerprint, err := identity.ParseFingerprint(offer.Fingerprint)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to announce: %w", err)
 		}
 		txt = append(txt, fingerprintKey+fingerprint)
 		for key, value := range map[string]string{

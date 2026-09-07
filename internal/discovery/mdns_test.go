@@ -466,12 +466,15 @@ func TestALabelIsNormalisedOrRefused(t *testing.T) {
 		"a hangul filler":             "ㅤ",
 		"a zero-width space":          "lap\u200btop",
 		"a right-to-left override":    "laptop\u202egnp.exe",
-		"a variation selector":        "laptop\ufe0e",
 		"a combining grapheme joiner": "lap\u034ftop",
 		"a soft hyphen":               "lap\u00adtop",
 		"a newline":                   "lap\ntop",
 		"invalid utf-8":               "lap\xff\xfetop",
 		"nothing but spaces":          "     ",
+		// PRECIS accepts these; they render as the same empty row the
+		// braille blank was refused for.
+		"nothing but combining marks": "\u0301\u0301\u0301",
+		"one combining mark":          "\u0301",
 		"empty":                       "",
 	}
 	for name, value := range refused {
@@ -492,6 +495,11 @@ func TestALabelIsNormalisedOrRefused(t *testing.T) {
 		"a leading space":      {" laptop", "laptop"},
 		"a double space":       {"lap  top", "lap top"},
 		"decomposed":           {"cafe\u0301", "café"},
+		// The selector is presentation. Refusing it refuses ❤️ and every
+		// keycap, which is how a phone and a Mac write them.
+		"a variation selector": {"laptop\ufe0e", "laptop"},
+		"an emoji with one":    {"heart \u2764\ufe0f", "heart \u2764"},
+		"a ZWJ sequence":       {"dev \U0001f468\u200d\U0001f4bb", "dev \U0001f468\U0001f4bb"},
 	}
 	for name, pair := range repaired {
 		t.Run("repaired: "+name, func(t *testing.T) {
@@ -549,6 +557,13 @@ func TestLabelsCompareByMeaningNotBytes(t *testing.T) {
 	for name, pair := range map[string][2]string{
 		"case":        {"Laptop", "laptop"},
 		"composition": {"café", "cafe\u0301"},
+		// macOS writes the machine name with U+2019; an impersonator would
+		// send the ASCII one, and the two must not be different names.
+		"a typographic apostrophe": {"sheldon\u2019s laptop", "sheldon's laptop"},
+		"a modifier apostrophe":    {"sheldon\u02bcs laptop", "sheldon's laptop"},
+		"an en dash":               {"build\u2013server", "build-server"},
+		"a non-breaking hyphen":    {"build\u2011server", "build-server"},
+		"a minus sign":             {"build\u2212server", "build-server"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if fieldKey(pair[0]) != fieldKey(pair[1]) {
@@ -556,15 +571,19 @@ func TestLabelsCompareByMeaningNotBytes(t *testing.T) {
 			}
 		})
 	}
-	for name, pair := range map[string][2]string{
-		"grouping": {"1223 03EA 5E96", "122303EA5E96"},
-		"case":     {"1223 03ea", "1223 03EA"},
-	} {
-		t.Run("fingerprint "+name, func(t *testing.T) {
-			if comparableFingerprint(pair[0]) != comparableFingerprint(pair[1]) {
-				t.Errorf("%q and %q compare differently", pair[0], pair[1])
-			}
-		})
+	// A fingerprint is canonical by the time it is stored — the parser produces
+	// one form — so comparison is equality. What that relies on is the parser
+	// refusing everything else, which internal/identity tests.
+	canonical, err := identity.ParseFingerprint("1223 03ea 5e96 543a 2dd8 bfea")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spaceless, err := identity.ParseFingerprint("122303EA5E96543A2DD8BFEA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != spaceless {
+		t.Errorf("two spellings of one fingerprint parsed differently: %q and %q", canonical, spaceless)
 	}
 	// And two genuinely different labels stay different.
 	if fieldKey("laptop") == fieldKey("desktop") {
