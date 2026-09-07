@@ -50,6 +50,16 @@ func TestAFingerprintIsHexadecimalOrItIsNothing(t *testing.T) {
 		"too long":              canonical + " 0000",
 		"empty":                 "",
 		"a newline":             "1223 03EA\n5E96 543A 2DD8 BFEA",
+		// The boundaries of the hexadecimal range, either side.
+		"a G":                  "1223 G3EA 5E96 543A 2DD8 BFEA",
+		"a g":                  "1223 g3EA 5E96 543A 2DD8 BFEA",
+		"a slash":              "1223 /3EA 5E96 543A 2DD8 BFEA",
+		"a colon":              "1223 :3EA 5E96 543A 2DD8 BFEA",
+		"an at sign":           "1223 @3EA 5E96 543A 2DD8 BFEA",
+		"a backtick":           "1223 `3EA 5E96 543A 2DD8 BFEA",
+		"a tab for a space":    "1223\t03EA 5E96 543A 2DD8 BFEA",
+		"a non-breaking space": "1223\u00a003EA 5E96 543A 2DD8 BFEA",
+		"a fullwidth digit":    "1223 ０3EA 5E96 543A 2DD8 BFEA",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got, err := identity.ParseFingerprint(value); err == nil {

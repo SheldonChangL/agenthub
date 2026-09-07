@@ -430,6 +430,39 @@ func TestAHostileOfferCannotWriteToTheReader(t *testing.T) {
 	}
 }
 
+// The parser refuses a fingerprint that is not one, rather than carrying it as
+// text that looks like one. Checked through a packet this code did not build,
+// which is where such a value comes from.
+func TestAFingerprintThatIsNotOneIsNotAnOffer(t *testing.T) {
+	for name, value := range map[string]string{
+		"a letter O for a zero": "1223 O3EA 5E96 543A 2DD8 BFEA",
+		"prose":                 "trust me",
+		"too short":             "1223 03EA",
+		"too long":              "1223 03EA 5E96 543A 2DD8 BFEA 0000",
+	} {
+		t.Run(name, func(t *testing.T) {
+			packet := txtPacket(t, []string{"node=node_x000000000000", "fp=" + value, "name=laptop"})
+			for _, got := range ParseAnnouncements(packet) {
+				if got.Offering() {
+					t.Errorf("a packet with fingerprint %q reads as an offer: %+v", value, got)
+				}
+				if got.Fingerprint != "" {
+					t.Errorf("fingerprint = %q, want it dropped", got.Fingerprint)
+				}
+			}
+		})
+	}
+	// And a real one, written the other way, parses to the canonical form.
+	packet := txtPacket(t, []string{"node=node_x000000000000", "fp=122303ea5e96543a2dd8bfea"})
+	got := ParseAnnouncements(packet)
+	if len(got) != 1 || !got[0].Offering() {
+		t.Fatalf("announcements = %+v", got)
+	}
+	if got[0].Fingerprint != "1223 03EA 5E96 543A 2DD8 BFEA" {
+		t.Errorf("fingerprint = %q, want the canonical form", got[0].Fingerprint)
+	}
+}
+
 // A node whose own fingerprint is not a label must not announce at all.
 //
 // Dropping it would announce this node's name and platform in a packet that
@@ -475,7 +508,11 @@ func TestALabelIsNormalisedOrRefused(t *testing.T) {
 		// braille blank was refused for.
 		"nothing but combining marks": "\u0301\u0301\u0301",
 		"one combining mark":          "\u0301",
-		"empty":                       "",
+		// Mn is not the only mark category: Mc is a spacing mark and Me an
+		// enclosing one, and a name of either is as empty as a name of Mn.
+		"nothing but a spacing mark":    "\u0903",
+		"nothing but an enclosing mark": "\u20e3",
+		"empty":                         "",
 	}
 	for name, value := range refused {
 		t.Run("refused: "+name, func(t *testing.T) {
@@ -559,11 +596,15 @@ func TestLabelsCompareByMeaningNotBytes(t *testing.T) {
 		"composition": {"café", "cafe\u0301"},
 		// macOS writes the machine name with U+2019; an impersonator would
 		// send the ASCII one, and the two must not be different names.
-		"a typographic apostrophe": {"sheldon\u2019s laptop", "sheldon's laptop"},
-		"a modifier apostrophe":    {"sheldon\u02bcs laptop", "sheldon's laptop"},
-		"an en dash":               {"build\u2013server", "build-server"},
-		"a non-breaking hyphen":    {"build\u2011server", "build-server"},
-		"a minus sign":             {"build\u2212server", "build-server"},
+		"a typographic apostrophe":          {"sheldon\u2019s laptop", "sheldon's laptop"},
+		"a modifier apostrophe":             {"sheldon\u02bcs laptop", "sheldon's laptop"},
+		"a hyphen":                          {"build\u2010server", "build-server"},
+		"a non-breaking hyphen figure dash": {"build\u2012server", "build-server"},
+		"an en dash":                        {"build\u2013server", "build-server"},
+		"an em dash":                        {"build\u2014server", "build-server"},
+		"a left single quote":               {"sheldon\u2018s laptop", "sheldon's laptop"},
+		"a non-breaking hyphen":             {"build\u2011server", "build-server"},
+		"a minus sign":                      {"build\u2212server", "build-server"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if fieldKey(pair[0]) != fieldKey(pair[1]) {
