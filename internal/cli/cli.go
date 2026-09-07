@@ -15,6 +15,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"agenthub.local/agenthub/internal/buildinfo"
 	"agenthub.local/agenthub/internal/model"
 )
 
@@ -34,9 +35,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	baseURL := flags.String("url", defaultURL, "AgentHub node URL")
 	jsonOutput := flags.Bool("json", false, "print JSON")
+	showVersion := flags.Bool("version", false, "print the build version and exit")
 	flags.Usage = func() { printUsage(stderr) }
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	// Answered before anything that needs a node, and before the URL is
+	// validated: the first thing asked of a binary that is misbehaving is which
+	// build it is, and that answer must not depend on the thing that is broken.
+	if *showVersion {
+		fmt.Fprintln(stdout, buildinfo.Line("ah"))
+		return 0
 	}
 	remaining := flags.Args()
 	if len(remaining) == 0 {
@@ -493,6 +502,7 @@ func writePrettyJSON(output io.Writer, data []byte) error {
 
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
+	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
