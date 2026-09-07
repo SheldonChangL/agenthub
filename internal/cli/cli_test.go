@@ -453,3 +453,42 @@ func TestInboxSaysSoWhenItStopsShort(t *testing.T) {
 		t.Errorf("printed %d messages, next = %q; want 60 and a cursor", len(printed.Messages), printed.Next)
 	}
 }
+
+// The first question asked of a binary that is misbehaving is which build it
+// is, so the answer must not need a node, a valid URL, or anything else that
+// might be the thing that is broken.
+func TestVersionAnswersWithoutANode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	// A URL that resolves to nothing, and no node running anywhere.
+	code := Run(context.Background(), []string{"--url", "http://127.0.0.1:1", "--version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("--version wrote to stderr: %q", stderr.String())
+	}
+	printed := stdout.String()
+	for _, want := range []string{"ah ", "go1."} {
+		if !strings.Contains(printed, want) {
+			t.Errorf("--version = %q, missing %q", printed, want)
+		}
+	}
+	// Whether a revision is recorded depends on how the binary was built — a
+	// test binary carries none — so what is asserted here is that the answer
+	// says which of the two it is rather than leaving a reader guessing. CI
+	// checks the real `go build` output against the commit it built.
+	if !strings.Contains(printed, "unreleased") && !strings.Contains(printed, "revision") {
+		t.Errorf("--version = %q; it names neither a release nor a revision", printed)
+	}
+}
+
+// A malformed URL must not stop it answering, for the same reason.
+func TestVersionAnswersEvenWithAnUnusableURL(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", "not a url at all", "--version"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ah ") {
+		t.Errorf("--version = %q", stdout.String())
+	}
+}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/api"
+	"agenthub.local/agenthub/internal/buildinfo"
 	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
@@ -33,6 +34,9 @@ func main() {
 }
 
 func run() error {
+	// First line, before anything can fail: a log someone sends back has to say
+	// which build produced it.
+	log.Print(buildinfo.Line("agenthub-node"))
 	defaults, err := defaultPaths()
 	if err != nil {
 		return err
