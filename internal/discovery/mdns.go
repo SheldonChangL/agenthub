@@ -760,6 +760,14 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 // skipped as already joined, which is precisely the case this refresh exists
 // for.
 //
+// What relying on the kernel's record does not cover, and is not covered
+// anywhere yet: on Linux a socket membership is matched on the group and the
+// interface index, while the device-level group is torn down when an interface
+// loses its last IPv4 address. If that is right — measured on macOS, reasoned
+// on Linux, see #93 — then an interface whose DHCP lease lapses and returns
+// stops delivering, and this refresh cannot repair it, because the duplicate
+// join is refused and nothing here leaves the group first.
+//
 // Most join failures are expected and are not reported: the membership the
 // system already took refuses to be duplicated, and an interface with no IPv4
 // stack refuses outright. Anything else earns one line, because a machine at

@@ -23,7 +23,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Architecture and issue plan for authenticated multi-node operation
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
 - Nothing writes into a provider's session files or process, by design
-- Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
+- Pairing still needs the peer's public key by hand, though a node can now announce itself for a while and see who else is announcing (Step 9, issues #61 and #62)
 - No release or installer: installing means building from source, though CI now
   uploads a build of every binary for six platforms (Step 10, issues #64 and #67)
 
