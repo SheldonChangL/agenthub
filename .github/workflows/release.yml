@@ -40,6 +40,20 @@ jobs:
     name: gates at the tag
     runs-on: ubuntu-latest
     steps:
+      # First, because the trigger is broader than the grammar: `v*` matches a
+      # mistyped v1 or v1.2.3.4, and the tag is already on the remote by the
+      # time this runs. Refusing here costs a minute instead of a full race-test
+      # and vulnerability scan before the build job says the same thing.
+      - name: the tag is a version
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${DISPATCH_TAG:-${GITHUB_REF_NAME}}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "refusing to release \"$tag\": want vMAJOR.MINOR.PATCH with an optional -suffix"
+            exit 1
+          fi
+          echo "releasing $tag"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -179,6 +193,9 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+          # Re-running all jobs of a run would otherwise fail here: the names
+          # are per-run, and this action refuses an existing one by default.
+          overwrite: true
 
   publish:
     name: publish the release
