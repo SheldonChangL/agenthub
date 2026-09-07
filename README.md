@@ -248,13 +248,17 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 The four pairing endpoints exist only under `-discover`; without it they answer
 `409 DISCOVERY_DISABLED` rather than an empty list, because "nobody is
 advertising" and "this node is not looking" are different answers and only one
-of them means the owner should keep waiting. Advertising also needs an address a
-peer could reach — `-allow-lan` and a `-peer-listen` on this machine's network
-address rather than loopback — and opening the window is refused with
-`409 NO_ANNOUNCEABLE_ADDRESS` when there is none, since a window that announces
-nothing looks identical to one nobody has answered. `GET /v1/pairing` carries
-`announcing` for the same reason: an open window and a machine that is actually
-sending packets are separate facts.
+of them means the owner should keep waiting.
+
+Advertising also needs somewhere for a peer to connect back to, and that is the
+peer listener's own bound address — so it needs `-allow-lan` *and* a
+`-peer-listen` on this machine's network address rather than on loopback.
+Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when the
+listener is on loopback, because announcing any other address would advertise
+one nothing is listening on: the peer would see a candidate that looks right,
+with a matching fingerprint, and get a refused connection. `GET /v1/pairing`
+carries `announcing` for the same reason — an open window and a machine that is
+actually sending packets are separate facts.
 
 Nothing in the candidate list is verified and appearing in it grants nothing.
 The fingerprint shown is the one announced, which is a hint for finding the

@@ -74,12 +74,21 @@ func (s *Server) openPairing(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// Bounded before the multiplication rather than after. A duration is
-	// nanoseconds in an int64, so seconds above about 9.2e9 wrap: 18446744104
-	// seconds came back as a thirty-second window and was accepted as if it
-	// were what the owner asked for. Anything over the maximum gets the same
-	// answer a slightly-too-long window gets.
-	if int64(input.Seconds) > int64(pairing.MaxWindow/time.Second) {
+	// Bounded on both sides before the multiplication, rather than after. A
+	// duration is nanoseconds in an int64, so a magnitude above about 9.2e9
+	// seconds wraps, and the wrapped value lands inside the allowed range in
+	// both directions: 18446744104 came back as a thirty-second window, and
+	// -18446744043 as a thirty-second window too, while math.MinInt64 came back
+	// as exactly zero — which Open reads as "no preference" and answers with
+	// its default. Every one of those was accepted as what the owner asked for.
+	//
+	// A negative window is refused here rather than left to Open's lower bound:
+	// Open never sees the number, only the duration it wrapped into.
+	switch {
+	case input.Seconds < 0:
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", pairing.ErrWindowTooShort.Error())
+		return
+	case int64(input.Seconds) > int64(pairing.MaxWindow/time.Second):
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", pairing.ErrWindowTooLong.Error())
 		return
 	}
@@ -89,9 +98,10 @@ func (s *Server) openPairing(w http.ResponseWriter, r *http.Request) {
 	// is waiting for an answer.
 	if !s.announcer.Announceable() {
 		writeError(w, http.StatusConflict, "NO_ANNOUNCEABLE_ADDRESS",
-			"this node has no address a peer on the local network could reach, so opening "+
-				"pairing mode would announce nothing. Start it with -allow-lan and a "+
-				"-peer-listen address on this machine's network address rather than loopback")
+			"this node's peer listener is not on an address another machine could reach, so "+
+				"opening pairing mode would announce nothing. Pairing over the network needs the "+
+				"node restarted with -peer-listen on this machine's own network address rather "+
+				"than on loopback, together with -allow-lan")
 		return
 	}
 	state, err := s.pairing.Open(time.Duration(input.Seconds) * time.Second)

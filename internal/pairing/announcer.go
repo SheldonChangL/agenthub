@@ -96,14 +96,16 @@ func (a *Announcer) Status() Status {
 	a.mu.Lock()
 	status := a.status
 	a.mu.Unlock()
-	// Read live rather than from the last attempt: this is the field an owner
-	// looks at to understand why nothing is going out, and it changes when an
-	// interface does, not when the loop ticks.
+	// Read directly rather than from the last attempt: this is the field an
+	// owner looks at to understand why nothing is going out, and it should
+	// answer before the loop has ticked even once.
 	status.Addresses = len(a.addresses())
 	return status
 }
 
-// Announceable reports whether this node has any address a peer could use.
+// Announceable reports whether this node has an address a peer could reach it
+// at — which is its peer listener's own bound address, and nothing else. See
+// PeerEndpoint for why the two are not the same question.
 //
 // Asked before opening a window, so an owner is told that pairing cannot work
 // on this configuration instead of being given a window that announces nothing.

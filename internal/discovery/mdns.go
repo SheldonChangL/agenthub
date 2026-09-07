@@ -18,12 +18,9 @@
 package discovery
 
 import (
-	"agenthub.local/agenthub/internal/identity"
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/text/secure/precis"
-	"golang.org/x/text/unicode/norm"
 	"log"
 	"net"
 	"net/netip"
@@ -35,6 +32,10 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/text/secure/precis"
+	"golang.org/x/text/unicode/norm"
+
+	"agenthub.local/agenthub/internal/identity"
 )
 
 const (
@@ -415,6 +416,17 @@ func ParseAnnouncements(packet []byte) []Announcement {
 // а in "lаptop" is a different letter, and no normalisation makes it the same
 // one; mixed-script detection would, and is not done here. The fingerprint
 // comparison in the handshake is what separates two rows that read alike.
+// Announceable reports what an offer field would actually carry, which is the
+// empty string when this node's own value cannot be announced.
+//
+// Exported so a node can find that out about itself at startup rather than
+// leaving the owner to notice that their machine appears in someone else's
+// candidate list with no name. A display name is the hostname, and a hostname
+// can be longer than MaxCandidateFieldLength or hold something PRECIS refuses.
+func Announceable(value string) string {
+	return printableField(value)
+}
+
 func printableField(value string) string {
 	if len(value) == 0 || len(value) > MaxCandidateFieldLength {
 		return ""
@@ -613,11 +625,15 @@ func Listen(ctx context.Context, group string, handlers ...PacketHandler) error 
 // dispatch parses one packet and gives it to every handler, with the address it
 // arrived from.
 //
-// Separate from the read loop so the source can be tested without a socket. The
-// source is the one thing in a packet the sender did not choose, so it is what
-// the candidate layer checks a claimed address against; passing the wrong one —
-// or the zero value — would leave that check comparing an announcement to
-// nothing. What this does not cover is the socket read itself.
+// Separate from the read loop so the source can be tested without a socket.
+//
+// The source is what the candidate layer checks a claimed address against, so
+// passing the wrong one — or the zero value — would leave that check comparing
+// an announcement to nothing. It is worth checking because it is harder to
+// choose than the packet's contents, not because it cannot be chosen: anyone
+// who can open a raw socket on the segment can put whatever they like in it.
+// What the check rules out is a sender using an ordinary UDP socket to claim
+// somebody else's address. What this does not cover is the socket read itself.
 func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers []PacketHandler) {
 	announcements := ParseAnnouncements(packet)
 	if len(announcements) == 0 {
