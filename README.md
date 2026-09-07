@@ -74,10 +74,11 @@ a modified tree says so, because a revision that does not describe the source
 points at code nobody ran.
 
 CI builds all three for six platforms and attaches them to each run, with a
-`SHA256SUMS` and a `BUILD` file naming the run and the revision. GitHub's
-artifact zip does not preserve file modes, so a downloaded binary needs
-`chmod +x`. On a pull request the revision inside the binary is the ephemeral
-merge commit GitHub built, not a commit on the branch — `BUILD` records both.
+`SHA256SUMS` and a `BUILD` file naming the run and the revision. The artifact
+zip records the executable bit, and `gh run download` and `unzip` both keep it;
+a graphical extractor may not, in which case `chmod +x`. On a pull request the
+revision inside the binary is the ephemeral merge commit GitHub built, not a
+commit on the branch — `BUILD` records both.
 
 ## Run locally
 
