@@ -184,3 +184,63 @@ func TestFrontendRendersHostileCandidateMetadataAsText(t *testing.T) {
 		t.Fatalf("pairing panel render check failed: %v\n%s", err, output)
 	}
 }
+
+// A warning with no style that applies to it is read as body text, and a
+// container with no overflow rule clips whatever an attacker can make long.
+//
+// Both of those shipped: `.stale` was scoped to `.nodedetail`, so the pairing
+// panel's "this is the absence of a fact, not a fact" notices rendered
+// identically to its statements; `.pill.bad` did not exist at all, so the flag
+// marking a contested candidate — the only place impersonation is visible from
+// this side — looked like a neutral pill; and the sidebar had no scroll, so 64
+// candidate rows (a state anyone on the segment can force) pushed the pairing
+// button and the full-list warning out of reach.
+//
+// A static check, so it cannot prove a colour is legible. What it does prove is
+// that a rule exists to be applied, which is what was missing.
+func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	css := string(stylesheet)
+
+	for what, selector := range map[string]string{
+		// Unscoped, so the pairing panel's notices get it too. A leading `.` at
+		// the start of a rule is what distinguishes it from `.nodedetail .stale`.
+		"a notice explaining an absence": "\n.stale {",
+		"a contested or duplicate flag":  "\n.pill.bad {",
+	} {
+		if !strings.Contains(css, selector) {
+			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
+				what, strings.TrimSpace(selector))
+		}
+	}
+
+	// The scrolling containers, each with the property that makes it scroll.
+	// Without these the sidebar clips, and what it clips is the button the
+	// owner needs and the warning that explains what they are looking at.
+	for _, required := range []struct{ selector, property string }{
+		{".nodelist {", "overflow-y"},
+		{"#candidate-rows {", "max-height"},
+	} {
+		start := strings.Index(css, required.selector)
+		if start < 0 {
+			t.Errorf("style.css has no %q rule", required.selector)
+			continue
+		}
+		block := css[start:]
+		if end := strings.Index(block, "}"); end > 0 {
+			block = block[:end]
+		}
+		if !strings.Contains(block, required.property) {
+			t.Errorf("%s does not set %s, so a long candidate list clips instead of scrolling",
+				required.selector, required.property)
+		}
+	}
+	// #candidate-rows needs a scroll of its own as well, which it gets from a
+	// grouped selector, so look for it anywhere.
+	if !strings.Contains(css, "#candidate-rows") {
+		t.Error("style.css never mentions #candidate-rows")
+	}
+}

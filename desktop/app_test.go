@@ -334,8 +334,8 @@ func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
 	if !pairing.State.Open || pairing.State.Remaining != 240 {
 		t.Errorf("state = %+v, want an open window with 240s left", pairing.State)
 	}
-	// The countdown comes from the node, not from a subtraction here, so it
-	// cannot disagree with the expiry beside it.
+	// The countdown comes from the node rather than being subtracted from the
+	// expiry here, because the node measured the window against its own clock.
 	if pairing.State.Announcing.Addresses != 1 || pairing.State.Announcing.LastSuccess.IsZero() {
 		t.Errorf("announcing = %+v, want one address and a last success", pairing.State.Announcing)
 	}

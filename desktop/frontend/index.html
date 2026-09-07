@@ -50,7 +50,14 @@
           <div id="node-rows"></div>
           <div class="pairingpanel">
             <div class="nodelist-head">配對模式</div>
-            <div id="pairing-state" class="pairing-state"></div>
+            <div class="pairing-state">
+              <div id="pairing-headline" class="line"></div>
+              <!-- Its own element so the countdown can tick without redrawing
+                   the rows: rebuilding those every second replaces the one the
+                   pointer is over. -->
+              <div id="pairing-countdown" class="countdown"></div>
+              <div id="pairing-detail"></div>
+            </div>
             <div class="pairing-actions">
               <button id="btn-pairing-on" class="btn">開啟配對模式</button>
               <button id="btn-pairing-off" class="ghost">停止廣播</button>

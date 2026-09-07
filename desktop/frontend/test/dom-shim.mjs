@@ -50,9 +50,12 @@ class Node {
     return this._raw !== undefined ? new Node("input") : null;
   }
 
-  // Enough of a classList for the renderers: a set, so add/remove/toggle
-  // compose the way they do in a browser. toggle keeps its previous observable
-  // behaviour for a single class, which is all the table renderer uses.
+  // Enough of a classList for the renderers: a set behind add, remove,
+  // contains and toggle. Not a browser's — it does not reject a name with a
+  // space in it, and nothing here needs `replace` or iteration — but toggle
+  // follows the specified rule, so a falsy second argument removes rather than
+  // adds. Getting that backwards would let a test pass over code that leaves a
+  // panel visible when it should be hidden.
   get classList() {
     const classes = () => new Set(String(this.className || "").split(/\s+/).filter(Boolean));
     const write = (set) => { this.className = [...set].join(" "); };
@@ -62,9 +65,11 @@ class Node {
       contains: (name) => classes().has(name),
       toggle: (name, on) => {
         const set = classes();
-        if (on === undefined ? set.has(name) : on === false) set.delete(name);
-        else set.add(name);
+        const wanted = on === undefined ? !set.has(name) : Boolean(on);
+        if (wanted) set.add(name);
+        else set.delete(name);
         write(set);
+        return wanted;
       },
     };
   }
@@ -100,4 +105,8 @@ export const document = {
     if (!byId.has(id)) byId.set(id, new Node("div"));
     return byId.get(id);
   },
+  // The module's wiring queries for the view switch and the audience radios.
+  // Empty is right for a test that drives the renderers directly: there is no
+  // markup here for those to be found in.
+  querySelectorAll: () => [],
 };

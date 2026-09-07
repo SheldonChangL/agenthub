@@ -168,9 +168,12 @@ func summarize(sessions []Session) map[string]int {
 	return counts
 }
 
-// Pairing is everything the pairing panel needs, loaded together so the panel
-// never renders a window without the list it belongs to, or the other way
-// round.
+// Pairing is everything the pairing panel needs, in one call so the panel makes
+// one round trip rather than three.
+//
+// Not one atomic answer: the window and the list are two requests, and the
+// second can fail on its own — which is why CandidatesError exists and why the
+// panel has to be able to render a window with no list beside it.
 type Pairing struct {
 	State      PairingState `json:"state"`
 	Candidates []Candidate  `json:"candidates"`

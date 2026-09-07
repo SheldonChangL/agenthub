@@ -275,6 +275,12 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
   background: #131620;
   display: flex;
   flex-direction: column;
+  /* The candidate list is filled by whoever is on the segment, up to the
+     node's cap of 64 rows, and holding it full is something an attacker can
+     do. Without this the sidebar simply clipped: the "pair a new node" button
+     and the warning explaining why a machine might be missing both went
+     off-screen with no way to reach them. */
+  overflow-y: auto;
 }
 .nodelist-head {
   padding: 10px 14px;
@@ -362,8 +368,11 @@ tbody tr.sel { background: rgba(79, 140, 255, 0.09); }
 }
 
 /* A peer's last snapshot is never shown once it has expired, so this explains
-   the absence rather than leaving an empty panel that reads as "nothing shared". */
-.nodedetail .stale {
+   the absence rather than leaving an empty panel that reads as "nothing shared".
+   Unscoped, because the pairing panel says the same kind of thing — "this is
+   the absence of a fact, not a fact" — and a notice styled like body text is
+   read as body text. */
+.stale {
   margin: 12px 0;
   padding: 10px 12px;
   border-left: 3px solid var(--muted-dot, #6e7681);
@@ -453,4 +462,47 @@ table.peer-sessions td.mono {
 .candidaterow button {
   align-self: flex-start;
   margin-top: 4px;
+}
+
+/* A candidate flagged as contested or duplicated is the only place an
+   impersonation attempt is visible from this side. Without a rule for it the
+   pill rendered in exactly the colour of a neutral one, which is the same as
+   not flagging it at all. */
+.pill.bad {
+  color: var(--red);
+  border-color: rgba(229, 84, 75, 0.45);
+  background: rgba(229, 84, 75, 0.1);
+}
+
+/* Each list scrolls within itself rather than pushing the panel below it out
+   of view. The candidate list is capped because its length is chosen by
+   whoever is on the segment, not by this owner. */
+#node-rows {
+  overflow-y: auto;
+}
+
+#candidate-rows {
+  overflow-y: auto;
+  max-height: 42vh;
+}
+
+.pairing-state .line {
+  font-size: 13px;
+}
+
+.pairing-state .countdown {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pairing-state .stale,
+#candidate-rows .stale,
+#pair-prefill-note .stale {
+  margin: 6px 0;
+  font-size: 12px;
+}
+
+#pair-prefill-note > div + div {
+  margin-top: 6px;
 }
