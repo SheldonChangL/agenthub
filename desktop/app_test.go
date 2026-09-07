@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -257,5 +258,165 @@ func TestARefusedPeerSnapshotReachesTheUI(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"sessionsWithheld":true`) {
 		t.Errorf("the field does not reach the UI: %s", encoded)
+	}
+}
+
+// "This node is not looking", "this node did not answer" and "nobody is
+// advertising" are three different facts. A panel that renders any of them as
+// another tells the owner to keep waiting for something that is not coming, or
+// to change a setting that is not the problem.
+func TestPairingDistinguishesOffFromUnreachable(t *testing.T) {
+	discoveryOff := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code":    "DISCOVERY_DISABLED",
+			"message": "this node is not listening on the local network. Start it with -discover",
+		}})
+	}))
+	defer discoveryOff.Close()
+
+	app := &App{client: newClient(discoveryOff.URL), url: discoveryOff.URL, ctx: context.Background()}
+	pairing := app.Pairing()
+	if pairing.Availability != pairingOff {
+		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOff)
+	}
+	if !strings.Contains(pairing.Error, "DISCOVERY_DISABLED") {
+		t.Errorf("error = %q, want the node's own code", pairing.Error)
+	}
+	// And never a bare empty list, which reads as "nobody is out there".
+	if pairing.Candidates == nil {
+		t.Error("candidates is nil, which marshals as null rather than an empty list")
+	}
+	if len(pairing.Candidates) != 0 {
+		t.Errorf("candidates = %v on a node that is not looking", pairing.Candidates)
+	}
+
+	// A node that is not there at all is a third answer, not the second one.
+	unreachable := &App{client: newClient("http://127.0.0.1:1"), url: "http://127.0.0.1:1",
+		ctx: context.Background()}
+	if got := unreachable.Pairing(); got.Availability != pairingUnknown {
+		t.Errorf("availability = %q on an unreachable node, want %q", got.Availability, pairingUnknown)
+	} else if got.Error == "" {
+		t.Error("an unreachable node produced no error")
+	}
+}
+
+// The candidate list is the one view whose every field was chosen by whoever
+// sent the packet. It has to arrive intact — flags included — because the flags
+// are how an impersonation attempt is visible at all, and a field this struct
+// does not carry is one the UI can never render.
+func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/pairing":
+			_, _ = w.Write([]byte(`{"open":true,"openedAt":"2026-09-07T07:00:00Z",
+				"expiresAt":"2026-09-07T07:05:00Z","remainingSeconds":240,
+				"announcing":{"announceableAddresses":1,"lastAnnouncedAt":"2026-09-07T07:00:20Z"}}`))
+		case "/v1/pairing/candidates":
+			_, _ = w.Write([]byte(`{"candidates":[
+				{"nodeId":"node_a","address":"192.168.1.5:7463","displayName":"laptop",
+				 "platform":"darwin/arm64","fingerprint":"1223 03EA 5E96 543A 2DD8 BFEA",
+				 "firstSeen":"2026-09-07T07:00:00Z","lastSeen":"2026-09-07T07:01:00Z",
+				 "duplicate":true,"contested":true}],
+				"full":true,"notice":"nothing here has been verified"}`))
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	pairing := app.Pairing()
+	if pairing.Availability != pairingOn {
+		t.Fatalf("availability = %q, want %q (error %q)", pairing.Availability, pairingOn, pairing.Error)
+	}
+	if !pairing.State.Open || pairing.State.Remaining != 240 {
+		t.Errorf("state = %+v, want an open window with 240s left", pairing.State)
+	}
+	// The countdown comes from the node, not from a subtraction here, so it
+	// cannot disagree with the expiry beside it.
+	if pairing.State.Announcing.Addresses != 1 || pairing.State.Announcing.LastSuccess.IsZero() {
+		t.Errorf("announcing = %+v, want one address and a last success", pairing.State.Announcing)
+	}
+	if !pairing.Full {
+		t.Error("full was dropped; the owner would not learn the machine they want may be missing")
+	}
+	if pairing.Notice == "" {
+		t.Error("the node's notice was dropped, so the UI would have to invent its own")
+	}
+	if len(pairing.Candidates) != 1 {
+		t.Fatalf("candidates = %v, want one", pairing.Candidates)
+	}
+	candidate := pairing.Candidates[0]
+	if !candidate.Duplicate || !candidate.Contested {
+		t.Errorf("candidate = %+v; duplicate and contested are how impersonation is visible", candidate)
+	}
+	for field, got := range map[string]string{
+		"nodeId":      candidate.NodeID,
+		"address":     candidate.Address,
+		"displayName": candidate.DisplayName,
+		"platform":    candidate.Platform,
+		"fingerprint": candidate.Fingerprint,
+	} {
+		if got == "" {
+			t.Errorf("candidate %s was dropped in decoding", field)
+		}
+	}
+}
+
+// A window the node refuses must surface as a refusal. Reporting success and
+// then showing a closed window would read as the node ignoring the button.
+func TestOpenPairingSurfacesTheNodesRefusal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code":    "NO_ANNOUNCEABLE_ADDRESS",
+			"message": "this node has no address a peer on the local network could reach",
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	state, err := app.OpenPairing(60)
+	if err == nil {
+		t.Fatalf("OpenPairing reported success against a node that refused: %+v", state)
+	}
+	if !strings.Contains(err.Error(), "NO_ANNOUNCEABLE_ADDRESS") {
+		t.Errorf("error = %q, want the node's own code so the panel can explain it", err)
+	}
+	if state.Open {
+		t.Error("a refused window came back open")
+	}
+}
+
+// Zero means "no preference" and must not be sent as a duration: the node reads
+// a zero window as its default, so forwarding one asked-for-nothing would be
+// indistinguishable from asking for five minutes.
+func TestOpenPairingSendsADurationOnlyWhenItHasOne(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, strings.TrimSpace(string(data)))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":300,"announcing":{"announceableAddresses":1}}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if _, err := app.OpenPairing(0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.OpenPairing(90); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("bodies = %v", bodies)
+	}
+	if bodies[0] != "" {
+		t.Errorf("OpenPairing(0) sent %q, want no body at all", bodies[0])
+	}
+	if !strings.Contains(bodies[1], `"seconds":90`) {
+		t.Errorf("OpenPairing(90) sent %q", bodies[1])
 	}
 }
