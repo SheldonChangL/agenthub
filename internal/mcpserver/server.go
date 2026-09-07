@@ -10,11 +10,15 @@ import (
 	"context"
 	"errors"
 
+	"agenthub.local/agenthub/internal/buildinfo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Version is reported to the agent during initialize.
-const Version = "0.1.0-alpha"
+//
+// The build, not a hand-maintained constant: an agent that names this server in
+// a report should name something a maintainer can look up.
+func Version() string { return buildinfo.Version() }
 
 // server is one bound session's MCP surface.
 //
@@ -81,7 +85,7 @@ type listResult struct {
 func (s *server) MCPServer() *mcp.Server {
 	capabilities := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
 	sdk := mcp.NewServer(
-		&mcp.Implementation{Name: "agenthub", Version: Version},
+		&mcp.Implementation{Name: "agenthub", Version: Version()},
 		&mcp.ServerOptions{
 			Capabilities: capabilities,
 			Instructions: "AgentHub exposes coding-agent sessions on this machine and on nodes " +

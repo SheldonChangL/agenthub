@@ -188,14 +188,77 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: build agenthub-node and ah
+      # Built to a directory rather than /dev/null, and uploaded. A matrix that
+      # compiles six platforms and throws the result away proves the code
+      # builds and gives nobody anything to run: every install so far has meant
+      # building from source. These are what a reviewer downloads to check a
+      # change on a platform they do not have, and what the release workflow
+      # will produce for a tag.
+      - name: build every binary for this platform
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          go build -o /dev/null ./cmd/agenthub-node
-          go build -o /dev/null ./cmd/ah
+          suffix=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then suffix=".exe"; fi
+          mkdir -p dist
+          for command in agenthub-node ah agenthub-mcp; do
+            # -trimpath so the binary does not carry this runner's paths, and
+            # so two builds of one commit are byte-identical.
+            go build -trimpath -o "dist/${command}${suffix}" "./cmd/${command}"
+          done
+          # On a pull request the revision stamped into these binaries is the
+          # ephemeral merge commit: it exists only under refs/pull/N/merge, it
+          # changes whenever main moves, and it cannot be resolved from an
+          # ordinary clone. This file is how someone holding the download finds
+          # the code and the run that produced it.
+          {
+            # The attempt, not just the run: a re-run moves what the bare URL
+            # resolves to, while this file describes one particular build.
+            echo "run=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+            echo "ref=${GITHUB_REF}"
+            echo "built_revision=${GITHUB_SHA}"
+            echo "event=${GITHUB_EVENT_NAME}"
+            echo "pr_head=${PR_HEAD_SHA:-}"
+            echo "platform=${GOOS}/${GOARCH}"
+          } > dist/BUILD
+          # The checksums travel with the binaries: a downloader can check what
+          # they got without a second source. Release adds a signed manifest;
+          # this is the artifact-level answer to "is this the file CI built".
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      # The version each binary reports has to be the code it was built from.
+      # Only the native combination can run here, and that is enough: the
+      # stamping is the go command's, not this workflow's, so it either works
+      # for every platform or none.
+      - name: the binary knows which commit it is
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          reported=$(./dist/ah --version)
+          echo "$reported"
+          case "$reported" in
+            # Checked before the revision, and it is the arm that earns its
+            # keep: the revision matches whether or not the tree was clean, so
+            # without this the day dist/ leaves .gitignore — or any step writes
+            # into the workspace — every artifact would be stamped "modified
+            # source" and this job would stay green.
+            *"modified source"*)
+              echo "the tree was not clean when this was built: $reported"
+              git status --porcelain
+              exit 1 ;;
+            *"${GITHUB_SHA:0:12}"*) ;;
+            *) echo "ah --version does not name this commit (${GITHUB_SHA:0:12})"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agenthub-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
       # Compiling the tests, not just the packages, is what keeps build-tagged
       # code and its tests from rotting: Windows DPAPI key protection and its
       # tests are never built by a darwin or linux run.

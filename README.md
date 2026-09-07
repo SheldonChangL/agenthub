@@ -24,7 +24,8 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
 - Nothing writes into a provider's session files or process, by design
 - Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
-- No release or installer: installing means building from source (Step 10, issue #67)
+- No release or installer: installing means building from source, though CI now
+  uploads a build of every binary for six platforms (Step 10, issues #64 and #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
@@ -64,7 +65,21 @@ mkdir -p bin
 go build -o bin/agenthub-node ./cmd/agenthub-node
 go build -o bin/ah ./cmd/ah
 go build -o bin/agenthub-mcp ./cmd/agenthub-mcp
+bin/ah --version   # which commit these binaries came from
 ```
+
+Every binary reports the revision it was built from — `ah --version`, the node's
+first log line, and the version `agenthub-mcp` sends at initialize. A build from
+a modified tree says so, because a revision that does not describe the source
+points at code nobody ran.
+
+CI builds all three for six platforms and attaches them to each run, with a
+`SHA256SUMS` and a `BUILD` file naming the run and the revision. The artifact
+zip records the executable bit, and `gh run download`, `unzip` and Archive
+Utility all keep it. `actions/download-artifact` does not — it extracts without
+applying modes — so a workflow that consumes these has to `chmod +x` them. On a
+pull request the revision inside the binary is the ephemeral merge commit
+GitHub built, not a commit on the branch; `BUILD` records both.
 
 ## Run locally
 
