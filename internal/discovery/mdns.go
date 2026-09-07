@@ -956,27 +956,41 @@ func interfaceHolding(address netip.Addr) (*net.Interface, error) {
 			}
 		}
 	}
+	if err := announceableFrom(holder, address); err != nil {
+		return nil, err
+	}
+	return holder, nil
+}
+
+// announceableFrom judges an interface that holds the address.
+//
+// Separate from the search so every answer can be tested on flags a test
+// chooses. Whether this machine happens to have a tunnel carrying an IPv4
+// address decides nothing about whether the code handles one — and it does not
+// have one, which is how the tunnel branch went untested while three places of
+// prose claimed it was the case being caught.
+func announceableFrom(holder *net.Interface, address netip.Addr) error {
 	switch {
 	case holder == nil:
-		return nil, fmt.Errorf("no interface on this machine holds %v, so an announcement "+
+		return fmt.Errorf("no interface on this machine holds %v, so an announcement "+
 			"naming it could not come from it", address)
 	case holder.Flags&net.FlagUp == 0:
-		return nil, fmt.Errorf("%s holds %v but is down", holder.Name, address)
+		return fmt.Errorf("%s holds %v but is down", holder.Name, address)
 	case holder.Flags&net.FlagPointToPoint != 0:
 		// The case the flags alone miss: a tunnel carries MULTICAST on macOS
 		// and for OpenVPN on Linux, so without this an announcement is sent and
 		// goes nowhere a peer could answer from, and the send reports success.
-		return nil, fmt.Errorf("%s holds %v but is a point-to-point interface — a tunnel — "+
+		return fmt.Errorf("%s holds %v but is a point-to-point interface — a tunnel — "+
 			"which has no local network segment for a peer to answer on. Pairing by hand with "+
 			"`ah pair` works over it", holder.Name, address)
-	case holder.Flags&net.FlagMulticast == 0:
-		return nil, fmt.Errorf("%s holds %v but cannot carry a multicast packet, so no "+
-			"announcement could leave by it", holder.Name, address)
 	case holder.Flags&net.FlagLoopback != 0:
-		return nil, fmt.Errorf("%s holds %v, which is loopback and reaches no other machine",
+		return fmt.Errorf("%s holds %v, which is loopback and reaches no other machine",
 			holder.Name, address)
+	case holder.Flags&net.FlagMulticast == 0:
+		return fmt.Errorf("%s holds %v but cannot carry a multicast packet, so no "+
+			"announcement could leave by it", holder.Name, address)
 	}
-	return holder, nil
+	return nil
 }
 
 // AnnounceOffering announces this node, and — when the offer is non-empty —
