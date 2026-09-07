@@ -178,11 +178,16 @@ if (!unknown.includes("connection refused")) {
 // 4. An open window on a machine with nothing to announce must say so. This is
 //    the one failure an owner cannot see from the other machine: the panel says
 //    open, and the other machine waits for a candidate that never arrives.
+// The node's reason, not the panel's. "Loopback" and "an IPv6 listener that is
+// reachable but cannot be discovered on the IPv4 group" are different problems
+// with different fixes, so a sentence written here for all of them would tell
+// most owners something untrue.
+const nodeReason = "the peer listener is on an IPv6 address, and announcements go out on the IPv4 group";
 state.pairing = {
   availability: "on",
   state: {
     open: true, remainingSeconds: 240,
-    announcing: { announceableAddresses: 0, lastError: "this node has no address a peer could reach" },
+    announcing: { announceableAddresses: 0, lastError: nodeReason },
   },
   candidates: [],
 };
@@ -191,6 +196,14 @@ renderPairing();
 const silent = panel();
 if (!silent.includes("實際上什麼都沒有送出")) {
   failures.push("an open window that announces nothing was rendered as advertising");
+}
+if (!silent.includes(nodeReason)) {
+  failures.push("the panel did not show the node's own reason for announcing nothing");
+}
+// And it must not substitute a reason of its own, which would be false for
+// every cause but one.
+if (silent.includes("連得到的位址上")) {
+  failures.push("the panel asserts its own explanation instead of the node's");
 }
 // The headline must not assert advertising from an open window: carrying the
 // announce status exists precisely because the second does not follow.
