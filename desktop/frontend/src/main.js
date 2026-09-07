@@ -362,7 +362,7 @@ function renderPairingWindow() {
       "這個節點啟動時沒有 -discover，所以它既不廣播，也看不到別人廣播。" +
       "這不代表同網段沒有人在廣播——這台機器只是沒有在看。"));
     note.textContent = "要使用配對模式，請以 -discover 重新啟動節點；還需要 -allow-lan 與一個本機網段位址的 " +
-      "-peer-listen，因為廣播帶的是對端要連回來的位址，而那就是 peer listener 綁定的位址。";
+      "-peer-listen，因為廣播帶的就是 peer listener 綁定的那個位址，而對端只接受「位址與來源相符」的廣播。";
     on.disabled = true;
     off.disabled = true;
     return;
@@ -398,8 +398,9 @@ function renderPairingWindow() {
     headline.textContent = "配對視窗未開啟。";
     if ((announcing.announceableAddresses ?? 0) === 0) {
       detail.append(element("div", "stale",
-        "而且這台機器的 peer listener 不在其他機器連得到的位址上，" +
-        "所以就算開啟配對模式也送不出任何廣播。"));
+        "而且這台機器沒有任何可以廣播的位址，所以就算開啟配對模式也送不出任何廣播。"));
+      // The node's own reason, for the same reason as in announceLine.
+      detail.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
     }
     note.textContent = "開啟後，同網段的人都會知道這台機器在跑 AgentHub，並看到這個節點的名稱、平台與指紋" +
       "（不含公鑰）。這是為了配對而明確接受的取捨，時間到會自動停止。";
@@ -415,9 +416,13 @@ function renderPairingWindow() {
 // send fails is exactly as silent.
 function announceLine(announcing) {
   if ((announcing.announceableAddresses ?? 0) === 0) {
-    const box = element("div", "stale",
-      "但這台機器的 peer listener 不在其他機器連得到的位址上，所以實際上什麼都沒有送出。");
-    if (announcing.lastError) box.append(element("div", "muted", announcing.lastError));
+    // The node says why, and it is not always the same why: a loopback
+    // listener is unreachable, an IPv6 one is perfectly reachable and merely
+    // cannot be discovered on the IPv4 group, and an address this build will
+    // not deliver to is a third thing. Writing one sentence here for all of
+    // them would tell most owners something untrue.
+    const box = element("div", "stale", "這台機器沒有任何可以廣播的位址，所以實際上什麼都沒有送出。");
+    box.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
     return box;
   }
   if (announcing.lastError) {
