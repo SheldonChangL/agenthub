@@ -168,6 +168,99 @@ func summarize(sessions []Session) map[string]int {
 	return counts
 }
 
+// Pairing is everything the pairing panel needs, in one call so the panel makes
+// one round trip rather than three.
+//
+// Not one atomic answer: the window and the list are two requests, and the
+// second can fail on its own — which is why CandidatesError exists and why the
+// panel has to be able to render a window with no list beside it.
+type Pairing struct {
+	State      PairingState `json:"state"`
+	Candidates []Candidate  `json:"candidates"`
+	// Full means the list is at its limit, so a machine the owner is looking
+	// for may be missing for that reason rather than because it is silent.
+	Full bool `json:"full"`
+	// Notice is the node's own words about what this list is worth. Taken from
+	// the node rather than written here, so the warning cannot drift from the
+	// guarantees the node actually makes.
+	Notice string `json:"notice"`
+	// Availability is "on", "off" or "unknown", and it is three values rather
+	// than a boolean because the panel has three different things to say.
+	// "off" is a node started without -discover, which the owner can change by
+	// restarting it. "unknown" is a node that did not answer, where saying
+	// anything about the network would be a claim with nothing behind it. A
+	// boolean would have to render one of those as the other.
+	Availability string `json:"availability"`
+	// Error and CandidatesError are separate, and separate from Availability,
+	// because a failure to read must never be rendered as a fact about the
+	// network. An unreachable node looks exactly like an empty segment
+	// otherwise.
+	Error           string `json:"error,omitempty"`
+	CandidatesError string `json:"candidatesError,omitempty"`
+}
+
+// Pairing availability, as the panel has to talk about it.
+const (
+	pairingOn      = "on"
+	pairingOff     = "off"
+	pairingUnknown = "unknown"
+)
+
+// Pairing reports whether this machine is advertising and who else is.
+func (a *App) Pairing() Pairing {
+	activeClient, _ := a.current()
+	result := Pairing{Candidates: []Candidate{}}
+
+	state, err := activeClient.pairingState(a.ctx)
+	if err != nil {
+		result.Error = err.Error()
+		if isDiscoveryDisabled(err) {
+			result.Availability = pairingOff
+		} else {
+			result.Availability = pairingUnknown
+		}
+		return result
+	}
+	result.Availability = pairingOn
+	result.State = state
+
+	candidates, full, notice, err := activeClient.candidates(a.ctx)
+	if err != nil {
+		result.CandidatesError = err.Error()
+		return result
+	}
+	result.Candidates = candidates
+	result.Full = full
+	result.Notice = notice
+	return result
+}
+
+// OpenPairing starts advertising for a while. Seconds of zero asks the node for
+// its default window.
+//
+// The node refuses a window it could not announce, and refuses one outside its
+// own bounds, rather than clamping — so an owner who asked for an hour is told
+// the limit instead of being given fifteen minutes and believing they have an
+// hour. Those refusals arrive here as errors and are shown as they are.
+func (a *App) OpenPairing(seconds int) (PairingState, error) {
+	activeClient, _ := a.current()
+	return activeClient.openPairing(a.ctx, seconds)
+}
+
+// ClosePairing stops advertising now. Idempotent, so the button works whatever
+// the panel currently believes.
+func (a *App) ClosePairing() (PairingState, error) {
+	activeClient, _ := a.current()
+	return activeClient.closePairing(a.ctx)
+}
+
+// isDiscoveryDisabled distinguishes "this node is not looking" from "this node
+// could not be reached", which the panel must not conflate: the first is a
+// configuration the owner can change, the second is a failure.
+func isDiscoveryDisabled(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "DISCOVERY_DISABLED")
+}
+
 // Discover triggers a provider rescan on the node.
 func (a *App) Discover() (map[string]int, error) {
 	activeClient, _ := a.current()

@@ -159,3 +159,113 @@ func TestFrontendEveryElementLookupHasAnElement(t *testing.T) {
 		t.Fatal("no el(\"...\") lookups found; this test would pass vacuously")
 	}
 }
+
+// TestFrontendRendersHostileCandidateMetadataAsText covers the pairing panel,
+// whose input is the least trustworthy in the app.
+//
+// A peer's session metadata at least arrives authenticated: the signature is
+// verified and the envelope must name this node. A pairing candidate arrives on
+// a multicast group anyone on the segment can write to, unsigned, from a
+// machine this owner has no relationship with. Every field is whatever the
+// sender typed. The check also pins that the panel never presents a claim as a
+// fact, and that clicking a row cannot pre-confirm a fingerprint nobody
+// compared.
+func TestFrontendRendersHostileCandidateMetadataAsText(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the pairing panel render check")
+	}
+	script := filepath.Join("frontend", "test", "render-hostile-candidate.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pairing panel render check failed: %v\n%s", err, output)
+	}
+}
+
+// A warning with no style that applies to it is read as body text, and a
+// container with no overflow rule clips whatever an attacker can make long.
+//
+// Both of those shipped: `.stale` was scoped to `.nodedetail`, so the pairing
+// panel's "this is the absence of a fact, not a fact" notices rendered
+// identically to its statements; `.pill.bad` did not exist at all, so the flag
+// marking a contested candidate — the only place impersonation is visible from
+// this side — looked like a neutral pill; and the sidebar had no scroll, so 64
+// candidate rows (a state anyone on the segment can force) pushed the pairing
+// button and the full-list warning out of reach.
+//
+// A static check, so it cannot prove a colour is legible. What it does prove is
+// that a rule exists to be applied, which is what was missing.
+func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	css := string(stylesheet)
+
+	for what, selector := range map[string]string{
+		// Unscoped, so the pairing panel's notices get it too. A leading `.` at
+		// the start of a rule is what distinguishes it from `.nodedetail .stale`.
+		"a notice explaining an absence": "\n.stale {",
+		"a contested or duplicate flag":  "\n.pill.bad {",
+	} {
+		if !strings.Contains(css, selector) {
+			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
+				what, strings.TrimSpace(selector))
+		}
+	}
+
+	// The scrolling containers, each with the property that makes it scroll.
+	// Without these the sidebar clips, and what it clips is the button the
+	// owner needs and the warning that explains what they are looking at.
+	for _, required := range []struct{ selector, property string }{
+		{".nodelist {", "overflow-y"},
+		{"#candidate-rows {", "max-height"},
+	} {
+		start := strings.Index(css, required.selector)
+		if start < 0 {
+			t.Errorf("style.css has no %q rule", required.selector)
+			continue
+		}
+		block := css[start:]
+		if end := strings.Index(block, "}"); end > 0 {
+			block = block[:end]
+		}
+		if !strings.Contains(block, required.property) {
+			t.Errorf("%s does not set %s, so a long candidate list clips instead of scrolling",
+				required.selector, required.property)
+		}
+	}
+	// #candidate-rows needs a scroll of its own as well, which it gets from a
+	// grouped selector, so look for it anywhere.
+	if !strings.Contains(css, "#candidate-rows") {
+		t.Error("style.css never mentions #candidate-rows")
+	}
+}
+
+// TestFrontendPairingPanelSurvivesTheSequences drives the whole module —
+// wiring, polls and handlers — through the orderings a render-only check cannot
+// reach.
+//
+// The other render checks slice the source at the wiring marker, so
+// loadPairing, both intervals and the button handlers were executed by nothing.
+// Three defects lived in exactly that gap: a stale poll overwriting a fresher
+// one, an expired window counting 0:00 until the next read, and a countdown
+// tick rebuilding the candidate rows — which replaces the row an owner is about
+// to click.
+func TestFrontendPairingPanelSurvivesTheSequences(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the pairing lifecycle check")
+	}
+	script := filepath.Join("frontend", "test", "pairing-lifecycle.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pairing lifecycle check failed: %v\n%s", err, output)
+	}
+}

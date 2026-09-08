@@ -48,6 +48,29 @@
         <aside class="nodelist">
           <div class="nodelist-head">已配對節點</div>
           <div id="node-rows"></div>
+          <div class="pairingpanel">
+            <div class="nodelist-head">配對模式</div>
+            <div class="pairing-state">
+              <div id="pairing-headline" class="line"></div>
+              <!-- Its own element so the countdown can tick without redrawing
+                   the rows: rebuilding those every second replaces the one the
+                   pointer is over. -->
+              <div id="pairing-countdown" class="countdown"></div>
+              <div id="pairing-detail"></div>
+            </div>
+            <div class="pairing-actions">
+              <button id="btn-pairing-on" class="btn">開啟配對模式</button>
+              <button id="btn-pairing-off" class="ghost">停止廣播</button>
+            </div>
+            <p id="pairing-note" class="muted"></p>
+            <div class="nodelist-head">正在廣播的機器</div>
+            <!-- Outside the scroller below, because it qualifies every row in
+                 it: inside, a full list scrolls its own warning out of view,
+                 which is exactly the state an attacker can hold. -->
+            <div id="candidate-full"></div>
+            <div id="candidate-rows"></div>
+            <p id="candidate-notice" class="muted"></p>
+          </div>
           <div class="nodelist-foot">
             <button id="btn-pair" class="btn primary">配對新節點…</button>
             <p class="muted">配對只確認身分。要讓對方看到 session，仍須在本機視圖逐一設定公開對象。</p>
@@ -101,6 +124,7 @@
           <label>公鑰<input id="pair-public-key" type="text" autocomplete="off" /></label>
           <label>對方顯示的指紋<input id="pair-fingerprint" type="text" placeholder="2DCF 9604 DBA9 778A 6DDD 035B" autocomplete="off" /></label>
         </div>
+        <p id="pair-prefill-note" class="muted hidden"></p>
         <div class="modal-actions">
           <span class="muted">本機指紋：<code id="local-fingerprint">—</code></span>
           <button id="pair-submit" class="primary">指紋一致，信任此節點</button>

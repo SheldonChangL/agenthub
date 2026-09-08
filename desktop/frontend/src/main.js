@@ -6,6 +6,9 @@ import {
   TrustNode,
   RevokeNode,
   Heartbeat,
+  Pairing,
+  OpenPairing,
+  ClosePairing,
 } from "../wailsjs/go/main/App";
 
 const state = {
@@ -20,6 +23,15 @@ const state = {
   presenceError: "",
   selectedNode: null,
   busy: false,
+  // pairing is loaded separately from the overview: it changes on its own — a
+  // window expires, a machine starts or stops advertising — while the session
+  // table does not, and a candidate list that only updates when the owner
+  // clicks refresh is one they cannot use to find a machine.
+  pairing: null,
+  // pairingReadAt is when the countdown below was true. The remaining seconds
+  // come from the node, so they are subtracted from the moment they were read
+  // rather than compared against this machine's own idea of the expiry.
+  pairingReadAt: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -178,6 +190,7 @@ function render() {
   }
   if (network) {
     renderNodes();
+    renderPairing();
   }
 
   const rows = visible();
@@ -279,6 +292,287 @@ async function applyAudience(audience, noun) {
 }
 
 /* ---------------- network view ---------------- */
+
+/* ---------------- pairing mode and candidates ---------------- */
+
+// Every field of a candidate was chosen by whoever sent the packet, on a
+// multicast group anyone on the segment can write to. So this whole panel is
+// built with element(), which assigns textContent, and none of these values is
+// ever allowed to decide a class name.
+function candidateName(candidate) {
+  const name = (candidate.displayName || "").trim();
+  return name === "" ? "（未提供名稱）" : name;
+}
+
+// remainingSeconds arrives from the node and is then counted down locally from
+// the moment it was read.
+//
+// Elapsed time rather than a comparison against the node's expiry: the two
+// clocks can disagree, and elapsed time is the one thing they agree on.
+// performance.now() rather than Date.now() because it does not step — a wall
+// clock corrected backwards mid-window would otherwise inflate the countdown
+// until the next poll.
+function pairingRemaining() {
+  const window_ = state.pairing?.state;
+  if (!window_?.open) return 0;
+  const elapsed = Math.floor((performance.now() - state.pairingReadAt) / 1000);
+  return Math.max(0, (window_.remainingSeconds ?? 0) - elapsed);
+}
+
+function clock(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+// renderPairing redraws the whole panel, and is called when a read returns —
+// not on the countdown's tick. Rebuilding the rows every second would replace
+// the element under the pointer between an owner deciding to click a row and
+// clicking it, and if a row above expired in that second they would click a
+// different machine.
+function renderPairing() {
+  renderPairingWindow();
+  renderCandidates();
+}
+
+function renderPairingWindow() {
+  const headline = el("pairing-headline");
+  const detail = el("pairing-detail");
+  const note = el("pairing-note");
+  detail.replaceChildren();
+  tickCountdown();
+
+  const pairing = state.pairing;
+  const on = el("btn-pairing-on");
+  const off = el("btn-pairing-off");
+
+  if (!pairing) {
+    headline.textContent = "正在讀取配對狀態…";
+    on.disabled = true;
+    off.disabled = true;
+    note.textContent = "";
+    return;
+  }
+
+  // Three different things to say, and a panel that collapses any two of them
+  // tells the owner to wait for something that is not coming, or to change a
+  // setting that is not the problem.
+  if (pairing.availability === "off") {
+    headline.textContent = "這台機器沒有在看，也不會廣播。";
+    detail.append(element("div", "stale",
+      "這個節點啟動時沒有 -discover，所以它既不廣播，也看不到別人廣播。" +
+      "這不代表同網段沒有人在廣播——這台機器只是沒有在看。"));
+    note.textContent = "要使用配對模式，請以 -discover 重新啟動節點；還需要 -allow-lan 與一個本機網段位址的 " +
+      "-peer-listen，因為廣播帶的就是 peer listener 綁定的那個位址，而對端只接受「位址與來源相符」的廣播。";
+    on.disabled = true;
+    off.disabled = true;
+    return;
+  }
+  if (pairing.availability !== "on") {
+    headline.textContent = "配對狀態讀不到。";
+    detail.append(element("div", "stale",
+      "無法向本機節點取得配對狀態，所以這裡不顯示任何內容。" +
+      "這是本機的讀取問題，不代表沒有人在廣播。"));
+    note.textContent = pairing.error || "";
+    on.disabled = true;
+    off.disabled = true;
+    return;
+  }
+
+  const window_ = pairing.state ?? {};
+  const announcing = window_.announcing ?? {};
+  // The node refuses to open a window it could not announce on — the same
+  // condition, checked there. Leaving the button live would invite the owner to
+  // press it and read a 409 to learn what this panel already knows.
+  const canAnnounce = (announcing.announceableAddresses ?? 0) > 0;
+  on.disabled = state.busy || !canAnnounce;
+  off.disabled = state.busy || !window_.open;
+
+  if (window_.open) {
+    const left = pairingRemaining();
+    // The window and the announcing are two lines because they are two facts.
+    // Saying "正在廣播" for an open window asserts the second from the first,
+    // and the whole point of carrying `announcing` is that it does not follow.
+    // The node closes the window itself; this machine only knows the count
+    // reached zero. Saying so beats counting "剩 0:00" until the next read.
+    headline.textContent = left === 0 ? "配對視窗已到期，正在向節點確認…" : "配對視窗開啟中";
+    detail.append(announceLine(announcing));
+    note.textContent = "時間到會自動停止。在這段時間內，同網段的人都能看到這台機器在跑 AgentHub，" +
+      "以及這個節點的名稱、平台與指紋。";
+  } else if (!canAnnounce) {
+    // Not "opening it would achieve nothing" — the node will not open it. Two
+    // different sentences, and the earlier one sat directly above a note
+    // promising what opening would reveal, which contradicted it.
+    headline.textContent = "配對視窗無法開啟。";
+    detail.append(element("div", "stale",
+      "這台機器沒有任何可以廣播的位址，節點會拒絕開啟配對模式。"));
+    detail.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
+    note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
+  } else {
+    headline.textContent = "配對視窗未開啟。";
+    note.textContent = "開啟後，同網段的人都會知道這台機器在跑 AgentHub，並看到這個節點的名稱、平台與指紋" +
+      "（不含公鑰）。這是為了配對而明確接受的取捨，時間到會自動停止。";
+  }
+}
+
+// announceLine says what the announce loop actually managed to do.
+//
+// This is the one failure an owner cannot see from the other machine: the
+// window is open, this panel looks fine, and the other machine waits for a
+// candidate that never arrives. So a failure is shown whenever the node reports
+// one, not only when there is no address — a node with an address whose every
+// send fails is exactly as silent.
+function announceLine(announcing) {
+  if ((announcing.announceableAddresses ?? 0) === 0) {
+    // The node says why, and it is not always the same why: a loopback
+    // listener is unreachable, an IPv6 one is perfectly reachable and merely
+    // cannot be discovered on the IPv4 group, and an address this build will
+    // not deliver to is a third thing. Writing one sentence here for all of
+    // them would tell most owners something untrue.
+    const box = element("div", "stale", "這台機器沒有任何可以廣播的位址，所以實際上什麼都沒有送出。");
+    box.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
+    return box;
+  }
+  if (announcing.lastError) {
+    const box = element("div", "stale", "最後一次廣播失敗了，所以現在可能沒有任何人看到這台機器。");
+    box.append(element("div", "muted", announcing.lastError));
+    return box;
+  }
+  if (announcing.lastAnnouncedAt) {
+    return element("div", "muted", `最後一次廣播：${relative(announcing.lastAnnouncedAt)}`);
+  }
+  return element("div", "muted", "還沒有送出第一次廣播。");
+}
+
+// tickCountdown updates only the countdown's own text, leaving the rows alone.
+function tickCountdown() {
+  const line = el("pairing-countdown");
+  const left = pairingRemaining();
+  if (!state.pairing?.state?.open) {
+    line.textContent = "";
+    return;
+  }
+  line.textContent = left === 0 ? "" : `剩 ${clock(left)}`;
+}
+
+function renderCandidates() {
+  const rows = el("candidate-rows");
+  const notice = el("candidate-notice");
+  const full = el("candidate-full");
+  rows.replaceChildren();
+  full.replaceChildren();
+  notice.textContent = "";
+
+  const pairing = state.pairing;
+  if (!pairing) return;
+  if (pairing.availability === "off") {
+    rows.append(element("div", "empty",
+      "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。"));
+    return;
+  }
+  if (pairing.availability !== "on") {
+    rows.append(element("div", "empty",
+      "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。"));
+    return;
+  }
+  if (pairing.candidatesError) {
+    rows.append(element("div", "stale",
+      "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"));
+    rows.append(element("div", "muted", pairing.candidatesError));
+    return;
+  }
+  // In its own element above the list, not the first row of it. A full list is
+  // long by definition — that is what full means — and the rows scroll, so a
+  // warning inside them is scrolled away by the reader who most needs it.
+  // Measured: with 64 rows it left the view after 600px of scrolling.
+  if (pairing.full) {
+    full.append(element("div", "stale",
+      "候選清單已滿。同網段有人可以持續送出封包把清單佔滿，" +
+      "所以你要找的機器有可能因此沒有出現，而不是因為它沒在廣播。"));
+  }
+  const candidates = pairing.candidates ?? [];
+  if (candidates.length === 0) {
+    rows.append(element("div", "empty", "目前沒有看到任何機器在廣播。"));
+  }
+  for (const candidate of candidates) {
+    rows.append(candidateRow(candidate));
+  }
+  // The node's own words about what this list is worth, so the warning here
+  // cannot drift from the guarantees the node actually makes.
+  if (pairing.notice) notice.textContent = pairing.notice;
+}
+
+function candidateRow(candidate) {
+  const row = element("div", "candidaterow");
+  const line = element("div", "line");
+  line.append(element("span", "name", candidateName(candidate)));
+  // A flag is how impersonation is visible at all from this side, so it is
+  // shown on the row rather than in a detail view someone has to open.
+  if (candidate.contested) line.append(pill("身分有爭用", "bad"));
+  if (candidate.duplicate) line.append(pill("名稱或指紋重複", "bad"));
+  row.append(line);
+  row.append(element("div", "meta", `${candidate.platform || "平台未提供"} · ${candidate.address}`));
+  // The node id and the fingerprint in full, never a prefix: comparing the
+  // first few groups is exactly what a forger can defeat, and these are the two
+  // values that decide which machine gets trusted. `ah candidates` prints every
+  // field, and #61 asks the two surfaces to agree, so nothing is omitted here
+  // either.
+  row.append(element("div", "fingerprint", candidate.nodeId));
+  row.append(element("div", "fingerprint", candidate.fingerprint));
+  row.append(element("div", "muted",
+    `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`));
+  const use = element("button", "ghost", "用這一列開始配對…");
+  use.onclick = () => prefillPairFrom(candidate);
+  row.append(use);
+  return row;
+}
+
+// prefillPairFrom copies the announced claims into the pairing form.
+//
+// It cannot complete a pairing, and it must not look as though it could. The
+// announcement carries no public key by design, so the owner still has to get
+// that from the other machine — and the fingerprint field is their statement
+// that they compared one there, so filling it from the network would make that
+// statement on their behalf.
+//
+// The announced fingerprint is deliberately NOT repeated here. Printing it one
+// line above the field the note tells the owner not to fill from the list would
+// put the exact string to type on screen. It stays on the row, where it reads
+// as a claim rather than as an instruction.
+function prefillPairFrom(candidate) {
+  el("pair-node-id").value = candidate.nodeId;
+  el("pair-display-name").value = candidate.displayName || "";
+  el("pair-platform").value = candidate.platform || "";
+  el("pair-public-key").value = "";
+  el("pair-fingerprint").value = "";
+
+  const note = el("pair-prefill-note");
+  note.replaceChildren();
+  // The flags follow the owner into the dialog. The row is where impersonation
+  // is visible, and leaving that behind at the moment of deciding to trust is
+  // leaving it behind at the only moment it matters.
+  const flags = [];
+  if (candidate.contested) flags.push("身分有爭用");
+  if (candidate.duplicate) flags.push("名稱或指紋重複");
+  if (flags.length > 0) {
+    // Both, when both. A ternary picked one, so a row the list flags twice
+    // arrived in the dialog — where trust is granted — flagged once.
+    note.append(element("div", "stale",
+      "這一列被標記為" + flags.join("、") +
+      "：同網段有另一份廣播與它衝突，其中至少一份是假的。除非你能在對方機器上直接核對，否則不要信任它。"));
+  }
+  note.append(element("div", "",
+    "節點 ID、名稱與平台是從廣播帶進來的，全都是對方自己宣稱的，沒有經過任何驗證。"));
+  note.append(element("div", "",
+    "公鑰不在廣播內容裡，必須在對方機器上執行 ah node 取得。指紋也請看對方螢幕上顯示的那一組，" +
+    "逐組核對後再填進來——這個欄位的意思就是「我核對過了」。"));
+  // The node id is what trust is keyed on, and the node only checks that the
+  // key matches the fingerprint, never that either belongs to this id.
+  note.append(element("div", "",
+    "同時請確認對方 ah node 顯示的節點 ID 與上面這一組完全相同：信任是記在節點 ID 上的，" +
+    "而本機只會檢查公鑰與指紋相符，不會檢查它們屬於這個 ID。"));
+  note.classList.remove("hidden");
+  openPairModal();
+}
 
 function renderNodes() {
   const container = el("node-rows");
@@ -484,6 +778,10 @@ function closePairModal() {
   for (const id of ["pair-node-id", "pair-display-name", "pair-platform", "pair-public-key", "pair-fingerprint"]) {
     el(id).value = "";
   }
+  // The note describes where the fields came from, so it must not outlive them.
+  const note = el("pair-prefill-note");
+  note.textContent = "";
+  note.classList.add("hidden");
 }
 
 /* ---------------- audience picker ---------------- */
@@ -543,6 +841,10 @@ for (const segment of document.querySelectorAll("#view-switch span")) {
   segment.onclick = () => {
     state.view = segment.dataset.view;
     render();
+    // Read on arrival rather than on the next poll: a candidate list that is up
+    // to five seconds stale when the view opens is one the owner will read as
+    // "nobody is advertising".
+    if (state.view === "network") loadPairing().catch(() => {});
   };
 }
 
@@ -609,4 +911,78 @@ el("modal").onclick = (event) => {
   if (event.target === el("modal")) el("modal").classList.add("hidden");
 };
 
-load().catch((error) => banner(`載入失敗：${error}`));
+/* ---------------- pairing panel wiring ---------------- */
+
+// loadPairing is separate from load() because a failure to read the pairing
+// state must not blank the session table, and because this one is polled: a
+// window expires and machines come and go on their own.
+// Reads are numbered so a slow one cannot overwrite a fast one.
+//
+// The client's timeout is 15 seconds and the poll runs every 5, so three can be
+// in flight at once. Without this, clicking Stop showed the window closed and
+// then an older reply put it back to "open, 2:30 left" with the Stop button
+// live again — the panel asserting, from a stale read, something the owner had
+// just changed.
+let pairingRequest = 0;
+let pairingApplied = 0;
+
+async function loadPairing() {
+  const sequence = ++pairingRequest;
+  let result;
+  try {
+    result = await Pairing();
+  } catch (error) {
+    // A binding that threw is not a fact about the network either.
+    result = { availability: "unknown", candidates: [], error: String(error) };
+  }
+  if (sequence <= pairingApplied) {
+    // A later read already landed. This one describes an older moment.
+    return;
+  }
+  pairingApplied = sequence;
+  state.pairing = result;
+  // Stamped when the answer is applied, from the monotonic clock the countdown
+  // is subtracted against.
+  state.pairingReadAt = performance.now();
+  if (state.view === "network") renderPairing();
+}
+
+el("btn-pairing-on").onclick = () =>
+  withBusy("開啟配對模式", async () => {
+    // No duration: the node's own default is the one the node documents, and
+    // sending a number from here would make this window disagree with `ah`.
+    await OpenPairing(0);
+    await loadPairing();
+  });
+
+el("btn-pairing-off").onclick = () =>
+  withBusy("停止廣播", async () => {
+    await ClosePairing();
+    await loadPairing();
+  });
+
+// The panel is polled only while it is on screen.
+setInterval(() => {
+  if (state.view !== "network") return;
+  loadPairing().catch(() => {});
+}, 5000);
+
+// And the countdown ticks in between, so an expiring window is visibly
+// expiring. Only the countdown's own text is touched: redrawing the panel here
+// would rebuild the candidate rows every second, replacing the row an owner is
+// about to click.
+setInterval(() => {
+  if (state.view !== "network" || !state.pairing?.state?.open) return;
+  const before = pairingRemaining();
+  tickCountdown();
+  // The node is what closes the window. When the count reaches zero, ask it
+  // rather than waiting up to five seconds to stop claiming an open window.
+  if (before === 0) {
+    renderPairingWindow();
+    loadPairing().catch(() => {});
+  }
+}, 1000);
+
+load()
+  .then(loadPairing)
+  .catch((error) => banner(`載入失敗：${error}`));
