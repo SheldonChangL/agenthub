@@ -2,6 +2,8 @@ package registry
 
 import (
 	"context"
+
+	"agenthub.local/agenthub/internal/label"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -378,15 +380,26 @@ func TestIsPairedAnswersWithoutReadingTheRow(t *testing.T) {
 	}
 }
 
-// The bound on a peer's name is the same one this node applies to its own.
+// A peer's display name is bounded, and by the trust store's own limit.
 //
-// Two numbers that drift apart fail in the worst place: this node stores a name
-// it is happy with, announces it, and the pairing is refused on the other
-// machine — where the owner of the name cannot see the reason. The constant is
-// shared so that cannot happen, and this holds both sides to it.
-func TestAPeerNameIsBoundedByTheSameLimitAsThisNodes(t *testing.T) {
+// Deliberately not this node's, which is smaller: a peer's name is a label this
+// node received and shows, while its own is one it transmits, and only the
+// second is dropped by an announcement that will not carry it. Relaxing this
+// bound costs a wider row; relaxing the other costs an announcement with no
+// name in it. The two are different rules, and unifying them would reintroduce
+// whichever bug the loser of that merge was preventing.
+func TestAPeerNameIsBoundedByTheTrustStoresOwnLimit(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
+
+	// Between the two bounds, to pin down which one applies here: a name this
+	// node would refuse for itself is fine for a peer.
+	betweenTheBounds := peer("node_between000000000000", "key-between")
+	betweenTheBounds.DisplayName = strings.Repeat("a", label.MaxLength+1)
+	if err := store.TrustNode(ctx, betweenTheBounds); err != nil {
+		t.Errorf("a peer name of %d bytes was refused under this node's own bound: %v",
+			len(betweenTheBounds.DisplayName), err)
+	}
 
 	tooLong := peer("node_verbose00000000000", "key-a")
 	tooLong.DisplayName = strings.Repeat("a", MaxDisplayName+1)

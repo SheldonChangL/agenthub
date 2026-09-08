@@ -1,6 +1,8 @@
-package model
+package label
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -9,7 +11,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxLabelLength bounds each human-readable label that crosses the network.
+// MaxLength bounds each human-readable label that crosses the network.
 //
 // These reach a person's screen, and every one of them is chosen by whoever
 // sent the packet — on a multicast group anyone on the network can write to.
@@ -17,13 +19,53 @@ import (
 // place to write to the reader, not a label. A DNS TXT string cannot exceed 255
 // bytes anyway; this is smaller because a display name that does not fit on a
 // line is not a display name.
-const MaxLabelLength = 64
+const MaxLength = 64
 
-// PrintableLabel keeps a human-readable label only if it is one, and returns
+// Announceable returns the form of a name this node would actually
+// announce, or an error saying why there is none.
+//
+// Normalise rather than refuse. Printable is a normaliser as much as a
+// judge — NFD becomes NFC, a variation selector is dropped, runs of spaces
+// collapse — and refusing everything that is not already its own output turns
+// ordinary names into dead ends. macOS hands out NFD, and this whole change is
+// about macOS: "café mac" typed there was refused with a message naming the
+// same eight visible characters back, because the two differ only in bytes. The
+// emoji case had no exit at all — the suggested form of "☕️" is one the macOS
+// picker cannot produce.
+//
+// So the announceable form is what gets stored. What the owner sees in their
+// own UI is then the string on the wire, which is the property that mattered;
+// insisting they type it was never part of it.
+//
+// The bound is the announcement's, not the trust store's larger one. A peer's
+// name is a label this node received and displays; this one is a label this
+// node transmits, and the announcement drops any field Printable refuses
+// — silently, because a TXT record has nowhere to report an error to.
+func Announceable(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("display name is required")
+	}
+	clean := Printable(name)
+	if clean != "" {
+		return clean, nil
+	}
+	// Two different failures, and a person can act on only one of them. Saying
+	// "is 10 bytes, and must be at most 64" to someone whose name was refused
+	// for a zero-width character reads as nonsense.
+	if len(name) > MaxLength {
+		return "", fmt.Errorf("display name %q is %d bytes; an announcement carries at most %d",
+			name, len(name), MaxLength)
+	}
+	return "", fmt.Errorf(
+		"display name %q cannot be announced: it has to contain characters that render, "+
+			"and no control, invisible or direction-changing ones", name)
+}
+
+// Printable keeps a human-readable label only if it is one, and returns
 // the normalised form.
 //
-// It lives here rather than beside the announcement code because both sides of
-// the exchange need the same rule: a peer's label is judged by it on the way
+// It lives in a package of its own, below both, because both sides of the
+// exchange need the same rule: a peer's label is judged by it on the way
 // in, and this node's own name has to satisfy it on the way out or the
 // announcement carries no name at all.
 //
@@ -57,8 +99,8 @@ const MaxLabelLength = 64
 // а in "lаptop" is a different letter, and no normalisation makes it the same
 // one; mixed-script detection would, and is not done here. The fingerprint
 // comparison in the handshake is what separates two rows that read alike.
-func PrintableLabel(value string) string {
-	if len(value) == 0 || len(value) > MaxLabelLength {
+func Printable(value string) string {
+	if len(value) == 0 || len(value) > MaxLength {
 		return ""
 	}
 	// Before anything else: strings.Map below replaces an invalid byte with
@@ -100,7 +142,7 @@ func PrintableLabel(value string) string {
 	}
 	// Normalisation can lengthen a string, so the bound is applied to what will
 	// actually be stored and shown.
-	if len(clean) > MaxLabelLength {
+	if len(clean) > MaxLength {
 		return ""
 	}
 	for _, r := range clean {

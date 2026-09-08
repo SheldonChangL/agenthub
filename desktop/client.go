@@ -133,6 +133,9 @@ type PairingState struct {
 	// warning names, and it changes when the node restarts under a different
 	// -display-name — which is exactly what that warning tells an owner to do.
 	DisplayName string `json:"displayName"`
+	// NameIsChosen says whether a person picked that name or the node read it
+	// off the machine. The warning names a remedy, and the remedy differs.
+	NameIsChosen bool `json:"nameIsChosen"`
 }
 
 // responseCap bounds what this app will read from its own node. Large enough

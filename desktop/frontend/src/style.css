@@ -597,4 +597,7 @@ table.peer-sessions td.mono {
 #pairing-note .claimed {
   /* Against the muted note text, muted-on-muted would not read as set apart. */
   color: var(--text);
+  /* The same isolation the inbox gives a sender: a right-to-left name inside a
+     left-to-right sentence otherwise reorders the punctuation around it. */
+  unicode-bidi: isolate;
 }

@@ -312,6 +312,7 @@ func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
 		case "/v1/pairing":
 			_, _ = w.Write([]byte(`{"open":true,"openedAt":"2026-09-07T07:00:00Z",
 				"expiresAt":"2026-09-07T07:05:00Z","remainingSeconds":240,
+				"displayName":"sheldon.chang mac","nameIsChosen":true,
 				"announcing":{"announceableAddresses":1,"lastAnnouncedAt":"2026-09-07T07:00:20Z"}}`))
 		case "/v1/pairing/candidates":
 			_, _ = w.Write([]byte(`{"candidates":[
@@ -336,6 +337,16 @@ func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
 	}
 	// The countdown comes from the node rather than being subtracted from the
 	// expiry here, because the node measured the window against its own clock.
+	// The name this node broadcasts, and whether a person picked it. Both reach
+	// the warning that tells an owner what the segment can see, and its remedy
+	// differs by the second — so a field lost in transit is a UI stating the
+	// wrong one confidently.
+	if pairing.State.DisplayName != "sheldon.chang mac" {
+		t.Errorf("displayName = %q, want the name the node says it announces", pairing.State.DisplayName)
+	}
+	if !pairing.State.NameIsChosen {
+		t.Error("nameIsChosen was lost, so the warning would say a chosen name was read off the machine")
+	}
 	if pairing.State.Announcing.Addresses != 1 || pairing.State.Announcing.LastSuccess.IsZero() {
 		t.Errorf("announcing = %+v, want one address and a last success", pairing.State.Announcing)
 	}

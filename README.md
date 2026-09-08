@@ -172,10 +172,21 @@ bin/agenthub-node --db ./data/agenthub.db --display-name "the machine on my desk
 ```
 
 It sticks, so the flag is not needed on later starts, and the node id does not
-change — existing pairings survive a rename. A name is refused if an
-announcement could not carry it: at most 64 bytes, made of characters that
-render. A peer you have already paired with keeps the name it recorded at
-pairing time; re-pair to update it there.
+change — existing pairings survive a rename. To hand the name back to the
+machine, pass the flag empty:
+
+```bash
+bin/agenthub-node --db ./data/agenthub.db --display-name ""
+```
+
+The name is stored in the form it will be announced in, which is not always the
+form you typed: NFD becomes NFC, `☕️` loses its variation selector, runs of
+spaces collapse. That is so what you read back is what the segment sees. A name
+is refused outright only if no announcement could carry it — over 64 bytes, or
+made of nothing that renders.
+
+A peer you have already paired with keeps the name it recorded at pairing time;
+re-pair to update it there.
 
 If the two machines are on a direct cable in a range that is not private —
 `122.122.0.0/16`, say — add `--treat-as-private 122.122.0.0/16` **on both**.

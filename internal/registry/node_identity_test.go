@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 )
 
@@ -164,10 +165,10 @@ func TestANameThatCouldNotBeAnnouncedIsNotStoredForThisNode(t *testing.T) {
 	// by the announcement for this node. 22 CJK characters is 66 bytes, and an
 	// unremarkable name in a product whose own UI is written in Chinese.
 	tooLong := strings.Repeat("三", 22)
-	if len(tooLong) <= model.MaxLabelLength || len(tooLong) > MaxDisplayName {
+	if len(tooLong) <= label.MaxLength || len(tooLong) > MaxDisplayName {
 		t.Fatalf("the fixture is %d bytes; it has to sit between the announcement's %d and "+
 			"the trust store's %d for this test to mean anything",
-			len(tooLong), model.MaxLabelLength, MaxDisplayName)
+			len(tooLong), label.MaxLength, MaxDisplayName)
 	}
 	if err := store.SetNodeDisplayName(ctx, tooLong, true); err == nil {
 		t.Error("a name the announcement would silently drop was stored as this node's own")
@@ -184,17 +185,29 @@ func TestANameThatCouldNotBeAnnouncedIsNotStoredForThisNode(t *testing.T) {
 		}
 	}
 
-	// A name the announcement would rewrite is refused rather than stored in
-	// one shape and sent in another. Two spaces collapse to one.
-	if err := store.SetNodeDisplayName(ctx, "my  mac", true); err == nil {
-		t.Error("a name that would be announced differently was stored as-is")
+	// A name the announcement would rewrite is stored in the rewritten form,
+	// not refused. What the owner reads back is then the string on the wire,
+	// which is the property this exists for; making them retype it was not.
+	for typed, announced := range map[string]string{
+		"my  mac":          "my mac",
+		"cafe\u0301 mac":   "caf\u00e9 mac",
+		"\u2615\ufe0f mac": "\u2615 mac",
+	} {
+		if err := store.SetNodeDisplayName(ctx, typed, true); err != nil {
+			t.Errorf("SetNodeDisplayName(%q) error = %v", typed, err)
+			continue
+		}
+		if got := storedIdentity(t, store).DisplayName; got != announced {
+			t.Errorf("SetNodeDisplayName(%q) stored %q, want the announced form %q",
+				typed, got, announced)
+		}
 	}
 
 	// And a name right at the bound is usable, so nothing is refused by an
 	// off-by-one.
-	atLimit := strings.Repeat("a", model.MaxLabelLength)
+	atLimit := strings.Repeat("a", label.MaxLength)
 	if err := store.SetNodeDisplayName(ctx, atLimit, false); err != nil {
-		t.Errorf("a name of exactly %d bytes was refused: %v", model.MaxLabelLength, err)
+		t.Errorf("a name of exactly %d bytes was refused: %v", label.MaxLength, err)
 	}
 }
 
@@ -206,7 +219,7 @@ func TestCreatingANodeWithAnUnannounceableNameIsRefused(t *testing.T) {
 	store := identityStore(t)
 	err := store.SaveNodeIdentity(ctx, model.NodeIdentity{
 		ID:          "node_0123456789abcdef",
-		DisplayName: strings.Repeat("a", model.MaxLabelLength+1),
+		DisplayName: strings.Repeat("a", label.MaxLength+1),
 		Platform:    "linux/amd64",
 		CreatedAt:   time.Now().UTC(),
 	})

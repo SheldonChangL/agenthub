@@ -217,6 +217,11 @@ func (s *Server) writePairingState(w http.ResponseWriter, status int, state pair
 		"open":        state.Open,
 		"announcing":  s.announcer.Status(),
 		"displayName": s.node.DisplayName,
+		// Where the name came from, because the two have different remedies:
+		// a name read from the machine is changed by renaming the machine or
+		// passing the flag, a chosen one only by passing the flag. A UI that
+		// states the wrong one sends its reader to the wrong place.
+		"nameIsChosen": s.node.NameIsChosen,
 	}
 	if state.Open {
 		body["openedAt"] = state.OpenedAt

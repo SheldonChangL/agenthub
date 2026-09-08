@@ -9,18 +9,10 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
-
-// MaxDisplayName is what this node may call itself.
-//
-// The announcement's bound, not the trust store's larger one for peer names.
-// This name is transmitted: a longer one is stored, shown in this node's own UI
-// as the string the network sees, and then dropped from the announcement with
-// nowhere to report it — so the owner is told their machine announces a name
-// that is not on the wire at all.
-const MaxDisplayName = model.MaxLabelLength
 
 // LoadOrCreate returns this node's identity, creating it on first run.
 //
@@ -36,19 +28,35 @@ const MaxDisplayName = model.MaxLabelLength
 // Trust is keyed on the node id, so either change is safe: a peer keeps the
 // name it recorded at pairing time until it pairs again.
 //
-// A chosen name the announcement would not carry is refused by the store, not
-// here. One enforcement point: a check in both places is a second rule that can
-// drift from the first, and the store is the boundary a name crosses to become
-// the announced one.
-func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) (model.NodeIdentity, error) {
+// Passing an empty name explicitly — given, with chosen empty — hands the name
+// back to the machine. It is the only way out of a pinned name, and without it
+// the flag is a door that locks behind you.
+//
+// A chosen name is resolved to its announceable form by label.Announceable,
+// the same function the store applies on the way in.
+func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string, given bool) (model.NodeIdentity, error) {
 	chosen = strings.TrimSpace(chosen)
+	// An empty name that was actually passed means the opposite of one that was
+	// not: hand the name back to the machine. Without the distinction, pinning
+	// is a one-way door out of which the only exit is editing the database.
+	release := given && chosen == ""
+	if chosen != "" {
+		// Resolved here as well as in the store, so the comparison below is
+		// against the form that would actually be written. The same function
+		// the store calls, not a second rule.
+		announceable, err := label.Announceable(chosen)
+		if err != nil {
+			return model.NodeIdentity{}, err
+		}
+		chosen = announceable
+	}
 
 	identity, err := store.GetNodeIdentity(ctx)
 	if err == nil {
 		name, pick := chosen, true
 		switch {
 		case chosen != "":
-		case identity.NameIsChosen:
+		case identity.NameIsChosen && !release:
 			// Somebody picked this. Not ours to revise.
 			return identity, nil
 		default:
@@ -113,17 +121,41 @@ var machineNameLookup = localMachineName
 // source rather than becoming a node with no announced name.
 func MachineName() string {
 	for _, candidate := range []string{machineNameLookup(), hostname()} {
-		if name := model.PrintableLabel(strings.TrimSpace(candidate)); name != "" {
-			return name
-		}
-		// Too long to announce is the common case, and truncating is better
-		// than discarding: "Sheldon 的 MacBook Pro …" identifies the machine,
-		// and "agenthub-node" does not.
-		if name := model.PrintableLabel(truncate(strings.TrimSpace(candidate))); name != "" {
+		if name := shortenUntilAnnounceable(strings.TrimSpace(candidate)); name != "" {
 			return name
 		}
 	}
 	return "agenthub-node"
+}
+
+// shortenUntilAnnounceable returns the longest prefix of a name that an
+// announcement will carry, or "" if no prefix will do.
+//
+// Cutting once to the bound is not enough. Normalisation can lengthen what it
+// is given — NFKC expands ㍿ to four characters and ½ to three — so a 64-byte
+// cut can come back over the bound and be refused, and the name is then
+// discarded whole. Measured: a ComputerName of thirty ㍿ made MachineName()
+// fall through to the hostname, which on this machine is the DNS name this
+// change exists to stop announcing. So the cut shrinks until something fits.
+func shortenUntilAnnounceable(candidate string) string {
+	for cut := len(candidate); cut > 0; {
+		if name := label.Printable(candidate[:cut]); name != "" {
+			return name
+		}
+		if cut > label.MaxLength {
+			// First pass goes straight to the bound rather than one rune at a
+			// time: a 4KB name would otherwise be normalised thousands of times.
+			cut = label.MaxLength
+		} else {
+			cut--
+		}
+		for cut > 0 && candidate[cut]&0xC0 == 0x80 {
+			// Never leave the cut inside a rune: the fragment is not valid
+			// UTF-8, and Printable would refuse it for the wrong reason.
+			cut--
+		}
+	}
+	return ""
 }
 
 func hostname() string {
@@ -132,23 +164,4 @@ func hostname() string {
 		return ""
 	}
 	return name
-}
-
-// truncate cuts a name to the announcement's bound on a rune boundary, so a
-// multi-byte name is not cut into invalid UTF-8.
-//
-// The bound is checked again by the caller, because normalisation can lengthen
-// a string: this cut is what makes a long name a candidate, not what proves it
-// acceptable.
-func truncate(name string) string {
-	if len(name) <= MaxDisplayName {
-		return name
-	}
-	cut := MaxDisplayName
-	// Back off the trailing bytes of a rune the cut landed inside. A UTF-8
-	// continuation byte is 10xxxxxx; the byte that starts a rune is not.
-	for cut > 0 && name[cut]&0xC0 == 0x80 {
-		cut--
-	}
-	return name[:cut]
 }
