@@ -228,6 +228,23 @@ if (!el("pairing-note").serialize().includes("J-SomeoneElse.example.com.tw")) {
 if (!el("pairing-note").serialize().includes('class="claimed"')) {
   failures.push("the broadcast name is not marked as a label");
 }
+// The warning also has to say where the name came from, because the remedy
+// differs and the sentence beside it names one. A chosen name described as
+// "read from this machine" is the same defect the display name had, one level
+// down: follow the instruction and the panel's own next sentence is false.
+if (!beforeOpening.includes("節點從這台機器讀來的")) {
+  failures.push(`the warning does not say the name was read from the machine: ${beforeOpening}`);
+}
+scope.state.localNameIsChosen = true;
+renderPairing();
+const chosen = el("pairing-note").serialize();
+if (chosen.includes("節點從這台機器讀來的")) {
+  failures.push("a chosen name is still described as one read off the machine");
+}
+if (!chosen.includes("這個名稱是指定的")) {
+  failures.push(`the warning does not say the name was chosen: ${chosen}`);
+}
+scope.state.localNameIsChosen = false;
 scope.state.localName = "";
 
 // 4. An open window on a machine with nothing to announce must say so. This is
