@@ -345,3 +345,35 @@ func TestSetNodeAddressUpdatesAPairedNode(t *testing.T) {
 		t.Fatalf("clearing an address disturbed the trust record: %+v", node)
 	}
 }
+
+// The candidate list asks this per packet, so it answers the question and reads
+// nothing else.
+func TestIsPairedAnswersWithoutReadingTheRow(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	const nodeID = "node_peer0000000000000"
+
+	paired, err := store.IsPaired(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("IsPaired() error = %v", err)
+	}
+	if paired {
+		t.Error("an unpaired node reported as paired")
+	}
+
+	if err := store.TrustNode(ctx, peer(nodeID, "key-a")); err != nil {
+		t.Fatal(err)
+	}
+	if paired, err = store.IsPaired(ctx, nodeID); err != nil || !paired {
+		t.Errorf("IsPaired() after pairing = %v, %v", paired, err)
+	}
+
+	// And a revoked node stops being paired, which is what makes it a
+	// candidate again.
+	if err := store.RevokeNode(ctx, nodeID); err != nil {
+		t.Fatal(err)
+	}
+	if paired, err = store.IsPaired(ctx, nodeID); err != nil || paired {
+		t.Errorf("IsPaired() after revoke = %v, %v", paired, err)
+	}
+}

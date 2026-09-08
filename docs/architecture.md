@@ -145,7 +145,7 @@ of them do, is recorded in
 | Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
 | MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced by the node and checked earlier in this process |
 | Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
-| Pairing | Manual: five arguments including a base64 public key. mDNS browses and fills addresses for already-paired nodes only — and `discovery.Announce` has no caller, so nothing announces yet and `-discover` learns nothing from another node. Step 9, #63 |
+| Pairing | Trust still takes five arguments including a base64 public key, and a compared fingerprint. What is automatic is finding the other machine: with `-discover`, a node can open a timed window in which it announces its id, name, platform and fingerprint — never its key — and lists others doing the same. Appearing in that list grants nothing. The handshake that would carry the key is #62. Step 9, #61 and #62 |
 | Distribution | CI builds all three binaries for six platforms and uploads them with checksums, so a reviewer can download one. No release workflow, no installer, and nothing tagged: a build reports the revision it came from, not a version. Step 10, #64 and #67 |
 
 ## Platform boundary

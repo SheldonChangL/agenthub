@@ -23,7 +23,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Architecture and issue plan for authenticated multi-node operation
 - No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
 - Nothing writes into a provider's session files or process, by design
-- Pairing is manual, and nothing announces itself for discovery (Step 9, issue #63)
+- Pairing still needs the peer's public key by hand, though a node can now announce itself for a while and see who else is announcing (Step 9, issues #61 and #62)
 - No release or installer: installing means building from source, though CI now
   uploads a build of every binary for six platforms (Step 10, issues #64 and #67)
 
@@ -240,6 +240,47 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
+| `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
+| `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
+| `DELETE` | `/v1/pairing` | Stop advertising now |
+| `GET` | `/v1/pairing/candidates` | Machines advertising right now. Every field is the sender's own claim |
+
+The four pairing endpoints exist only under `-discover`; without it they answer
+`409 DISCOVERY_DISABLED` rather than an empty list, because "nobody is
+advertising" and "this node is not looking" are different answers and only one
+of them means the owner should keep waiting.
+
+Advertising also needs somewhere for a peer to connect back to, and that is the
+peer listener's own bound address — so it needs `-allow-lan` *and* a
+`-peer-listen` on this machine's network address. What gets announced is that
+one address, sent from that address and out of the interface holding it, because
+a receiver lists an offer only when the address it carries is the address the
+datagram came from.
+
+Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when there is
+no such address, and the message says which case applies: a loopback listener
+that no other machine can reach, an IPv6 listener that is perfectly reachable
+but cannot be discovered while announcements go out on the IPv4 group, a
+`-peer-listen` naming a host rather than one address, or an address whose
+interface cannot carry a multicast packet — a point-to-point or VPN interface,
+where the address is fine and the announcement has nowhere to go. That last one
+is checked when the window is asked for rather than at startup, because an
+interface can lose the ability after boot. Announcing anyway would advertise an
+address nothing is listening on: the peer would see a candidate that looks
+right, with a matching fingerprint, and get a refused connection.
+
+A node with `-discover` joins the group on every interface that can carry it,
+re-checked every ten seconds so an adapter plugged in after startup is picked up
+without a restart — which is how a peer whose own listener is on a direct cable
+gets heard rather than silently missed. `GET /v1/pairing` carries `announcing`
+because an open window and a machine that is actually sending packets are
+separate facts: it reports how many addresses this node can announce, when it
+last tried and last succeeded, and why nothing is going out.
+
+Nothing in the candidate list is verified and appearing in it grants nothing.
+The fingerprint shown is the one announced, which is a hint for finding the
+right row and never evidence; what settles identity is comparing the
+fingerprint of the key that arrives in the handshake, on both machines.
 
 The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, and `POST /v1/messages`. It is never the owner's API.
 

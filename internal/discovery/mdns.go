@@ -18,23 +18,27 @@
 package discovery
 
 import (
-	"agenthub.local/agenthub/internal/identity"
 	"context"
 	"errors"
 	"fmt"
-	"golang.org/x/text/secure/precis"
-	"golang.org/x/text/unicode/norm"
 	"log"
 	"net"
 	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/dns/dnsmessage"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/text/secure/precis"
+	"golang.org/x/text/unicode/norm"
+
+	"agenthub.local/agenthub/internal/identity"
 )
 
 const (
@@ -382,6 +386,17 @@ func ParseAnnouncements(packet []byte) []Announcement {
 	return announcements
 }
 
+// Announceable reports what an offer field would actually carry, which is the
+// empty string when this node's own value cannot be announced.
+//
+// Exported so a node can find that out about itself at startup rather than
+// leaving the owner to notice that their machine appears in someone else's
+// candidate list with no name. A display name is the hostname, and a hostname
+// can be longer than MaxCandidateFieldLength or hold something PRECIS refuses.
+func Announceable(value string) string {
+	return printableField(value)
+}
+
 // printableField keeps a peer-supplied label only if it is one, and returns the
 // normalised form.
 //
@@ -545,8 +560,32 @@ func MulticastGroupV4() string { return multicastAddressV4 }
 // MulticastGroupV6 is the standard IPv6 mDNS group.
 func MulticastGroupV6() string { return multicastAddressV6 }
 
-// Listen joins the mDNS group and applies announcements until ctx is done.
-func (b *Browser) Listen(ctx context.Context, group string) error {
+// Handler adapts a Browser to Listen: it records the addresses of peers this
+// owner has already paired with and ignores everything else.
+func (b *Browser) Handler() PacketHandler {
+	return func(ctx context.Context, _ netip.Addr, announcements []Announcement) {
+		if _, err := b.ApplyAll(ctx, announcements); err != nil {
+			log.Printf("discovery could not apply announcements: %v", err)
+		}
+	}
+}
+
+// PacketHandler is given every packet this node receives on the group, with the
+// address it came from.
+//
+// The source is passed rather than dropped because two of the checks that make
+// discovery safe need it: an announced address has to be one the announcing host
+// is actually answering at, and without the source a single host can fill a
+// candidate list with entries that all resolve to itself.
+type PacketHandler func(ctx context.Context, source netip.Addr, announcements []Announcement)
+
+// Listen joins the group and hands every packet to each handler.
+//
+// More than one handler because a packet is two different things at once: an
+// address for a peer this owner has already paired with, and an offer from one
+// they have not. Parsed once and given to both, rather than parsed twice or
+// routed by guessing which it is.
+func Listen(ctx context.Context, group string, handlers ...PacketHandler) error {
 	address, err := net.ResolveUDPAddr("udp", group)
 	if err != nil {
 		return fmt.Errorf("resolve mDNS group %q: %w", group, err)
@@ -558,9 +597,11 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 	defer func() { _ = connection.Close() }()
 	// The closer must not outlive this function. Without the done channel it
 	// stays parked on ctx.Done() after a read error returns, which is a leaked
-	// goroutine per Listen call.
+	// goroutine per Listen call. The membership refresher is bounded the same
+	// way, for the same reason.
 	done := make(chan struct{})
 	defer close(done)
+	subscribe(ctx, done, connection, address)
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -574,20 +615,75 @@ func (b *Browser) Listen(ctx context.Context, group string) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		read, _, err := connection.ReadFrom(buffer)
+		read, from, err := connection.ReadFromUDPAddrPort(buffer)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("read mDNS packet: %w", err)
 		}
-		if _, err := b.ApplyAll(ctx, ParseAnnouncements(buffer[:read])); err != nil {
-			log.Printf("discovery could not apply announcements: %v", err)
-		}
+		dispatch(ctx, from, buffer[:read], handlers)
 	}
 }
 
-// Announce writes this node's own service record to the group.
+// dispatch parses one packet and gives it to every handler, with the address it
+// arrived from.
+//
+// Separate from the read loop so the source can be tested without a socket.
+//
+// The source is what the candidate layer checks a claimed address against, so
+// passing the wrong one — or the zero value — would leave that check comparing
+// an announcement to nothing. It is worth checking because it is harder to
+// choose than the packet's contents, not because it cannot be chosen: anyone
+// who can open a raw socket on the segment can put whatever they like in it.
+// What the check rules out is a sender using an ordinary UDP socket to claim
+// somebody else's address. What this does not cover is the socket read itself.
+func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers []PacketHandler) {
+	// Passed as it arrived. Normalising a v4-mapped sender and stripping a zone
+	// is the comparing side's job, and doing it in both places would leave
+	// neither one load-bearing.
+	source := from.Addr()
+	// A datagram from loopback is refused here, before any handler sees it —
+	// including Browser.apply, which does not look at the source at all.
+	// Candidates refuses it a second time on its own, so the property does not
+	// depend on every future reader of this socket remembering to.
+	//
+	// IP_MULTICAST_LOOP hands a copy of every outgoing multicast datagram back
+	// to local sockets that have joined the group, and the copy is matched
+	// against the membership of the interface it was *sent* on — the source
+	// address is not consulted. So a local process sending to the group from
+	// 127.0.0.1 is delivered to this socket through its ordinary membership on
+	// the default interface. Measured: the row lands even when nothing has
+	// joined loopback at all, so which interfaces are joined cannot prevent it.
+	// The write even reports EADDRNOTAVAIL and the copy arrives regardless.
+	// A unicast datagram straight at the port arrives too, since the socket is
+	// bound to the wildcard — another reason this cannot be a question about
+	// memberships.
+	//
+	// Without this, any unprivileged local process — a second user on a shared
+	// machine, who cannot read the first user's files — could put a chosen
+	// display name and fingerprint on the owner's candidate list, and could do
+	// it under the default loopback-only policy, which is the configuration
+	// where a forgery from the local network is refused. The source check the
+	// candidate layer relies on is void here, because a forger on loopback
+	// trivially sends from the address it claims.
+	//
+	// Nothing legitimate is dropped: reachableAt refuses to announce a loopback
+	// address, and dialGroup binds the source to the address being advertised,
+	// so this node's own announcements arrive from its real address and its
+	// self-exclusion still sees them.
+	if source.Unmap().IsLoopback() {
+		return
+	}
+	announcements := ParseAnnouncements(packet)
+	if len(announcements) == 0 {
+		return
+	}
+	for _, handle := range handlers {
+		handle(ctx, source, announcements)
+	}
+}
+
 // Offer is what a node says about itself while pairing mode is open.
 //
 // Fingerprint travels; the public key does not. A key on a multicast group is a
@@ -600,10 +696,435 @@ type Offer struct {
 	Fingerprint string
 }
 
-// Announce writes this node's own service record to the group, saying only where
-// it is. A node that has not opened pairing mode announces exactly this.
-func Announce(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr) error {
-	return AnnounceOffering(ctx, group, nodeID, instance, port, addresses, Offer{})
+// subscribe joins the group everywhere a peer's announcement could arrive, and
+// keeps doing so for as long as the listener runs.
+//
+// A function of its own, and a variable, so a test can see that Listen calls it
+// and can watch what it is asked to do. The alternative here was a test that
+// read this file for the call, which `if false { … }` around it defeats — and
+// which fails a refactor that is correct.
+//
+// The nil interface ListenMulticastUDP was given joins one interface: the
+// system's choice, which is the default route's. Measured — a datagram sent out
+// of a second interface was not heard by that join at all. So a peer whose own
+// listener is on a direct cable announces onto the cable, correctly, and this
+// node would never hear it.
+//
+// Re-checked on a ticker rather than only once, because interfaces appear after
+// a process starts: an owner plugs in a USB Ethernet adapter and runs a cable to
+// the machine they want to pair with, which is the case this feature is for.
+var subscribe = func(ctx context.Context, done <-chan struct{}, connection *net.UDPConn, group *net.UDPAddr) {
+	subscribeGroup(ctx, done, newMembership(connection, group))
+}
+
+// subscribeGroup joins now and keeps joining.
+//
+// Separate from the variable above so both halves are covered. Replacing
+// subscribe with a recorder proves Listen calls it and hands it a live context,
+// and nothing else — reducing this body to nothing passed the whole suite,
+// which is how the multi-interface join came to have no coverage at all despite
+// being the point of the change.
+func subscribeGroup(ctx context.Context, done <-chan struct{}, joins *membership) {
+	if added := joins.rejoin(); len(added) > 0 {
+		// "Joined", not "listening on": what is true is that this socket now
+		// has a membership on each of these.
+		log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
+	}
+	go joins.keepFresh(ctx, done)
+}
+
+// RejoinInterval is how often the group membership is re-checked for interfaces
+// that have appeared since the process started.
+//
+// Bounded by the shortest window a peer can open, not by CandidateTTL: an
+// unjoined interface has no row to expire, so the TTL says nothing about this.
+// A peer may open a window for as little as thirty seconds and announces every
+// twenty.
+//
+// What ten seconds buys is a bound on the delay, not a guarantee: an interface
+// appearing late in a short window can still be joined after that peer's last
+// announcement, so the shortest windows remain a matter of timing. Ten is the
+// point where the delay is small next to the interval a peer announces at,
+// while the cost stays one interface enumeration.
+//
+// The pairing package owns those two numbers and imports this one, so they
+// cannot be named here; the test writes them down and pairing's own test pins
+// them.
+const RejoinInterval = 10 * time.Second
+
+// membership keeps this socket subscribed to the group on every interface that
+// could carry it, not only the one the default route uses.
+//
+// Best-effort by design. The join the socket already has from
+// ListenMulticastUDP is what discovery ran on before any of this, so a machine
+// where every extra join fails is no worse off, and one interface refusing must
+// not stop the others.
+//
+// Joining widely grants nothing. Every packet still goes through the same
+// checks: an offer must name the address it came from, its node id must be
+// unpaired and well formed, and its address must be one the delivery policy
+// accepts. What arrives on one more interface is one more set of claims.
+type membership struct {
+	packet *ipv4.PacketConn
+	group  *net.UDPAddr
+	// rejoin is the work a tick does, and every is how often. Fields so a test
+	// can watch the loop doing it without waiting half a minute — the same seam
+	// the announce loop uses for its own send.
+	rejoin func() []string
+	every  time.Duration
+	// join is the syscall, injected for the same reason: a test needs to see
+	// which interfaces were offered, and to make one of them fail.
+	join func(*net.Interface, *net.UDPAddr) error
+
+	mu sync.Mutex
+	// reported is the set of failures already logged, so a condition that
+	// recurs every tick is one line rather than one line a tick.
+	reported map[string]struct{}
+}
+
+func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
+	packet := ipv4.NewPacketConn(connection)
+	m := &membership{
+		packet: packet,
+		group:  group,
+		every:  RejoinInterval,
+		join: func(iface *net.Interface, group *net.UDPAddr) error {
+			return packet.JoinGroup(iface, group)
+		},
+	}
+	m.rejoin = m.refresh
+	return m
+}
+
+// refresh attempts every interface that could carry a peer's announcement and
+// reports the ones that were not already joined.
+//
+// No record is kept of what has been joined, because the kernel keeps one: a
+// duplicate join fails, so a repeat call reports nothing and the log stays
+// quiet. A cache here would be an optimisation whose one distinctive behaviour
+// is harmful — an interface destroyed and re-created at the same index would be
+// skipped as already joined, which is precisely the case this refresh exists
+// for.
+//
+// What relying on the kernel's record does not cover, and is not covered
+// anywhere yet: on Linux a socket membership is matched on the group and the
+// interface index, while the device-level group is torn down when an interface
+// loses its last IPv4 address. If that is right — measured on macOS, reasoned
+// on Linux, see #93 — then an interface whose DHCP lease lapses and returns
+// stops delivering, and this refresh cannot repair it, because the duplicate
+// join is refused and nothing here leaves the group first.
+//
+// Most join failures are expected and are not reported: the membership the
+// system already took refuses to be duplicated, and an interface with no IPv4
+// stack at all refuses with EAFNOSUPPORT. Having no IPv4 *address* is not what
+// decides it — measured on this machine, four address-less interfaces joined
+// while five others refused — so the returned names are filtered by address
+// rather than by whether the join worked. Anything unexpected earns one line,
+// because a machine at its multicast membership limit fails here (Linux allows
+// twenty by default) and the interface just plugged in may be the one refused.
+func (m *membership) refresh() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		m.reportOnce("interfaces", fmt.Sprintf(
+			"could not list this machine's interfaces, so no announcement can be heard on one "+
+				"that appears later: %v", err))
+		return nil
+	}
+	var added []string
+	for i := range interfaces {
+		iface := &interfaces[i]
+		if !canCarryAnnouncements(iface) {
+			continue
+		}
+		err := m.join(iface, m.group)
+		switch {
+		case err == nil:
+			// Named for the log only when the interface has an IPv4 address of
+			// its own. On this machine four address-less interfaces join
+			// successfully while en0 — the only one with an address, and the
+			// only one an announcement can arrive on — is refused as a
+			// duplicate of the socket's own membership and never named. A line
+			// listing the four read as evidence the join was doing something.
+			if hasIPv4(iface) {
+				added = append(added, iface.Name)
+			}
+		case errors.Is(err, syscall.EADDRINUSE), errors.Is(err, syscall.EAFNOSUPPORT),
+			errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ENODEV):
+			// Expected: already joined, or no IPv4 on this device.
+		default:
+			m.reportOnce(iface.Name,
+				fmt.Sprintf("could not listen for announcements on %s: %v", iface.Name, err))
+		}
+	}
+	return added
+}
+
+// canCarryAnnouncements reports whether an interface is one a peer's
+// announcement could legitimately arrive on.
+//
+// Loopback and point-to-point are excluded because nothing legitimate announces
+// on them: reachableAt refuses to announce a loopback address, and a tun-mode
+// tunnel carries no multicast at all. A membership there could only ever
+// receive something forged, so taking one serves nothing.
+//
+// It is **not** a security property, and an earlier version of this comment
+// claimed it was. Two measurements say otherwise. A forged datagram sent to the
+// group from loopback arrives through the membership of the interface it was
+// sent on — the default one, which every configuration has — so refusing to
+// join lo0 never blocked it; what blocks it is the source check in dispatch.
+// And ListenMulticastUDP binds the wildcard, not the group, so a datagram
+// unicast straight at the port is delivered without any membership being
+// consulted: excluding a tunnel does not stop a peer on that tunnel sending
+// one. Whether a packet is acted on is decided by the checks it passes, never
+// by which interfaces this socket has joined.
+func canCarryAnnouncements(iface *net.Interface) bool {
+	return refuseFlags(iface) == nil
+}
+
+// refuseFlags is the one rule about an interface's flags, and says which flag
+// refused. The message names the condition and not the interface, so a caller
+// can compose one sentence around it.
+//
+// One function because there were two, kept in step by hand: the membership
+// asked a boolean and the announcing side asked for a reason, and nothing made
+// them agree. Two mutations survived on that — dropping the up check and the
+// multicast check from the membership's copy — because only the reason-shaped
+// one was tested.
+func refuseFlags(iface *net.Interface) error {
+	switch {
+	case iface.Flags&net.FlagUp == 0:
+		return errors.New("is down")
+	case iface.Flags&net.FlagPointToPoint != 0:
+		// A tunnel carries MULTICAST on macOS and for OpenVPN on Linux, so the
+		// other flags do not exclude it. What a tun-mode tunnel lacks is
+		// multicast delivery: the two ends can reach each other over TCP, which
+		// is why `ah pair` works across one, but a datagram sent to a group
+		// gets nowhere.
+		return errors.New("is a point-to-point interface — a tunnel — which carries no " +
+			"multicast, so an announcement sent on it would reach nobody. Pairing by hand " +
+			"with `ah pair` works over it")
+	case iface.Flags&net.FlagLoopback != 0:
+		// Nothing legitimate announces from loopback, so a membership there
+		// could only receive a forgery. The forgery arrives through the default
+		// interface's membership regardless — see dispatch, which is what
+		// actually refuses it — but joining an interface no announcement can
+		// legitimately arrive on serves nothing.
+		return errors.New("is loopback and reaches no other machine")
+	case iface.Flags&net.FlagMulticast == 0:
+		return errors.New("cannot carry a multicast packet")
+	}
+	return nil
+}
+
+// hasIPv4 reports whether an interface holds an IPv4 address, which is what
+// decides whether an announcement could arrive on it. Not the same question as
+// whether a join succeeds: an address-less interface joins on this machine, and
+// several address-less ones refuse.
+func hasIPv4(iface *net.Interface) bool {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		prefix, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if parsed, ok := netip.AddrFromSlice(prefix.IP); ok && parsed.Unmap().Is4() {
+			return true
+		}
+	}
+	return false
+}
+
+// reportOnce logs a message the first time it is seen, so a condition that
+// recurs on every refresh does not become a line every RejoinInterval.
+// Keyed on the interface rather than on the message, so the set is bounded by
+// the interfaces this machine has had rather than growing with every distinct
+// errno text. A host churning veths or ppp units would otherwise accumulate one
+// entry per name per error for the process's life.
+func (m *membership) reportOnce(key, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.reported == nil {
+		m.reported = map[string]struct{}{}
+	}
+	if _, seen := m.reported[key]; seen {
+		return
+	}
+	m.reported[key] = struct{}{}
+	log.Print(message)
+}
+
+// keepFresh re-checks the membership until the listener stops.
+func (m *membership) keepFresh(ctx context.Context, done <-chan struct{}) {
+	ticker := time.NewTicker(m.every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-ticker.C:
+			if added := m.rejoin(); len(added) > 0 {
+				// Logged only when it changes: an interface appearing is worth
+				// a line, and the same list every RejoinInterval is not.
+				log.Printf("joined the announcement group on %s", strings.Join(added, ", "))
+			}
+		}
+	}
+}
+
+// dialGroup opens the socket an announcement leaves by.
+//
+// A receiver accepts an announcement only when the address it carries is the
+// address the datagram came from — see the source check in Candidates.observe.
+// So the packet has to leave by the interface that holds the address being
+// advertised, not by whichever one the default route happens to pick.
+//
+// This is not hypothetical. With a peer listener on a direct cable
+// (122.122.122.1 on en8) and wifi as the default route, net.DialUDP with a nil
+// local address sent from 192.168.161.2, every receiver dropped the packet for
+// naming an address it did not come from, and the announcing node reported a
+// successful announcement with no error — an open window that nobody could ever
+// see.
+//
+// Both halves are set, and setting only the source is worse than setting
+// neither where it does not also select the interface: the packet then goes out
+// on the wrong wire with a source matching its own claim, so a receiver on a
+// segment that cannot reach the address accepts the row rather than dropping
+// it. See SetMulticastInterface below for what was measured where.
+//
+// Anything this cannot send correctly is refused rather than sent the old way.
+// A nil-local dial here would be the bug above, one branch away and reported as
+// a success: nothing in this package needs it, and a caller that grew a second
+// address should find out at the call rather than on someone else's screen.
+func dialGroup(target *net.UDPAddr, addresses []netip.Addr) (*net.UDPConn, error) {
+	if len(addresses) != 1 || !addresses[0].Is4() {
+		return nil, fmt.Errorf(
+			"an announcement carries exactly one IPv4 address, which is the one it is sent "+
+				"from and the one a receiver checks it against; got %v", addresses)
+	}
+	source := addresses[0]
+	iface, err := interfaceHolding(source)
+	if err != nil {
+		return nil, err
+	}
+	connection, err := net.DialUDP("udp4", &net.UDPAddr{IP: source.AsSlice()}, target)
+	if err != nil {
+		return nil, fmt.Errorf("dial mDNS group %q from %v: %w", target, source, err)
+	}
+	// The outgoing interface for a multicast datagram is a socket option of its
+	// own, separate from the bound source. On macOS, binding the source was
+	// measured to be enough — a datagram bound to an address on a second
+	// interface arrived at a join on that interface only. On platforms where
+	// egress follows the route to the group instead, it is not, and the packet
+	// would leave by the default interface carrying a source that matches its
+	// own claim: a receiver on a segment that cannot reach the address would
+	// then accept the row rather than drop it. Set for that reason.
+	if err := ipv4.NewPacketConn(connection).SetMulticastInterface(iface); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("send announcements for %v on %s: %w", source, iface.Name, err)
+	}
+	return connection, nil
+}
+
+// CanAnnounceFrom reports why an announcement could not be sent from an
+// address, or nil when it could.
+//
+// Asked live rather than answered from startup, because the answer changes:
+// an interface can lose the address, lose multicast, or go away, and a node
+// that opens a pairing window an hour later should be told the truth then
+// rather than what was true at boot.
+func CanAnnounceFrom(address netip.Addr) error {
+	_, err := interfaceHolding(address)
+	return err
+}
+
+// interfaceHolding finds the interface that carries an address.
+//
+// An error rather than a fallback: the fallback is the behaviour that made a
+// node announce an address no receiver would accept, and reporting success for
+// it is what made that invisible.
+func interfaceHolding(address netip.Addr) (*net.Interface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list interfaces to announce from %v: %w", address, err)
+	}
+	// Every holder, not one. An address can sit on two interfaces — a virtual
+	// address on a physical interface and a loopback alias, which is how
+	// keepalived and anycast setups are built — and taking whichever came last
+	// in the enumeration meant a machine that holds the address on a perfectly
+	// good interface could be refused because the same address is also on a
+	// tunnel.
+	var holders []*net.Interface
+	for i := range interfaces {
+		addrs, err := interfaces[i].Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			prefix, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			held, ok := netip.AddrFromSlice(prefix.IP)
+			if ok && held.Unmap() == address {
+				holders = append(holders, &interfaces[i])
+				break
+			}
+		}
+	}
+	return chooseHolder(holders, address)
+}
+
+// chooseHolder picks the interface to announce from, out of every one holding
+// the address.
+//
+// Separate from the walk so the multiple-holder case can be tested: no address
+// on this machine sits on two interfaces, so taking whichever came last in the
+// enumeration went unnoticed — the same way the tunnel branch did.
+func chooseHolder(holders []*net.Interface, address netip.Addr) (*net.Interface, error) {
+	if len(holders) == 0 {
+		return nil, announceableFrom(nil, address)
+	}
+	// One usable holder is enough, and it is the one to announce from. Taking
+	// the last instead meant a machine holding the address on a good interface
+	// could be refused because the same address is also on a loopback alias or
+	// a tunnel — how keepalived and anycast setups are built.
+	var refused error
+	for _, holder := range holders {
+		err := announceableFrom(holder, address)
+		if err == nil {
+			return holder, nil
+		}
+		if refused == nil {
+			refused = err
+		}
+	}
+	return nil, refused
+}
+
+// announceableFrom judges an interface that holds the address.
+//
+// Separate from the search so every answer can be tested on flags a test
+// chooses. Whether this machine happens to have a tunnel carrying an IPv4
+// address decides nothing about whether the code handles one — and it does not
+// have one, which is how the tunnel branch went untested while three places of
+// prose claimed it was the case being caught.
+func announceableFrom(holder *net.Interface, address netip.Addr) error {
+	if holder == nil {
+		return fmt.Errorf("no interface on this machine holds %v, so an announcement "+
+			"naming it could not come from it", address)
+	}
+	if err := refuseFlags(holder); err != nil {
+		// Composed, not concatenated. refuseFlags returns the condition alone
+		// so this reads as one sentence: an owner meets these in the 409 body,
+		// in the announce status and in the startup log.
+		return fmt.Errorf("%s holds %v but %w", holder.Name, address, err)
+	}
+	return nil
 }
 
 // AnnounceOffering announces this node, and — when the offer is non-empty —
@@ -617,9 +1138,9 @@ func AnnounceOffering(ctx context.Context, group, nodeID, instance string, port 
 	if err != nil {
 		return fmt.Errorf("resolve mDNS group %q: %w", group, err)
 	}
-	connection, err := net.DialUDP("udp", nil, target)
+	connection, err := dialGroup(target, addresses)
 	if err != nil {
-		return fmt.Errorf("dial mDNS group %q: %w", group, err)
+		return err
 	}
 	defer func() { _ = connection.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {

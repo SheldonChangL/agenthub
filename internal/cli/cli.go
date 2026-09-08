@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -95,6 +96,49 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodPut, "/v1/sessions/"+url.PathEscape(args[1])+"/visibility", map[string]any{"visibility": visibility})
 	case "audience":
 		return r.audience(ctx, args)
+	case "pairing":
+		// `ah pairing` reads, `ah pairing on [seconds]` opens, `ah pairing off`
+		// closes. Reading is the default because the question asked most often
+		// is "am I advertising right now".
+		switch {
+		case len(args) == 1:
+			return r.simple(ctx, http.MethodGet, "/v1/pairing", nil)
+		case args[1] == "off":
+			return r.simple(ctx, http.MethodDelete, "/v1/pairing", nil)
+		case args[1] == "on":
+			if len(args) > 3 {
+				return fmt.Errorf("ah pairing on takes one duration at most, got %d: %s\nusage: ah pairing on [seconds]",
+					len(args)-2, strings.Join(args[2:], " "))
+			}
+			body := map[string]int{}
+			if len(args) == 3 {
+				seconds, err := strconv.Atoi(args[2])
+				// Echoed rather than answered with a bare usage line: the
+				// argument came from a shell, and what went wrong is usually
+				// visible in it — a stray quote, a duration like "5m", a flag
+				// that landed in the wrong place.
+				if err != nil {
+					return fmt.Errorf("%q is not a number of seconds\nusage: ah pairing on [seconds]", args[2])
+				}
+				// Zero is refused rather than sent. The API reads zero as "no
+				// preference" and opens its default window, so `ah pairing on 0`
+				// would open five minutes for someone who asked for none.
+				if seconds <= 0 {
+					return fmt.Errorf("a pairing window of %d seconds would advertise nothing; "+
+						"use `ah pairing off` to stop advertising\nusage: ah pairing on [seconds]", seconds)
+				}
+				body["seconds"] = seconds
+			}
+			return r.simple(ctx, http.MethodPost, "/v1/pairing", body)
+		default:
+			return fmt.Errorf("ah pairing does not take %q\nusage: ah pairing [on [seconds] | off]", args[1])
+		}
+	case "candidates":
+		if len(args) != 1 {
+			return fmt.Errorf("ah candidates takes no arguments, got %s\nusage: ah candidates",
+				strings.Join(args[1:], " "))
+		}
+		return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	case "nodes":
 		return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
 	case "pair":
@@ -504,7 +548,10 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
-	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat")
+	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat,")
+	_, _ = fmt.Fprintln(output, "          pairing, candidates")
+	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
+	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")

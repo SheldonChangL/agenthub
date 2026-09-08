@@ -504,8 +504,10 @@ What this run did not cover, and which therefore remains test-only:
 
 - the automated `pair.*` handshake — pairing was done by hand with `ah pair` and
   a `PUT /v1/nodes/{id}/address`
-- `-discover` — both addresses were entered by hand, and nothing announces
-  itself in any case, because `discovery.Announce` has no caller
+- `-discover` on two real hosts — both addresses were entered by hand. Pairing
+  mode's announcing and candidate list were exercised between several nodes on
+  one machine, across two interfaces (one of them not the default route), which
+  is not the same as two hosts on a real network
 - TLS pin rejection against a substituted certificate
 - refusal of a stale, expired, or replayed heartbeat
 - the inbox-full 503 path
