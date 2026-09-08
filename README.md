@@ -103,7 +103,9 @@ go run ./cmd/ah nodes
 go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
 
 # Pairing alone does not make delivery happen: a peer with no recorded address
-# is skipped. There is no `ah` subcommand for this yet, so it is a raw call.
+# is skipped. With --discover the address is learned from the peer's own
+# announcements and this is unnecessary — see "Two machines" below. Without it,
+# there is no `ah` subcommand, so it is a raw call.
 curl -X PUT http://127.0.0.1:7462/v1/nodes/<node-id>/address \
   -H 'Content-Type: application/json' -d '{"address":"192.168.1.20:7463"}'
 
@@ -123,6 +125,94 @@ by hand, and the receiving side authenticates every envelope against them:
 signature and recipient binding on all of them, plus expiry and a strictly
 advancing sequence on heartbeats, and message-id deduplication on messages.
 Session list responses are paginated; `ah list` follows every page automatically.
+
+## Two machines
+
+This is the walkthrough that was actually run between a MacBook and an Ubuntu
+22.04 box joined by a direct Ethernet cable, recorded in
+[verification.md](docs/verification.md). Substitute your own addresses.
+
+**1. A node on each machine.** The defaults keep everything on loopback, so a
+second machine needs to be told otherwise:
+
+```sh
+# on each machine, with its own address in -peer-listen
+bin/agenthub-node --db ./data/agenthub.db \
+  --peer-listen 192.168.1.10:7463 --allow-lan --discover
+```
+
+`--peer-listen` is where peers connect back to, and it is the address that gets
+announced, so it has to be an address other machines can reach — not loopback.
+`--allow-lan` is what permits that. `--discover` turns on finding peers, and
+without it the pairing commands below refuse and say so.
+
+If the two machines are on a direct cable in a range that is not private —
+`122.122.0.0/16`, say — add `--treat-as-private 122.122.0.0/16` **on both**.
+Without it each node refuses to list the other, because it will not deliver to
+an address outside the ranges it trusts.
+
+**2. Find each other.** On one machine:
+
+```sh
+bin/ah pairing on          # advertise for five minutes
+```
+
+On the other:
+
+```sh
+bin/ah candidates
+```
+
+Nothing in that list is verified. Every field was chosen by whoever sent the
+packet, and the fingerprint shown is the one announced — a hint for finding the
+right machine, never proof of which it is.
+
+**3. Compare the fingerprints, then pair.** On each machine run `bin/ah node`
+and read the six groups out loud, or compare them on the two screens. They must
+match group for group; comparing the first few is what an attacker defeats.
+
+Then, on each machine, trust the other:
+
+```sh
+bin/ah pair <their-node-id> <their-name> <their-platform> <their-public-key> <their-fingerprint>
+```
+
+The public key still has to be carried across by hand — the announcement never
+contains one, by design. Automating this exchange while keeping the fingerprint
+comparison is issue #62.
+
+With `--discover` running, each node learns the other's address from the
+announcements; no `PUT /v1/nodes/{id}/address` is needed.
+
+**4. Publish a session.** Pairing on its own shares nothing:
+
+```sh
+bin/ah list                                            # your own sessions
+bin/ah audience <session-id> all-paired --messages --outbound
+```
+
+`--messages` lets other nodes send to it; `--outbound` lets it send out. Without
+`--outbound` the node refuses its outgoing messages, on the sending side.
+
+**5. Send, and read.** On the other machine:
+
+```sh
+bin/ah peers                                           # what they published, and the address to send to
+bin/ah send --from <your-session-id> <node-id>/<their-session-id> -- "hi"
+bin/ah outbound <message-id>                           # queued, delivered, or refused
+```
+
+A remote session is addressed `<node-id>/<session-id>`; `ah peers` prints that
+string in its SEND TO column. Then on the receiving machine:
+
+```sh
+bin/ah inbox <session-id>
+```
+
+**6. Give an agent the tools.** Everything above is also available to an agent
+over MCP — see the next section. What no version of this does is hand a message
+to an agent: it sits in the inbox until something asks for it. That boundary is
+Step 8 (issue #60).
 
 ## Give an agent the four tools
 
