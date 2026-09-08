@@ -359,6 +359,7 @@ type audienceInput struct {
 	ExportCWD      bool               `json:"exportCwd"`
 	AcceptMessages bool               `json:"acceptMessages"`
 	AllowOutbound  bool               `json:"allowOutbound"`
+	AutoWake       bool               `json:"autoWake"`
 }
 
 func (i audienceInput) audience() model.Audience {
@@ -368,6 +369,7 @@ func (i audienceInput) audience() model.Audience {
 		ExportCWD:      i.ExportCWD,
 		AcceptMessages: i.AcceptMessages,
 		AllowOutbound:  i.AllowOutbound,
+		AutoWake:       i.AutoWake,
 	}
 }
 

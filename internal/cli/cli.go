@@ -277,7 +277,7 @@ func (r runner) pair(ctx context.Context, args []string) error {
 //	ah audience <session-id> selected <node-id>... [--cwd] [--messages]
 func (r runner) audience(ctx context.Context, args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
+		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")
 	}
 	path := "/v1/sessions/" + url.PathEscape(args[1]) + "/audience"
 	if len(args) == 2 {
@@ -298,6 +298,7 @@ func (r runner) audience(ctx context.Context, args []string) error {
 	exportCWD := false
 	acceptMessages := false
 	allowOutbound := false
+	autoWake := false
 	for _, argument := range args[3:] {
 		switch argument {
 		case "--cwd":
@@ -306,9 +307,11 @@ func (r runner) audience(ctx context.Context, args []string) error {
 			acceptMessages = true
 		case "--outbound":
 			allowOutbound = true
+		case "--auto-wake":
+			autoWake = true
 		default:
 			if strings.HasPrefix(argument, "-") {
-				return fmt.Errorf("unknown flag %q; want --cwd, --messages or --outbound", argument)
+				return fmt.Errorf("unknown flag %q; want --cwd, --messages, --outbound or --auto-wake", argument)
 			}
 			nodes = append(nodes, argument)
 		}
@@ -326,6 +329,7 @@ func (r runner) audience(ctx context.Context, args []string) error {
 		"exportCwd":      exportCWD,
 		"acceptMessages": acceptMessages,
 		"allowOutbound":  allowOutbound,
+		"autoWake":       autoWake,
 	})
 }
 

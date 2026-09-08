@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     export_cwd INTEGER NOT NULL DEFAULT 0 CHECK (export_cwd IN (0, 1)),
     accept_messages INTEGER NOT NULL DEFAULT 0 CHECK (accept_messages IN (0, 1)),
     allow_outbound INTEGER NOT NULL DEFAULT 0 CHECK (allow_outbound IN (0, 1)),
+    auto_wake INTEGER NOT NULL DEFAULT 0 CHECK (auto_wake IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'inactive', 'unknown')),
     status_source TEXT NOT NULL,
     cwd TEXT NOT NULL DEFAULT '',
@@ -247,6 +248,11 @@ func (r *Registry) addSessionPolicyColumns(ctx context.Context) error {
 		// take the default, which is closed: an upgrade must not silently grant
 		// a session the ability to send.
 		{"allow_outbound", "INTEGER NOT NULL DEFAULT 0 CHECK (allow_outbound IN (0, 1))"},
+		// Added with wake (#59). Closed for every existing row, and the default
+		// matters more here than for the others: an upgrade that turned this on
+		// would let messages already sitting in an inbox start turns nobody
+		// asked for, on a machine whose owner never agreed to that.
+		{"auto_wake", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_wake IN (0, 1))"},
 	}
 
 	existing := map[string]bool{}
@@ -557,7 +563,7 @@ func (r *Registry) GetSession(ctx context.Context, id string) (model.Session, er
 	const query = `
 SELECT id, provider, provider_session_id, management, status,
        status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
-       audience_mode, export_cwd, accept_messages, allow_outbound,
+       audience_mode, export_cwd, accept_messages, allow_outbound, auto_wake,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
             AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
@@ -578,7 +584,7 @@ func (r *Registry) ListSessions(ctx context.Context, options ListOptions) ([]mod
 	query := `
 SELECT id, provider, provider_session_id, management, status,
        status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
-       audience_mode, export_cwd, accept_messages, allow_outbound,
+       audience_mode, export_cwd, accept_messages, allow_outbound, auto_wake,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
             AND EXISTS (SELECT 1 FROM session_audience WHERE session_id = sessions.id))) AS published,
@@ -694,9 +700,9 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 	}
 
 	result, err := transaction.ExecContext(ctx,
-		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, allow_outbound = ?, updated_at_ms = ? WHERE id = ?`,
+		`UPDATE sessions SET audience_mode = ?, export_cwd = ?, accept_messages = ?, allow_outbound = ?, auto_wake = ?, updated_at_ms = ? WHERE id = ?`,
 		audience.Mode, boolToInt(audience.ExportCWD), boolToInt(audience.AcceptMessages),
-		boolToInt(audience.AllowOutbound),
+		boolToInt(audience.AllowOutbound), boolToInt(audience.AutoWake),
 		time.Now().UTC().UnixMilli(), id)
 	if err != nil {
 		return fmt.Errorf("set audience for %q: %w", id, err)
@@ -732,10 +738,10 @@ func (r *Registry) SetAudience(ctx context.Context, id string, audience model.Au
 // GetAudience reads a session's export policy including its grants.
 func (r *Registry) GetAudience(ctx context.Context, id string) (model.Audience, error) {
 	var audience model.Audience
-	var exportCWD, acceptMessages, allowOutbound int
+	var exportCWD, acceptMessages, allowOutbound, autoWake int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT audience_mode, export_cwd, accept_messages, allow_outbound FROM sessions WHERE id = ?`, id).
-		Scan(&audience.Mode, &exportCWD, &acceptMessages, &allowOutbound)
+		`SELECT audience_mode, export_cwd, accept_messages, allow_outbound, auto_wake FROM sessions WHERE id = ?`, id).
+		Scan(&audience.Mode, &exportCWD, &acceptMessages, &allowOutbound, &autoWake)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Audience{}, fmt.Errorf("session %q: %w", id, ErrNotFound)
 	}
@@ -745,6 +751,7 @@ func (r *Registry) GetAudience(ctx context.Context, id string) (model.Audience, 
 	audience.ExportCWD = exportCWD == 1
 	audience.AcceptMessages = acceptMessages == 1
 	audience.AllowOutbound = allowOutbound == 1
+	audience.AutoWake = autoWake == 1
 
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT node_id FROM session_audience WHERE session_id = ? ORDER BY node_id`, id)
@@ -791,13 +798,13 @@ const publishedPredicate = `WHERE (
 func scanSession(row rowScanner) (model.Session, error) {
 	var session model.Session
 	var lastSeenMS, updatedMS int64
-	var exportCWD, acceptMessages, allowOutbound, published int
+	var exportCWD, acceptMessages, allowOutbound, autoWake, published int
 	var grants string
 	err := row.Scan(
 		&session.ID, &session.Provider, &session.ProviderSessionID, &session.Management,
 		&session.Status, &session.StatusSource, &session.CWD,
 		&session.Source, &session.MetadataPath, &lastSeenMS, &updatedMS,
-		&session.Audience.Mode, &exportCWD, &acceptMessages, &allowOutbound, &published, &grants,
+		&session.Audience.Mode, &exportCWD, &acceptMessages, &allowOutbound, &autoWake, &published, &grants,
 	)
 	if err != nil {
 		return model.Session{}, err
@@ -805,6 +812,7 @@ func scanSession(row rowScanner) (model.Session, error) {
 	session.Audience.ExportCWD = exportCWD == 1
 	session.Audience.AcceptMessages = acceptMessages == 1
 	session.Audience.AllowOutbound = allowOutbound == 1
+	session.Audience.AutoWake = autoWake == 1
 	session.LastSeenAt = time.UnixMilli(lastSeenMS).UTC()
 	session.UpdatedAt = time.UnixMilli(updatedMS).UTC()
 	// Visibility is derived, never stored: one source of truth for "who may
