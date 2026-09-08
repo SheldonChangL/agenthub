@@ -220,6 +220,18 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		}
 	}
 
+	// And the markup still asks for it. The stylesheet having a rule proves
+	// nothing if the element that carries the warning stopped using the class —
+	// that mutation was green.
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	if !strings.Contains(string(markup), `<p class="warning">`) {
+		t.Error("no element carries the warning class, so the prompt-injection warning " +
+			"renders as body text whatever the stylesheet says")
+	}
+
 	// The scrolling containers, each with the property that makes it scroll.
 	// Without these the sidebar clips, and what it clips is the button the
 	// owner needs and the warning that explains what they are looking at.

@@ -113,15 +113,70 @@ if (!provenHalf) {
   failures.push(`the proven half is ${JSON.stringify(provenHalf[1])}, want just the node id — ` +
     "a span holding the whole address presents a chosen label as verified");
 }
-// A locally queued message has no node id at all, and must not render a bare
-// session id that reads like a peer's.
-renderInbox({
-  sessionId: "claude:mine", held: 1, capacity: 500, full: false, showing: 1,
-  messages: [{ id: "m", from: "claude:local-one", createdAt: new Date().toISOString(), body: "x" }],
-});
-const localRow = el("inbox-body").serialize();
-if (!localRow.includes("本機")) {
-  failures.push("a locally queued message was not marked as local");
+// Every shape the node can write, because getting the bare one backwards is
+// how a hostile peer gets the most trustworthy label the envelope can carry.
+//
+// A peer may omit its sending session — every From check in the payload's
+// Validate is guarded by `if p.From != ""` — and the node then stores the bare
+// proven peer node id. Reading "no separator" as "local" would put that message
+// behind 本機. internal/mcpserver/inbox.go settled this once already; its test
+// is named TestAPeerOmittingItsSendingSessionIsStillRemote.
+scope.state.localNodeId = "node_thismachine0000";
+scope.state.nodes = [{ nodeId: "node_pairedpeer00000" }];
+const senderShapes = [
+  {
+    what: "a peer that named no session",
+    from: "node_deadbeef0123456789",
+    want: ["未指明 session"],
+    reject: ["本機"],
+  },
+  {
+    what: "a paired peer that named no session",
+    from: "node_pairedpeer00000",
+    want: ["未指明 session"],
+    reject: ["本機"],
+  },
+  {
+    what: "this machine's own queue, qualified",
+    from: "node_thismachine0000/claude:mine",
+    want: ["本機"],
+    reject: ["自稱"],
+  },
+  {
+    what: "a peer, qualified",
+    from: "node_otherone0000000/codex:theirs",
+    want: ["自稱"],
+    reject: ["本機"],
+  },
+  {
+    what: "an unnamed sender from the owner's own API",
+    from: "",
+    want: ["本機"],
+    reject: ["自稱"],
+  },
+  {
+    what: "a session-shaped value that is nobody's",
+    from: "claude:from-before-senders-were-named",
+    want: ["來源不明"],
+    reject: ["本機"],
+  },
+];
+for (const shape of senderShapes) {
+  renderInbox({
+    sessionId: "claude:mine", held: 1, capacity: 500, full: false, showing: 1, more: false,
+    messages: [{ id: "m", from: shape.from, createdAt: new Date().toISOString(), body: "x" }],
+  });
+  const row = el("inbox-body").serialize();
+  for (const want of shape.want) {
+    if (!row.includes(want)) {
+      failures.push(`${shape.what} (${JSON.stringify(shape.from)}) is not shown as ${want}: ${row}`);
+    }
+  }
+  for (const reject of shape.reject) {
+    if (row.includes(reject)) {
+      failures.push(`${shape.what} (${JSON.stringify(shape.from)}) was labelled ${reject}`);
+    }
+  }
 }
 
 // 1b. A read in flight is not an empty inbox. They rendered identically, for up
@@ -144,6 +199,24 @@ if (failed.includes("還沒有任何訊息")) {
 }
 if (!failed.includes("connection refused")) {
   failures.push("the reason the read failed was not shown");
+}
+
+// 2b. A page is shown as a page. Ten out of five hundred must not read as an
+//     inbox of ten — and the ten are the oldest, since the node returns them in
+//     arrival order.
+renderInbox({
+  sessionId: "claude:mine", held: 500, capacity: 500, full: true, showing: 10, more: true,
+  messages: [{ id: "m", from: "node_a/codex:x", createdAt: new Date().toISOString(), body: "x" }],
+});
+const paged = el("inbox-meta").serialize() + el("inbox-body").serialize();
+if (!paged.includes("10")) {
+  failures.push("a page did not say how many of the inbox it is showing");
+}
+if (!paged.includes("500")) {
+  failures.push("a page did not say how many the inbox holds");
+}
+if (!paged.includes("還有更多訊息")) {
+  failures.push("a page did not say there is more behind it");
 }
 
 // 3. A full inbox says so, because it is refusing new messages now.

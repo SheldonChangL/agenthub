@@ -428,7 +428,7 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 		// peer can make a page far larger than it looks. Say what happened and
 		// what clears it.
 		return nil, fmt.Errorf("the node's answer reached the %d byte limit and was cut off; "+
-			"something in it is too large to read here. For an inbox, emptying it is the way out",
+			"something in it is too large to read here. Emptying an inbox is the way out of one",
 			responseCap)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
