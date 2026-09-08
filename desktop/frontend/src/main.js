@@ -928,7 +928,12 @@ function senderLine(from) {
 
 async function openInbox(sessionId) {
   const sequence = ++inboxRequest;
-  state.inboxSession = sessionId;
+  // Cleared, not pointed at the new session. inboxSession is what the clear
+  // button empties, so it may only ever name the session whose messages are on
+  // screen — setting it here would aim an irreversible action at a session
+  // whose content has not arrived, while the dialog still shows another's.
+  // While it is null the button is a no-op.
+  state.inboxSession = null;
   el("inbox-modal").classList.remove("hidden");
   // Loading is its own state. Rendering an empty list here is byte-identical to
   // an inbox with nothing in it, and the client waits up to fifteen seconds.
@@ -946,6 +951,7 @@ async function openInbox(sessionId) {
     return;
   }
   inboxApplied = sequence;
+  // Now, and only now: the messages below the button are this session's.
   state.inboxSession = view.sessionId ?? sessionId;
   renderInbox(view);
 }
