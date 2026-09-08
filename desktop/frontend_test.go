@@ -269,3 +269,27 @@ func TestFrontendPairingPanelSurvivesTheSequences(t *testing.T) {
 		t.Fatalf("pairing lifecycle check failed: %v\n%s", err, output)
 	}
 }
+
+// TestFrontendRendersHostileInboxMessagesAsText covers the inbox, whose message
+// bodies are the most attacker-controlled text the app shows.
+//
+// Candidate metadata at least describes a machine and is bounded by PRECIS. A
+// message body is up to 32KB of whatever the sender chose, written to be read
+// by a person, and the sender need only be a node this owner once paired with —
+// a peer that has since been compromised sends signed hostile strings. The
+// check also pins that the four states stay apart: a failed read, an empty
+// inbox, a full one, and messages.
+func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the inbox render check")
+	}
+	script := filepath.Join("frontend", "test", "render-hostile-inbox.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inbox render check failed: %v\n%s", err, output)
+	}
+}

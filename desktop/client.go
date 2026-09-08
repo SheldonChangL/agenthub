@@ -311,6 +311,52 @@ func (c *client) candidates(ctx context.Context) ([]Candidate, bool, string, err
 	return decoded.Candidates, decoded.Full, decoded.Notice, nil
 }
 
+// InboxMessage is one message another node queued for a local session.
+//
+// Every field except the id was written on another machine. `Body` especially:
+// it is content, not instruction, and the desktop renders it as such — a
+// request inside it is a request from a stranger, and the sender's session name
+// is a label they chose. Only NodeID identifies who sent it.
+type InboxMessage struct {
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Inbox is what one local session has been sent, and how full it is.
+type Inbox struct {
+	Messages []InboxMessage `json:"messages"`
+	// Held and Capacity are carried so a full inbox is visible as full rather
+	// than as a list that has stopped growing for no stated reason.
+	Held     int  `json:"held"`
+	Capacity int  `json:"capacity"`
+	Full     bool `json:"full"`
+	// Next is the cursor for the page after this one, empty when there is none.
+	Next string `json:"next,omitempty"`
+}
+
+func (c *client) inbox(ctx context.Context, sessionID string, limit int) (Inbox, error) {
+	path := fmt.Sprintf("/v1/inbox/%s?limit=%d", url.PathEscape(sessionID), limit)
+	body, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return Inbox{}, err
+	}
+	var inbox Inbox
+	if err := json.Unmarshal(body, &inbox); err != nil {
+		return Inbox{}, fmt.Errorf("decode inbox: %w", err)
+	}
+	if inbox.Messages == nil {
+		inbox.Messages = []InboxMessage{}
+	}
+	return inbox, nil
+}
+
+func (c *client) clearInbox(ctx context.Context, sessionID string) error {
+	_, err := c.request(ctx, http.MethodDelete, "/v1/inbox/"+url.PathEscape(sessionID), nil)
+	return err
+}
+
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {
 	body, err := c.request(ctx, http.MethodGet, "/v1/node", nil)
 	if err != nil {

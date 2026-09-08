@@ -472,3 +472,86 @@ func TestPairingReportsAFailedCandidateReadSeparately(t *testing.T) {
 		t.Errorf("a failed read carried a notice about a list it never got: %q", pairing.Notice)
 	}
 }
+
+// An inbox that could not be read is not an inbox with nothing in it. Told
+// apart, because only one of them means the owner should stop looking.
+func TestInboxSeparatesAFailedReadFromAnEmptyOne(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": "REGISTRY_ERROR", "message": "the inbox could not be read",
+		}})
+	}))
+	defer failing.Close()
+
+	app := &App{client: newClient(failing.URL), url: failing.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if view.Error == "" {
+		t.Error("a failed read reported no error")
+	}
+	if view.Messages == nil {
+		t.Error("messages is nil, which marshals as null rather than an empty list")
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"held":0,"capacity":500,"full":false}`))
+	}))
+	defer empty.Close()
+
+	app = &App{client: newClient(empty.URL), url: empty.URL, ctx: context.Background()}
+	if view := app.Inbox("claude:abc"); view.Error != "" {
+		t.Errorf("an empty inbox reported an error: %q", view.Error)
+	}
+}
+
+// A full inbox refuses new messages, so it has to arrive as full rather than as
+// a list that stopped growing for no stated reason.
+func TestInboxCarriesHowFullItIs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/v1/inbox/claude:abc" {
+			t.Errorf("path = %s", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[
+			{"id":"msg_1","from":"node_a/codex:x","body":"hello","createdAt":"2026-09-08T04:00:00Z"}
+		],"held":500,"capacity":500,"full":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if !view.Full || view.Held != 500 || view.Capacity != 500 {
+		t.Errorf("view = %+v, want it to carry that the inbox is full", view)
+	}
+	if len(view.Messages) != 1 || view.Messages[0].Body != "hello" {
+		t.Errorf("messages = %+v", view.Messages)
+	}
+	// The sender travels, because who sent it is the only part the reader can
+	// check — and the node id inside it is the only identifying half.
+	if view.Messages[0].From != "node_a/codex:x" {
+		t.Errorf("the sender was dropped: %+v", view.Messages[0])
+	}
+}
+
+// Reading and clearing both refuse without a session rather than asking the
+// node about an empty path.
+func TestInboxRefusesWithoutASession(t *testing.T) {
+	var called int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if view := app.Inbox("  "); view.Error == "" {
+		t.Error("reading with no session reported no error")
+	}
+	if err := app.ClearInbox(""); err == nil {
+		t.Error("clearing with no session reported success")
+	}
+	if called != 0 {
+		t.Errorf("the node was asked %d times about an empty session id", called)
+	}
+}

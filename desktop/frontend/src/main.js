@@ -9,6 +9,8 @@ import {
   Pairing,
   OpenPairing,
   ClosePairing,
+  Inbox,
+  ClearInbox,
 } from "../wailsjs/go/main/App";
 
 const state = {
@@ -32,6 +34,9 @@ const state = {
   // come from the node, so they are subtracted from the moment they were read
   // rather than compared against this machine's own idea of the expiry.
   pairingReadAt: 0,
+  // inboxSession is whose inbox the modal is showing, so Clear knows what it
+  // would empty and a refresh knows what to re-read.
+  inboxSession: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -160,6 +165,15 @@ function renderRows(rows) {
 
     const idCell = element("td", "mono sid");
     idCell.append(element("b", "", rest));
+    // Opening an inbox is a read, and a per-row button is where an owner looks
+    // for "what has this session been sent". It does not mark anything read and
+    // does not hand anything to an agent.
+    const openInboxButton = element("button", "ghost inbox", "收件匣");
+    openInboxButton.onclick = (event) => {
+      event.stopPropagation();
+      openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
+    };
+    idCell.append(openInboxButton);
 
     const cwdCell = element("td", "mono muted", session.cwd || "—");
     if (session.cwd) cwdCell.title = session.cwd;
@@ -823,6 +837,62 @@ function readAudienceForm() {
   };
 }
 
+/* ---------------- inbox ---------------- */
+
+// A message body is the most hostile input this app renders. Candidate metadata
+// at least describes a machine; this is free text written by whoever is on the
+// other end, chosen to be read by a person. It reaches the DOM through
+// element(), which assigns textContent, and nothing about it decides a class.
+function renderInbox(view) {
+  const meta = el("inbox-meta");
+  const body = el("inbox-body");
+  body.replaceChildren();
+
+  if (view.error) {
+    // A failed read is not an empty inbox, and only one of them means there is
+    // nothing to come back for.
+    meta.textContent = "";
+    body.append(element("div", "stale", "讀不到這個 session 的收件匣，所以這裡不顯示任何內容。"));
+    body.append(element("div", "muted", view.error));
+    return;
+  }
+
+  meta.textContent = `${view.sessionId} · ${view.held} / ${view.capacity} 則`;
+  if (view.full) {
+    // A full inbox refuses new messages, which is a thing happening now rather
+    // than a list that happens to be long.
+    body.append(element("div", "stale",
+      "收件匣已滿，新的訊息會被退回。清空之後才會再收得到。"));
+  }
+  if (view.messages.length === 0) {
+    body.append(element("div", "empty", "還沒有任何訊息。"));
+    return;
+  }
+  for (const message of view.messages) {
+    const row = element("div", "inboxrow");
+    // Who sent it, before what they said: the address carries the node id,
+    // which is the only half that identifies anyone.
+    row.append(element("div", "fingerprint", message.from));
+    row.append(element("div", "muted", relative(message.createdAt)));
+    row.append(element("div", "inboxbody", message.body));
+    body.append(row);
+  }
+}
+
+async function openInbox(sessionId) {
+  state.inboxSession = sessionId;
+  el("inbox-modal").classList.remove("hidden");
+  renderInbox({ sessionId, messages: [], held: 0, capacity: 0 });
+  renderInbox(await Inbox(sessionId));
+}
+
+function closeInbox() {
+  el("inbox-modal").classList.add("hidden");
+  el("inbox-body").replaceChildren();
+  el("inbox-meta").textContent = "";
+  state.inboxSession = null;
+}
+
 /* ---------------- wiring ---------------- */
 
 el("search").oninput = (event) => {
@@ -946,6 +1016,22 @@ async function loadPairing() {
   state.pairingReadAt = performance.now();
   if (state.view === "network") renderPairing();
 }
+
+el("inbox-close").onclick = closeInbox;
+el("inbox-modal").onclick = (event) => {
+  if (event.target === el("inbox-modal")) closeInbox();
+};
+el("inbox-clear").onclick = () => {
+  const session = state.inboxSession;
+  if (!session) return;
+  // Not undoable, so it is asked rather than assumed. The node has no
+  // "unclear".
+  if (!confirm(`清空 ${session} 的收件匣？這個動作無法復原。`)) return;
+  withBusy("清空收件匣", async () => {
+    await ClearInbox(session);
+    renderInbox(await Inbox(session));
+  });
+};
 
 el("btn-pairing-on").onclick = () =>
   withBusy("開啟配對模式", async () => {
