@@ -39,6 +39,10 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string, 
 	// An empty name that was actually passed means the opposite of one that was
 	// not: hand the name back to the machine. Without the distinction, pinning
 	// is a one-way door out of which the only exit is editing the database.
+	// After the trim, so a value of nothing but spaces releases too. Other
+	// invisible characters do not — a zero-width space is not unicode.IsSpace,
+	// so it reaches label.Announceable and is refused by name. Two outcomes for
+	// two things that look identical, which is why the flag help says which.
 	release := given && chosen == ""
 	if chosen != "" {
 		// Resolved here as well as in the store, so the comparison below is
@@ -128,8 +132,13 @@ func MachineName() string {
 	return "agenthub-node"
 }
 
-// shortenUntilAnnounceable returns the longest prefix of a name that an
-// announcement will carry, or "" if no prefix will do.
+// shortenUntilAnnounceable returns the announceable form of the longest byte
+// prefix of a name that yields one, or "" if no prefix does.
+//
+// Not itself a prefix, in general: normalisation runs after the cut, so ㍿×30
+// comes back as 株式会社×5 and Ⅻ×30 as XII×21. It is a prefix whenever the
+// characters survive NFKC unchanged, which covers the ordinary long name — a
+// CJK machine name — but is not the guarantee.
 //
 // Cutting once to the bound is not enough. Normalisation can lengthen what it
 // is given — NFKC expands ㍿ to four characters and ½ to three — so a 64-byte

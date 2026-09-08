@@ -154,6 +154,9 @@ func TestALongMachineNameIsShortenedNotDiscarded(t *testing.T) {
 	if name == "agenthub-node" {
 		t.Fatal("a long name was discarded; the node lost the one thing identifying it")
 	}
+	// A prefix here because NFKC leaves 三 alone. Not true in general — see
+	// shortenUntilAnnounceable, and TestANameThatGrowsWhenNormalisedIsStillShortened
+	// for the fixtures where it is not.
 	if !strings.HasPrefix(strings.Repeat("三", 60), name) {
 		t.Errorf("MachineName() = %q, which is not a prefix of the name it shortened", name)
 	}

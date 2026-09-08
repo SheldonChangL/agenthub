@@ -77,7 +77,26 @@ func TestPrintableRefusesWhatWouldNotReachAReader(t *testing.T) {
 // it was given. Normalisation can lengthen a string, so the bound has to be
 // applied to the output and not only to the input.
 func TestPrintableAlwaysReturnsSomethingAnnounceable(t *testing.T) {
+	// A name that fits going in and not coming out. Without one the test was
+	// vacuous for the property it is named after: every long fixture was
+	// refused by the input check and skipped, and deleting the output bound
+	// left this package green.
+	if grown := Printable(strings.Repeat("㍿", 6)); grown != "" {
+		t.Errorf("Printable(%d bytes that normalise to %d) = %q, want it refused on the way out",
+			len(strings.Repeat("㍿", 6)), len("株式会社")*6, grown)
+	}
+	if fits := Printable(strings.Repeat("㍿", 5)); fits == "" {
+		t.Error("the pair is not discriminating: the shorter of the two was refused as well")
+	}
+
 	for _, value := range []string{
+		// The point of this test, and it needs an input that survives the check
+		// on the way in and crosses the bound on the way out. ㍿ is three bytes
+		// and normalises to 株式会社, twelve: six of them is 18 in and 72 out.
+		// Five is 15 in and 60 out and is accepted, which is what makes the
+		// pair discriminating rather than the whole range being refused early.
+		strings.Repeat("㍿", 6), strings.Repeat("㍿", 5),
+		strings.Repeat("½", 8), strings.Repeat("Ⅻ", 7),
 		strings.Repeat("㍿", 30), strings.Repeat("½", 40), strings.Repeat("Ⅻ", 30),
 		strings.Repeat("a", MaxLength), strings.Repeat("三", 21),
 		"\U0001f468‍\U0001f4bb\U0001f468‍\U0001f4bb", "café mac",
