@@ -149,9 +149,18 @@ if (!el("pairing-countdown").serialize().includes(":")) {
 }
 
 // 5. A window whose count reaches zero asks the node instead of counting 0:00.
-pairingQueue = [{ value: openWindow(0) }, { value: closedWindow() }];
+//
+// Started from a window with time left, so the headline has to change on the
+// tick rather than having arrived that way: with remainingSeconds already 0 the
+// panel rendered "已到期" on load, and removing the tick's re-render passed.
+pairingQueue = [{ value: openWindow(1) }, { value: closedWindow() }];
 await loadPairing();
 await settle();
+if (el("pairing-headline").serialize().includes("已到期")) {
+  failures.push("the window read as expired before the countdown reached zero");
+}
+// Let the countdown run out, so the tick is what discovers it.
+state.pairingReadAt = performance.now() - 2000;
 const callsBefore = pairingCalls.length;
 countdownTick.fn();
 // Read before settling. Once the reload lands the panel is closed and the

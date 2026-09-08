@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 // A minimal DOM good enough for the table renderer, plus a serializer.
 //
 // `textContent` and `append` escape on serialization, while `innerHTML` keeps
@@ -98,11 +102,41 @@ class Fragment extends Node {
 
 const byId = new Map();
 
+// The classes each id actually carries in index.html.
+//
+// Without this every fabricated element starts with className "", so the
+// `hidden` class the real markup uses never exists — and an assertion that a
+// panel was un-hidden passes whether or not anything un-hid it. Measured:
+// deleting the classList.remove("hidden") that opens the pairing dialog left
+// the whole suite green, so a click could have opened nothing.
+const initialClasses = (() => {
+  const classes = new Map();
+  try {
+    const markup = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+    const tag = /<[a-zA-Z][^>]*>/g;
+    for (const [element] of markup.matchAll(tag)) {
+      const id = /\sid="([^"]+)"/.exec(element);
+      if (!id) continue;
+      const className = /\sclass="([^"]*)"/.exec(element);
+      classes.set(id[1], className ? className[1] : "");
+    }
+  } catch {
+    // A shim that cannot find the markup is still usable; it is just back to
+    // fabricating bare elements, which is what it did before.
+  }
+  return classes;
+})();
+
 export const document = {
   createElement: (tag) => new Node(tag),
   createDocumentFragment: () => new Fragment(),
   getElementById: (id) => {
-    if (!byId.has(id)) byId.set(id, new Node("div"));
+    if (!byId.has(id)) {
+      const node = new Node("div");
+      node.className = initialClasses.get(id) ?? "";
+      byId.set(id, node);
+    }
     return byId.get(id);
   },
   // The module's wiring queries for the view switch and the audience radios.

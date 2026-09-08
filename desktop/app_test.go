@@ -420,3 +420,55 @@ func TestOpenPairingSendsADurationOnlyWhenItHasOne(t *testing.T) {
 		t.Errorf("OpenPairing(90) sent %q", bodies[1])
 	}
 }
+
+// The window read can succeed while the candidate read fails — two requests,
+// and the second can fail on its own. That has to arrive as a failed read, not
+// as an empty list, or the owner is told nobody is advertising on the strength
+// of a request that never completed.
+func TestPairingReportsAFailedCandidateReadSeparately(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/pairing" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":120,
+				"announcing":{"announceableAddresses":1}}`))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": "REGISTRY_ERROR", "message": "the candidate list could not be read",
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	pairing := app.Pairing()
+
+	// The window is known, so availability is not in doubt.
+	if pairing.Availability != pairingOn {
+		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOn)
+	}
+	if !pairing.State.Open {
+		t.Error("the window read succeeded but its result was discarded")
+	}
+	// The failure is reported as its own fact, not as an empty list and not as
+	// an error about the window.
+	if pairing.Error != "" {
+		t.Errorf("a failed candidate read was reported as a window error: %q", pairing.Error)
+	}
+	if !strings.Contains(pairing.CandidatesError, "could not be read") {
+		t.Errorf("candidatesError = %q, want the node's own reason", pairing.CandidatesError)
+	}
+	if pairing.Candidates == nil {
+		t.Error("candidates is nil, which marshals as null rather than an empty list")
+	}
+	if len(pairing.Candidates) != 0 {
+		t.Errorf("candidates = %v after a failed read", pairing.Candidates)
+	}
+	// And nothing is claimed about the list itself.
+	if pairing.Full {
+		t.Error("a failed read reported the list as full")
+	}
+	if pairing.Notice != "" {
+		t.Errorf("a failed read carried a notice about a list it never got: %q", pairing.Notice)
+	}
+}
