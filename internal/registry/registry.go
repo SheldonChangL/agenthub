@@ -231,6 +231,36 @@ func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, err
 	return identity, nil
 }
 
+// SetNodeDisplayName changes only what this node calls itself.
+//
+// Separate from SaveNodeIdentity, which refuses to overwrite: the id, platform
+// and creation time are what make this node the same node across restarts and
+// what every pairing is keyed on, so they stay immutable. The name is not any
+// of that — it is a label shown to a person — and it has to be correctable,
+// because a node can be created with the wrong one. On macOS with no HostName
+// set, the name gethostname() returns is whatever DHCP and DNS say the address
+// is called, which can belong to whoever held it before.
+func (r *Registry) SetNodeDisplayName(ctx context.Context, name string) error {
+	if name == "" {
+		return errors.New("display name is required")
+	}
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE node_identity SET display_name = ? WHERE singleton = 1`, name)
+	if err != nil {
+		return fmt.Errorf("set node display name: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set node display name: %w", err)
+	}
+	if changed == 0 {
+		// No identity yet. Renaming one that does not exist would otherwise
+		// report success and change nothing.
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *Registry) SaveNodeIdentity(ctx context.Context, identity model.NodeIdentity) error {
 	if identity.ID == "" || identity.DisplayName == "" || identity.Platform == "" || identity.CreatedAt.IsZero() {
 		return errors.New("complete node identity is required")

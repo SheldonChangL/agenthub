@@ -198,6 +198,38 @@ if (!cannot.includes("the peer listener is on loopback")) {
   failures.push("the node's own reason was dropped");
 }
 
+// 3c. The warning names the string that actually goes out. "The node's name" is
+//     a category, and nobody judges a category — a hostname is often a person's
+//     name and an employer's domain, and on macOS it can be a previous
+//     occupant's. The only way an owner weighs the tradeoff is by reading it.
+scope.state.localName = "J-SomeoneElse.example.com.tw";
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+renderPairing();
+const beforeOpening = el("pairing-note").serialize();
+if (!beforeOpening.includes("J-SomeoneElse.example.com.tw")) {
+  failures.push(`the warning does not name what would be broadcast: ${beforeOpening}`);
+}
+state.pairing = {
+  availability: "on",
+  state: { open: true, remainingSeconds: 200, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+state.pairingReadAt = performance.now();
+renderPairing();
+if (!el("pairing-note").serialize().includes("J-SomeoneElse.example.com.tw")) {
+  failures.push("the warning stops naming the broadcast name once the window is open");
+}
+// It is a name they chose to show, not an identifier — same treatment as a
+// candidate's claimed half.
+if (!el("pairing-note").serialize().includes('class="claimed"')) {
+  failures.push("the broadcast name is not marked as a label");
+}
+scope.state.localName = "";
+
 // 4. An open window on a machine with nothing to announce must say so. This is
 //    the one failure an owner cannot see from the other machine: the panel says
 //    open, and the other machine waits for a candidate that never arrives.

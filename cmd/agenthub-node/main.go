@@ -51,6 +51,10 @@ func run() error {
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
+	displayName := flag.String("display-name", "",
+		"what this node calls itself to other machines, replacing the stored name. "+
+			"Defaults to this machine's own name — which is not always the one the network "+
+			"calls it, and is announced to everyone on the segment while pairing mode is open")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -98,7 +102,7 @@ func run() error {
 	}
 	defer store.Close()
 
-	node, err := identity.LoadOrCreate(ctx, store)
+	node, err := identity.LoadOrCreate(ctx, store, *displayName)
 	if err != nil {
 		return fmt.Errorf("load node identity: %w", err)
 	}
@@ -118,6 +122,12 @@ func run() error {
 	}
 	log.Printf("node %s discovered %d sessions (%d Claude, %d Codex)", node.ID, result.Total, result.Claude, result.Codex)
 	log.Printf("node fingerprint %s", node.Fingerprint)
+	// Printed because it is announced. An owner who never looks at this only
+	// finds out what their machine calls itself by reading it off someone
+	// else's screen, and it is not always the name they expect: with no
+	// HostName set, macOS answers gethostname() from DHCP and DNS.
+	log.Printf("node display name %q — announced to the local network while pairing mode is open; "+
+		"-display-name changes it", node.DisplayName)
 
 	// One policy decides three things that must agree: where this node will
 	// deliver, which addresses discovery may record, and which addresses the

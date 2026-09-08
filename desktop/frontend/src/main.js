@@ -38,6 +38,7 @@ const state = {
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
   localNodeId: "",
+  localName: "",
 };
 
 const el = (id) => document.getElementById(id);
@@ -256,6 +257,8 @@ async function load() {
   // qualified sender naming this node reads as a peer, and a bare one reads as
   // local — which is the dangerous direction.
   state.localNodeId = overview.node?.id || "";
+  // Shown in the pairing warning, because it is the string that goes out.
+  state.localName = overview.node?.displayName || "";
   if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
     state.selectedNode = null;
   }
@@ -352,6 +355,26 @@ function renderPairing() {
   renderCandidates();
 }
 
+// broadcastWarning says what actually goes on the wire, with the name spelled
+// out.
+//
+// "the node's name" is a category, and a person cannot judge a category. The
+// name is this machine's hostname, which is often a person's name and an
+// employer's domain — and on macOS with no HostName set it is whatever DHCP and
+// DNS call the address, which may be a previous occupant's. Nobody discovers
+// that from an abstract warning; they discover it by reading their own name off
+// a stranger's screen.
+function broadcastWarning(lead) {
+  const name = state.localName || "（未知）";
+  return [
+    element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，並看到它自稱 "),
+    element("span", "claimed", name),
+    element("span", "",
+      `，以及平台與指紋（不含公鑰）。這個名稱來自這台機器的 hostname；` +
+      `要換掉就用 -display-name 重新啟動節點。`),
+  ];
+}
+
 function renderPairingWindow() {
   const headline = el("pairing-headline");
   const detail = el("pairing-detail");
@@ -414,8 +437,7 @@ function renderPairingWindow() {
     // reached zero. Saying so beats counting "剩 0:00" until the next read.
     headline.textContent = left === 0 ? "配對視窗已到期，正在向節點確認…" : "配對視窗開啟中";
     detail.append(announceLine(announcing));
-    note.textContent = "時間到會自動停止。在這段時間內，同網段的人都能看到這台機器在跑 AgentHub，" +
-      "以及這個節點的名稱、平台與指紋。";
+    note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
   } else if (!canAnnounce) {
     // Not "opening it would achieve nothing" — the node will not open it. Two
     // different sentences, and the earlier one sat directly above a note
@@ -427,8 +449,7 @@ function renderPairingWindow() {
     note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
   } else {
     headline.textContent = "配對視窗未開啟。";
-    note.textContent = "開啟後，同網段的人都會知道這台機器在跑 AgentHub，並看到這個節點的名稱、平台與指紋" +
-      "（不含公鑰）。這是為了配對而明確接受的取捨，時間到會自動停止。";
+    note.replaceChildren(...broadcastWarning("開啟後，"));
   }
 }
 
