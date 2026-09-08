@@ -143,17 +143,18 @@ func shortenUntilAnnounceable(candidate string) string {
 			return name
 		}
 		if cut > label.MaxLength {
-			// First pass goes straight to the bound rather than one rune at a
-			// time: a 4KB name would otherwise be normalised thousands of times.
+			// Straight to the bound on the first pass rather than one byte at
+			// a time: a 4KB name would otherwise be normalised thousands of
+			// times to reach the same place.
 			cut = label.MaxLength
-		} else {
-			cut--
+			continue
 		}
-		for cut > 0 && candidate[cut]&0xC0 == 0x80 {
-			// Never leave the cut inside a rune: the fragment is not valid
-			// UTF-8, and Printable would refuse it for the wrong reason.
-			cut--
-		}
+		// One byte at a time from here, with no special case for a cut inside
+		// a rune. Printable refuses the invalid fragment, the next step backs
+		// off another byte, and within three it is on a boundary again. A
+		// rune-aware backoff was here and bought nothing: removing it changed
+		// no result, only a handful of iterations.
+		cut--
 	}
 	return ""
 }
