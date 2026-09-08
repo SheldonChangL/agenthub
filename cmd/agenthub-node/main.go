@@ -104,16 +104,7 @@ func run() error {
 	}
 	defer store.Close()
 
-	// Whether the flag was passed, not whether it has a value: passing it empty
-	// releases a pinned name back to the machine, and the zero value cannot say
-	// which of the two happened.
-	nameGiven := false
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == "display-name" {
-			nameGiven = true
-		}
-	})
-	node, err := identity.LoadOrCreate(ctx, store, *displayName, nameGiven)
+	node, err := identity.LoadOrCreate(ctx, store, *displayName, wasSet(flag.CommandLine, "display-name"))
 	if err != nil {
 		return fmt.Errorf("load node identity: %w", err)
 	}
@@ -452,4 +443,20 @@ func nameProvenance(chosen bool) string {
 		return "chosen with -display-name"
 	}
 	return "read from this machine"
+}
+
+// wasSet reports whether a flag was passed, as opposed to left at its default.
+//
+// Whether it was passed, not whether it has a value: -display-name given empty
+// releases a pinned name back to the machine, and the zero value cannot tell
+// that apart from the flag being absent. Without the distinction, pinning is a
+// door that locks behind you.
+func wasSet(flags *flag.FlagSet, name string) bool {
+	given := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	return given
 }
