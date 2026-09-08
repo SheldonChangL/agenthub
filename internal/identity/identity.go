@@ -121,7 +121,7 @@ var machineNameLookup = localMachineName
 // the fallback rather than the source. Every candidate is put through the
 // announcement's own rule, because a name this function returns is a name that
 // will be transmitted: a 30-character ComputerName with an emoji in it is
-// ordinary, and one that PrintableLabel refuses must fall through to the next
+// ordinary, and one that label.Printable refuses must fall through to the next
 // source rather than becoming a node with no announced name.
 func MachineName() string {
 	for _, candidate := range []string{machineNameLookup(), hostname()} {

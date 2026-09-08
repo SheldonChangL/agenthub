@@ -172,6 +172,21 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 // could route anywhere else — but writing this node's id into those rows would
 // be inventing a record that was never made. Empty reads as "not recorded",
 // which is what is true of them.
+func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
+	has, err := r.hasColumn(ctx, "messages", "destination_node_id")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE messages ADD COLUMN destination_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add messages destination column: %w", err)
+	}
+	return nil
+}
+
 // addNodeNameProvenance records whether this node's name was picked or read.
 //
 // Existing rows default to 0, "nobody picked it", and that is true rather than
@@ -214,31 +229,6 @@ func (r *Registry) hasColumn(ctx context.Context, table, column string) (bool, e
 		return false, fmt.Errorf("read %s columns: %w", table, err)
 	}
 	return found, nil
-}
-
-func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
-	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('messages')`)
-	if err != nil {
-		return fmt.Errorf("read messages columns: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan messages column: %w", err)
-		}
-		if name == "destination_node_id" {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read messages columns: %w", err)
-	}
-	if _, err := r.db.ExecContext(ctx,
-		`ALTER TABLE messages ADD COLUMN destination_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("add messages destination column: %w", err)
-	}
-	return nil
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
