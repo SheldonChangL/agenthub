@@ -548,10 +548,93 @@ func TestInboxRefusesWithoutASession(t *testing.T) {
 	if view := app.Inbox("  "); view.Error == "" {
 		t.Error("reading with no session reported no error")
 	}
-	if err := app.ClearInbox(""); err == nil {
+	if _, err := app.ClearInbox(""); err == nil {
 		t.Error("clearing with no session reported success")
 	}
 	if called != 0 {
 		t.Errorf("the node was asked %d times about an empty session id", called)
+	}
+}
+
+// The one destructive operation here, and nothing checked what it sent.
+func TestClearInboxDeletesTheSessionItWasGiven(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"removed":3}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	removed, err := app.ClearInbox("claude:the-one-asked-for")
+	if err != nil {
+		t.Fatalf("ClearInbox: %v", err)
+	}
+	// The count travels, because it is the only sign that something arrived
+	// between the read and the confirm and was destroyed unseen.
+	if removed != 3 {
+		t.Errorf("removed = %d, want 3", removed)
+	}
+	if method != http.MethodDelete {
+		t.Errorf("method = %s, want DELETE; a GET would report success having emptied nothing", method)
+	}
+	if path != "/v1/inbox/claude:the-one-asked-for" {
+		t.Errorf("path = %s, want the session it was given", path)
+	}
+}
+
+// A page, and small enough that a peer cannot make one undecodable.
+//
+// A body is 32KB and a control character in it escapes to six JSON bytes, so a
+// large page can pass this app's read limit — after which nothing decodes and
+// the owner cannot see what is jamming the inbox they came to look at. Fifty
+// was that size; the CLI's own comment says so.
+func TestInboxAsksForAPageSmallEnoughToDecode(t *testing.T) {
+	var limit string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"held":500,"capacity":500,"full":true,"next":"cursor"}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if limit != "10" {
+		t.Errorf("limit = %q, want 10", limit)
+	}
+	// And the view says it is a page, so ten out of five hundred cannot read as
+	// an inbox of ten.
+	if !view.More {
+		t.Error("a paged answer did not say there is more")
+	}
+	if view.Held != 500 {
+		t.Errorf("held = %d, want the node's own count", view.Held)
+	}
+}
+
+// An answer cut off at the read limit will not decode, and "unexpected end of
+// JSON input" sends the owner nowhere. This is reachable from an inbox, which
+// is why it is checked here.
+func TestATruncatedAnswerSaysSoRatherThanFailingToDecode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// More than the client will read, so it is cut mid-document.
+		big := strings.Repeat("a", responseCap+1024)
+		_, _ = w.Write([]byte(`{"messages":[{"id":"m","from":"n/c:s","body":"` + big + `"}]}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if view.Error == "" {
+		t.Fatal("a truncated answer was not reported as an error")
+	}
+	if strings.Contains(view.Error, "unexpected end of JSON input") {
+		t.Errorf("the owner is told %q, which points nowhere", view.Error)
+	}
+	if !strings.Contains(view.Error, "cut off") {
+		t.Errorf("error = %q, want it to say what happened", view.Error)
 	}
 }

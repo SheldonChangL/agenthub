@@ -130,6 +130,10 @@ type PairingState struct {
 	Announcing AnnounceStatus `json:"announcing"`
 }
 
+// responseCap bounds what this app will read from its own node. Large enough
+// for a full session list, small enough that a peer cannot exhaust memory here.
+const responseCap = 8 * 1024 * 1024
+
 type client struct {
 	baseURL string
 	http    *http.Client
@@ -352,9 +356,24 @@ func (c *client) inbox(ctx context.Context, sessionID string, limit int) (Inbox,
 	return inbox, nil
 }
 
-func (c *client) clearInbox(ctx context.Context, sessionID string) error {
-	_, err := c.request(ctx, http.MethodDelete, "/v1/inbox/"+url.PathEscape(sessionID), nil)
-	return err
+// clearInbox empties an inbox and reports how many messages went.
+//
+// The count is the only way an owner learns that something arrived between
+// reading the list and confirming, and was destroyed unseen.
+func (c *client) clearInbox(ctx context.Context, sessionID string) (int, error) {
+	body, err := c.request(ctx, http.MethodDelete, "/v1/inbox/"+url.PathEscape(sessionID), nil)
+	if err != nil {
+		return 0, err
+	}
+	var removed struct {
+		Removed int `json:"removed"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &removed); err != nil {
+			return 0, fmt.Errorf("decode clear result: %w", err)
+		}
+	}
+	return removed.Removed, nil
 }
 
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {
@@ -398,9 +417,19 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 		return nil, fmt.Errorf("contact node: %w", err)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(response.Body, responseCap))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(data) >= responseCap {
+		// Cut off, so it will not decode, and "unexpected end of JSON input"
+		// sends the reader nowhere. Reachable from an inbox: a message body is
+		// 32KB and a control character in it escapes to six JSON bytes, so a
+		// peer can make a page far larger than it looks. Say what happened and
+		// what clears it.
+		return nil, fmt.Errorf("the node's answer reached the %d byte limit and was cut off; "+
+			"something in it is too large to read here. For an inbox, emptying it is the way out",
+			responseCap)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var apiError struct {

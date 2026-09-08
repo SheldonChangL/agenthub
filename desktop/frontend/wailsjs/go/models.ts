@@ -149,6 +149,8 @@ export namespace main {
 	    held: number;
 	    capacity: number;
 	    full: boolean;
+	    showing: number;
+	    more: boolean;
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -162,6 +164,8 @@ export namespace main {
 	        this.held = source["held"];
 	        this.capacity = source["capacity"];
 	        this.full = source["full"];
+	        this.showing = source["showing"];
+	        this.more = source["more"];
 	        this.error = source["error"];
 	    }
 	
