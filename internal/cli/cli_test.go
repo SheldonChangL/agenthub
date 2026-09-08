@@ -745,8 +745,21 @@ func TestUsageListsEveryCommandTheSwitchImplements(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	Run(context.Background(), nil, &stdout, &stderr)
 	usage := stdout.String() + stderr.String()
-	if !strings.Contains(usage, "commands:") {
+
+	// The enumeration only, not the detail lines below it. Checking the whole
+	// output let a command satisfy this from its own detail line: removing
+	// `peers` from the summary passed, because "ah peers   what paired nodes
+	// have published…" was still there.
+	from := strings.Index(usage, "commands:")
+	if from < 0 {
 		t.Fatalf("this test is not reading the usage output: %q", usage)
+	}
+	summary := usage[from:]
+	if end := strings.Index(summary, "\n  ah "); end > 0 {
+		summary = summary[:end]
+	}
+	if strings.Contains(summary, "  ah ") {
+		t.Fatalf("the summary was not separated from the detail lines: %q", summary)
 	}
 
 	implemented := regexp.MustCompile(`\n\tcase "([a-z-]+)"`).FindAllStringSubmatch(body[start:start+end], -1)
@@ -755,8 +768,8 @@ func TestUsageListsEveryCommandTheSwitchImplements(t *testing.T) {
 	}
 	for _, match := range implemented {
 		name := match[1]
-		if !strings.Contains(usage, name) {
-			t.Errorf("`ah %s` is implemented but absent from the usage output", name)
+		if !strings.Contains(summary, name) {
+			t.Errorf("`ah %s` is implemented but absent from the commands summary: %q", name, summary)
 		}
 	}
 	t.Logf("checked %d commands", len(implemented))
