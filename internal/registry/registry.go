@@ -20,6 +20,12 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// MaxDisplayName bounds every display name this store holds, this node's own
+// and every peer's. One constant because the two are compared: a node that
+// stored a longer name for itself would announce one its peers refuse, and
+// find out only when pairing fails on the other machine.
+const MaxDisplayName = 128
+
 type Registry struct {
 	db *sql.DB
 }
@@ -243,6 +249,12 @@ func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, err
 func (r *Registry) SetNodeDisplayName(ctx context.Context, name string) error {
 	if name == "" {
 		return errors.New("display name is required")
+	}
+	// Checked here and not only by the caller: this is the boundary a name
+	// crosses to become the one announced, and trust.go checks the same bound
+	// on the other side of that exchange.
+	if len(name) > MaxDisplayName {
+		return fmt.Errorf("display name is %d bytes, over the %d limit", len(name), MaxDisplayName)
 	}
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE node_identity SET display_name = ? WHERE singleton = 1`, name)
