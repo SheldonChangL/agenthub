@@ -141,6 +141,12 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	case "nodes":
 		return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
+	case "peers":
+		if len(args) != 1 {
+			return fmt.Errorf("ah peers takes no arguments, got %s\nusage: ah peers",
+				strings.Join(args[1:], " "))
+		}
+		return r.peers(ctx)
 	case "pair":
 		return r.pair(ctx, args)
 	case "revoke":
@@ -369,6 +375,79 @@ func (r runner) list(ctx context.Context) error {
 	return w.Flush()
 }
 
+// peers answers "who can I send to, and what did they publish".
+//
+// This exists because the answer was previously unreachable from the CLI. A
+// remote session does not appear in `ah list`, which is owner-local by design;
+// it appears in the presence endpoint, addressed as <node-id>/<session-id>, and
+// there was no command that showed it. The only way to find the id to send to
+// was to read the endpoint with curl — and `ah send` to an unqualified id
+// answers "session not found", which is true and unhelpful. Found by using the
+// thing: it cost time in the two-host run recorded in docs/verification.md.
+func (r runner) peers(ctx context.Context) error {
+	body, err := r.request(ctx, http.MethodGet, "/v1/peers", nil)
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var decoded struct {
+		Peers []struct {
+			NodeID      string    `json:"nodeId"`
+			DisplayName string    `json:"displayName"`
+			Online      bool      `json:"online"`
+			ReceivedAt  time.Time `json:"receivedAt"`
+			Sessions    []struct {
+				ID       string `json:"id"`
+				Provider string `json:"provider"`
+				Status   string `json:"status"`
+			} `json:"sessions"`
+			SessionsWithheld bool `json:"sessionsWithheld"`
+		} `json:"peers"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode peers: %w", err)
+	}
+	if len(decoded.Peers) == 0 {
+		_, _ = fmt.Fprintln(r.stdout, "No paired nodes. Pair one with `ah pair`, or see who is "+
+			"advertising with `ah candidates`.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(r.stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "SEND TO\tPROVIDER\tSTATUS\tNODE\tSTATE")
+	for _, peer := range decoded.Peers {
+		state := "offline"
+		if peer.Online {
+			state = "online"
+		}
+		if peer.ReceivedAt.IsZero() {
+			// Never heard from is not the same as gone quiet, and an owner
+			// waiting for a machine to appear needs to know which.
+			state = "never heard from"
+		}
+		switch {
+		case peer.SessionsWithheld:
+			// The node refused what this peer published, which looks identical
+			// on the wire to a peer publishing nothing.
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, published something this node refused\n",
+				peer.DisplayName, state)
+		case len(peer.Sessions) == 0:
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, nothing published to this node\n",
+				peer.DisplayName, state)
+		default:
+			for _, session := range peer.Sessions {
+				// The full address, which is what `ah send` needs. Printing the
+				// bare session id is what sent the previous reader to curl.
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+					session.ID, session.Provider, session.Status, peer.DisplayName, state)
+			}
+		}
+	}
+	return w.Flush()
+}
+
 // describeAudience answers "published to whom" in one column. A count rather
 // than a list keeps the table readable; ah audience <id> shows the nodes.
 func describeAudience(audience model.Audience) string {
@@ -552,6 +631,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "          pairing, candidates")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
+	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
+	_, _ = fmt.Fprintln(output, "                                               with the address to send to")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
