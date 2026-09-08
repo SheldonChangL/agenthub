@@ -251,6 +251,14 @@ scope.state.localNameIsChosen = false;
 // separate-launch workflow makes ordinary — and "（未知）… read from this
 // machine" states confidently where a string it does not have came from.
 scope.state.localName = "";
+// Back to a closed window: the previous step opened one, and the open branch
+// leads with 時間到會自動停止 of its own, which would satisfy the assertion
+// below no matter what the closed branch says.
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
 renderPairing();
 const nameless = el("pairing-note").serialize();
 if (!nameless.includes("（未知）")) {
