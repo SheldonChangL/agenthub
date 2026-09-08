@@ -503,11 +503,11 @@ Observed:
 What this run did not cover, and which therefore remains test-only:
 
 - the automated `pair.*` handshake — pairing was done by hand with `ah pair` and
-  a `PUT /v1/nodes/{id}/address`
-- `-discover` on two real hosts — both addresses were entered by hand. Pairing
-  mode's announcing and candidate list were exercised between several nodes on
-  one machine, across two interfaces (one of them not the default route), which
-  is not the same as two hosts on a real network
+  a `PUT /v1/nodes/{id}/address`. Still outstanding; see the second run below,
+  where the address was no longer entered by hand but the fingerprints were
+  still carried across by a person
+- `-discover` on two real hosts — both addresses were entered by hand. Covered
+  by the second run below
 - TLS pin rejection against a substituted certificate
 - refusal of a stale, expired, or replayed heartbeat
 - the inbox-full 503 path
@@ -693,3 +693,72 @@ repository:
 
 These are enforced by people, not by the workflow. Branch protection makes the
 checks mandatory; nothing automated can make the judgement mandatory.
+
+## Two-host pairing-mode run, 2026-09-08
+
+The first two-host run above predates pairing mode: its addresses were typed in
+by hand, and `-discover` did nothing between hosts. This run is the same two
+machines question asked of the code merged in #91 and #94.
+
+**Machines.** A MacBook (`darwin/arm64`) and an HP ProBook running Ubuntu
+22.04.5 (`linux/amd64`, kernel 6.8.0), joined by a direct Ethernet cable —
+`122.122.122.1` on the Mac's `en8`, `122.122.122.2` on the Ubuntu box's
+`enp2s0`. Neither address is in a private range, so both nodes ran with
+`-treat-as-private 122.122.0.0/16`, which is the case that flag exists for. Both
+also had a wifi address on a different segment, and the Ubuntu box had
+`docker0`, a bridge, and eleven interfaces in total.
+
+The Linux binaries were cross-compiled from the Mac and copied over; both
+reported `unreleased (revision 02937e02cb0d)` with no `modified source`, so both
+hosts ran the merged tree.
+
+**What was verified.**
+
+- **Announcing and discovery across a real cable.** The Ubuntu node opened a
+  window; the Mac listed it at `122.122.122.2:7463` with fingerprint
+  `DB7A 14D1 2C0D 1900 2540 65F2`, display name `user-HP-ProBook` and platform
+  `linux/amd64`. The fingerprint matches the one that node printed at startup.
+  The reverse held: the Ubuntu node listed the Mac at `122.122.122.1:7463` with
+  `8DE2 B6BF 553A 5AE8 159B 6EBD`.
+- **The address was learned, not typed.** After pairing, each node's
+  `/v1/nodes` carried the other's address with no `PUT` ever issued — the first
+  run's outstanding item.
+- **Interface selection on Linux.** The Ubuntu node joined `enp2s0`,
+  `br-8bf057623f60` and `docker0`: loopback excluded, and the names filtered to
+  interfaces that hold an IPv4 address. `net.ipv4.igmp_max_memberships` is 20 on
+  that host against three joins, so the membership limit is not reached there.
+  The Mac joined `en8` alone, the cable — not its default route, which is the
+  configuration that was broken before #91 and could only be simulated until now.
+- **A message both ways, between two real hosts, over the cable.** The Ubuntu
+  node exposed one of its own Codex sessions
+  (`codex:754c3495-1ab5-43d1-891b-14ffab3c6cce`, cwd
+  `/home/user/new_space/Tools/serialwrap`) to all paired nodes with
+  `--messages --outbound`. The Mac sent `hi` from a Claude session;
+  `msg_88da21d0e6700713276e70d515b7b7fa` reached `delivered` and appeared in
+  that Codex session's inbox. The Ubuntu node replied `HI`;
+  `msg_44c4f699cc68614a8c89e268380e3389` reached `delivered` and appeared in the
+  Mac session's inbox.
+- The Ubuntu node discovered 21 real sessions (19 Claude, 2 Codex) from that
+  machine's own `~/.claude` and `~/.codex`, so the exchange ran against real
+  provider metadata rather than fixtures.
+
+**What this run did not cover.**
+
+- **The MCP path.** Both sides were driven with `ah`. The four MCP tools go
+  through the same node API and are covered by their own tests, but no Claude
+  Code or Codex session drove this exchange, and no message was handed to an
+  agent — that remains the documented boundary (Step 8, #60).
+- The automated `pair.*` handshake (#62). Trust was established with `ah pair`
+  on each side after a person compared the six fingerprint groups on both
+  screens, which is the property #62 automates rather than replaces.
+- Everything else the first run left outstanding: TLS pin rejection against a
+  substituted certificate, stale and replayed heartbeats, the inbox-full 503
+  path, revocation over the wire, and anything on Windows.
+
+**A usability finding, recorded because it cost time in the run itself.** A
+remote session does not appear in `ah list`, which is owner-local by design; it
+appears under `/v1/peers`, and is addressed as `<node-id>/<session-id>`. There
+is no `ah` command that shows what other nodes have published, so the only way
+to find the id to send to is to read the presence endpoint with `curl`. `ah
+send` to an unqualified remote id answers `NOT_FOUND: session not found`, which
+is true and unhelpful.
