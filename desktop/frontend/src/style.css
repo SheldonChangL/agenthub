@@ -515,3 +515,37 @@ table.peer-sessions td.mono {
 #pair-prefill-note > div + div {
   margin-top: 6px;
 }
+
+/* ---------------- inbox ---------------- */
+
+.sid .inbox {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.inboxrow {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A message body is written by someone else and may be long, may be one word,
+   and may contain anything. It wraps, keeps its own line breaks, and never
+   escapes its box. */
+.inboxrow .inboxbody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#inbox-body {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 10px 0;
+}

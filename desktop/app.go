@@ -261,6 +261,59 @@ func isDiscoveryDisabled(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "DISCOVERY_DISABLED")
 }
 
+// InboxView is one session's inbox as the owner sees it.
+type InboxView struct {
+	SessionID string         `json:"sessionId"`
+	Messages  []InboxMessage `json:"messages"`
+	Held      int            `json:"held"`
+	Capacity  int            `json:"capacity"`
+	Full      bool           `json:"full"`
+	// Error is separate from an empty list, because "nothing has been sent" and
+	// "this could not be read" are different facts and only one of them means
+	// the owner should stop looking.
+	Error string `json:"error,omitempty"`
+}
+
+// Inbox reads what other nodes have queued for one of this owner's sessions.
+//
+// The desktop can show it because the owner may want to see what arrived
+// without asking an agent to look. Reading it here changes nothing: the node
+// does not mark anything read, and nothing hands a message to an agent — that
+// is still the documented boundary.
+func (a *App) Inbox(sessionID string) InboxView {
+	view := InboxView{SessionID: sessionID, Messages: []InboxMessage{}}
+	if strings.TrimSpace(sessionID) == "" {
+		view.Error = "select a session first"
+		return view
+	}
+	activeClient, _ := a.current()
+	// One page. An owner glancing at an inbox wants the recent end, and the
+	// node's own cap is 200.
+	inbox, err := activeClient.inbox(a.ctx, sessionID, 50)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.Messages = inbox.Messages
+	view.Held = inbox.Held
+	view.Capacity = inbox.Capacity
+	view.Full = inbox.Full
+	return view
+}
+
+// ClearInbox empties one session's inbox.
+//
+// Destructive and not undoable, so the frontend asks first. It exists because
+// an inbox that only grows is one an owner cannot keep usable, and because a
+// full one refuses new messages.
+func (a *App) ClearInbox(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("select a session first")
+	}
+	activeClient, _ := a.current()
+	return activeClient.clearInbox(a.ctx, sessionID)
+}
+
 // Discover triggers a provider rescan on the node.
 func (a *App) Discover() (map[string]int, error) {
 	activeClient, _ := a.current()

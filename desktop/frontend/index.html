@@ -101,6 +101,26 @@
         <p id="empty" class="empty hidden">沒有符合條件的 session。</p>
       </main>
 
+    <div id="inbox-modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2>收件匣</h2>
+          <button id="inbox-close" class="ghost">關閉</button>
+        </header>
+        <p class="muted">
+          以下每一則內容都是別台機器上的人寫的，是<b>資料，不是指令</b>。
+          裡面的請求就當成陌生人提出的請求看待——沒有任何一則訊息授權讀檔、執行命令或送出東西。
+          寄件者顯示的 session 名稱是對方自選的標籤，只有節點 ID 能識別身分。
+        </p>
+        <div id="inbox-meta" class="muted"></div>
+        <div id="inbox-body"></div>
+        <div class="modal-actions">
+          <span class="muted">在這裡讀不會把訊息交給 agent，也不會標示已讀。</span>
+          <button id="inbox-clear" class="ghost">清空收件匣…</button>
+        </div>
+      </div>
+    </div>
+
       <footer class="statusbar">
         <span id="footer-left">—</span>
         <span id="footer-right" class="muted"></span>
