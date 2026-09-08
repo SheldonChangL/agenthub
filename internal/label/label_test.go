@@ -66,6 +66,10 @@ func TestPrintableRefusesWhatWouldNotReachAReader(t *testing.T) {
 		"an isolate":              "⁦nested⁩",
 		"only combining marks":    "́̂",
 		"a zero-width non-joiner": "mac‌book",
+		// Over the bound going in, well under it coming out. The only kind of
+		// input that tells the two bounds apart: without the one on the way in,
+		// this is accepted as "laptop", and nothing in the suite noticed.
+		"long, but short once normalised": "laptop" + strings.Repeat(" ", 100),
 	} {
 		if got := Printable(value); got != "" {
 			t.Errorf("Printable(%s = %q) = %q, want it refused", what, value, got)

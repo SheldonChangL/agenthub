@@ -381,8 +381,12 @@ function broadcastWarning(lead, tail = "") {
       ? "這個名稱是你指定的；"
       : "這個名稱是節點從這台機器讀來的；";
   }
+  // The space before the name is right for a Latin one and wrong before a
+  // fullwidth paren, which carries its own. Dropped in the one case that has
+  // one.
+  const before = known ? "並看到它自稱 " : "並看到它自稱";
   return [
-    element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，並看到它自稱 "),
+    element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，" + before),
     element("span", "claimed", name),
     element("span", "",
       `，以及平台與指紋（不含公鑰）。${tail}${origin}要換掉就用 -display-name 重新啟動節點。`),
