@@ -8,42 +8,59 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/registry"
 )
 
-// MaxDisplayName is the store's bound, re-exported so callers naming a node do
-// not have to know where it is enforced. Not a second copy of the number: a
-// name this node accepts for itself but a peer refuses would fail on the other
-// machine, which is the hardest place to see it.
-const MaxDisplayName = registry.MaxDisplayName
+// MaxDisplayName is what this node may call itself.
+//
+// The announcement's bound, not the trust store's larger one for peer names.
+// This name is transmitted: a longer one is stored, shown in this node's own UI
+// as the string the network sees, and then dropped from the announcement with
+// nowhere to report it — so the owner is told their machine announces a name
+// that is not on the wire at all.
+const MaxDisplayName = model.MaxLabelLength
 
 // LoadOrCreate returns this node's identity, creating it on first run.
 //
-// A chosen name replaces whatever is stored, not only what is created: a node
-// whose name was wrong from the day it started needs a way to correct it, and
-// that is the case this argument exists for. Trust is keyed on the node id, so
-// the name can change without breaking a pairing — a peer keeps the name it
-// recorded until it hears otherwise.
+// A name nobody picked follows the machine. That is the whole point rather than
+// a convenience: a node created before this code existed took its name from
+// os.Hostname(), which on macOS answers from DHCP and DNS, and correcting only
+// newly created nodes would leave every node that actually has the problem
+// announcing a stranger's name forever. So a stored name that nobody chose is
+// re-read from the machine on every start.
+//
+// A name someone did pick is left alone, including across a machine rename.
+//
+// Trust is keyed on the node id, so either change is safe: a peer keeps the
+// name it recorded at pairing time until it pairs again.
 func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) (model.NodeIdentity, error) {
 	chosen = strings.TrimSpace(chosen)
-	if len(chosen) > MaxDisplayName {
-		return model.NodeIdentity{}, fmt.Errorf(
-			"display name is %d characters; the most a peer will accept is %d",
-			len(chosen), MaxDisplayName)
+	if chosen != "" {
+		if err := checkAnnounceable(chosen); err != nil {
+			return model.NodeIdentity{}, err
+		}
 	}
 
 	identity, err := store.GetNodeIdentity(ctx)
 	if err == nil {
-		if chosen == "" || chosen == identity.DisplayName {
+		name, pick := chosen, true
+		switch {
+		case chosen != "":
+		case identity.NameIsChosen:
+			// Somebody picked this. Not ours to revise.
+			return identity, nil
+		default:
+			name, pick = MachineName(), false
+		}
+		if name == identity.DisplayName && pick == identity.NameIsChosen {
 			return identity, nil
 		}
 		// SetNodeDisplayName rather than SaveNodeIdentity: the latter refuses
 		// to overwrite, deliberately, because the id must not change.
-		if err := store.SetNodeDisplayName(ctx, chosen); err != nil {
+		if err := store.SetNodeDisplayName(ctx, name, pick); err != nil {
 			return model.NodeIdentity{}, err
 		}
 		return store.GetNodeIdentity(ctx)
@@ -56,15 +73,16 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) 
 	if err != nil {
 		return model.NodeIdentity{}, err
 	}
-	name := chosen
+	name, pick := chosen, true
 	if name == "" {
-		name = MachineName()
+		name, pick = MachineName(), false
 	}
 	identity = model.NodeIdentity{
-		ID:          nodeID,
-		DisplayName: name,
-		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
-		CreatedAt:   time.Now().UTC(),
+		ID:           nodeID,
+		DisplayName:  name,
+		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
+		CreatedAt:    time.Now().UTC(),
+		NameIsChosen: pick,
 	}
 	if err := store.SaveNodeIdentity(ctx, identity); err != nil {
 		return model.NodeIdentity{}, err
@@ -72,8 +90,36 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) 
 	return store.GetNodeIdentity(ctx)
 }
 
-// MachineName is what this machine calls itself, for a node that has not been
-// given a name.
+// checkAnnounceable refuses a chosen name the announcement would not carry,
+// while the person who typed it is still there to be told.
+//
+// The alternative is to accept it, store it, print it at startup as the
+// announced name, and have the mDNS TXT record silently omit it. The owner then
+// looks for their machine on another screen and it has no name — a failure with
+// no error anywhere and nothing pointing at the name they chose.
+func checkAnnounceable(name string) error {
+	clean := model.PrintableLabel(name)
+	if clean == "" {
+		return fmt.Errorf(
+			"display name %q cannot be announced: it is %d bytes, and the most an announcement "+
+				"carries is %d, made of characters that render",
+			name, len(name), MaxDisplayName)
+	}
+	if clean != name {
+		return fmt.Errorf(
+			"display name %q would be announced as %q; pass that instead, so what you see here "+
+				"is what other machines see", name, clean)
+	}
+	return nil
+}
+
+// machineNameLookup is what MachineName asks first. A variable so the
+// preference between the machine's own name and the network's can be tested on
+// any platform, including the CI runners, where the real lookup answers "".
+var machineNameLookup = localMachineName
+
+// MachineName is what this machine calls itself, for a node whose name nobody
+// has picked.
 //
 // Not os.Hostname() alone. On macOS with no HostName set — the default —
 // gethostname() answers with whatever DHCP and DNS say this address is called,
@@ -84,29 +130,49 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) 
 // the segment, which is both wrong and somebody else's.
 //
 // So the machine's own name is asked for first, and the network-derived one is
-// the fallback rather than the source.
+// the fallback rather than the source. Every candidate is put through the
+// announcement's own rule, because a name this function returns is a name that
+// will be transmitted: a 30-character ComputerName with an emoji in it is
+// ordinary, and one that PrintableLabel refuses must fall through to the next
+// source rather than becoming a node with no announced name.
 func MachineName() string {
-	if name := strings.TrimSpace(localMachineName()); name != "" {
-		return truncateName(name)
-	}
-	if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
-		return truncateName(strings.TrimSpace(hostname))
+	for _, candidate := range []string{machineNameLookup(), hostname()} {
+		if name := model.PrintableLabel(strings.TrimSpace(candidate)); name != "" {
+			return name
+		}
+		// Too long to announce is the common case, and truncating is better
+		// than discarding: "Sheldon 的 MacBook Pro …" identifies the machine,
+		// and "agenthub-node" does not.
+		if name := model.PrintableLabel(truncate(strings.TrimSpace(candidate))); name != "" {
+			return name
+		}
 	}
 	return "agenthub-node"
 }
 
-// truncateName keeps a name inside what a peer will accept, on a rune boundary
-// so a multi-byte name is not cut into invalid UTF-8.
-func truncateName(name string) string {
+func hostname() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return name
+}
+
+// truncate cuts a name to the announcement's bound on a rune boundary, so a
+// multi-byte name is not cut into invalid UTF-8.
+//
+// The bound is checked again by the caller, because normalisation can lengthen
+// a string: this cut is what makes a long name a candidate, not what proves it
+// acceptable.
+func truncate(name string) string {
 	if len(name) <= MaxDisplayName {
 		return name
 	}
-	trimmed := name[:MaxDisplayName]
-	for len(trimmed) > 0 && !utf8.ValidString(trimmed) {
-		trimmed = trimmed[:len(trimmed)-1]
+	cut := MaxDisplayName
+	// Back off the trailing bytes of a rune the cut landed inside. A UTF-8
+	// continuation byte is 10xxxxxx; the byte that starts a rune is not.
+	for cut > 0 && name[cut]&0xC0 == 0x80 {
+		cut--
 	}
-	if trimmed == "" {
-		return "agenthub-node"
-	}
-	return trimmed
+	return name[:cut]
 }

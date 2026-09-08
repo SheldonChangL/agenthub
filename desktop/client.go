@@ -128,6 +128,11 @@ type PairingState struct {
 	// against its own clock and this process need not agree with it.
 	Remaining  int            `json:"remainingSeconds"`
 	Announcing AnnounceStatus `json:"announcing"`
+	// DisplayName is what the node announces itself as. Read from the node on
+	// every poll rather than once at startup: it is the string the pairing
+	// warning names, and it changes when the node restarts under a different
+	// -display-name — which is exactly what that warning tells an owner to do.
+	DisplayName string `json:"displayName"`
 }
 
 // responseCap bounds what this app will read from its own node. Large enough

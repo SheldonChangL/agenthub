@@ -16,6 +16,20 @@ func identityStore(t *testing.T) *Registry {
 	return openRegistryAt(t, filepath.Join(t.TempDir(), "agenthub.db"))
 }
 
+func seedIdentity(t *testing.T, store *Registry, name string) model.NodeIdentity {
+	t.Helper()
+	created := model.NodeIdentity{
+		ID:          "node_0123456789abcdef",
+		DisplayName: name,
+		Platform:    "darwin/arm64",
+		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+	}
+	if err := store.SaveNodeIdentity(context.Background(), created); err != nil {
+		t.Fatalf("SaveNodeIdentity() error = %v", err)
+	}
+	return created
+}
+
 func storedIdentity(t *testing.T, store *Registry) model.NodeIdentity {
 	t.Helper()
 	identity, err := store.GetNodeIdentity(context.Background())
@@ -31,17 +45,9 @@ func storedIdentity(t *testing.T, store *Registry) model.NodeIdentity {
 func TestRenamingANodeLeavesItsIdentityIntact(t *testing.T) {
 	ctx := context.Background()
 	store := identityStore(t)
-	created := model.NodeIdentity{
-		ID:          "node_0123456789abcdef",
-		DisplayName: "the wrong name",
-		Platform:    "darwin/arm64",
-		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
-	}
-	if err := store.SaveNodeIdentity(ctx, created); err != nil {
-		t.Fatal(err)
-	}
+	created := seedIdentity(t, store, "the wrong name")
 
-	if err := store.SetNodeDisplayName(ctx, "the machine on my desk"); err != nil {
+	if err := store.SetNodeDisplayName(ctx, "the machine on my desk", true); err != nil {
 		t.Fatalf("SetNodeDisplayName() error = %v", err)
 	}
 	after := storedIdentity(t, store)
@@ -60,39 +66,154 @@ func TestRenamingANodeLeavesItsIdentityIntact(t *testing.T) {
 	}
 }
 
+// Whether a person picked the name is stored with it, and survives a reopen.
+//
+// It is the whole basis for leaving one name alone and re-reading another, so a
+// column that silently forgot would turn a pinned name back into one that
+// follows the machine — undoing the owner's choice on the next restart.
+func TestWhetherTheNameWasPickedIsRemembered(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agenthub.db")
+	store := openRegistryAt(t, path)
+	seedIdentity(t, store, "read from the machine")
+
+	if got := storedIdentity(t, store).NameIsChosen; got {
+		t.Error("a name saved with no choice recorded came back as chosen")
+	}
+	if err := store.SetNodeDisplayName(ctx, "picked by hand", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedIdentity(t, store).NameIsChosen; !got {
+		t.Fatal("a chosen name came back as one nobody picked")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := openRegistryAt(t, path)
+	after := storedIdentity(t, reopened)
+	if !after.NameIsChosen {
+		t.Error("the choice was forgotten across a reopen; the next start would overwrite it")
+	}
+	if after.DisplayName != "picked by hand" {
+		t.Errorf("display name = %q after a reopen", after.DisplayName)
+	}
+
+	// And it can be handed back: a name re-read from the machine is not chosen.
+	if err := reopened.SetNodeDisplayName(ctx, "read again", false); err != nil {
+		t.Fatal(err)
+	}
+	if storedIdentity(t, reopened).NameIsChosen {
+		t.Error("a name recorded as read from the machine came back as chosen")
+	}
+}
+
+// A database created before the provenance column exists gains it, and the
+// names already in it read as nobody's choice.
+//
+// That is not a convenient default, it is the fact: before the column there was
+// no way to pick a name, so every name in such a database came off the machine.
+// Reading them as chosen would pin the wrong names this change exists to fix.
+func TestAnOlderDatabaseGainsProvenanceAndReadsAsUnchosen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agenthub.db")
+	store := openRegistryAt(t, path)
+	seedIdentity(t, store, "J-SomeoneElse.example.com.tw")
+	// Drop the column to stand in for a database written by the earlier build.
+	if _, err := store.db.ExecContext(ctx,
+		`ALTER TABLE node_identity DROP COLUMN name_is_chosen`); err != nil {
+		t.Fatalf("could not reproduce the older schema: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := openRegistryAt(t, path)
+	after := storedIdentity(t, reopened)
+	if after.NameIsChosen {
+		t.Error("a name from before the column existed reads as one somebody picked; " +
+			"the wrong name would then be kept forever")
+	}
+	if after.DisplayName != "J-SomeoneElse.example.com.tw" {
+		t.Errorf("display name = %q; the migration lost it", after.DisplayName)
+	}
+}
+
 // Renaming a node that does not exist reports it. Without the row count this
 // returns nil, having changed nothing: the caller reads back the old name and
 // has no way to tell a failed rename from one the store quietly declined.
 func TestRenamingBeforeThereIsAnIdentityIsRefused(t *testing.T) {
-	err := identityStore(t).SetNodeDisplayName(context.Background(), "a name")
+	err := identityStore(t).SetNodeDisplayName(context.Background(), "a name", true)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetNodeDisplayName() error = %v; want ErrNotFound", err)
 	}
 }
 
-// The store holds one bound for every display name it keeps. A node that stored
-// a longer name for itself would announce one its peers refuse under the same
-// constant, and the failure would surface on the other machine.
-func TestANameTooLongForAPeerIsNotStoredForThisNode(t *testing.T) {
+// This node's own name is held to what an announcement will actually carry.
+//
+// Not the trust store's larger bound. A longer name is stored, printed at
+// startup as the announced name, shown by the desktop as the string the network
+// sees — and then dropped from the mDNS TXT record, which has nowhere to report
+// that. The owner looks for their machine on another screen and it has no name.
+func TestANameThatCouldNotBeAnnouncedIsNotStoredForThisNode(t *testing.T) {
 	ctx := context.Background()
 	store := identityStore(t)
-	if err := store.SaveNodeIdentity(ctx, model.NodeIdentity{
-		ID: "node_0123456789abcdef", DisplayName: "start", Platform: "linux/amd64",
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	seedIdentity(t, store, "start")
 
-	if err := store.SetNodeDisplayName(ctx, strings.Repeat("a", MaxDisplayName+1)); err == nil {
-		t.Error("a name longer than a peer accepts was stored for this node")
+	// Between the two bounds: accepted by the trust store for a peer, dropped
+	// by the announcement for this node. 22 CJK characters is 66 bytes, and an
+	// unremarkable name in a product whose own UI is written in Chinese.
+	tooLong := strings.Repeat("三", 22)
+	if len(tooLong) <= model.MaxLabelLength || len(tooLong) > MaxDisplayName {
+		t.Fatalf("the fixture is %d bytes; it has to sit between the announcement's %d and "+
+			"the trust store's %d for this test to mean anything",
+			len(tooLong), model.MaxLabelLength, MaxDisplayName)
+	}
+	if err := store.SetNodeDisplayName(ctx, tooLong, true); err == nil {
+		t.Error("a name the announcement would silently drop was stored as this node's own")
 	}
 	if got := storedIdentity(t, store).DisplayName; got != "start" {
 		t.Errorf("display name = %q; the refused name was written anyway", got)
 	}
-	if err := store.SetNodeDisplayName(ctx, ""); err == nil {
-		t.Error("an empty name was accepted, leaving the node with nothing to announce")
+
+	// A name that renders as nothing is refused for the same reason: it would
+	// be dropped from the announcement, not shown as an empty row.
+	for _, unshowable := range []string{" ", "\u200b\u200b", "\x1b[31mred", "a\r\nb", "\xff\xfe"} {
+		if err := store.SetNodeDisplayName(ctx, unshowable, true); err == nil {
+			t.Errorf("SetNodeDisplayName(%q) was accepted", unshowable)
+		}
 	}
-	if err := store.SetNodeDisplayName(ctx, strings.Repeat("a", MaxDisplayName)); err != nil {
-		t.Errorf("a name of exactly the maximum was refused: %v", err)
+
+	// A name the announcement would rewrite is refused rather than stored in
+	// one shape and sent in another. Two spaces collapse to one.
+	if err := store.SetNodeDisplayName(ctx, "my  mac", true); err == nil {
+		t.Error("a name that would be announced differently was stored as-is")
+	}
+
+	// And a name right at the bound is usable, so nothing is refused by an
+	// off-by-one.
+	atLimit := strings.Repeat("a", model.MaxLabelLength)
+	if err := store.SetNodeDisplayName(ctx, atLimit, false); err != nil {
+		t.Errorf("a name of exactly %d bytes was refused: %v", model.MaxLabelLength, err)
+	}
+}
+
+// The other write path enforces the same rule. Two write paths that disagree
+// leave the invariant true only for whichever one the caller happened to take —
+// and SaveNodeIdentity is the one that creates the row in the first place.
+func TestCreatingANodeWithAnUnannounceableNameIsRefused(t *testing.T) {
+	ctx := context.Background()
+	store := identityStore(t)
+	err := store.SaveNodeIdentity(ctx, model.NodeIdentity{
+		ID:          "node_0123456789abcdef",
+		DisplayName: strings.Repeat("a", model.MaxLabelLength+1),
+		Platform:    "linux/amd64",
+		CreatedAt:   time.Now().UTC(),
+	})
+	if err == nil {
+		t.Fatal("a node was created with a name no announcement would carry")
+	}
+	if _, err := store.GetNodeIdentity(ctx); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetNodeIdentity() error = %v; the refused identity was written anyway", err)
 	}
 }

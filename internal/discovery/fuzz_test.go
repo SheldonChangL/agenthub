@@ -78,7 +78,7 @@ func FuzzParseAnnouncements(f *testing.F) {
 					t.Fatalf("%s is not already normalised: %q became %q", field, value, again)
 				}
 				for _, r := range value {
-					if r == brailleBlank {
+					if r == '\u2800' {
 						t.Fatalf("%s carries a braille blank: %q", field, value)
 					}
 				}

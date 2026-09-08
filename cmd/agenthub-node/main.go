@@ -52,9 +52,9 @@ func run() error {
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
 	displayName := flag.String("display-name", "",
-		"what this node calls itself to other machines, replacing the stored name. "+
-			"Defaults to this machine's own name — which is not always the one the network "+
-			"calls it, and is announced to everyone on the segment while pairing mode is open")
+		"what this node calls itself to other machines, and it is announced to everyone on "+
+			"the segment while pairing mode is open. Pinned once given: without this flag the "+
+			"name follows the machine's own name, which is not always the one the network calls it")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -126,8 +126,8 @@ func run() error {
 	// finds out what their machine calls itself by reading it off someone
 	// else's screen, and it is not always the name they expect: with no
 	// HostName set, macOS answers gethostname() from DHCP and DNS.
-	log.Printf("node display name %q — announced to the local network while pairing mode is open; "+
-		"-display-name changes it", node.DisplayName)
+	log.Printf("node display name %q (%s) — announced to the local network while pairing mode "+
+		"is open; -display-name changes it", node.DisplayName, nameProvenance(node.NameIsChosen))
 
 	// One policy decides three things that must agree: where this node will
 	// deliver, which addresses discovery may record, and which addresses the
@@ -428,4 +428,17 @@ func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler 
 			log.Printf("%d new pairing candidate(s)", changed)
 		}
 	}
+}
+
+// nameProvenance says where the announced name came from.
+//
+// An owner who sees the wrong name needs to know whether the fix is to rename
+// the machine or to pass the flag, and those are different actions. Printed
+// because this string leaves the machine: it is the one thing about this node
+// that strangers on the segment read.
+func nameProvenance(chosen bool) string {
+	if chosen {
+		return "chosen with -display-name"
+	}
+	return "read from this machine"
 }

@@ -209,7 +209,15 @@ const candidateNotice = "Every field here was chosen by whoever sent the packet,
 // candidate appearing on the other machine needs to be able to tell which side
 // the problem is on.
 func (s *Server) writePairingState(w http.ResponseWriter, status int, state pairing.State) {
-	body := map[string]any{"open": state.Open, "announcing": s.announcer.Status()}
+	// displayName travels with the announce status because it is part of it:
+	// this is the string a stranger on the segment reads. A UI that warns
+	// about what is being broadcast has to be able to re-read it, and the
+	// name changes when the node restarts with a different -display-name.
+	body := map[string]any{
+		"open":        state.Open,
+		"announcing":  s.announcer.Status(),
+		"displayName": s.node.DisplayName,
+	}
 	if state.Open {
 		body["openedAt"] = state.OpenedAt
 		body["expiresAt"] = state.ExpiresAt
