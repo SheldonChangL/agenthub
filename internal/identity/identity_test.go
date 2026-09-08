@@ -120,6 +120,30 @@ func describeRefusal(name string) string {
 	return "drop"
 }
 
+// A name that grows when normalised is still shortened to something, not
+// discarded.
+//
+// NFKC expands ㍿ to four characters, so cutting once to the bound produces a
+// prefix that comes back over it. Discarding on that gives up the machine's own
+// name and falls through to the hostname — the DNS name this whole change
+// exists to stop announcing.
+func TestANameThatGrowsWhenNormalisedIsStillShortened(t *testing.T) {
+	hostname, _ := os.Hostname()
+	for _, machine := range []string{
+		strings.Repeat("㍿", 30), strings.Repeat("½", 40), strings.Repeat("Ⅻ", 30),
+	} {
+		withMachineName(t, machine)
+		got := MachineName()
+		if got == "agenthub-node" || got == shortenUntilAnnounceable(hostname) {
+			t.Errorf("MachineName() = %q for a %d-byte name that expands when normalised; "+
+				"the machine's own name was given up", got, len(machine))
+		}
+		if len(got) > label.MaxLength {
+			t.Errorf("MachineName() = %d bytes for %q", len(got), machine)
+		}
+	}
+}
+
 // A long name is shortened rather than discarded: a truncated name still says
 // which machine this is, and "agenthub-node" does not.
 func TestALongMachineNameIsShortenedNotDiscarded(t *testing.T) {
