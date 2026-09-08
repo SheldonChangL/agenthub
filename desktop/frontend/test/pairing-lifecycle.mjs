@@ -72,7 +72,11 @@ const InboxStub = async (sessionId) => {
     sessionId, messages: [], held: 0, capacity: 500, full: false, showing: 0, more: false,
   };
 };
-const ClearInboxStub = async (sessionId) => { clearCalls.push(sessionId); };
+let clearResult = { removed: 3 };
+const ClearInboxStub = async (sessionId) => {
+  clearCalls.push(sessionId);
+  return clearResult;
+};
 
 const scope = new Function(
   "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
@@ -250,6 +254,26 @@ await settle();
 if (clearCalls.length !== 1 || clearCalls[0] !== "claude:shown") {
   failures.push(`clear emptied ${JSON.stringify(clearCalls)}, want ["claude:shown"] once`);
 }
+// What it did, where the person who pressed it is looking. A banner is behind
+// the modal, so the count — the only sign that something arrived between the
+// read and the confirm — would be invisible there.
+if (!el("inbox-body").serialize().includes("移除 3 則")) {
+  failures.push(`the clear result is not in the dialog: ${el("inbox-body").serialize()}`);
+}
+
+// A clear that fails has to say so there too, or the owner is left with an
+// unchanged list and no sign the destructive action did not happen.
+clearResult = { removed: 0, error: "the inbox could not be emptied" };
+await el("inbox-clear").onclick();
+await settle();
+const afterFailure = el("inbox-body").serialize();
+if (!afterFailure.includes("could not be emptied")) {
+  failures.push(`a failed clear said nothing in the dialog: ${afterFailure}`);
+}
+if (!afterFailure.includes("沒有變動")) {
+  failures.push("a failed clear did not say the inbox is unchanged");
+}
+clearResult = { removed: 3 };
 
 // 9. A slow read landing after a newer one must not repaint the dialog, because
 //    the clear button aims at whatever the dialog says it is showing.
