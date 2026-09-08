@@ -1,0 +1,244 @@
+package pairing
+
+import (
+	"context"
+	"log"
+	"net/netip"
+	"sync"
+	"time"
+
+	"agenthub.local/agenthub/internal/discovery"
+)
+
+// AnnounceInterval is how often an open window re-announces.
+//
+// Bounded by discovery.CandidateTTL rather than chosen freely: a candidate is
+// dropped that long after its last packet, so announcing less often than a
+// third of it would make a listener show a machine flickering in and out as
+// packets are lost. mDNS is UDP.
+const AnnounceInterval = 20 * time.Second
+
+// Addresses reports where this node answers peer traffic, for the announcement
+// to carry.
+//
+// A function rather than a value because the announce loop asks on every tick
+// and a test needs to change the answer between two of them. What PeerEndpoint
+// returns is in fact constant for the process's life — it is the peer
+// listener's own bound address — so nothing in production varies here.
+type Addresses func() []netip.Addr
+
+// Status is what actually happened, as opposed to what was asked for.
+//
+// An open window and a machine that is advertising are different facts, and the
+// gap between them would be silent otherwise. The API refuses to open a window
+// on a node that cannot announce, so the gap opens afterwards: every send
+// starts failing, or the owner is reading the state of a node that could never
+// announce in the first place and needs to be told why rather than shown a
+// zero.
+type Status struct {
+	// Addresses is how many this node would announce right now. Zero is the
+	// whole explanation when nothing is going out.
+	Addresses int `json:"announceableAddresses"`
+	// LastAttempt and LastSuccess are absent until the loop has run.
+	LastAttempt time.Time `json:"lastAttemptAt,omitzero"`
+	LastSuccess time.Time `json:"lastAnnouncedAt,omitzero"`
+	// LastError is why nothing is going out: the reason the last attempt failed,
+	// or — before any attempt, and whenever there is no address at all — the
+	// reason this node cannot be announced in the first place.
+	LastError string `json:"lastError,omitempty"`
+}
+
+// Announcer says on the local network that this node is willing to pair, but
+// only while the window is open.
+type Announcer struct {
+	mode      *Mode
+	group     string
+	nodeID    string
+	instance  string
+	port      int
+	addresses Addresses
+	offer     discovery.Offer
+
+	// announce is the call under test. Production passes
+	// discovery.AnnounceOffering.
+	announce func(ctx context.Context, group, nodeID, instance string, port int, addresses []netip.Addr, offer discovery.Offer) error
+	// canAnnounceFrom asks whether the machine could still send from an
+	// address. Injected for the same reason announce is: a test's addresses are
+	// chosen, not held by the machine running it.
+	canAnnounceFrom func(netip.Addr) error
+	interval        time.Duration
+	// unannounceable is why this node has nothing to announce, when it has
+	// nothing. Reported rather than left as a bare zero, because "no address"
+	// and "an address announcements cannot carry" send an owner to change
+	// different things.
+	unannounceable string
+	// wake lets opening the window announce at once rather than at the next
+	// tick. Buffered so a caller never blocks and a second wake before the loop
+	// reads the first is not two announcements.
+	wake chan struct{}
+
+	mu     sync.Mutex
+	status Status
+}
+
+func NewAnnouncer(mode *Mode, group, nodeID, instance string, endpoint Endpoint, offer discovery.Offer) *Announcer {
+	return &Announcer{
+		mode: mode, group: group, nodeID: nodeID, instance: instance,
+		port: endpoint.Port, addresses: endpoint.Addresses, offer: offer,
+		unannounceable:  endpoint.Unannounceable,
+		announce:        discovery.AnnounceOffering,
+		canAnnounceFrom: discovery.CanAnnounceFrom,
+		interval:        AnnounceInterval,
+		wake:            make(chan struct{}, 1),
+	}
+}
+
+// Wake asks the loop to announce now.
+//
+// Without it, opening a window is followed by up to a full interval of silence
+// while the UI says open — and the shortest window this node allows is thirty
+// seconds, so that silence could be most of it.
+func (a *Announcer) Wake() {
+	select {
+	case a.wake <- struct{}{}:
+	default:
+		// Already pending. One announcement answers both.
+	}
+}
+
+// Status reports what the loop last managed to do.
+func (a *Announcer) Status() Status {
+	a.mu.Lock()
+	status := a.status
+	a.mu.Unlock()
+	// Read directly rather than from the last attempt: this is the field an
+	// owner looks at to understand why nothing is going out, and it should
+	// answer before the loop has ticked even once.
+	// The same answer the API gets, from the same place, and asked whenever no
+	// failure has been recorded — not only when there is no address at all.
+	// Gating it on a zero count is what let the two disagree: an address on an
+	// interface that cannot carry a multicast packet made POST refuse with a
+	// reason while GET reported one announceable address and nothing wrong.
+	//
+	// This walks the machine's interfaces — one enumeration plus an address
+	// read per interface, measured at well under a millisecond on a
+	// twenty-four-interface machine — on a loopback-only API a UI polls every
+	// few seconds. The alternative, answering from what was true at startup, is
+	// the whole class of bug this PR has been about.
+	status.Addresses = len(a.addresses())
+	// A recorded send failure, with the configuration fine, is left as it is:
+	// that was one attempt, not a statement about this node, so the address
+	// count stands beside it.
+	if unannounceable := a.Unannounceable(); unannounceable != "" {
+		// The configuration wins over a recorded attempt, because it explains
+		// the state and outlasts it. Filling LastError only when it was empty
+		// left the two disagreeing the other way: a send that failed once with
+		// "no buffer space available" stayed on screen next to a zeroed count,
+		// while POST refused with "cannot carry a multicast packet" — sending
+		// the owner to look at buffers for a problem that is an interface.
+		status.LastError = unannounceable
+		// And none of the addresses can be used, so none is announceable.
+		status.Addresses = 0
+	}
+	return status
+}
+
+// Unannounceable is why this node cannot be announced, or the empty string when
+// it can be. Used by the API to refuse a window with the actual reason.
+//
+// It never answers "" for a node that cannot announce. The reason recorded at
+// startup is preferred because it names the configuration, but a node with no
+// address and no recorded reason still gets one: the caller uses this to decide
+// whether to open a window, and a missing explanation must not read as
+// permission.
+func (a *Announcer) Unannounceable() string {
+	addresses := a.addresses()
+	if len(addresses) == 0 {
+		if a.unannounceable != "" {
+			return a.unannounceable
+		}
+		return "this node has no address to announce"
+	}
+	// Asked of the machine as it is now, not as it was at startup. An address
+	// can survive on an interface that has lost multicast — a WireGuard or
+	// point-to-point interface never had it — and then every announcement
+	// fails while the window says open. This runs only when someone tries to
+	// open one, so it is cheap to be current.
+	for _, address := range addresses {
+		if err := a.canAnnounceFrom(address); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
+}
+
+// Run announces on every tick the window is open, and says nothing on every
+// tick it is not.
+//
+// It runs for the process's life rather than being started and stopped with the
+// window: a loop that is started on demand is a loop that can be started twice,
+// and the thing that must be certain here is that nothing is announced while
+// the window is closed. That is one condition, checked in one place.
+func (a *Announcer) Run(ctx context.Context) {
+	ticker := time.NewTicker(a.interval)
+	defer ticker.Stop()
+	for {
+		// Checked at the top as well as in announceIfOpen: a tick and a
+		// cancellation ready together would otherwise send one more packet
+		// after the process was told to stop.
+		if ctx.Err() != nil {
+			return
+		}
+		// Checked before announcing and again after each tick, so a window that
+		// closed between ticks stops the very next announcement.
+		a.announceIfOpen(ctx)
+		// The interval is measured from the announcement, not from the last
+		// tick. Without this a wake that lands just before a pending tick sends
+		// two packets moments apart — observed on a live pair, seven seconds
+		// between them — and the interval exists to space announcements out.
+		ticker.Reset(a.interval)
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.wake:
+		case <-ticker.C:
+		}
+	}
+}
+
+func (a *Announcer) announceIfOpen(ctx context.Context) {
+	if !a.mode.IsOpen() {
+		return
+	}
+	addresses := a.addresses()
+	now := time.Now().UTC()
+	if len(addresses) == 0 {
+		// Nothing to announce, and announcing without an address would list
+		// this machine as a candidate nobody can reach. Recorded rather than
+		// only logged: an owner asking why nothing is happening reads the API,
+		// not the log.
+		reason := a.unannounceable
+		if reason == "" {
+			reason = "this node has no address to announce"
+		}
+		a.record(Status{LastAttempt: now, LastError: reason})
+		return
+	}
+	if err := a.announce(ctx, a.group, a.nodeID, a.instance, a.port, addresses, a.offer); err != nil {
+		a.record(Status{LastAttempt: now, LastError: err.Error()})
+		log.Printf("pairing announcement failed: %v", err)
+		return
+	}
+	a.record(Status{LastAttempt: now, LastSuccess: now})
+}
+
+// record keeps the last attempt, preserving the last success so an owner can
+// see that announcements were working until something changed.
+func (a *Announcer) record(status Status) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if status.LastSuccess.IsZero() {
+		status.LastSuccess = a.status.LastSuccess
+	}
+	a.status = status
+}

@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/address"
+	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 	"agenthub.local/agenthub/internal/transport"
@@ -38,6 +40,12 @@ type Server struct {
 	deliveryPolicy func(string) error
 	// peerLimiter throttles the peer surface by source address.
 	peerLimiter *rateLimiter
+	// pairing is the owner's pairing window and the candidates it collects.
+	// Both are nil when the node was started without discovery: the endpoints
+	// then say so rather than pretending an empty list is an answer.
+	pairing    *pairing.Mode
+	candidates *discovery.Candidates
+	announcer  PairingAnnouncer
 	// refused remembers which stored snapshot was last reported as unservable,
 	// per peer, so a reader that polls /v1/peers — every agent_list call does —
 	// does not write the same line again for as long as the row sits there.
@@ -48,6 +56,20 @@ type Server struct {
 
 // Option adjusts a Server at construction.
 type Option func(*Server)
+
+// WithPairing gives the API the pairing window and the candidate list.
+//
+// Absent when the node runs without discovery, which is the default: the
+// endpoints then refuse rather than answer with an empty list, since "nobody is
+// out there" and "this node is not looking" are different answers and only one
+// of them means the owner should keep waiting.
+func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer PairingAnnouncer) Option {
+	return func(s *Server) {
+		s.pairing = mode
+		s.candidates = candidates
+		s.announcer = announcer
+	}
+}
 
 // WithDeliveryPolicy makes the API accept exactly the addresses the publisher
 // will deliver to. The default is loopback only, matching a node that has not
@@ -83,6 +105,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
 	mux.HandleFunc("PUT /v1/nodes/{id}/address", s.setNodeAddress)
+	mux.HandleFunc("GET /v1/pairing", s.pairingState)
+	mux.HandleFunc("POST /v1/pairing", s.openPairing)
+	mux.HandleFunc("DELETE /v1/pairing", s.closePairing)
+	mux.HandleFunc("GET /v1/pairing/candidates", s.pairingCandidates)
 	// GET /v1/heartbeat is the owner's preview of what this node would publish.
 	// The peer-facing POST /v1/heartbeat and POST /v1/challenge deliberately do
 	// not appear here: they live only on PeerHandler, so the management port has
@@ -269,6 +295,16 @@ func (s *Server) trustNode(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.TrustNode(r.Context(), node); err != nil {
 		writeRegistryError(w, err)
 		return
+	}
+	// A node the owner has just paired with is no longer a candidate. Dropping
+	// the row here is what the candidate list's own optimisation depends on:
+	// it asks the trust store once, when a row is created, and never again on a
+	// refresh — so without this the machine the owner just paired with stays in
+	// front of them as something still to pair with, for as long as it keeps
+	// announcing. Three comments in that package said pairing did this. Nothing
+	// did.
+	if s.candidates != nil {
+		s.candidates.Forget(input.NodeID)
 	}
 	stored, err := s.store.TrustedNode(r.Context(), input.NodeID)
 	if err != nil {

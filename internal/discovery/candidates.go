@@ -48,6 +48,15 @@ var ErrCandidatesFull = errors.New("the candidate list is full")
 // appearing in this list changes no audience and no trust record. The whole
 // list is throwaway state: it lives in memory, and a restart empties it.
 type Candidates struct {
+	// localNodeID is this node's own id, so it can be left out of the list: a
+	// machine offering to pair with itself is a row that can only waste the
+	// owner's time.
+	//
+	// On Unix its own announcements come back on the multicast loopback of the
+	// group it sends to, which is what makes the check necessary. On Windows
+	// the receiving socket has that loopback cleared, so they never arrive and
+	// the check is simply never exercised there.
+	localNodeID string
 	// paired reports whether a node is already in the trust store, so the list
 	// shows what the owner might still want rather than what they have.
 	paired func(ctx context.Context, nodeID string) (bool, error)
@@ -60,12 +69,13 @@ type Candidates struct {
 	seen map[string]Candidate
 }
 
-func NewCandidates(paired func(ctx context.Context, nodeID string) (bool, error), policy AddressPolicy) *Candidates {
+func NewCandidates(localNodeID string, paired func(ctx context.Context, nodeID string) (bool, error), policy AddressPolicy) *Candidates {
 	return &Candidates{
-		paired: paired,
-		policy: policy,
-		now:    func() time.Time { return time.Now().UTC() },
-		seen:   map[string]Candidate{},
+		localNodeID: localNodeID,
+		paired:      paired,
+		policy:      policy,
+		now:         func() time.Time { return time.Now().UTC() },
+		seen:        map[string]Candidate{},
 	}
 }
 
@@ -97,6 +107,12 @@ func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announce
 		if !announcement.Offering() {
 			continue
 		}
+		// An offer has to come from where it says it is. Without this, one host
+		// sprays a list full of candidates that all resolve to itself and the
+		// owner picks one of them. This is the only place that check lives:
+		// observe carried a second copy, which was unreachable because
+		// everything reaching it has already passed this one.
+		//
 		// Before the reduction, not after. A multi-homed node announces every
 		// address it has in one packet, and only one of them is the one the
 		// datagram came from — keeping the first and checking afterwards drops
@@ -139,6 +155,21 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	if !announcement.Offering() || announcement.Address == "" {
 		return false, nil
 	}
+	// A loopback source is refused in dispatch, where the multicast loop copy
+	// arrives. Refused again here so the property does not rest on one call
+	// site: this is the function that decides what appears on a person's
+	// screen, and a caller reading packets some other way — a unicast reply to
+	// :5353, a future transport — would otherwise reintroduce it.
+	//
+	// One check, not two. Refusing a loopback announced address as well reads
+	// like defence in depth and is not: an offer from loopback naming anything
+	// else is already refused by the source comparison below, so the only case
+	// either check catches is loopback claiming loopback — and then each makes
+	// the other survive its own mutation, which is how a pair of guards ends up
+	// with neither one load-bearing.
+	if source.Unmap().IsLoopback() {
+		return false, nil
+	}
 	// The id is the map key and a field on a person's screen, so it has to be
 	// an id. Before this list existed a hostile id was inert — it could only
 	// fail to match the trust store — and now it is displayed, which is what
@@ -146,6 +177,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	// built from non-ASCII characters must not be three rows that look like
 	// one.
 	if model.ValidateNodeID(announcement.NodeID) != nil {
+		return false, nil
+	}
+	// This node's own announcement, returned by the multicast loopback. Checked
+	// before anything else it would cost: it is the one id guaranteed to be
+	// announcing whenever this list is being filled.
+	if announcement.NodeID == c.localNodeID {
 		return false, nil
 	}
 	// The fingerprint is canonical by the time it is stored, whichever way the
@@ -156,12 +193,6 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		return false, nil
 	}
 	announcement.Fingerprint = canonical
-	// An offer has to come from where it says it is. Without this, one host
-	// sprays a list full of candidates that all resolve to itself, and the
-	// owner picks one of them.
-	if source.IsValid() && !announcedFrom(announcement.Address, source) {
-		return false, nil
-	}
 	// The cheap, local checks first, and the bound before any of them reaches
 	// the trust store: a full list must not still cost a database read per
 	// packet.
@@ -244,10 +275,12 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 			// in the same family.
 			return c.contest(announcement.NodeID, existing)
 		case relateAddresses(announcement.Address, existing.Address) == addressOtherFamily:
-			// The same id seen over the other address family. A dual-stack
-			// machine announces on both groups and each datagram reduces to the
-			// address matching its own source, so this is the ordinary case for
-			// one node — and it is indistinguishable, at this layer, from
+			// The same id seen over the other address family. This build
+			// announces and listens on the IPv4 group only, so it does not
+			// produce this itself — a v6 row here comes from another
+			// implementation, or from a v6 group this build later joins, and
+			// each datagram reduces to the address matching its own source. It
+			// is indistinguishable, at this layer, from
 			// someone claiming the id from the family this row is not pinned to.
 			// It is deliberately not flagged: flagging it would mark every
 			// dual-stack machine on the network, which would make the flag
