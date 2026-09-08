@@ -192,6 +192,11 @@ type Message struct {
 	DestinationNodeID string    `json:"destinationNodeId"`
 	Body              string    `json:"body"`
 	CreatedAt         time.Time `json:"createdAt"`
+	// WakeHops counts the automatic wakes that led here. Stored with the
+	// message because the wake decision is made after the payload is gone, and
+	// because an owner asking why an agent moved at 3am needs the chain, not
+	// just the last link.
+	WakeHops int `json:"wakeHops,omitempty"`
 }
 
 // SessionIDSeparator is the character that joins a node ID to a session ID in

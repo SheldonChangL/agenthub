@@ -63,6 +63,9 @@ type OutboundMessage struct {
 	CreatedAt         time.Time     `json:"createdAt"`
 	UpdatedAt         time.Time     `json:"updatedAt"`
 	LastError         string        `json:"lastError,omitempty"`
+	// WakeHops travels with the message so the receiving node can tell how far
+	// an automatic exchange has already gone. Set by whatever queued it.
+	WakeHops int `json:"wakeHops,omitempty"`
 }
 
 func (r *Registry) migrateOutbox(ctx context.Context) error {
@@ -77,7 +80,8 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
     attempts INTEGER NOT NULL DEFAULT 0,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
-    last_error TEXT NOT NULL DEFAULT ''
+    last_error TEXT NOT NULL DEFAULT '',
+    wake_hops INTEGER NOT NULL DEFAULT 0 CHECK (wake_hops >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_pending
     ON outbound_messages(state, created_at_ms ASC, id ASC);
@@ -122,10 +126,10 @@ func (r *Registry) QueueOutbound(ctx context.Context, message OutboundMessage) (
 
 	if _, err := r.db.ExecContext(ctx, `
 INSERT INTO outbound_messages
-    (id, destination_node_id, recipient_session, sender_label, body, state, attempts, created_at_ms, updated_at_ms)
-VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    (id, destination_node_id, recipient_session, sender_label, body, state, attempts, created_at_ms, updated_at_ms, wake_hops)
+VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 		message.ID, message.DestinationNodeID, message.To, message.From, message.Body,
-		string(OutboundPending), now.UnixMilli(), now.UnixMilli()); err != nil {
+		string(OutboundPending), now.UnixMilli(), now.UnixMilli(), message.WakeHops); err != nil {
 		return OutboundMessage{}, fmt.Errorf("queue outbound message: %w", err)
 	}
 	return message, nil
@@ -138,7 +142,7 @@ func (r *Registry) PendingOutbound(ctx context.Context, nodeID string, limit int
 	}
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, destination_node_id, recipient_session, sender_label, body, state, attempts,
-       created_at_ms, updated_at_ms, last_error
+       created_at_ms, updated_at_ms, last_error, wake_hops
 FROM outbound_messages
 WHERE destination_node_id = ? AND state = 'pending'
 ORDER BY created_at_ms ASC, id ASC LIMIT ?`, nodeID, limit)
@@ -153,7 +157,7 @@ ORDER BY created_at_ms ASC, id ASC LIMIT ?`, nodeID, limit)
 func (r *Registry) OutboundFor(ctx context.Context, messageID string) (OutboundMessage, error) {
 	rows, err := r.db.QueryContext(ctx, `
 SELECT id, destination_node_id, recipient_session, sender_label, body, state, attempts,
-       created_at_ms, updated_at_ms, last_error
+       created_at_ms, updated_at_ms, last_error, wake_hops
 FROM outbound_messages WHERE id = ?`, messageID)
 	if err != nil {
 		return OutboundMessage{}, fmt.Errorf("read outbound message: %w", err)
@@ -208,7 +212,8 @@ func scanOutbound(rows rowsScanner) ([]OutboundMessage, error) {
 		var state string
 		var createdMS, updatedMS int64
 		if err := rows.Scan(&message.ID, &message.DestinationNodeID, &message.To, &message.From,
-			&message.Body, &state, &message.Attempts, &createdMS, &updatedMS, &message.LastError); err != nil {
+			&message.Body, &state, &message.Attempts, &createdMS, &updatedMS, &message.LastError,
+			&message.WakeHops); err != nil {
 			return nil, fmt.Errorf("scan outbound message: %w", err)
 		}
 		message.State = OutboundState(state)
@@ -237,9 +242,10 @@ func (r *Registry) MessageByID(ctx context.Context, messageID string) (model.Mes
 	var message model.Message
 	var createdMS int64
 	err := r.db.QueryRowContext(ctx, `
-SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms
+SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms, wake_hops
 FROM messages WHERE id = ?`, messageID).
-		Scan(&message.ID, &message.From, &message.To, &message.DestinationNodeID, &message.Body, &createdMS)
+		Scan(&message.ID, &message.From, &message.To, &message.DestinationNodeID, &message.Body,
+			&createdMS, &message.WakeHops)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Message{}, fmt.Errorf("message %q: %w", messageID, ErrNotFound)
 	}
@@ -276,12 +282,12 @@ func (r *Registry) StoreIncomingMessage(ctx context.Context, message model.Messa
 	// concurrent deliveries both see 499 and both insert, and would let a
 	// separate count drift from the insert it was guarding.
 	result, err := r.db.ExecContext(ctx, `
-INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
-SELECT ?, ?, ?, ?, ?, ?
+INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms, wake_hops)
+SELECT ?, ?, ?, ?, ?, ?, ?
 WHERE (SELECT count(*) FROM messages WHERE recipient_id = ?) < ?
 ON CONFLICT(id) DO NOTHING`,
 		message.ID, message.From, message.To, message.DestinationNodeID,
-		message.Body, message.CreatedAt.UTC().UnixMilli(),
+		message.Body, message.CreatedAt.UTC().UnixMilli(), message.WakeHops,
 		message.To, MaxInboxMessages)
 	if err != nil {
 		return false, fmt.Errorf("store incoming message: %w", err)
