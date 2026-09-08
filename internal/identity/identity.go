@@ -3,7 +3,6 @@ package identity
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -36,13 +35,13 @@ const MaxDisplayName = model.MaxLabelLength
 //
 // Trust is keyed on the node id, so either change is safe: a peer keeps the
 // name it recorded at pairing time until it pairs again.
+//
+// A chosen name the announcement would not carry is refused by the store, not
+// here. One enforcement point: a check in both places is a second rule that can
+// drift from the first, and the store is the boundary a name crosses to become
+// the announced one.
 func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) (model.NodeIdentity, error) {
 	chosen = strings.TrimSpace(chosen)
-	if chosen != "" {
-		if err := checkAnnounceable(chosen); err != nil {
-			return model.NodeIdentity{}, err
-		}
-	}
 
 	identity, err := store.GetNodeIdentity(ctx)
 	if err == nil {
@@ -88,29 +87,6 @@ func LoadOrCreate(ctx context.Context, store *registry.Registry, chosen string) 
 		return model.NodeIdentity{}, err
 	}
 	return store.GetNodeIdentity(ctx)
-}
-
-// checkAnnounceable refuses a chosen name the announcement would not carry,
-// while the person who typed it is still there to be told.
-//
-// The alternative is to accept it, store it, print it at startup as the
-// announced name, and have the mDNS TXT record silently omit it. The owner then
-// looks for their machine on another screen and it has no name — a failure with
-// no error anywhere and nothing pointing at the name they chose.
-func checkAnnounceable(name string) error {
-	clean := model.PrintableLabel(name)
-	if clean == "" {
-		return fmt.Errorf(
-			"display name %q cannot be announced: it is %d bytes, and the most an announcement "+
-				"carries is %d, made of characters that render",
-			name, len(name), MaxDisplayName)
-	}
-	if clean != name {
-		return fmt.Errorf(
-			"display name %q would be announced as %q; pass that instead, so what you see here "+
-				"is what other machines see", name, clean)
-	}
-	return nil
 }
 
 // machineNameLookup is what MachineName asks first. A variable so the
