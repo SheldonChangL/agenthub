@@ -54,7 +54,8 @@ func run() error {
 	displayName := flag.String("display-name", "",
 		"what this node calls itself to other machines, and it is announced to everyone on "+
 			"the segment while pairing mode is open. Pinned once given: without this flag the "+
-			"name follows the machine's own name, which is not always the one the network calls it")
+			"name follows the machine's own name, which is not always the one the network calls "+
+			"it. Pass it empty to hand the name back to the machine")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -102,7 +103,16 @@ func run() error {
 	}
 	defer store.Close()
 
-	node, err := identity.LoadOrCreate(ctx, store, *displayName)
+	// Whether the flag was passed, not whether it has a value: passing it empty
+	// releases a pinned name back to the machine, and the zero value cannot say
+	// which of the two happened.
+	nameGiven := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "display-name" {
+			nameGiven = true
+		}
+	})
+	node, err := identity.LoadOrCreate(ctx, store, *displayName, nameGiven)
 	if err != nil {
 		return fmt.Errorf("load node identity: %w", err)
 	}

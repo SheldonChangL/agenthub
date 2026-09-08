@@ -39,6 +39,7 @@ const state = {
   inboxSession: null,
   localNodeId: "",
   localName: "",
+  localNameIsChosen: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -365,13 +366,17 @@ function renderPairing() {
 function broadcastWarning(lead) {
   const name = state.localName || "（未知）";
   // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
-  // the wrong source is the reason this reads the way it does.
+  // the wrong source is the reason this reads the way it does. And not "read
+  // from this machine" unconditionally — follow the instruction below and that
+  // sentence becomes false, which is the same defect one level down.
+  const origin = state.localNameIsChosen
+    ? "這個名稱是指定的；"
+    : "這個名稱是節點從這台機器讀來的；";
   return [
     element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，並看到它自稱 "),
     element("span", "claimed", name),
     element("span", "",
-      `，以及平台與指紋（不含公鑰）。這個名稱是節點從這台機器讀來的；` +
-      `要換掉就用 -display-name 重新啟動節點。`),
+      `，以及平台與指紋（不含公鑰）。${origin}要換掉就用 -display-name 重新啟動節點。`),
   ];
 }
 
@@ -1183,7 +1188,10 @@ async function loadPairing() {
   // Only on a read that reached the node. An unreachable node answers with no
   // name, and blanking the warning to "（未知）" because one poll failed would
   // drop the one string the warning exists to show.
-  if (result.state?.displayName) state.localName = result.state.displayName;
+  if (result.state?.displayName) {
+    state.localName = result.state.displayName;
+    state.localNameIsChosen = Boolean(result.state.nameIsChosen);
+  }
   // Stamped when the answer is applied, from the monotonic clock the countdown
   // is subtracted against.
   state.pairingReadAt = performance.now();

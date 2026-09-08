@@ -36,7 +36,7 @@ import (
 	"golang.org/x/text/secure/precis"
 
 	"agenthub.local/agenthub/internal/identity"
-	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/label"
 )
 
 const (
@@ -68,7 +68,7 @@ const (
 	// an unbounded field is a place to write to the reader, not a label. A DNS
 	// TXT string cannot exceed 255 bytes anyway; this is smaller because a
 	// display name that does not fit on a line is not a display name.
-	MaxCandidateFieldLength = model.MaxLabelLength
+	MaxCandidateFieldLength = label.MaxLength
 )
 
 // Announcement is one peer's claim about where it can be reached.
@@ -395,9 +395,9 @@ func Announceable(value string) string {
 	return printableField(value)
 }
 
-// printableField is model.PrintableLabel, kept as a name because this package
+// printableField is label.Printable, kept as a name because this package
 // applies it to fields of an announcement.
-func printableField(value string) string { return model.PrintableLabel(value) }
+func printableField(value string) string { return label.Printable(value) }
 
 // fieldKey is what two labels are compared by when deciding whether one row is
 // impersonating another.

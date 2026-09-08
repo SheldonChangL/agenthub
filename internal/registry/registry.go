@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 
 	_ "modernc.org/sqlite"
@@ -23,7 +24,7 @@ var ErrNotFound = errors.New("not found")
 // MaxDisplayName bounds a peer's display name — a label this node received and
 // shows, nothing more.
 //
-// This node's own name is held to model.MaxLabelLength instead, which is
+// This node's own name is held to label.MaxLength instead, which is
 // smaller, because its name is transmitted rather than merely displayed and the
 // announcement drops anything longer. The two are deliberately different rules,
 // not one rule copied twice: relaxing this one costs a wider row, relaxing the
@@ -47,7 +48,18 @@ func Open(ctx context.Context, path string) (*Registry, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	// _pragma=busy_timeout: without it a second process opening the same
+	// database while the first is migrating gets SQLITE_BUSY immediately, and
+	// the schema steps take a write lock. Measured on a database needing the
+	// node-name migration, eight concurrent opens: 8 of 8 failed without this,
+	// 2 of 8 with it.
+	//
+	// Not a fix, and not claimed as one. The two that still fail are on the
+	// journal_mode = WAL statement, whose lock a busy timeout does not wait
+	// for. Only one process is meant to hold a database at a time — Open has a
+	// single caller — so this is about failing legibly rather than supporting
+	// concurrent openers.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -307,7 +319,8 @@ func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, err
 // chosen distinguishes a name a person typed from one read off the machine. A
 // name nobody picked keeps following the machine; a picked one is left alone.
 func (r *Registry) SetNodeDisplayName(ctx context.Context, name string, chosen bool) error {
-	if err := validateOwnDisplayName(name); err != nil {
+	name, err := label.Announceable(name)
+	if err != nil {
 		return err
 	}
 	result, err := r.db.ExecContext(ctx,
@@ -328,45 +341,18 @@ func (r *Registry) SetNodeDisplayName(ctx context.Context, name string, chosen b
 	return nil
 }
 
-// validateOwnDisplayName holds this node's own name to what it will actually
-// be announced as.
-//
-// Not the trust store's bound, which is larger. A peer's name is a label this
-// node received and displays; this one is a label this node transmits, and the
-// announcement drops any field PrintableLabel refuses — silently, because a TXT
-// record has nowhere to report an error to. Storing a name the announcement
-// will not carry means the owner reads it in their own UI, is told it is what
-// the network sees, and it is not there at all.
-//
-// Equality rather than non-empty: PrintableLabel normalises as well as judges,
-// so a name that only differs from its normalised form would be shown here in
-// one shape and announced in another.
-func validateOwnDisplayName(name string) error {
-	if name == "" {
-		return errors.New("display name is required")
-	}
-	clean := model.PrintableLabel(name)
-	if clean == "" {
-		return fmt.Errorf(
-			"display name %q is %d bytes and cannot be announced: a name must be at most %d bytes "+
-				"and made of characters that render", name, len(name), model.MaxLabelLength)
-	}
-	if clean != name {
-		return fmt.Errorf("display name %q would be announced as %q; use that form instead", name, clean)
-	}
-	return nil
-}
-
 func (r *Registry) SaveNodeIdentity(ctx context.Context, identity model.NodeIdentity) error {
 	if identity.ID == "" || identity.DisplayName == "" || identity.Platform == "" || identity.CreatedAt.IsZero() {
 		return errors.New("complete node identity is required")
 	}
 	// The same rule as SetNodeDisplayName. Two write paths that disagree leave
 	// the invariant true only for whichever one the caller happened to take.
-	if err := validateOwnDisplayName(identity.DisplayName); err != nil {
+	announceable, err := label.Announceable(identity.DisplayName)
+	if err != nil {
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, `
+	identity.DisplayName = announceable
+	_, err = r.db.ExecContext(ctx, `
 INSERT INTO node_identity (singleton, id, display_name, platform, created_at_ms, name_is_chosen)
 VALUES (1, ?, ?, ?, ?, ?)
 ON CONFLICT(singleton) DO NOTHING`,
