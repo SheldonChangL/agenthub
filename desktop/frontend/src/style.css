@@ -483,10 +483,15 @@ table.peer-sessions td.mono {
 
 #candidate-rows {
   overflow-y: auto;
-  /* Chosen by measuring, not by taste: at 42vh a full list of 64 rows pushed
-     the "pair a new node" button 52px below the fold on an 800px-tall window.
-     At 32vh the whole panel fits, and the sidebar scrolls anyway for a shorter
-     window or a long list of paired nodes. */
+  /* A cap, not a fit. Measured in a browser on the real page at 1280x800 with
+     a full list of 64 rows: the sidebar is a 610px box holding 956px, so the
+     panel does not fit at that height and no cap would make it — everything
+     but the list already comes to 700px. What the cap does is stop a list
+     whose length is chosen by whoever is on the segment from pushing the rest
+     arbitrarily far down; what makes the rest reachable is the sidebar's own
+     scroll. An earlier version of this comment claimed the whole panel fits,
+     measured on a harness that left out the toolbar, selection bar and status
+     bar. */
   max-height: 32vh;
 }
 
