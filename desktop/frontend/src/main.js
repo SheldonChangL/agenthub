@@ -169,8 +169,7 @@ function renderRows(rows) {
     // for "what has this session been sent". It does not mark anything read and
     // does not hand anything to an agent.
     const openInboxButton = element("button", "ghost inbox", "收件匣");
-    openInboxButton.onclick = (event) => {
-      event.stopPropagation();
+    openInboxButton.onclick = () => {
       openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
     };
     idCell.append(openInboxButton);
@@ -848,16 +847,26 @@ function renderInbox(view) {
   const body = el("inbox-body");
   body.replaceChildren();
 
+  if (view.loading) {
+    // Not an empty list: those render identically, and the read can take
+    // fifteen seconds.
+    meta.textContent = view.sessionId;
+    body.append(element("div", "muted", "正在讀取…"));
+    return;
+  }
   if (view.error) {
     // A failed read is not an empty inbox, and only one of them means there is
-    // nothing to come back for.
-    meta.textContent = "";
+    // nothing to come back for. Shown here rather than in a banner: the dialog
+    // covers the banner, so an error there is an error nobody sees.
+    meta.textContent = view.sessionId ?? "";
     body.append(element("div", "stale", "讀不到這個 session 的收件匣，所以這裡不顯示任何內容。"));
     body.append(element("div", "muted", view.error));
     return;
   }
 
-  meta.textContent = `${view.sessionId} · ${view.held} / ${view.capacity} 則`;
+  meta.textContent = view.more
+    ? `${view.sessionId} · 顯示最舊的 ${view.showing} 則，共 ${view.held} / ${view.capacity} 則`
+    : `${view.sessionId} · ${view.held} / ${view.capacity} 則`;
   if (view.full) {
     // A full inbox refuses new messages, which is a thing happening now rather
     // than a list that happens to be long.
@@ -868,22 +877,77 @@ function renderInbox(view) {
     body.append(element("div", "empty", "還沒有任何訊息。"));
     return;
   }
+  if (view.more) {
+    // The oldest end, because the node returns them in arrival order. An owner
+    // looking for what just came in has to empty some of this first.
+    body.append(element("div", "stale",
+      `收件匣裡還有更多訊息，這裡只顯示最舊的 ${view.showing} 則。` +
+      "新到的訊息排在後面，要先清掉一些才看得到。"));
+  }
   for (const message of view.messages) {
     const row = element("div", "inboxrow");
-    // Who sent it, before what they said: the address carries the node id,
-    // which is the only half that identifies anyone.
-    row.append(element("div", "fingerprint", message.from));
+    row.append(senderLine(message.from));
     row.append(element("div", "muted", relative(message.createdAt)));
     row.append(element("div", "inboxbody", message.body));
     body.append(row);
   }
 }
 
+// Reads are numbered, for the same reason the pairing panel numbers its own: a
+// slow answer must not repaint the dialog after a fast one. Here it is worse
+// than a stale display — the clear button reads state.inboxSession, so an
+// out-of-order answer could show one session's messages above a button that
+// empties another's, irreversibly.
+let inboxRequest = 0;
+let inboxApplied = 0;
+
+// senderLine splits who sent it from what they called themselves.
+//
+// `from` is `<node id>/<session id>` for another machine, and the two halves
+// are not equally trustworthy: the node id was proven by the TLS pin and the
+// signature, while the session id is up to 128 bytes the sender chose. Printed
+// as one string they read as one fact — and a sender can pad theirs so it looks
+// like a separate field, or start it with a bidi override. Split, labelled, and
+// the id given the same monospace treatment as a fingerprint.
+function senderLine(from) {
+  const line = element("div", "sender");
+  const slash = String(from ?? "").indexOf("/");
+  if (slash < 0) {
+    // No node id: a message queued on this machine for one of its own
+    // sessions. Saying so beats leaving a bare id that looks like a peer's.
+    line.append(element("span", "muted", "本機 "));
+    line.append(element("span", "mono", from || "—"));
+    return line;
+  }
+  line.append(element("span", "fingerprint", from.slice(0, slash)));
+  line.append(element("span", "muted", " 自稱 "));
+  // The half they chose, marked as such.
+  line.append(element("span", "claimed", from.slice(slash + 1)));
+  return line;
+}
+
 async function openInbox(sessionId) {
+  const sequence = ++inboxRequest;
   state.inboxSession = sessionId;
   el("inbox-modal").classList.remove("hidden");
-  renderInbox({ sessionId, messages: [], held: 0, capacity: 0 });
-  renderInbox(await Inbox(sessionId));
+  // Loading is its own state. Rendering an empty list here is byte-identical to
+  // an inbox with nothing in it, and the client waits up to fifteen seconds.
+  renderInbox({ sessionId, loading: true, messages: [] });
+
+  let view;
+  try {
+    view = await Inbox(sessionId);
+  } catch (error) {
+    view = { sessionId, messages: [], error: String(error) };
+  }
+  if (sequence <= inboxApplied) {
+    // A later read already landed. This one describes an older moment, and
+    // painting it would put its messages above a button aimed elsewhere.
+    return;
+  }
+  inboxApplied = sequence;
+  state.inboxSession = view.sessionId ?? sessionId;
+  renderInbox(view);
 }
 
 function closeInbox() {
@@ -1025,11 +1089,18 @@ el("inbox-clear").onclick = () => {
   const session = state.inboxSession;
   if (!session) return;
   // Not undoable, so it is asked rather than assumed. The node has no
-  // "unclear".
+  // "unclear", and messages that arrive between this dialog and the confirm go
+  // with the rest.
   if (!confirm(`清空 ${session} 的收件匣？這個動作無法復原。`)) return;
   withBusy("清空收件匣", async () => {
-    await ClearInbox(session);
-    renderInbox(await Inbox(session));
+    const removed = await ClearInbox(session);
+    // The count, because messages can arrive between reading the list and
+    // confirming, and those go with the rest. It is the only way the owner
+    // learns that happened.
+    banner(`已清空 ${session}，移除 ${removed} 則。`, true);
+    // Re-read through openInbox, so the answer is sequence-guarded like every
+    // other read and lands on the session it was asked about.
+    await openInbox(session);
   });
 };
 

@@ -210,6 +210,9 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		// the start of a rule is what distinguishes it from `.nodedetail .stale`.
 		"a notice explaining an absence": "\n.stale {",
 		"a contested or duplicate flag":  "\n.pill.bad {",
+		// The only thing between a hostile message body and someone acting on
+		// it. Styled like body text, it is read as body text.
+		"the data-not-instruction warning": "\n.modal-card .warning {",
 	} {
 		if !strings.Contains(css, selector) {
 			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
@@ -223,6 +226,11 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 	for _, required := range []struct{ selector, property string }{
 		{".nodelist {", "overflow-y"},
 		{"#candidate-rows {", "max-height"},
+		// A message body is 32KB of whatever a sender chose. One of newlines
+		// renders over a hundred thousand pixels tall, which is every message
+		// after it made unreachable.
+		{"#inbox-body {", "max-height"},
+		{".inboxrow .inboxbody {", "max-height"},
 	} {
 		start := strings.Index(css, required.selector)
 		if start < 0 {

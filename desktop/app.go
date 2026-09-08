@@ -268,6 +268,11 @@ type InboxView struct {
 	Held      int            `json:"held"`
 	Capacity  int            `json:"capacity"`
 	Full      bool           `json:"full"`
+	// Showing and More say that this is a page. Without them a view of ten out
+	// of five hundred looks like an inbox of ten — and the ten are the oldest,
+	// because the node returns them in arrival order.
+	Showing int  `json:"showing"`
+	More    bool `json:"more"`
 	// Error is separate from an empty list, because "nothing has been sent" and
 	// "this could not be read" are different facts and only one of them means
 	// the owner should stop looking.
@@ -287,9 +292,15 @@ func (a *App) Inbox(sessionID string) InboxView {
 		return view
 	}
 	activeClient, _ := a.current()
-	// One page. An owner glancing at an inbox wants the recent end, and the
-	// node's own cap is 200.
-	inbox, err := activeClient.inbox(a.ctx, sessionID, 50)
+	// Ten, not fifty. A body is 32KB and a control character in it escapes to
+	// six JSON bytes, so a peer can make fifty messages serialise to more than
+	// this app will read — after which nothing decodes and the owner cannot see
+	// what is jamming the inbox they came to look at. The CLI reaches the same
+	// number for the same reason.
+	//
+	// The node returns them oldest first, so this is the start of the queue,
+	// not the recent end.
+	inbox, err := activeClient.inbox(a.ctx, sessionID, inboxPageSize)
 	if err != nil {
 		view.Error = err.Error()
 		return view
@@ -298,17 +309,25 @@ func (a *App) Inbox(sessionID string) InboxView {
 	view.Held = inbox.Held
 	view.Capacity = inbox.Capacity
 	view.Full = inbox.Full
+	// Said rather than left to be inferred from a short list: an inbox holding
+	// five hundred, shown ten at a time, must not read as an inbox holding ten.
+	view.Showing = len(inbox.Messages)
+	view.More = inbox.Next != ""
 	return view
 }
+
+// inboxPageSize is how many messages one read asks for. See Inbox for why it is
+// not larger.
+const inboxPageSize = 10
 
 // ClearInbox empties one session's inbox.
 //
 // Destructive and not undoable, so the frontend asks first. It exists because
 // an inbox that only grows is one an owner cannot keep usable, and because a
 // full one refuses new messages.
-func (a *App) ClearInbox(sessionID string) error {
+func (a *App) ClearInbox(sessionID string) (int, error) {
 	if strings.TrimSpace(sessionID) == "" {
-		return fmt.Errorf("select a session first")
+		return 0, fmt.Errorf("select a session first")
 	}
 	activeClient, _ := a.current()
 	return activeClient.clearInbox(a.ctx, sessionID)

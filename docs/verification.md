@@ -436,6 +436,15 @@ covering batch audience writes with partial failures, full pagination, trusted
 node management, hostile metadata rendering, unreachable-node handling, and
 rejection of non-loopback node URLs.
 
+Five node-driven render checks run from that suite, each loading the real
+frontend into a minimal DOM: provider metadata, peer session metadata, pairing
+candidates, inbox messages, and a whole-module check that drives the wiring
+through out-of-order reads, expiry and the one destructive button. They assert
+that hostile values reach the DOM as text, decide no class name and build no
+attribute, and — as much as anything else — that the states a panel can be in
+stay distinguishable, since a failed read rendered as an empty list is the
+recurring defect in this app.
+
 Not verified: the app's visual rendering was not captured, because screen recording permission was unavailable to the shell used for this run.
 
 ## Toolchain security baseline
