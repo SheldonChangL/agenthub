@@ -107,6 +107,12 @@ func (c *Candidates) ObserveAll(ctx context.Context, source netip.Addr, announce
 		if !announcement.Offering() {
 			continue
 		}
+		// An offer has to come from where it says it is. Without this, one host
+		// sprays a list full of candidates that all resolve to itself and the
+		// owner picks one of them. This is the only place that check lives:
+		// observe carried a second copy, which was unreachable because
+		// everything reaching it has already passed this one.
+		//
 		// Before the reduction, not after. A multi-homed node announces every
 		// address it has in one packet, and only one of them is the one the
 		// datagram came from — keeping the first and checking afterwards drops
@@ -187,12 +193,6 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 		return false, nil
 	}
 	announcement.Fingerprint = canonical
-	// An offer has to come from where it says it is. Without this, one host
-	// sprays a list full of candidates that all resolve to itself, and the
-	// owner picks one of them.
-	if source.IsValid() && !announcedFrom(announcement.Address, source) {
-		return false, nil
-	}
 	// The cheap, local checks first, and the bound before any of them reaches
 	// the trust store: a full list must not still cost a database read per
 	// packet.

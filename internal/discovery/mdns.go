@@ -643,8 +643,10 @@ func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers 
 	// is the comparing side's job, and doing it in both places would leave
 	// neither one load-bearing.
 	source := from.Addr()
-	// A datagram from loopback is refused here, and this is the only place that
-	// can refuse it.
+	// A datagram from loopback is refused here, before any handler sees it —
+	// including Browser.apply, which does not look at the source at all.
+	// Candidates refuses it a second time on its own, so the property does not
+	// depend on every future reader of this socket remembering to.
 	//
 	// IP_MULTICAST_LOOP hands a copy of every outgoing multicast datagram back
 	// to local sockets that have joined the group, and the copy is matched
@@ -654,6 +656,9 @@ func dispatch(ctx context.Context, from netip.AddrPort, packet []byte, handlers 
 	// the default interface. Measured: the row lands even when nothing has
 	// joined loopback at all, so which interfaces are joined cannot prevent it.
 	// The write even reports EADDRNOTAVAIL and the copy arrives regardless.
+	// A unicast datagram straight at the port arrives too, since the socket is
+	// bound to the wildcard — another reason this cannot be a question about
+	// memberships.
 	//
 	// Without this, any unprivileged local process — a second user on a shared
 	// machine, who cannot read the first user's files — could put a chosen
@@ -857,30 +862,28 @@ func (m *membership) refresh() []string {
 // canCarryAnnouncements reports whether an interface is one a peer's
 // announcement could legitimately arrive on.
 //
-// Loopback and point-to-point are excluded, and excluding them is a security
-// property rather than tidiness.
+// Loopback and point-to-point are excluded because nothing legitimate announces
+// on them: reachableAt refuses to announce a loopback address, and a tun-mode
+// tunnel carries no multicast at all. A membership there could only ever
+// receive something forged, so taking one serves nothing.
 //
-// Nothing legitimate ever announces from loopback — reachableAt refuses to — so
-// every packet a loopback membership can receive is a forgery. Joining lo0 was
-// measured to let any local process put a chosen display name and fingerprint
-// on the owner's candidate list: a second user on a shared machine, who cannot
-// read the first user's files, can do it, and can do it under the default
-// loopback-only policy, which is the one configuration where a LAN-sourced
-// forgery is refused. The source check that makes discovery safe is exactly the
-// check loopback voids, since a forger there trivially sends from the address it
-// claims.
-//
-// A point-to-point interface — a VPN tunnel — carries the MULTICAST flag on
-// macOS and for OpenVPN on Linux, so the flags alone do not exclude it. It has
-// an address but no segment a peer could answer on, and joining it widens the
-// population that can inject a row from one local network to every VPN the host
-// is attached to.
+// It is **not** a security property, and an earlier version of this comment
+// claimed it was. Two measurements say otherwise. A forged datagram sent to the
+// group from loopback arrives through the membership of the interface it was
+// sent on — the default one, which every configuration has — so refusing to
+// join lo0 never blocked it; what blocks it is the source check in dispatch.
+// And ListenMulticastUDP binds the wildcard, not the group, so a datagram
+// unicast straight at the port is delivered without any membership being
+// consulted: excluding a tunnel does not stop a peer on that tunnel sending
+// one. Whether a packet is acted on is decided by the checks it passes, never
+// by which interfaces this socket has joined.
 func canCarryAnnouncements(iface *net.Interface) bool {
 	return refuseFlags(iface) == nil
 }
 
 // refuseFlags is the one rule about an interface's flags, and says which flag
-// refused.
+// refused. The message names the condition and not the interface, so a caller
+// can compose one sentence around it.
 //
 // One function because there were two, kept in step by hand: the membership
 // asked a boolean and the announcing side asked for a reason, and nothing made
@@ -890,25 +893,25 @@ func canCarryAnnouncements(iface *net.Interface) bool {
 func refuseFlags(iface *net.Interface) error {
 	switch {
 	case iface.Flags&net.FlagUp == 0:
-		return fmt.Errorf("%s is down", iface.Name)
+		return errors.New("is down")
 	case iface.Flags&net.FlagPointToPoint != 0:
 		// A tunnel carries MULTICAST on macOS and for OpenVPN on Linux, so the
 		// other flags do not exclude it. What a tun-mode tunnel lacks is
 		// multicast delivery: the two ends can reach each other over TCP, which
 		// is why `ah pair` works across one, but a datagram sent to a group
 		// gets nowhere.
-		return fmt.Errorf("%s is a point-to-point interface — a tunnel — which carries no "+
-			"multicast, so an announcement sent on it would reach nobody. Pairing by hand "+
-			"with `ah pair` works over it", iface.Name)
+		return errors.New("is a point-to-point interface — a tunnel — which carries no " +
+			"multicast, so an announcement sent on it would reach nobody. Pairing by hand " +
+			"with `ah pair` works over it")
 	case iface.Flags&net.FlagLoopback != 0:
 		// Nothing legitimate announces from loopback, so a membership there
 		// could only receive a forgery. The forgery arrives through the default
 		// interface's membership regardless — see dispatch, which is what
 		// actually refuses it — but joining an interface no announcement can
 		// legitimately arrive on serves nothing.
-		return fmt.Errorf("%s is loopback and reaches no other machine", iface.Name)
+		return errors.New("is loopback and reaches no other machine")
 	case iface.Flags&net.FlagMulticast == 0:
-		return fmt.Errorf("%s cannot carry a multicast packet", iface.Name)
+		return errors.New("cannot carry a multicast packet")
 	}
 	return nil
 }
@@ -1116,7 +1119,10 @@ func announceableFrom(holder *net.Interface, address netip.Addr) error {
 			"naming it could not come from it", address)
 	}
 	if err := refuseFlags(holder); err != nil {
-		return fmt.Errorf("%v is held by %w", address, err)
+		// Composed, not concatenated. refuseFlags returns the condition alone
+		// so this reads as one sentence: an owner meets these in the 409 body,
+		// in the announce status and in the startup log.
+		return fmt.Errorf("%s holds %v but %w", holder.Name, address, err)
 	}
 	return nil
 }

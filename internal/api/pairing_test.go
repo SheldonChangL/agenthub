@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/discovery"
+	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
@@ -428,5 +430,54 @@ func TestPairingIsRefusedRatherThanHalfWired(t *testing.T) {
 	}
 	if mode.IsOpen() {
 		t.Error("a half-wired node opened a pairing window")
+	}
+}
+
+// Pairing with a machine takes it off the list of machines to pair with.
+//
+// The candidate list asks the trust store once, when a row is created, and
+// never again on a refresh — an optimisation whose safety rests entirely on
+// this call. Without it the node the owner has just paired with keeps being
+// offered to them as something still to pair with, for as long as it keeps
+// announcing. Three comments in the discovery package said pairing did this,
+// and nothing did.
+func TestPairingWithACandidateTakesItOffTheList(t *testing.T) {
+	handler, _, candidates, _ := pairingServerWithAnnouncer(t)
+
+	// A machine announcing itself, listed the ordinary way.
+	source := netip.MustParseAddr("192.168.1.77")
+	if _, err := candidates.ObserveAll(context.Background(), source, []discovery.Announcement{{
+		NodeID:      peerNodeID,
+		Address:     "192.168.1.77:7463",
+		DisplayName: "the machine on the next desk",
+		Platform:    "darwin/arm64",
+		Fingerprint: "1223 03EA 5E96 543A 2DD8 BFEA",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates.List()) != 1 {
+		t.Fatalf("the candidate was not listed to begin with: %+v", candidates.List())
+	}
+
+	// The owner pairs with it, by hand, having compared the fingerprint. The
+	// key is the peer's real one — the announcement never carried it, which is
+	// the whole point of the handshake being a separate step.
+	public, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := perform(t, handler, http.MethodPost, "/v1/nodes", map[string]string{
+		"nodeId":               peerNodeID,
+		"displayName":          "the machine on the next desk",
+		"platform":             "darwin/arm64",
+		"publicKey":            identity.EncodePublicKey(public),
+		"confirmedFingerprint": identity.Fingerprint(public),
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("pairing = %d %s", response.Code, response.Body.String())
+	}
+
+	if rows := candidates.List(); len(rows) != 0 {
+		t.Errorf("a node the owner has just paired with is still offered as a candidate: %+v", rows)
 	}
 }

@@ -296,6 +296,16 @@ func (s *Server) trustNode(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	// A node the owner has just paired with is no longer a candidate. Dropping
+	// the row here is what the candidate list's own optimisation depends on:
+	// it asks the trust store once, when a row is created, and never again on a
+	// refresh — so without this the machine the owner just paired with stays in
+	// front of them as something still to pair with, for as long as it keeps
+	// announcing. Three comments in that package said pairing did this. Nothing
+	// did.
+	if s.candidates != nil {
+		s.candidates.Forget(input.NodeID)
+	}
 	stored, err := s.store.TrustedNode(r.Context(), input.NodeID)
 	if err != nil {
 		writeRegistryError(w, err)
