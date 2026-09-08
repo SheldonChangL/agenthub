@@ -757,8 +757,8 @@ hosts ran the merged tree.
 
 **A usability finding, recorded because it cost time in the run itself.** A
 remote session does not appear in `ah list`, which is owner-local by design; it
-appears under `/v1/peers`, and is addressed as `<node-id>/<session-id>`. There
-is no `ah` command that shows what other nodes have published, so the only way
-to find the id to send to is to read the presence endpoint with `curl`. `ah
-send` to an unqualified remote id answers `NOT_FOUND: session not found`, which
-is true and unhelpful.
+appears under `/v1/peers`, and is addressed as `<node-id>/<session-id>`. At the
+time of this run no `ah` command showed what other nodes had published, so
+finding the id to send to meant reading the presence endpoint with `curl` — and
+`ah send` given an unqualified remote id answers `NOT_FOUND: session not found`,
+which is true and unhelpful. Closed by `ah peers`.
