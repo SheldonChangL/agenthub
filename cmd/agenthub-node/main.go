@@ -22,6 +22,7 @@ import (
 	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
@@ -51,6 +52,11 @@ func run() error {
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
 	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
+	displayName := flag.String("display-name", "",
+		"what this node calls itself to other machines, and it is announced to everyone on "+
+			"the segment while pairing mode is open. Pinned once given: without this flag the "+
+			"name follows the machine's own name, which is not always the one the network calls "+
+			"it. Pass it empty, or as nothing but spaces, to hand the name back to the machine")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -98,7 +104,7 @@ func run() error {
 	}
 	defer store.Close()
 
-	node, err := identity.LoadOrCreate(ctx, store)
+	node, err := identity.LoadOrCreate(ctx, store, *displayName, wasSet(flag.CommandLine, "display-name"))
 	if err != nil {
 		return fmt.Errorf("load node identity: %w", err)
 	}
@@ -118,6 +124,12 @@ func run() error {
 	}
 	log.Printf("node %s discovered %d sessions (%d Claude, %d Codex)", node.ID, result.Total, result.Claude, result.Codex)
 	log.Printf("node fingerprint %s", node.Fingerprint)
+	// Printed because it is announced. An owner who never looks at this only
+	// finds out what their machine calls itself by reading it off someone
+	// else's screen, and it is not always the name they expect: with no
+	// HostName set, macOS answers gethostname() from DHCP and DNS.
+	log.Printf("node display name %q (%s) — announced to the local network while pairing mode "+
+		"is open; -display-name changes it", node.DisplayName, nameProvenance(node.NameIsChosen))
 
 	// One policy decides three things that must agree: where this node will
 	// deliver, which addresses discovery may record, and which addresses the
@@ -163,14 +175,14 @@ func run() error {
 		// node would believe it announces a name while appearing nameless in
 		// everyone else's list. Said here because the value is this machine's
 		// own and the owner can change it.
-		for label, value := range map[string]string{
+		for field, value := range map[string]string{
 			"display name": node.DisplayName,
 			"platform":     node.Platform,
 		} {
-			if value != "" && discovery.Announceable(value) == "" {
+			if value != "" && label.Printable(value) == "" {
 				log.Printf("pairing announcements will carry no %s: %q cannot be announced, "+
 					"so this node will appear without one in other machines' candidate lists",
-					label, value)
+					field, value)
 			}
 		}
 		if reason := announcer.Unannounceable(); reason != "" {
@@ -418,4 +430,33 @@ func candidateHandler(candidates *discovery.Candidates) discovery.PacketHandler 
 			log.Printf("%d new pairing candidate(s)", changed)
 		}
 	}
+}
+
+// nameProvenance says where the announced name came from.
+//
+// An owner who sees the wrong name needs to know whether the fix is to rename
+// the machine or to pass the flag, and those are different actions. Printed
+// because this string leaves the machine: it is the one thing about this node
+// that strangers on the segment read.
+func nameProvenance(chosen bool) string {
+	if chosen {
+		return "chosen with -display-name"
+	}
+	return "read from this machine"
+}
+
+// wasSet reports whether a flag was passed, as opposed to left at its default.
+//
+// Whether it was passed, not whether it has a value: -display-name given empty
+// releases a pinned name back to the machine, and the zero value cannot tell
+// that apart from the flag being absent. Without the distinction, pinning is a
+// door that locks behind you.
+func wasSet(flags *flag.FlagSet, name string) bool {
+	given := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			given = true
+		}
+	})
+	return given
 }

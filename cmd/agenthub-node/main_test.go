@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/netip"
@@ -59,5 +60,40 @@ func TestARecurringCandidateConditionIsLoggedOnceNotPerPacket(t *testing.T) {
 	handle(context.Background(), netip.Addr{}, fill)
 	if !strings.Contains(logged.String(), "could not read pairing offers") {
 		t.Errorf("a second, different failure was swallowed by the first: %s", logged.String())
+	}
+}
+
+// A flag passed with its default value is still a flag that was passed.
+//
+// -display-name "" means "hand the name back to the machine", and reading the
+// flag's value cannot say whether an empty string was typed or the flag was
+// left out. Getting this wrong makes a pinned name permanent, which is not a
+// failure anything else here would catch: the node starts, keeps the old name,
+// and looks like the rename simply did not take.
+func TestWasSetDistinguishesAPassedFlagFromAnAbsentOne(t *testing.T) {
+	for name, args := range map[string][]string{
+		"passed empty":       {"-display-name", ""},
+		"passed a value":     {"-display-name", "the machine on my desk"},
+		"passed with equals": {"-display-name="},
+	} {
+		flags := flag.NewFlagSet("test", flag.ContinueOnError)
+		flags.String("display-name", "", "")
+		if err := flags.Parse(args); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !wasSet(flags, "display-name") {
+			t.Errorf("%s (%q) reads as absent, so an empty value could never release a pinned name",
+				name, args)
+		}
+	}
+
+	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.String("display-name", "", "")
+	flags.String("other", "", "")
+	if err := flags.Parse([]string{"-other", "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if wasSet(flags, "display-name") {
+		t.Error("an absent flag reads as passed, so every start would release the name")
 	}
 }
