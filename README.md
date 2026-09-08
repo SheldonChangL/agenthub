@@ -132,6 +132,10 @@ This is the walkthrough that was actually run between a MacBook and an Ubuntu
 22.04 box joined by a direct Ethernet cable, recorded in
 [verification.md](docs/verification.md). Substitute your own addresses.
 
+Most of it is done in the desktop app. The `ah` commands below each step are
+the same thing from a terminal — useful over SSH, and useful when something has
+gone wrong and you want to see the raw answer.
+
 **1. A node on each machine.** The defaults keep everything on loopback, so a
 second machine needs to be told otherwise:
 
@@ -151,50 +155,55 @@ If the two machines are on a direct cable in a range that is not private —
 Without it each node refuses to list the other, because it will not deliver to
 an address outside the ranges it trusts.
 
-**2. Find each other.** On one machine:
-
-```sh
-bin/ah pairing on          # advertise for five minutes
-```
-
-On the other:
-
-```sh
-bin/ah candidates
-```
+**2. Find each other.** Open the desktop app on both, go to the 區網 tab, and
+press 開啟配對模式 on one. It appears on the other's candidate list within a
+few seconds. From a terminal that is `bin/ah pairing on` and `bin/ah
+candidates`.
 
 Nothing in that list is verified. Every field was chosen by whoever sent the
 packet, and the fingerprint shown is the one announced — a hint for finding the
-right machine, never proof of which it is.
+right machine, never proof of which it is. The panel says so, and flags a row
+whose name or fingerprint collides with another's.
 
-**3. Compare the fingerprints, then pair.** On each machine run `bin/ah node`
-and read the six groups out loud, or compare them on the two screens. They must
-match group for group; comparing the first few is what an attacker defeats.
+**3. Compare the fingerprints, then pair.** Click the candidate. The dialog
+fills in what was announced and deliberately leaves the public key and
+fingerprint fields empty: the announcement carries no key, and that fingerprint
+field is your statement that you compared one on the other machine's screen.
 
-Then, on each machine, trust the other:
+So compare them. Both apps show the node's own fingerprint; they must match
+group for group, since comparing the first few is what an attacker defeats. Then
+get the peer's public key from its own machine — `bin/ah node` there, or the
+desktop's node line — and complete the dialog on each side.
+
+From a terminal the same thing is:
 
 ```sh
+bin/ah node                                            # on each machine, to read and compare
 bin/ah pair <their-node-id> <their-name> <their-platform> <their-public-key> <their-fingerprint>
 ```
 
-The public key still has to be carried across by hand — the announcement never
-contains one, by design. Automating this exchange while keeping the fingerprint
-comparison is issue #62.
+The public key still has to be carried across by hand. Automating that exchange
+while keeping the fingerprint comparison is issue #62.
 
 With `--discover` running, each node learns the other's address from the
 announcements; no `PUT /v1/nodes/{id}/address` is needed.
 
-**4. Publish a session.** Pairing on its own shares nothing:
+**4. Publish a session.** Pairing on its own shares nothing. In the app's 本機
+tab, tick the sessions and press 設定公開對象…, then choose who and tick 允許對方
+排入訊息 and 允許這個 session 主動送出訊息. Doing many at once is why the app
+exists.
 
 ```sh
 bin/ah list                                            # your own sessions
 bin/ah audience <session-id> all-paired --messages --outbound
 ```
 
-`--messages` lets other nodes send to it; `--outbound` lets it send out. Without
-`--outbound` the node refuses its outgoing messages, on the sending side.
+The two boxes are the same two flags: `--messages` lets other nodes send to it,
+`--outbound` lets it send out. Without `--outbound` the node refuses its own
+outgoing messages, on the sending side, and says so.
 
-**5. Send, and read.** On the other machine:
+**5. Send, and read.** Sending is the one step with no button: it is what an
+agent does, through the MCP tools in the next section. From a terminal:
 
 ```sh
 bin/ah peers                                           # what they published, and the address to send to
@@ -203,16 +212,19 @@ bin/ah outbound <message-id>                           # queued, delivered, or r
 ```
 
 A remote session is addressed `<node-id>/<session-id>`; `ah peers` prints that
-string in its SEND TO column. Then on the receiving machine:
+string in its SEND TO column, because `ah list` shows only your own sessions and
+nothing else showed the qualified one.
+
+Reading has a button: 收件匣 on any session row in the app, or
 
 ```sh
 bin/ah inbox <session-id>
 ```
 
-**6. Give an agent the tools.** Everything above is also available to an agent
-over MCP — see the next section. What no version of this does is hand a message
-to an agent: it sits in the inbox until something asks for it. That boundary is
-Step 8 (issue #60).
+**6. Give an agent the tools.** That is the next section. What no version of
+this does is hand a message to an agent — it waits in the inbox until something
+asks for it, whether that is you pressing 收件匣 or an agent calling
+`agent_inbox`. Making it arrive is Step 8 (issue #60).
 
 ## Give an agent the four tools
 
