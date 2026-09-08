@@ -273,6 +273,19 @@ if (clearCalls[0] !== "claude:fast") {
   failures.push(`clear aimed at ${clearCalls[0]}, not the session the dialog is showing`);
 }
 
+// 9b. While a read is in flight the button empties nothing. It aims at whatever
+//     the dialog is showing, and during a load that is not yet a session.
+inboxDelays.set("claude:pending", 60);
+clearCalls.length = 0;
+const pending = scope.openInbox("claude:pending");
+await el("inbox-clear").onclick();
+if (clearCalls.length !== 0) {
+  failures.push(`clear emptied ${clearCalls[0]} while its content was still loading`);
+}
+await pending;
+await settle();
+inboxDelays.clear();
+
 // 10. Closing forgets which session it was, so a later clear cannot fire at it.
 el("inbox-close").onclick();
 if (scope.state.inboxSession !== null) {
