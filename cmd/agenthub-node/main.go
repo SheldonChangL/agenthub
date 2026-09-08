@@ -22,6 +22,7 @@ import (
 	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
@@ -55,7 +56,7 @@ func run() error {
 		"what this node calls itself to other machines, and it is announced to everyone on "+
 			"the segment while pairing mode is open. Pinned once given: without this flag the "+
 			"name follows the machine's own name, which is not always the one the network calls "+
-			"it. Pass it empty to hand the name back to the machine")
+			"it. Pass it empty, or as nothing but spaces, to hand the name back to the machine")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -183,14 +184,14 @@ func run() error {
 		// node would believe it announces a name while appearing nameless in
 		// everyone else's list. Said here because the value is this machine's
 		// own and the owner can change it.
-		for label, value := range map[string]string{
+		for field, value := range map[string]string{
 			"display name": node.DisplayName,
 			"platform":     node.Platform,
 		} {
-			if value != "" && discovery.Announceable(value) == "" {
+			if value != "" && label.Printable(value) == "" {
 				log.Printf("pairing announcements will carry no %s: %q cannot be announced, "+
 					"so this node will appear without one in other machines' candidate lists",
-					label, value)
+					field, value)
 			}
 		}
 		if reason := announcer.Unannounceable(); reason != "" {

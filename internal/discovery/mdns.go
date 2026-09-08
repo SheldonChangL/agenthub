@@ -384,17 +384,6 @@ func ParseAnnouncements(packet []byte) []Announcement {
 	return announcements
 }
 
-// Announceable reports what an offer field would actually carry, which is the
-// empty string when this node's own value cannot be announced.
-//
-// Exported so a node can find that out about itself at startup rather than
-// leaving the owner to notice that their machine appears in someone else's
-// candidate list with no name. A display name is the hostname, and a hostname
-// can be longer than MaxCandidateFieldLength or hold something PRECIS refuses.
-func Announceable(value string) string {
-	return printableField(value)
-}
-
 // printableField is label.Printable, kept as a name because this package
 // applies it to fields of an announcement.
 func printableField(value string) string { return label.Printable(value) }

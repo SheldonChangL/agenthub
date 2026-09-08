@@ -363,20 +363,29 @@ function renderPairing() {
 // DNS call the address, which may be a previous occupant's. Nobody discovers
 // that from an abstract warning; they discover it by reading their own name off
 // a stranger's screen.
-function broadcastWarning(lead) {
-  const name = state.localName || "（未知）";
+function broadcastWarning(lead, tail = "") {
+  const known = Boolean(state.localName);
+  const name = known ? state.localName : "（未知）";
   // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
   // the wrong source is the reason this reads the way it does. And not "read
   // from this machine" unconditionally — follow the instruction below and that
   // sentence becomes false, which is the same defect one level down.
-  const origin = state.localNameIsChosen
-    ? "這個名稱是指定的；"
-    : "這個名稱是節點從這台機器讀來的；";
+  //
+  // Nothing at all when the name is unknown. A node that answers the pairing
+  // endpoint without a name is one older than this app — ordinary, since the
+  // two are launched separately — and stating where an unknown string came
+  // from is a confident claim about something not in hand.
+  let origin = "";
+  if (known) {
+    origin = state.localNameIsChosen
+      ? "這個名稱是你指定的；"
+      : "這個名稱是節點從這台機器讀來的；";
+  }
   return [
     element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，並看到它自稱 "),
     element("span", "claimed", name),
     element("span", "",
-      `，以及平台與指紋（不含公鑰）。${origin}要換掉就用 -display-name 重新啟動節點。`),
+      `，以及平台與指紋（不含公鑰）。${tail}${origin}要換掉就用 -display-name 重新啟動節點。`),
   ];
 }
 
@@ -454,7 +463,7 @@ function renderPairingWindow() {
     note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
   } else {
     headline.textContent = "配對視窗未開啟。";
-    note.replaceChildren(...broadcastWarning("開啟後，"));
+    note.replaceChildren(...broadcastWarning("開啟後，", "這是為了配對而明確接受的取捨，時間到會自動停止。"));
   }
 }
 

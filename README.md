@@ -173,7 +173,7 @@ bin/agenthub-node --db ./data/agenthub.db --display-name "the machine on my desk
 
 It sticks, so the flag is not needed on later starts, and the node id does not
 change — existing pairings survive a rename. To hand the name back to the
-machine, pass the flag empty:
+machine, pass the flag empty — or as nothing but spaces:
 
 ```bash
 bin/agenthub-node --db ./data/agenthub.db --display-name ""

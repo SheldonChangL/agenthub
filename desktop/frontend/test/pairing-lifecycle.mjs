@@ -400,10 +400,10 @@ if (!String(throwing.state.pairing?.error).includes("binding exploded")) {
 //     warning to （未知） because one read failed.
 // A single mutable answer rather than a queue: constructing the module fires a
 // read of its own, which would consume a queued one before the first assertion.
-const announcing = (displayName) => ({
+const announcing = (displayName, nameIsChosen = false) => ({
   availability: "on",
   candidates: [],
-  state: { open: false, displayName, announcing: { announceableAddresses: 1 } },
+  state: { open: false, displayName, nameIsChosen, announcing: { announceableAddresses: 1 } },
 });
 let answer = announcing("sheldon.chang mac");
 const named = new Function(
@@ -428,12 +428,26 @@ if (named.state.localName !== "sheldon.chang mac") {
     `an unreachable node dropped the last known broadcast name: ${JSON.stringify(named.state.localName)}`);
 }
 
-// Restarted under -display-name: the panel follows, which is the whole point.
-answer = announcing("Sheldon 的 MacBook");
+// Restarted under -display-name: the panel follows, which is the whole point —
+// and it learns that the name was picked, not read off the machine.
+//
+// Both halves, because only one of them was held down. Deleting the line that
+// carries nameIsChosen left every test green, and the panel then told an owner
+// who had just run -display-name that their name came from the machine — the
+// exact sentence the previous round removed.
+answer = announcing("Sheldon 的 MacBook", true);
 await named.loadPairing();
 if (named.state.localName !== "Sheldon 的 MacBook") {
   failures.push(
     `a restart under a new name still shows ${JSON.stringify(named.state.localName)}`);
+}
+if (named.state.localNameIsChosen !== true) {
+  failures.push("a chosen name arrived without its provenance, so the warning names the wrong remedy");
+}
+answer = announcing("sheldon.chang mac", false);
+await named.loadPairing();
+if (named.state.localNameIsChosen !== false) {
+  failures.push("a name read off the machine still reads as chosen");
 }
 
 if (failures.length > 0) {

@@ -241,11 +241,29 @@ const chosen = el("pairing-note").serialize();
 if (chosen.includes("節點從這台機器讀來的")) {
   failures.push("a chosen name is still described as one read off the machine");
 }
-if (!chosen.includes("這個名稱是指定的")) {
+if (!chosen.includes("這個名稱是你指定的")) {
   failures.push(`the warning does not say the name was chosen: ${chosen}`);
 }
 scope.state.localNameIsChosen = false;
+
+// An unknown name gets no claim about where it came from. A node that answers
+// the pairing endpoint without a name is one older than this app, which the
+// separate-launch workflow makes ordinary — and "（未知）… read from this
+// machine" states confidently where a string it does not have came from.
 scope.state.localName = "";
+renderPairing();
+const nameless = el("pairing-note").serialize();
+if (!nameless.includes("（未知）")) {
+  failures.push(`the warning does not say the name is unknown: ${nameless}`);
+}
+if (nameless.includes("讀來的") || nameless.includes("你指定的")) {
+  failures.push(`the warning claims a provenance for a name it does not have: ${nameless}`);
+}
+
+// And a reader deciding whether to open still learns that it stops by itself.
+if (!nameless.includes("時間到會自動停止")) {
+  failures.push(`the closed-window note no longer says the window expires: ${nameless}`);
+}
 
 // 4. An open window on a machine with nothing to announce must say so. This is
 //    the one failure an owner cannot see from the other machine: the panel says

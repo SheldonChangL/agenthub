@@ -2,14 +2,13 @@ package registry
 
 import (
 	"context"
-
-	"agenthub.local/agenthub/internal/label"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 )
 
