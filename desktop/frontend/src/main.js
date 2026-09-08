@@ -257,8 +257,6 @@ async function load() {
   // qualified sender naming this node reads as a peer, and a bare one reads as
   // local — which is the dangerous direction.
   state.localNodeId = overview.node?.id || "";
-  // Shown in the pairing warning, because it is the string that goes out.
-  state.localName = overview.node?.displayName || "";
   if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
     state.selectedNode = null;
   }
@@ -366,11 +364,13 @@ function renderPairing() {
 // a stranger's screen.
 function broadcastWarning(lead) {
   const name = state.localName || "（未知）";
+  // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
+  // the wrong source is the reason this reads the way it does.
   return [
     element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，並看到它自稱 "),
     element("span", "claimed", name),
     element("span", "",
-      `，以及平台與指紋（不含公鑰）。這個名稱來自這台機器的 hostname；` +
+      `，以及平台與指紋（不含公鑰）。這個名稱是節點從這台機器讀來的；` +
       `要換掉就用 -display-name 重新啟動節點。`),
   ];
 }
@@ -1180,6 +1180,10 @@ async function loadPairing() {
   }
   pairingApplied = sequence;
   state.pairing = result;
+  // Only on a read that reached the node. An unreachable node answers with no
+  // name, and blanking the warning to "（未知）" because one poll failed would
+  // drop the one string the warning exists to show.
+  if (result.state?.displayName) state.localName = result.state.displayName;
   // Stamped when the answer is applied, from the monotonic clock the countdown
   // is subtracted against.
   state.pairingReadAt = performance.now();

@@ -21,6 +21,9 @@ import (
 func localMachineName() string {
 	for _, key := range []string{"ComputerName", "LocalHostName"} {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// #nosec G204 -- key ranges over the two literals above and nothing
+		// else reaches this call: the binary is an absolute path, the argv is
+		// fixed, and no shell is involved.
 		out, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--get", key).Output()
 		cancel()
 		if err != nil {

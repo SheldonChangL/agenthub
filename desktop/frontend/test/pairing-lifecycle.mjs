@@ -388,6 +388,54 @@ if (!String(throwing.state.pairing?.error).includes("binding exploded")) {
   failures.push("a thrown binding lost its reason");
 }
 
+// 11. The broadcast name is re-read on every poll, not once at startup.
+//
+//     The warning tells an owner to restart the node with -display-name. Doing
+//     what it says used to leave the panel naming the old string forever: the
+//     name was read in load(), and the poller only calls loadPairing(). An
+//     owner then reads a warning about a name their machine no longer sends.
+//
+//     The queue also covers the other direction: a poll that could not reach
+//     the node must keep the last name it knew, rather than blanking the
+//     warning to （未知） because one read failed.
+// A single mutable answer rather than a queue: constructing the module fires a
+// read of its own, which would consume a queued one before the first assertion.
+const announcing = (displayName) => ({
+  availability: "on",
+  candidates: [],
+  state: { open: false, displayName, announcing: { announceableAddresses: 1 } },
+});
+let answer = announcing("sheldon.chang mac");
+const named = new Function(
+  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
+  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
+  source + "\nreturn { state, loadPairing };"
+)(document, () => 0, Overview, noop, noop, noop, noop, noop,
+  () => Promise.resolve(answer), OpenPairing, ClosePairing);
+named.state.view = "network";
+
+await named.loadPairing();
+if (named.state.localName !== "sheldon.chang mac") {
+  failures.push(`a poll left the broadcast name as ${JSON.stringify(named.state.localName)}`);
+}
+
+// A poll that could not reach the node keeps the last name it knew. Blanking
+// the warning to （未知） because one read failed drops the one string it is for.
+answer = { availability: "unknown", candidates: [], error: "node down" };
+await named.loadPairing();
+if (named.state.localName !== "sheldon.chang mac") {
+  failures.push(
+    `an unreachable node dropped the last known broadcast name: ${JSON.stringify(named.state.localName)}`);
+}
+
+// Restarted under -display-name: the panel follows, which is the whole point.
+answer = announcing("Sheldon 的 MacBook");
+await named.loadPairing();
+if (named.state.localName !== "Sheldon 的 MacBook") {
+  failures.push(
+    `a restart under a new name still shows ${JSON.stringify(named.state.localName)}`);
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
