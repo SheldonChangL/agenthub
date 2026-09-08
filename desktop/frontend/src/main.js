@@ -380,7 +380,11 @@ function renderPairingWindow() {
 
   const window_ = pairing.state ?? {};
   const announcing = window_.announcing ?? {};
-  on.disabled = state.busy;
+  // The node refuses to open a window it could not announce on — the same
+  // condition, checked there. Leaving the button live would invite the owner to
+  // press it and read a 409 to learn what this panel already knows.
+  const canAnnounce = (announcing.announceableAddresses ?? 0) > 0;
+  on.disabled = state.busy || !canAnnounce;
   off.disabled = state.busy || !window_.open;
 
   if (window_.open) {
@@ -394,14 +398,17 @@ function renderPairingWindow() {
     detail.append(announceLine(announcing));
     note.textContent = "時間到會自動停止。在這段時間內，同網段的人都能看到這台機器在跑 AgentHub，" +
       "以及這個節點的名稱、平台與指紋。";
+  } else if (!canAnnounce) {
+    // Not "opening it would achieve nothing" — the node will not open it. Two
+    // different sentences, and the earlier one sat directly above a note
+    // promising what opening would reveal, which contradicted it.
+    headline.textContent = "配對視窗無法開啟。";
+    detail.append(element("div", "stale",
+      "這台機器沒有任何可以廣播的位址，節點會拒絕開啟配對模式。"));
+    detail.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
+    note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
   } else {
     headline.textContent = "配對視窗未開啟。";
-    if ((announcing.announceableAddresses ?? 0) === 0) {
-      detail.append(element("div", "stale",
-        "而且這台機器沒有任何可以廣播的位址，所以就算開啟配對模式也送不出任何廣播。"));
-      // The node's own reason, for the same reason as in announceLine.
-      detail.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
-    }
     note.textContent = "開啟後，同網段的人都會知道這台機器在跑 AgentHub，並看到這個節點的名稱、平台與指紋" +
       "（不含公鑰）。這是為了配對而明確接受的取捨，時間到會自動停止。";
   }
@@ -450,7 +457,9 @@ function tickCountdown() {
 function renderCandidates() {
   const rows = el("candidate-rows");
   const notice = el("candidate-notice");
+  const full = el("candidate-full");
   rows.replaceChildren();
+  full.replaceChildren();
   notice.textContent = "";
 
   const pairing = state.pairing;
@@ -471,11 +480,12 @@ function renderCandidates() {
     rows.append(element("div", "muted", pairing.candidatesError));
     return;
   }
-  // Said before the rows, not after them: a full list changes how the owner
-  // should read every row beneath it, and an attacker can hold the list full,
-  // which is the condition that makes the machine they want go missing.
+  // In its own element above the list, not the first row of it. A full list is
+  // long by definition — that is what full means — and the rows scroll, so a
+  // warning inside them is scrolled away by the reader who most needs it.
+  // Measured: with 64 rows it left the view after 600px of scrolling.
   if (pairing.full) {
-    rows.append(element("div", "stale",
+    full.append(element("div", "stale",
       "候選清單已滿。同網段有人可以持續送出封包把清單佔滿，" +
       "所以你要找的機器有可能因此沒有出現，而不是因為它沒在廣播。"));
   }
@@ -540,9 +550,14 @@ function prefillPairFrom(candidate) {
   // The flags follow the owner into the dialog. The row is where impersonation
   // is visible, and leaving that behind at the moment of deciding to trust is
   // leaving it behind at the only moment it matters.
-  if (candidate.contested || candidate.duplicate) {
+  const flags = [];
+  if (candidate.contested) flags.push("身分有爭用");
+  if (candidate.duplicate) flags.push("名稱或指紋重複");
+  if (flags.length > 0) {
+    // Both, when both. A ternary picked one, so a row the list flags twice
+    // arrived in the dialog — where trust is granted — flagged once.
     note.append(element("div", "stale",
-      "這一列被標記為" + (candidate.contested ? "身分有爭用" : "名稱或指紋重複") +
+      "這一列被標記為" + flags.join("、") +
       "：同網段有另一份廣播與它衝突，其中至少一份是假的。除非你能在對方機器上直接核對，否則不要信任它。"));
   }
   note.append(element("div", "",

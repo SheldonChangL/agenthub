@@ -142,7 +142,7 @@ if (!unnamed.includes("（未提供名稱）")) {
 state.busy = false;
 state.pairing = { availability: "off", candidates: [], error: "DISCOVERY_DISABLED: not listening" };
 renderPairing();
-const off = panel() + el("candidate-rows").serialize();
+const off = panel() + el("candidate-full").serialize() + el("candidate-rows").serialize();
 if (off.includes("目前沒有看到任何機器在廣播")) {
   failures.push('a node that is not looking was rendered as "nobody is advertising"');
 }
@@ -173,6 +173,29 @@ if (!off.includes("沒有在看")) {
 }
 if (!unknown.includes("connection refused")) {
   failures.push("the reason the read failed was not shown");
+}
+
+// 3b. A node that cannot announce is one the node itself refuses to open a
+//     window on, so the panel must say that rather than describing an outcome
+//     the node prevents — and must not leave the button live to prove it.
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 0, lastError: "the peer listener is on loopback" } },
+  candidates: [],
+};
+renderPairing();
+const cannot = panel() + el("pairing-note").serialize();
+if (!cannot.includes("拒絕")) {
+  failures.push("a node that cannot announce was not described as one the node will refuse");
+}
+if (cannot.includes("開啟後，同網段的人都會知道")) {
+  failures.push("the tradeoff of opening was promised on a node that cannot open");
+}
+if (!el("btn-pairing-on").disabled) {
+  failures.push("the open button is live on a node the node itself would refuse");
+}
+if (!cannot.includes("the peer listener is on loopback")) {
+  failures.push("the node's own reason was dropped");
 }
 
 // 4. An open window on a machine with nothing to announce must say so. This is
@@ -256,6 +279,27 @@ if (!expired.includes("已到期")) {
   failures.push("an expired window was not described as expired");
 }
 
+// 4d. The fourth state: the window read worked and the list read failed. It has
+//     to look like a failed read, not like an empty segment — the same rule as
+//     the other three, in the one branch nothing asserted.
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+  candidatesError: "contact node: connection reset by peer",
+};
+renderPairing();
+const listFailed = el("candidate-full").serialize() + el("candidate-rows").serialize();
+if (listFailed.includes("目前沒有看到任何機器在廣播")) {
+  failures.push("a failed candidate read was rendered as nobody advertising");
+}
+if (!listFailed.includes("connection reset by peer")) {
+  failures.push("the reason the candidate read failed was not shown");
+}
+if (!listFailed.includes("不代表沒有人在廣播")) {
+  failures.push("a failed candidate read did not say what it does not mean");
+}
+
 // 5. A full list is a condition an attacker can hold this node in, so the owner
 //    has to learn their machine may be missing for that reason.
 state.pairing = {
@@ -266,14 +310,19 @@ state.pairing = {
   notice: "nothing here has been verified",
 };
 renderPairing();
-const full = el("candidate-rows").serialize() + el("candidate-notice").serialize();
+const full = el("candidate-full").serialize() + el("candidate-rows").serialize() +
+  el("candidate-notice").serialize();
 if (!full.includes("候選清單已滿")) {
   failures.push("a full candidate list was not reported");
 }
-// Before the rows, not after them: it changes how every row beneath it should
-// be read, and an attacker can hold the list full.
-if (full.indexOf("候選清單已滿") > full.indexOf("candidaterow")) {
-  failures.push("the full-list warning is below the rows it qualifies");
+// Outside the rows, not the first of them. The rows scroll and a full list is
+// long by definition, so a warning inside them is scrolled out of view by the
+// reader who most needs it — measured at 64 rows, gone after 600px.
+if (el("candidate-rows").serialize().includes("候選清單已滿")) {
+  failures.push("the full-list warning is inside the scroller it qualifies");
+}
+if (!el("candidate-full").serialize().includes("候選清單已滿")) {
+  failures.push("the full-list warning is not in the element above the list");
 }
 if (!full.includes("nothing here has been verified")) {
   failures.push("the node's own notice about the list was not shown");
@@ -319,6 +368,11 @@ if (!note.includes("節點 ID")) {
 if (!note.includes("身分有爭用")) {
   failures.push("a contested candidate lost its flag on the way into the dialog");
 }
+// Both, when both. A row the list flags twice must not arrive in the dialog —
+// where trust is granted — flagged once.
+if (!note.includes("名稱或指紋重複")) {
+  failures.push("a row flagged both ways reached the dialog with one flag dropped");
+}
 const cleanNote = (() => {
   prefillPairFrom({ ...hostile, contested: false, duplicate: false });
   return el("pair-prefill-note").serialize();
@@ -328,6 +382,13 @@ if (cleanNote.includes("身分有爭用") || cleanNote.includes("名稱或指紋
 }
 if (el("pair-prefill-note").classList.contains("hidden")) {
   failures.push("the prefill note was left hidden");
+}
+// And the dialog itself opened. index.html gives both of these the `hidden`
+// class, which the shim now carries, so these assertions can fail — before it
+// did, deleting either classList.remove left the suite green and a click could
+// have opened nothing at all.
+if (el("pair-modal").classList.contains("hidden")) {
+  failures.push("clicking a candidate row did not open the pairing dialog");
 }
 
 if (failures.length > 0) {
