@@ -236,6 +236,16 @@ func TestAChosenNameThatCouldNotBeAnnouncedIsRefused(t *testing.T) {
 	if got := storedName(t, store); got != strings.Repeat("a", MaxDisplayName) {
 		t.Errorf("display name = %q after the refusals", got)
 	}
+
+	// And the same on the rename path. The check above ran while the store was
+	// empty, so it only proves the create path refuses; renaming an existing
+	// node is the other half, and the one an owner actually reaches.
+	if _, err := LoadOrCreate(ctx, store, tooLong); err == nil {
+		t.Error("an existing node was renamed to something no announcement would carry")
+	}
+	if got := storedName(t, store); got != strings.Repeat("a", MaxDisplayName) {
+		t.Errorf("display name = %q; the refused rename was applied anyway", got)
+	}
 }
 
 func storedName(t *testing.T, store *registry.Registry) string {
