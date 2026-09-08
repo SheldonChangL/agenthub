@@ -416,32 +416,46 @@ func (r runner) peers(ctx context.Context) error {
 	}
 
 	w := tabwriter.NewWriter(r.stdout, 0, 4, 2, ' ', 0)
+	// NODE is the id, not the name. Trust is keyed on the id, `ah revoke` and
+	// `ah audience selected` take it, and two peers may carry the same display
+	// name — the candidate list has a flag for exactly that collision. The name
+	// is quoted in STATE as what it is: a label they chose.
 	_, _ = fmt.Fprintln(w, "SEND TO\tPROVIDER\tSTATUS\tNODE\tSTATE")
 	for _, peer := range decoded.Peers {
-		state := "offline"
-		if peer.Online {
-			state = "online"
-		}
-		if peer.ReceivedAt.IsZero() {
+		// Quoted, so a control character in a name cannot forge a row. The name
+		// comes from this owner's own trust store, which does not require it to
+		// be printable, and this is the first place the CLI prints one as raw
+		// text rather than through the JSON encoder.
+		name := fmt.Sprintf("%q", peer.DisplayName)
+		switch {
+		case peer.ReceivedAt.IsZero():
 			// Never heard from is not the same as gone quiet, and an owner
 			// waiting for a machine to appear needs to know which.
-			state = "never heard from"
-		}
-		switch {
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, never heard from\n", peer.NodeID, name)
+		case !peer.Online:
+			// The node stops serving what an expired snapshot held, so the
+			// empty list here is this node withholding stale state — not the
+			// peer having published nothing. Saying the latter would be a claim
+			// about the peer that nothing supports, and it is the state every
+			// sleeping machine is in.
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, offline since %s; what it last published is no longer shown\n",
+				peer.NodeID, name, peer.ReceivedAt.Format(time.RFC3339))
 		case peer.SessionsWithheld:
 			// The node refused what this peer published, which looks identical
 			// on the wire to a peer publishing nothing.
-			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, published something this node refused\n",
-				peer.DisplayName, state)
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, online, published something this node refused\n",
+				peer.NodeID, name)
 		case len(peer.Sessions) == 0:
-			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, nothing published to this node\n",
-				peer.DisplayName, state)
+			// Online, so the empty list is the peer's own doing and this is the
+			// one case where saying so is true.
+			_, _ = fmt.Fprintf(w, "-\t-\t-\t%s\t%s, online, nothing published to this node\n",
+				peer.NodeID, name)
 		default:
 			for _, session := range peer.Sessions {
 				// The full address, which is what `ah send` needs. Printing the
 				// bare session id is what sent the previous reader to curl.
-				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					session.ID, session.Provider, session.Status, peer.DisplayName, state)
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s, online\n",
+					session.ID, session.Provider, session.Status, peer.NodeID, name)
 			}
 		}
 	}
@@ -627,8 +641,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
-	_, _ = fmt.Fprintln(output, "          nodes, pair, revoke, send, inbox, inbox-clear, outbound, node, heartbeat,")
-	_, _ = fmt.Fprintln(output, "          pairing, candidates")
+	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound, node,")
+	_, _ = fmt.Fprintln(output, "          heartbeat, pairing, candidates")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")

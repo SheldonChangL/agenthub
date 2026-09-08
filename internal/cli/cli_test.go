@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -618,10 +620,26 @@ func TestRunPeersShowsTheAddressToSendTo(t *testing.T) {
 	if !strings.Contains(out, "node_aaaa/codex:abc") {
 		t.Errorf("the address to send to is missing: %q", out)
 	}
-	for _, want := range []string{"the other desk", "online", "codex"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output does not mention %q: %q", want, out)
+	// The row as a whole, not substrings that another column already satisfies:
+	// asserting "codex" was met by the SEND TO id, so blanking PROVIDER passed,
+	// and STATUS was never asserted at all.
+	fields := strings.Fields(out[strings.Index(out, "node_aaaa/codex:abc"):])
+	want := []string{"node_aaaa/codex:abc", "codex", "inactive", "node_aaaa"}
+	for i, field := range want {
+		if i >= len(fields) || fields[i] != field {
+			t.Errorf("column %d = %q, want %q; whole row: %q",
+				i, func() string {
+					if i < len(fields) {
+						return fields[i]
+					}
+					return "(missing)"
+				}(), field, out)
 		}
+	}
+	// And the display name is present as a quoted label rather than an
+	// identifier, because it is not one.
+	if !strings.Contains(out, `"the other desk"`) {
+		t.Errorf("the display name is not shown as a quoted label: %q", out)
 	}
 }
 
@@ -647,7 +665,17 @@ func TestRunPeersDistinguishesSilenceFromRefusalAndFromNeverHeard(t *testing.T) 
 		},
 		"never heard from": {
 			`{"nodeId":"node_c","displayName":"silent","online":false,"sessions":[]}`,
-			"never heard from", "offline,",
+			"never heard from", "offline since",
+		},
+		// The fourth state, and the one every sleeping machine is in. The node
+		// stops serving what an expired snapshot held, so the empty list is
+		// this node withholding stale state — saying the peer published nothing
+		// is a claim about the peer that nothing supports. It may have
+		// published five sessions two minutes ago.
+		"offline with a lapsed snapshot": {
+			`{"nodeId":"node_d","displayName":"asleep","online":false,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[]}`,
+			"offline since", "nothing published",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -690,4 +718,46 @@ func TestRunPeersSaysWhatToDoWhenNothingIsPaired(t *testing.T) {
 			t.Errorf("the empty answer does not point at %q: %q", want, stdout.String())
 		}
 	}
+}
+
+// Every command the switch implements has to appear in the usage summary.
+//
+// `peers` did not: it was added to the detail lines below the summary but not to
+// the enumeration a reader scans first, and nothing noticed. The summary is
+// three separate Fprintln calls, so an edit that looks like it covers them can
+// miss one.
+func TestUsageListsEveryCommandTheSwitchImplements(t *testing.T) {
+	source, err := os.ReadFile("cli.go")
+	if err != nil {
+		t.Fatalf("read cli.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "switch args[0] {")
+	if start < 0 {
+		t.Fatal("the command switch is not where this test expects it")
+	}
+	end := strings.Index(body[start:], "\n\tdefault:")
+	if end < 0 {
+		t.Fatal("could not find the end of the command switch")
+	}
+
+	// No arguments prints the usage, to stderr.
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	usage := stdout.String() + stderr.String()
+	if !strings.Contains(usage, "commands:") {
+		t.Fatalf("this test is not reading the usage output: %q", usage)
+	}
+
+	implemented := regexp.MustCompile(`\n\tcase "([a-z-]+)"`).FindAllStringSubmatch(body[start:start+end], -1)
+	if len(implemented) == 0 {
+		t.Fatal("found no commands in the switch; this test would pass vacuously")
+	}
+	for _, match := range implemented {
+		name := match[1]
+		if !strings.Contains(usage, name) {
+			t.Errorf("`ah %s` is implemented but absent from the usage output", name)
+		}
+	}
+	t.Logf("checked %d commands", len(implemented))
 }
