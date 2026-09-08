@@ -3,8 +3,10 @@
 AgentHub Desktop is the owner-facing privacy console for a local
 `agenthub-node`. It lists every owner-local Claude and Codex session, supports
 search and status/provider/audience filters, applies one audience and export
-policy to multiple selected sessions, manages manually trusted nodes, triggers
-a provider rescan, and shows the current signed heartbeat preview.
+policy to multiple selected sessions, manages manually trusted nodes, opens and
+closes pairing mode and shows who is advertising, reads what other nodes have
+queued for a session, triggers a provider rescan, and shows the current signed
+heartbeat preview.
 
 The app is an HTTP client only. It does not read provider files or SQLite and
 does not write a second copy of session state. It accepts loopback node URLs

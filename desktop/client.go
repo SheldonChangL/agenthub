@@ -130,6 +130,10 @@ type PairingState struct {
 	Announcing AnnounceStatus `json:"announcing"`
 }
 
+// responseCap bounds what this app will read from its own node. Large enough
+// for a full session list, small enough that a peer cannot exhaust memory here.
+const responseCap = 8 * 1024 * 1024
+
 type client struct {
 	baseURL string
 	http    *http.Client
@@ -311,6 +315,67 @@ func (c *client) candidates(ctx context.Context) ([]Candidate, bool, string, err
 	return decoded.Candidates, decoded.Full, decoded.Notice, nil
 }
 
+// InboxMessage is one message another node queued for a local session.
+//
+// Every field except the id was written on another machine. `Body` especially:
+// it is content, not instruction, and the desktop renders it as such — a
+// request inside it is a request from a stranger, and the sender's session name
+// is a label they chose. Only NodeID identifies who sent it.
+type InboxMessage struct {
+	ID        string    `json:"id"`
+	From      string    `json:"from"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// Inbox is what one local session has been sent, and how full it is.
+type Inbox struct {
+	Messages []InboxMessage `json:"messages"`
+	// Held and Capacity are carried so a full inbox is visible as full rather
+	// than as a list that has stopped growing for no stated reason.
+	Held     int  `json:"held"`
+	Capacity int  `json:"capacity"`
+	Full     bool `json:"full"`
+	// Next is the cursor for the page after this one, empty when there is none.
+	Next string `json:"next,omitempty"`
+}
+
+func (c *client) inbox(ctx context.Context, sessionID string, limit int) (Inbox, error) {
+	path := fmt.Sprintf("/v1/inbox/%s?limit=%d", url.PathEscape(sessionID), limit)
+	body, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return Inbox{}, err
+	}
+	var inbox Inbox
+	if err := json.Unmarshal(body, &inbox); err != nil {
+		return Inbox{}, fmt.Errorf("decode inbox: %w", err)
+	}
+	if inbox.Messages == nil {
+		inbox.Messages = []InboxMessage{}
+	}
+	return inbox, nil
+}
+
+// clearInbox empties an inbox and reports how many messages went.
+//
+// The count is the only way an owner learns that something arrived between
+// reading the list and confirming, and was destroyed unseen.
+func (c *client) clearInbox(ctx context.Context, sessionID string) (int, error) {
+	body, err := c.request(ctx, http.MethodDelete, "/v1/inbox/"+url.PathEscape(sessionID), nil)
+	if err != nil {
+		return 0, err
+	}
+	var removed struct {
+		Removed int `json:"removed"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &removed); err != nil {
+			return 0, fmt.Errorf("decode clear result: %w", err)
+		}
+	}
+	return removed.Removed, nil
+}
+
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {
 	body, err := c.request(ctx, http.MethodGet, "/v1/node", nil)
 	if err != nil {
@@ -352,9 +417,19 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 		return nil, fmt.Errorf("contact node: %w", err)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 8*1024*1024))
+	data, err := io.ReadAll(io.LimitReader(response.Body, responseCap))
 	if err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(data) >= responseCap {
+		// Cut off, so it will not decode, and "unexpected end of JSON input"
+		// sends the reader nowhere. Reachable from an inbox: a message body is
+		// 32KB and a control character in it escapes to six JSON bytes, so a
+		// peer can make a page far larger than it looks. Say what happened and
+		// what clears it.
+		return nil, fmt.Errorf("the node's answer reached the %d byte limit and was cut off; "+
+			"something in it is too large to read here. Emptying an inbox is the way out of one",
+			responseCap)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var apiError struct {

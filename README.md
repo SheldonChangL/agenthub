@@ -158,7 +158,10 @@ to another machine regardless.
 
 The desktop app is the owner's management surface for the privacy model. It
 lists local sessions, filters by provider/status/audience/working directory,
-applies an audience policy to a selection, and manages manually paired nodes.
+applies an audience policy to a selection, manages manually paired nodes, opens
+and closes pairing mode with the candidate list beside it, and reads what other
+nodes have queued for a session. Sending is not there: that is what an agent
+does through the MCP tools.
 
 It lives in `desktop/` as a separate Go module so that Wails' CGo requirement never reaches `agenthub-node` or `ah`, which stay CGo-free and cross-compilable.
 

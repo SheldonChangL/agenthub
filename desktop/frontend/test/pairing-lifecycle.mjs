@@ -1,5 +1,7 @@
-// Loads the whole module — wiring, polls and handlers included — and drives the
-// pairing panel through the sequences a render-only check cannot reach.
+// Loads the whole module — wiring, polls and handlers included — and drives it
+// through the sequences a render-only check cannot reach. Named for the pairing
+// panel it was written for; it now also covers the inbox wiring, which sits
+// below the same marker the render checks slice at.
 //
 // The other render checks slice the source at the wiring marker, so loadPairing,
 // the two intervals and the button handlers were never executed by anything.
@@ -53,11 +55,37 @@ const Overview = async () => ({
 });
 const noop = async () => ({});
 
+// The inbox bindings, recorded so the destructive button can be followed.
+const inboxReads = [];
+const clearCalls = [];
+// Answers after a delay the test controls, so a slow read really can land after
+// a fast one. Without that the race the guard exists for never happens and
+// removing the guard passes.
+const inboxDelays = new Map();
+const inboxRejects = new Set();
+const InboxStub = async (sessionId) => {
+  inboxReads.push(sessionId);
+  const delay = inboxDelays.get(sessionId) ?? 0;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  if (inboxRejects.has(sessionId)) throw new Error("contact node: connection refused");
+  return {
+    sessionId, messages: [], held: 0, capacity: 500, full: false, showing: 0, more: false,
+  };
+};
+let clearResult = { removed: 3 };
+const ClearInboxStub = async (sessionId) => {
+  clearCalls.push(sessionId);
+  return clearResult;
+};
+
 const scope = new Function(
   "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { state, loadPairing, renderPairing, tickCountdown, pairingRemaining };"
-)(document, fakeSetInterval, Overview, noop, noop, noop, noop, noop, Pairing, OpenPairing, ClosePairing);
+  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "confirm",
+  source + "\nreturn { state, loadPairing, renderPairing, tickCountdown, pairingRemaining, openInbox };"
+)(document, fakeSetInterval, Overview, noop, noop, noop, noop, noop, Pairing, OpenPairing,
+  ClosePairing, InboxStub, ClearInboxStub, () => confirmAnswer);
+
+let confirmAnswer = true;
 
 const { state, loadPairing } = scope;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -204,6 +232,145 @@ if (typeof offClick !== "function") {
   }
 }
 
+const closeInboxHandler = () => el("inbox-close").onclick();
+
+// 8. The clear button empties the session the dialog is showing, and only
+//    after the owner says yes.
+//
+//    It reads state.inboxSession, which an out-of-order read could have left
+//    pointing elsewhere — so a stale answer must not repaint the dialog. That
+//    guard is what this checks, on the one irreversible action here.
+await scope.openInbox("claude:shown");
+clearCalls.length = 0;
+confirmAnswer = false;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls.length !== 0) {
+  failures.push("the inbox was cleared after the owner declined");
+}
+confirmAnswer = true;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls.length !== 1 || clearCalls[0] !== "claude:shown") {
+  failures.push(`clear emptied ${JSON.stringify(clearCalls)}, want ["claude:shown"] once`);
+}
+// What it did, where the person who pressed it is looking. A banner is behind
+// the modal, so the count — the only sign that something arrived between the
+// read and the confirm — would be invisible there.
+if (!el("inbox-body").serialize().includes("移除 3 則")) {
+  failures.push(`the clear result is not in the dialog: ${el("inbox-body").serialize()}`);
+}
+
+// A clear that fails has to say so there too, or the owner is left with an
+// unchanged list and no sign the destructive action did not happen.
+clearResult = { removed: 0, error: "the inbox could not be emptied" };
+await el("inbox-clear").onclick();
+await settle();
+const afterFailure = el("inbox-body").serialize();
+if (!afterFailure.includes("could not be emptied")) {
+  failures.push(`a failed clear said nothing in the dialog: ${afterFailure}`);
+}
+if (!afterFailure.includes("沒有變動")) {
+  failures.push("a failed clear did not say the inbox is unchanged");
+}
+clearResult = { removed: 3 };
+
+// 9. A slow read landing after a newer one must not repaint the dialog, because
+//    the clear button aims at whatever the dialog says it is showing.
+inboxDelays.set("claude:slow", 60);
+const slowInbox = scope.openInbox("claude:slow");
+const fastInbox = scope.openInbox("claude:fast");
+await Promise.all([slowInbox, fastInbox]);
+await settle();
+inboxDelays.clear();
+if (scope.state.inboxSession !== "claude:fast") {
+  failures.push(`a stale read left the dialog aimed at ${scope.state.inboxSession}`);
+}
+if (!el("inbox-meta").serialize().includes("claude:fast")) {
+  failures.push(`the dialog shows ${el("inbox-meta").serialize()} while clear targets claude:fast`);
+}
+if (el("inbox-meta").serialize().includes("claude:slow")) {
+  failures.push("the slow read repainted the dialog after the fast one landed");
+}
+// And the button follows the dialog, not the last read to finish. This is the
+// irreversible one.
+clearCalls.length = 0;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls[0] !== "claude:fast") {
+  failures.push(`clear aimed at ${clearCalls[0]}, not the session the dialog is showing`);
+}
+
+// 9b. While a read is in flight the button empties nothing. It aims at whatever
+//     the dialog is showing, and during a load that is not yet a session.
+inboxDelays.set("claude:pending", 60);
+clearCalls.length = 0;
+const pending = scope.openInbox("claude:pending");
+await el("inbox-clear").onclick();
+if (clearCalls.length !== 0) {
+  failures.push(`clear emptied ${clearCalls[0]} while its content was still loading`);
+}
+await pending;
+await settle();
+inboxDelays.clear();
+
+// 9c. A binding that rejects shows its reason in the dialog. It used to reach a
+//     banner the modal covers, so the owner saw an open dialog saying nothing
+//     while the error sat behind it.
+inboxRejects.add("claude:broken");
+await scope.openInbox("claude:broken");
+await settle();
+inboxRejects.clear();
+const brokenBody = el("inbox-body").serialize();
+if (!brokenBody.includes("connection refused")) {
+  failures.push(`a rejected read did not show its reason in the dialog: ${brokenBody}`);
+}
+if (brokenBody.includes("還沒有任何訊息")) {
+  failures.push("a rejected read was rendered as an empty inbox");
+}
+if (el("inbox-modal").classList.contains("hidden")) {
+  failures.push("a rejected read closed the dialog");
+}
+// And clear stays available, deliberately: a read that fails because the
+// inbox is too large to decode is exactly when emptying it is the way out, and
+// the truncation message says so. It must still aim at the session that was
+// asked for.
+clearCalls.length = 0;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls[0] !== "claude:broken") {
+  failures.push(`after a failed read clear aimed at ${clearCalls[0]}, want claude:broken`);
+}
+
+// 9d. Closing retires a read in flight, so its answer cannot repaint a hidden
+//     dialog and re-arm the button. Today that is safe only because the button
+//     is unclickable while hidden — a guard leaning on a CSS rule.
+inboxDelays.set("claude:abandoned", 60);
+const abandoned = scope.openInbox("claude:abandoned");
+closeInboxHandler();
+await abandoned;
+await settle();
+inboxDelays.clear();
+if (scope.state.inboxSession !== null) {
+  failures.push(`a read that landed after closing re-armed the button at ${scope.state.inboxSession}`);
+}
+
+// 10. Closing forgets which session it was, so a later clear cannot fire at it.
+el("inbox-close").onclick();
+if (scope.state.inboxSession !== null) {
+  failures.push("closing the dialog left it aimed at a session");
+}
+clearCalls.length = 0;
+await el("inbox-clear").onclick();
+if (clearCalls.length !== 0) {
+  failures.push("clear fired with no session open");
+}
+
+// The inbox sections run before section 7, which instantiates the module a
+// second time. The shim's element cache is module-global, so that second
+// instance's wiring replaces the first's handlers — and a handler closing over
+// the other instance's state reads an empty inboxSession and returns early,
+// which looks exactly like the button not working.
 // 7. A binding that throws is a failure to read, not a fact about the network.
 pairingQueue = [];
 const throwing = new Function(
