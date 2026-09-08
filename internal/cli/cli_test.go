@@ -586,3 +586,108 @@ func TestRunPairingRefusesADurationItCannotSend(t *testing.T) {
 		})
 	}
 }
+
+// `ah peers` answers "who can I send to, and what did they publish".
+//
+// It exists because that answer had no command. A remote session never appears
+// in `ah list`, which is owner-local; it appears only in the presence endpoint,
+// addressed as <node-id>/<session-id>. Without this the only way to find the id
+// was to read that endpoint with curl — and `ah send` to a bare session id
+// answers "session not found", which is true and unhelpful. It cost time in the
+// two-host run before it existed.
+func TestRunPeersShowsTheAddressToSendTo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/peers" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"peers":[
+			{"nodeId":"node_aaaa","displayName":"the other desk","online":true,
+			 "receivedAt":"2026-09-08T04:00:00Z",
+			 "sessions":[{"id":"node_aaaa/codex:abc","provider":"codex","status":"inactive"}]}
+		]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run(context.Background(), []string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+	}
+	out := stdout.String()
+	// The whole point: the qualified address, not the bare session id.
+	if !strings.Contains(out, "node_aaaa/codex:abc") {
+		t.Errorf("the address to send to is missing: %q", out)
+	}
+	for _, want := range []string{"the other desk", "online", "codex"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not mention %q: %q", want, out)
+		}
+	}
+}
+
+// The three states a peer can be in are different facts, and an owner waiting
+// for a machine to appear needs to know which one they are looking at. An empty
+// row for all three would say the same thing about a peer that has published
+// nothing, one this node refused, and one never heard from.
+func TestRunPeersDistinguishesSilenceFromRefusalAndFromNeverHeard(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		peer      string
+		wantInOut string
+		notInOut  string
+	}{
+		"published nothing": {
+			`{"nodeId":"node_a","displayName":"quiet","online":true,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[]}`,
+			"nothing published", "refused",
+		},
+		"this node refused what it sent": {
+			`{"nodeId":"node_b","displayName":"refused one","online":true,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[],"sessionsWithheld":true}`,
+			"refused", "nothing published",
+		},
+		"never heard from": {
+			`{"nodeId":"node_c","displayName":"silent","online":false,"sessions":[]}`,
+			"never heard from", "offline,",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"peers":[` + testCase.peer + `]}`))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if exit := Run(context.Background(),
+				[]string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+				t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, testCase.wantInOut) {
+				t.Errorf("output does not say %q: %q", testCase.wantInOut, out)
+			}
+			if strings.Contains(out, testCase.notInOut) {
+				t.Errorf("output says %q, which is a different fact: %q", testCase.notInOut, out)
+			}
+		})
+	}
+}
+
+// With nothing paired, the answer is what to do next rather than an empty table.
+func TestRunPeersSaysWhatToDoWhenNothingIsPaired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"peers":[]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run(context.Background(), []string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+	}
+	for _, want := range []string{"ah pair", "ah candidates"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the empty answer does not point at %q: %q", want, stdout.String())
+		}
+	}
+}
