@@ -377,3 +377,35 @@ func TestIsPairedAnswersWithoutReadingTheRow(t *testing.T) {
 		t.Errorf("IsPaired() after revoke = %v, %v", paired, err)
 	}
 }
+
+// The bound on a peer's name is the same one this node applies to its own.
+//
+// Two numbers that drift apart fail in the worst place: this node stores a name
+// it is happy with, announces it, and the pairing is refused on the other
+// machine — where the owner of the name cannot see the reason. The constant is
+// shared so that cannot happen, and this holds both sides to it.
+func TestAPeerNameIsBoundedByTheSameLimitAsThisNodes(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+
+	tooLong := peer("node_verbose00000000000", "key-a")
+	tooLong.DisplayName = strings.Repeat("a", MaxDisplayName+1)
+	if err := store.TrustNode(ctx, tooLong); err == nil {
+		t.Errorf("a peer name of %d bytes was trusted; the limit is %d",
+			len(tooLong.DisplayName), MaxDisplayName)
+	}
+
+	// And the limit itself is usable, so a node named right up to the bound is
+	// not turned away by an off-by-one.
+	atLimit := peer("node_atthelimit00000000", "key-b")
+	atLimit.DisplayName = strings.Repeat("a", MaxDisplayName)
+	if err := store.TrustNode(ctx, atLimit); err != nil {
+		t.Errorf("a peer name of exactly %d bytes was refused: %v", MaxDisplayName, err)
+	}
+
+	nameless := peer("node_nameless0000000000", "key-c")
+	nameless.DisplayName = ""
+	if err := store.TrustNode(ctx, nameless); err == nil {
+		t.Error("a peer with no name was trusted, leaving nothing to show for it")
+	}
+}
