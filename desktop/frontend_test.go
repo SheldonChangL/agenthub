@@ -210,11 +210,26 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		// the start of a rule is what distinguishes it from `.nodedetail .stale`.
 		"a notice explaining an absence": "\n.stale {",
 		"a contested or duplicate flag":  "\n.pill.bad {",
+		// The only thing between a hostile message body and someone acting on
+		// it. Styled like body text, it is read as body text.
+		"the data-not-instruction warning": "\n.modal-card .warning {",
 	} {
 		if !strings.Contains(css, selector) {
 			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
 				what, strings.TrimSpace(selector))
 		}
+	}
+
+	// And the markup still asks for it. The stylesheet having a rule proves
+	// nothing if the element that carries the warning stopped using the class —
+	// that mutation was green.
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	if !strings.Contains(string(markup), `<p class="warning">`) {
+		t.Error("no element carries the warning class, so the prompt-injection warning " +
+			"renders as body text whatever the stylesheet says")
 	}
 
 	// The scrolling containers, each with the property that makes it scroll.
@@ -223,6 +238,11 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 	for _, required := range []struct{ selector, property string }{
 		{".nodelist {", "overflow-y"},
 		{"#candidate-rows {", "max-height"},
+		// A message body is 32KB of whatever a sender chose. One of newlines
+		// renders over a hundred thousand pixels tall, which is every message
+		// after it made unreachable.
+		{"#inbox-body {", "max-height"},
+		{".inboxrow .inboxbody {", "max-height"},
 	} {
 		start := strings.Index(css, required.selector)
 		if start < 0 {
@@ -267,5 +287,29 @@ func TestFrontendPairingPanelSurvivesTheSequences(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("pairing lifecycle check failed: %v\n%s", err, output)
+	}
+}
+
+// TestFrontendRendersHostileInboxMessagesAsText covers the inbox, whose message
+// bodies are the most attacker-controlled text the app shows.
+//
+// Candidate metadata at least describes a machine and is bounded by PRECIS. A
+// message body is up to 32KB of whatever the sender chose, written to be read
+// by a person, and the sender need only be a node this owner once paired with —
+// a peer that has since been compromised sends signed hostile strings. The
+// check also pins that the four states stay apart: a failed read, an empty
+// inbox, a full one, and messages.
+func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the inbox render check")
+	}
+	script := filepath.Join("frontend", "test", "render-hostile-inbox.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inbox render check failed: %v\n%s", err, output)
 	}
 }

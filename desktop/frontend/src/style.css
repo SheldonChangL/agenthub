@@ -515,3 +515,76 @@ table.peer-sessions td.mono {
 #pair-prefill-note > div + div {
   margin-top: 6px;
 }
+
+/* ---------------- inbox ---------------- */
+
+.sid .inbox {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.inboxrow {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* A message body is written by someone else and may be long, may be one word,
+   and may contain anything. It wraps, keeps its own line breaks, never escapes
+   its box, and is capped — one 32KB body of newlines renders over a hundred
+   thousand pixels tall, which is every message after it made unreachable. */
+.inboxrow .inboxbody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+#inbox-body {
+  max-height: 46vh;
+  overflow-y: auto;
+  margin: 10px 0;
+}
+
+/* A warning that renders like body text is read as body text, and this one is
+   the only thing between a hostile message and someone acting on it. It sits
+   above the messages and does not scroll with them. */
+.modal-card .warning {
+  margin: 0 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--amber);
+  background: rgba(224, 163, 62, 0.1);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.inboxrow .sender {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Each half reorders only within itself. A session id may contain a bidi
+   override — the node bans only "/" and a length — and without this it could
+   reorder the proven node id beside it. */
+.inboxrow .sender span {
+  unicode-bidi: isolate;
+}
+
+/* The proven half and the chosen half, told apart. */
+.inboxrow .sender .fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+.inboxrow .sender .claimed {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+}

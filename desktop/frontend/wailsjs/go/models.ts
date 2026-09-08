@@ -106,6 +106,101 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ClearedInbox {
+	    removed: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClearedInbox(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.removed = source["removed"];
+	        this.error = source["error"];
+	    }
+	}
+	export class InboxMessage {
+	    id: string;
+	    from: string;
+	    body: string;
+	    // Go type: time
+	    createdAt: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new InboxMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.from = source["from"];
+	        this.body = source["body"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class InboxView {
+	    sessionId: string;
+	    messages: InboxMessage[];
+	    held: number;
+	    capacity: number;
+	    full: boolean;
+	    showing: number;
+	    more: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new InboxView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.sessionId = source["sessionId"];
+	        this.messages = this.convertValues(source["messages"], InboxMessage);
+	        this.held = source["held"];
+	        this.capacity = source["capacity"];
+	        this.full = source["full"];
+	        this.showing = source["showing"];
+	        this.more = source["more"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;

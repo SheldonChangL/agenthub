@@ -261,6 +261,98 @@ func isDiscoveryDisabled(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "DISCOVERY_DISABLED")
 }
 
+// InboxView is one session's inbox as the owner sees it.
+type InboxView struct {
+	SessionID string         `json:"sessionId"`
+	Messages  []InboxMessage `json:"messages"`
+	Held      int            `json:"held"`
+	Capacity  int            `json:"capacity"`
+	Full      bool           `json:"full"`
+	// Showing and More say that this is a page. Without them a view of ten out
+	// of five hundred looks like an inbox of ten — and the ten are the oldest,
+	// because the node returns them in arrival order.
+	Showing int  `json:"showing"`
+	More    bool `json:"more"`
+	// Error is separate from an empty list, because "nothing has been sent" and
+	// "this could not be read" are different facts and only one of them means
+	// the owner should stop looking.
+	Error string `json:"error,omitempty"`
+}
+
+// Inbox reads what other nodes have queued for one of this owner's sessions.
+//
+// The desktop can show it because the owner may want to see what arrived
+// without asking an agent to look. Reading it here changes nothing: the node
+// does not mark anything read, and nothing hands a message to an agent — that
+// is still the documented boundary.
+func (a *App) Inbox(sessionID string) InboxView {
+	view := InboxView{SessionID: sessionID, Messages: []InboxMessage{}}
+	if strings.TrimSpace(sessionID) == "" {
+		view.Error = "select a session first"
+		return view
+	}
+	activeClient, _ := a.current()
+	// Ten, not fifty. A body is 32KB and a control character in it escapes to
+	// six JSON bytes, so a peer can make fifty messages serialise to more than
+	// this app will read — after which nothing decodes and the owner cannot see
+	// what is jamming the inbox they came to look at. The CLI reaches the same
+	// number for the same reason.
+	//
+	// The node returns them oldest first, so this is the start of the queue,
+	// not the recent end.
+	inbox, err := activeClient.inbox(a.ctx, sessionID, inboxPageSize)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.Messages = inbox.Messages
+	view.Held = inbox.Held
+	view.Capacity = inbox.Capacity
+	view.Full = inbox.Full
+	// Said rather than left to be inferred from a short list: an inbox holding
+	// five hundred, shown ten at a time, must not read as an inbox holding ten.
+	//
+	// The cursor alone does not mean more: the node issues one whenever a page
+	// comes back full, so an inbox holding exactly ten answers with one. Taking
+	// it at face value put "there is more, clear some to see it" beside the one
+	// irreversible button in the dialog, about messages that do not exist.
+	view.Showing = len(inbox.Messages)
+	view.More = inbox.Next != "" && inbox.Held > len(inbox.Messages)
+	return view
+}
+
+// inboxPageSize is how many messages one read asks for. See Inbox for why it is
+// not larger.
+const inboxPageSize = 10
+
+// ClearedInbox is what emptying did, for the dialog to show. Not a banner: the
+// modal is fixed over the whole window, so a banner behind it is a message
+// nobody reads — the same reason read errors are shown in the dialog.
+type ClearedInbox struct {
+	Removed int    `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ClearInbox empties one session's inbox.
+//
+// Destructive and not undoable, so the frontend asks first. It exists because
+// an inbox that only grows is one an owner cannot keep usable, and because a
+// full one refuses new messages.
+func (a *App) ClearInbox(sessionID string) ClearedInbox {
+	if strings.TrimSpace(sessionID) == "" {
+		return ClearedInbox{Error: "select a session first"}
+	}
+	activeClient, _ := a.current()
+	removed, err := activeClient.clearInbox(a.ctx, sessionID)
+	if err != nil {
+		// Returned rather than thrown, so the dialog can say the destructive
+		// action did not happen. Thrown, it reached a banner the dialog covers
+		// while the list below sat unchanged.
+		return ClearedInbox{Error: err.Error()}
+	}
+	return ClearedInbox{Removed: removed}
+}
+
 // Discover triggers a provider rescan on the node.
 func (a *App) Discover() (map[string]int, error) {
 	activeClient, _ := a.current()

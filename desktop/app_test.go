@@ -472,3 +472,229 @@ func TestPairingReportsAFailedCandidateReadSeparately(t *testing.T) {
 		t.Errorf("a failed read carried a notice about a list it never got: %q", pairing.Notice)
 	}
 }
+
+// An inbox that could not be read is not an inbox with nothing in it. Told
+// apart, because only one of them means the owner should stop looking.
+func TestInboxSeparatesAFailedReadFromAnEmptyOne(t *testing.T) {
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": "REGISTRY_ERROR", "message": "the inbox could not be read",
+		}})
+	}))
+	defer failing.Close()
+
+	app := &App{client: newClient(failing.URL), url: failing.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if view.Error == "" {
+		t.Error("a failed read reported no error")
+	}
+	if view.Messages == nil {
+		t.Error("messages is nil, which marshals as null rather than an empty list")
+	}
+
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"held":0,"capacity":500,"full":false}`))
+	}))
+	defer empty.Close()
+
+	app = &App{client: newClient(empty.URL), url: empty.URL, ctx: context.Background()}
+	if view := app.Inbox("claude:abc"); view.Error != "" {
+		t.Errorf("an empty inbox reported an error: %q", view.Error)
+	}
+}
+
+// A full inbox refuses new messages, so it has to arrive as full rather than as
+// a list that stopped growing for no stated reason.
+func TestInboxCarriesHowFullItIs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Path; got != "/v1/inbox/claude:abc" {
+			t.Errorf("path = %s", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[
+			{"id":"msg_1","from":"node_a/codex:x","body":"hello","createdAt":"2026-09-08T04:00:00Z"}
+		],"held":500,"capacity":500,"full":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if !view.Full || view.Held != 500 || view.Capacity != 500 {
+		t.Errorf("view = %+v, want it to carry that the inbox is full", view)
+	}
+	if len(view.Messages) != 1 || view.Messages[0].Body != "hello" {
+		t.Errorf("messages = %+v", view.Messages)
+	}
+	// The sender travels, because who sent it is the only part the reader can
+	// check — and the node id inside it is the only identifying half.
+	if view.Messages[0].From != "node_a/codex:x" {
+		t.Errorf("the sender was dropped: %+v", view.Messages[0])
+	}
+}
+
+// Reading and clearing both refuse without a session rather than asking the
+// node about an empty path.
+func TestInboxRefusesWithoutASession(t *testing.T) {
+	var called int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if view := app.Inbox("  "); view.Error == "" {
+		t.Error("reading with no session reported no error")
+	}
+	if cleared := app.ClearInbox(""); cleared.Error == "" {
+		t.Error("clearing with no session reported success")
+	}
+	if called != 0 {
+		t.Errorf("the node was asked %d times about an empty session id", called)
+	}
+}
+
+// The one destructive operation here, and nothing checked what it sent.
+func TestClearInboxDeletesTheSessionItWasGiven(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"removed":3}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	cleared := app.ClearInbox("claude:the-one-asked-for")
+	if cleared.Error != "" {
+		t.Fatalf("ClearInbox: %s", cleared.Error)
+	}
+	// The count travels, because it is the only sign that something arrived
+	// between the read and the confirm and was destroyed unseen.
+	if cleared.Removed != 3 {
+		t.Errorf("removed = %d, want 3", cleared.Removed)
+	}
+	if method != http.MethodDelete {
+		t.Errorf("method = %s, want DELETE; a GET would report success having emptied nothing", method)
+	}
+	if path != "/v1/inbox/claude:the-one-asked-for" {
+		t.Errorf("path = %s, want the session it was given", path)
+	}
+}
+
+// A page, and small enough that a peer cannot make one undecodable.
+//
+// A body is 32KB and a control character in it escapes to six JSON bytes, so a
+// large page can pass this app's read limit — after which nothing decodes and
+// the owner cannot see what is jamming the inbox they came to look at. Fifty
+// was that size; the CLI's own comment says so.
+func TestInboxAsksForAPageSmallEnoughToDecode(t *testing.T) {
+	var limit string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit = r.URL.Query().Get("limit")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"held":500,"capacity":500,"full":true,"next":"cursor"}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if limit != "10" {
+		t.Errorf("limit = %q, want 10", limit)
+	}
+	// And the view says it is a page, so ten out of five hundred cannot read as
+	// an inbox of ten.
+	if !view.More {
+		t.Error("a paged answer did not say there is more")
+	}
+	if view.Held != 500 {
+		t.Errorf("held = %d, want the node's own count", view.Held)
+	}
+}
+
+// An answer cut off at the read limit will not decode, and "unexpected end of
+// JSON input" sends the owner nowhere. This is reachable from an inbox, which
+// is why it is checked here.
+func TestATruncatedAnswerSaysSoRatherThanFailingToDecode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// More than the client will read, so it is cut mid-document.
+		big := strings.Repeat("a", responseCap+1024)
+		_, _ = w.Write([]byte(`{"messages":[{"id":"m","from":"n/c:s","body":"` + big + `"}]}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.Inbox("claude:abc")
+	if view.Error == "" {
+		t.Fatal("a truncated answer was not reported as an error")
+	}
+	if strings.Contains(view.Error, "unexpected end of JSON input") {
+		t.Errorf("the owner is told %q, which points nowhere", view.Error)
+	}
+	if !strings.Contains(view.Error, "cut off") {
+		t.Errorf("error = %q, want it to say what happened", view.Error)
+	}
+}
+
+// A clear that fails has to come back as a fact the dialog can show, not as a
+// thrown error: the modal is fixed over the whole window, so a banner behind it
+// leaves the owner with an unchanged list and no sign the action did not
+// happen.
+func TestClearInboxReportsAFailureRatherThanThrowing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": "REGISTRY_ERROR", "message": "the inbox could not be emptied",
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	cleared := app.ClearInbox("claude:abc")
+	if cleared.Error == "" {
+		t.Fatal("a failed clear reported success")
+	}
+	if !strings.Contains(cleared.Error, "could not be emptied") {
+		t.Errorf("error = %q, want the node's own reason", cleared.Error)
+	}
+	if cleared.Removed != 0 {
+		t.Errorf("removed = %d after a failure", cleared.Removed)
+	}
+}
+
+// A cursor is not evidence of more. The node issues one whenever a page comes
+// back full, so an inbox holding exactly one page answers with one — and taking
+// it at face value put "there is more, clear some to see it" beside the
+// irreversible button, about messages that do not exist.
+func TestAFullPageIsNotTakenAsProofOfMore(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		body     string
+		wantMore bool
+	}{
+		"a full page that is the whole inbox": {
+			`{"messages":[{"id":"m1"},{"id":"m2"}],"held":2,"capacity":500,"next":"cursor"}`, false,
+		},
+		"a full page with more behind it": {
+			`{"messages":[{"id":"m1"},{"id":"m2"}],"held":500,"capacity":500,"next":"cursor"}`, true,
+		},
+		"a short page": {
+			`{"messages":[{"id":"m1"}],"held":1,"capacity":500}`, false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer server.Close()
+
+			app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+			if got := app.Inbox("claude:abc").More; got != testCase.wantMore {
+				t.Errorf("more = %v, want %v", got, testCase.wantMore)
+			}
+		})
+	}
+}
