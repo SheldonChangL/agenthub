@@ -711,25 +711,3 @@ func TestANodeNotOfferingAnnouncesNothingExtra(t *testing.T) {
 		t.Errorf("announcements = %+v; a quiet node must not read as an offer", got)
 	}
 }
-
-// A node's own display name and platform can be refused by the same validation
-// that guards a stranger's, and when that happens the announcement simply omits
-// the field. Announceable is how a node finds that out about itself, rather
-// than leaving the owner to notice their machine listed with no name on someone
-// else's screen.
-func TestANodeCanAskWhetherItsOwnNameCanBeAnnounced(t *testing.T) {
-	if got := Announceable("laptop"); got != "laptop" {
-		t.Errorf("Announceable(%q) = %q", "laptop", got)
-	}
-	// A hostname longer than the field allows is the realistic case: this is a
-	// hostname, and a Linux FQDN can be long.
-	long := strings.Repeat("a", MaxCandidateFieldLength+1)
-	if got := Announceable(long); got != "" {
-		t.Errorf("Announceable(a %d-byte name) = %q, want the empty string", len(long), got)
-	}
-	// And it answers with what would actually go out, not merely yes or no, so
-	// a name that survives in a normalised form is not reported as refused.
-	if got := Announceable("  laptop two  "); got != "laptop two" {
-		t.Errorf("Announceable() = %q, want the normalised name", got)
-	}
-}

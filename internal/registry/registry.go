@@ -13,12 +13,23 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 
 	_ "modernc.org/sqlite"
 )
 
 var ErrNotFound = errors.New("not found")
+
+// MaxDisplayName bounds a peer's display name — a label this node received and
+// shows, nothing more.
+//
+// This node's own name is held to label.MaxLength instead, which is
+// smaller, because its name is transmitted rather than merely displayed and the
+// announcement drops anything longer. The two are deliberately different rules,
+// not one rule copied twice: relaxing this one costs a wider row, relaxing the
+// other costs an announcement with no name in it.
+const MaxDisplayName = 128
 
 type Registry struct {
 	db *sql.DB
@@ -37,7 +48,18 @@ func Open(ctx context.Context, path string) (*Registry, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	// _pragma=busy_timeout: without it a second process opening the same
+	// database while the first is migrating gets SQLITE_BUSY immediately, and
+	// the schema steps take a write lock. Measured on a database needing the
+	// node-name migration, eight concurrent opens: 8 of 8 failed without this,
+	// 2 of 8 with it.
+	//
+	// Not a fix, and not claimed as one. The two that still fail are on the
+	// journal_mode = WAL statement, whose lock a busy timeout does not wait
+	// for. Only one process is meant to hold a database at a time — Open has a
+	// single caller — so this is about failing legibly rather than supporting
+	// concurrent openers.
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -92,7 +114,11 @@ CREATE TABLE IF NOT EXISTS node_identity (
     id TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
     platform TEXT NOT NULL,
-    created_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL,
+    -- Whether a person picked this name, as opposed to it being read off the
+    -- machine. A name nobody picked follows the machine when the machine's own
+    -- name changes or was wrong; a name somebody picked is left alone.
+    name_is_chosen INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -115,6 +141,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
 		return err
 	}
 	if err := r.migrateOutbox(ctx); err != nil {
+		return err
+	}
+	if err := r.addNodeNameProvenance(ctx); err != nil {
 		return err
 	}
 	// Indexes come last: a database created by an earlier build only gains the
@@ -144,28 +173,62 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 // be inventing a record that was never made. Empty reads as "not recorded",
 // which is what is true of them.
 func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
-	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('messages')`)
+	has, err := r.hasColumn(ctx, "messages", "destination_node_id")
 	if err != nil {
-		return fmt.Errorf("read messages columns: %w", err)
+		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan messages column: %w", err)
-		}
-		if name == "destination_node_id" {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read messages columns: %w", err)
+	if has {
+		return nil
 	}
 	if _, err := r.db.ExecContext(ctx,
 		`ALTER TABLE messages ADD COLUMN destination_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add messages destination column: %w", err)
 	}
 	return nil
+}
+
+// addNodeNameProvenance records whether this node's name was picked or read.
+//
+// Existing rows default to 0, "nobody picked it", and that is true rather than
+// merely convenient: before this column there was no way to pick one. Every
+// name in a database this migration touches came from the hostname, which is
+// exactly the population that needs correcting.
+func (r *Registry) addNodeNameProvenance(ctx context.Context) error {
+	has, err := r.hasColumn(ctx, "node_identity", "name_is_chosen")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE node_identity ADD COLUMN name_is_chosen INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add node name provenance column: %w", err)
+	}
+	return nil
+}
+
+// hasColumn reports whether a table already carries a column.
+func (r *Registry) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("read %s columns: %w", table, err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("scan %s column: %w", table, err)
+		}
+		if name == column {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read %s columns: %w", table, err)
+	}
+	return found, nil
 }
 
 // addSessionPolicyColumns brings a database created by an earlier build up to
@@ -218,8 +281,9 @@ func (r *Registry) addSessionPolicyColumns(ctx context.Context) error {
 func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, error) {
 	var identity model.NodeIdentity
 	var createdMS int64
-	err := r.db.QueryRowContext(ctx, `SELECT id, display_name, platform, created_at_ms FROM node_identity WHERE singleton = 1`).Scan(
-		&identity.ID, &identity.DisplayName, &identity.Platform, &createdMS,
+	err := r.db.QueryRowContext(ctx,
+		`SELECT id, display_name, platform, created_at_ms, name_is_chosen FROM node_identity WHERE singleton = 1`).Scan(
+		&identity.ID, &identity.DisplayName, &identity.Platform, &createdMS, &identity.NameIsChosen,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.NodeIdentity{}, ErrNotFound
@@ -231,15 +295,59 @@ func (r *Registry) GetNodeIdentity(ctx context.Context) (model.NodeIdentity, err
 	return identity, nil
 }
 
+// SetNodeDisplayName changes only what this node calls itself, recording
+// whether a person picked the name.
+//
+// Separate from SaveNodeIdentity, which refuses to overwrite: the id, platform
+// and creation time are what make this node the same node across restarts and
+// what every pairing is keyed on, so they stay immutable. The name is not any
+// of that — it is a label shown to a person — and it has to be correctable,
+// because a node can be created with the wrong one. On macOS with no HostName
+// set, the name gethostname() returns is whatever DHCP and DNS say the address
+// is called, which can belong to whoever held it before.
+//
+// chosen distinguishes a name a person typed from one read off the machine. A
+// name nobody picked keeps following the machine; a picked one is left alone.
+func (r *Registry) SetNodeDisplayName(ctx context.Context, name string, chosen bool) error {
+	name, err := label.Announceable(name)
+	if err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE node_identity SET display_name = ?, name_is_chosen = ? WHERE singleton = 1`,
+		name, chosen)
+	if err != nil {
+		return fmt.Errorf("set node display name: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set node display name: %w", err)
+	}
+	if changed == 0 {
+		// No identity yet. Renaming one that does not exist would otherwise
+		// report success and change nothing.
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *Registry) SaveNodeIdentity(ctx context.Context, identity model.NodeIdentity) error {
 	if identity.ID == "" || identity.DisplayName == "" || identity.Platform == "" || identity.CreatedAt.IsZero() {
 		return errors.New("complete node identity is required")
 	}
-	_, err := r.db.ExecContext(ctx, `
-INSERT INTO node_identity (singleton, id, display_name, platform, created_at_ms)
-VALUES (1, ?, ?, ?, ?)
+	// The same rule as SetNodeDisplayName. Two write paths that disagree leave
+	// the invariant true only for whichever one the caller happened to take.
+	announceable, err := label.Announceable(identity.DisplayName)
+	if err != nil {
+		return err
+	}
+	identity.DisplayName = announceable
+	_, err = r.db.ExecContext(ctx, `
+INSERT INTO node_identity (singleton, id, display_name, platform, created_at_ms, name_is_chosen)
+VALUES (1, ?, ?, ?, ?, ?)
 ON CONFLICT(singleton) DO NOTHING`,
 		identity.ID, identity.DisplayName, identity.Platform, identity.CreatedAt.UTC().UnixMilli(),
+		identity.NameIsChosen,
 	)
 	if err != nil {
 		return fmt.Errorf("save node identity: %w", err)

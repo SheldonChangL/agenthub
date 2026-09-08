@@ -158,6 +158,11 @@ type NodeIdentity struct {
 	// and is not part of this struct at all.
 	PublicKey   string `json:"publicKey,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
+	// NameIsChosen records that a person picked DisplayName, rather than it
+	// being read off the machine. Not serialised: it is how this node decides
+	// whether to keep following the machine's name, and means nothing to a
+	// peer, which sees only the name itself.
+	NameIsChosen bool `json:"-"`
 }
 
 type Message struct {

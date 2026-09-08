@@ -153,6 +153,41 @@ func TestPairingModeOpensAndCloses(t *testing.T) {
 	}
 }
 
+// The pairing state carries the name this node announces, and where it came
+// from.
+//
+// It travels here rather than being read once at startup because it is what a
+// UI warns about, and it changes when the node restarts under a different
+// -display-name — which is what such a warning tells an owner to do. Asserted
+// on the wire, by key: the desktop reads these names, and renaming either side
+// alone would leave every other test green.
+func TestThePairingStateCarriesTheAnnouncedName(t *testing.T) {
+	mode := pairing.NewMode()
+	handler, _, _ := pairingHandler(t, mode)
+
+	for _, path := range []string{"GET", "POST"} {
+		method := http.MethodGet
+		var payload any
+		if path == "POST" {
+			method, payload = http.MethodPost, map[string]int{"seconds": 60}
+		}
+		response := perform(t, handler, method, "/v1/pairing", payload)
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["displayName"] != "test" {
+			t.Errorf("%s /v1/pairing displayName = %v, want the node's own name", path, body["displayName"])
+		}
+		if _, ok := body["nameIsChosen"]; !ok {
+			t.Errorf("%s /v1/pairing carries no nameIsChosen, so a UI cannot say which remedy applies", path)
+		}
+		if body["nameIsChosen"] != false {
+			t.Errorf("%s /v1/pairing nameIsChosen = %v for a name nobody picked", path, body["nameIsChosen"])
+		}
+	}
+}
+
 // An owner who asks for an hour is told the answer, rather than given fifteen
 // minutes and left believing they have an hour.
 func TestAWindowOutsideTheBoundsIsRefused(t *testing.T) {

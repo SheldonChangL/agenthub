@@ -584,7 +584,20 @@ table.peer-sessions td.mono {
   color: var(--text);
 }
 
-.inboxrow .sender .claimed {
+/* A .claimed span is a string somebody else chose, or one this machine is about
+   to send. Either way it is set apart from the sentence around it, so a reader
+   can see where the prose stops and the untrusted or outbound text starts. The
+   selector is not scoped to the inbox: the pairing note names the display name
+   this node broadcasts, which needs the same boundary. */
+.claimed {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--muted);
+}
+
+#pairing-note .claimed {
+  /* Against the muted note text, muted-on-muted would not read as set apart. */
+  color: var(--text);
+  /* The same isolation the inbox gives a sender: a right-to-left name inside a
+     left-to-right sentence otherwise reorders the punctuation around it. */
+  unicode-bidi: isolate;
 }

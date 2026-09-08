@@ -150,6 +150,44 @@ announced, so it has to be an address other machines can reach — not loopback.
 `--allow-lan` is what permits that. `--discover` turns on finding peers, and
 without it the pairing commands below refuse and say so.
 
+### What your machine calls itself
+
+While pairing mode is open, the node announces a display name to everyone on
+the segment, and it is printed at startup so you can see what that is:
+
+```
+node display name "sheldon.chang mac" (read from this machine)
+```
+
+By default it is read from the machine — `ComputerName` on macOS, the hostname
+elsewhere — and it keeps following the machine on every start. That default
+matters on macOS: with no `HostName` set, `gethostname()` answers from DHCP and
+DNS, so a node using it can announce a name belonging to whoever held the
+address before you.
+
+To pick your own, and pin it against any later change:
+
+```bash
+bin/agenthub-node --db ./data/agenthub.db --display-name "the machine on my desk"
+```
+
+It sticks, so the flag is not needed on later starts, and the node id does not
+change — existing pairings survive a rename. To hand the name back to the
+machine, pass the flag empty — or as nothing but spaces:
+
+```bash
+bin/agenthub-node --db ./data/agenthub.db --display-name ""
+```
+
+The name is stored in the form it will be announced in, which is not always the
+form you typed: NFD becomes NFC, `☕️` loses its variation selector, runs of
+spaces collapse. That is so what you read back is what the segment sees. A name
+is refused outright only if no announcement could carry it — over 64 bytes, or
+made of nothing that renders.
+
+A peer you have already paired with keeps the name it recorded at pairing time;
+re-pair to update it there.
+
 If the two machines are on a direct cable in a range that is not private —
 `122.122.0.0/16`, say — add `--treat-as-private 122.122.0.0/16` **on both**.
 Without it each node refuses to list the other, because it will not deliver to

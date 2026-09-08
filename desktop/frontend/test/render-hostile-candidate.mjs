@@ -198,6 +198,81 @@ if (!cannot.includes("the peer listener is on loopback")) {
   failures.push("the node's own reason was dropped");
 }
 
+// 3c. The warning names the string that actually goes out. "The node's name" is
+//     a category, and nobody judges a category — a hostname is often a person's
+//     name and an employer's domain, and on macOS it can be a previous
+//     occupant's. The only way an owner weighs the tradeoff is by reading it.
+scope.state.localName = "J-SomeoneElse.example.com.tw";
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+renderPairing();
+const beforeOpening = el("pairing-note").serialize();
+if (!beforeOpening.includes("J-SomeoneElse.example.com.tw")) {
+  failures.push(`the warning does not name what would be broadcast: ${beforeOpening}`);
+}
+state.pairing = {
+  availability: "on",
+  state: { open: true, remainingSeconds: 200, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+state.pairingReadAt = performance.now();
+renderPairing();
+if (!el("pairing-note").serialize().includes("J-SomeoneElse.example.com.tw")) {
+  failures.push("the warning stops naming the broadcast name once the window is open");
+}
+// It is a name they chose to show, not an identifier — same treatment as a
+// candidate's claimed half.
+if (!el("pairing-note").serialize().includes('class="claimed"')) {
+  failures.push("the broadcast name is not marked as a label");
+}
+// The warning also has to say where the name came from, because the remedy
+// differs and the sentence beside it names one. A chosen name described as
+// "read from this machine" is the same defect the display name had, one level
+// down: follow the instruction and the panel's own next sentence is false.
+if (!beforeOpening.includes("節點從這台機器讀來的")) {
+  failures.push(`the warning does not say the name was read from the machine: ${beforeOpening}`);
+}
+scope.state.localNameIsChosen = true;
+renderPairing();
+const chosen = el("pairing-note").serialize();
+if (chosen.includes("節點從這台機器讀來的")) {
+  failures.push("a chosen name is still described as one read off the machine");
+}
+if (!chosen.includes("這個名稱是你指定的")) {
+  failures.push(`the warning does not say the name was chosen: ${chosen}`);
+}
+scope.state.localNameIsChosen = false;
+
+// An unknown name gets no claim about where it came from. A node that answers
+// the pairing endpoint without a name is one older than this app, which the
+// separate-launch workflow makes ordinary — and "（未知）… read from this
+// machine" states confidently where a string it does not have came from.
+scope.state.localName = "";
+// Back to a closed window: the previous step opened one, and the open branch
+// leads with 時間到會自動停止 of its own, which would satisfy the assertion
+// below no matter what the closed branch says.
+state.pairing = {
+  availability: "on",
+  state: { open: false, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+renderPairing();
+const nameless = el("pairing-note").serialize();
+if (!nameless.includes("（未知）")) {
+  failures.push(`the warning does not say the name is unknown: ${nameless}`);
+}
+if (nameless.includes("讀來的") || nameless.includes("你指定的")) {
+  failures.push(`the warning claims a provenance for a name it does not have: ${nameless}`);
+}
+
+// And a reader deciding whether to open still learns that it stops by itself.
+if (!nameless.includes("時間到會自動停止")) {
+  failures.push(`the closed-window note no longer says the window expires: ${nameless}`);
+}
+
 // 4. An open window on a machine with nothing to announce must say so. This is
 //    the one failure an owner cannot see from the other machine: the panel says
 //    open, and the other machine waits for a candidate that never arrives.

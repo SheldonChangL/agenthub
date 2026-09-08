@@ -38,6 +38,8 @@ const state = {
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
   localNodeId: "",
+  localName: "",
+  localNameIsChosen: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -352,6 +354,45 @@ function renderPairing() {
   renderCandidates();
 }
 
+// broadcastWarning says what actually goes on the wire, with the name spelled
+// out.
+//
+// "the node's name" is a category, and a person cannot judge a category. The
+// name is this machine's hostname, which is often a person's name and an
+// employer's domain — and on macOS with no HostName set it is whatever DHCP and
+// DNS call the address, which may be a previous occupant's. Nobody discovers
+// that from an abstract warning; they discover it by reading their own name off
+// a stranger's screen.
+function broadcastWarning(lead, tail = "") {
+  const known = Boolean(state.localName);
+  const name = known ? state.localName : "（未知）";
+  // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
+  // the wrong source is the reason this reads the way it does. And not "read
+  // from this machine" unconditionally — follow the instruction below and that
+  // sentence becomes false, which is the same defect one level down.
+  //
+  // Nothing at all when the name is unknown. A node that answers the pairing
+  // endpoint without a name is one older than this app — ordinary, since the
+  // two are launched separately — and stating where an unknown string came
+  // from is a confident claim about something not in hand.
+  let origin = "";
+  if (known) {
+    origin = state.localNameIsChosen
+      ? "這個名稱是你指定的；"
+      : "這個名稱是節點從這台機器讀來的；";
+  }
+  // The space before the name is right for a Latin one and wrong before a
+  // fullwidth paren, which carries its own. Dropped in the one case that has
+  // one.
+  const before = known ? "並看到它自稱 " : "並看到它自稱";
+  return [
+    element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，" + before),
+    element("span", "claimed", name),
+    element("span", "",
+      `，以及平台與指紋（不含公鑰）。${tail}${origin}要換掉就用 -display-name 重新啟動節點。`),
+  ];
+}
+
 function renderPairingWindow() {
   const headline = el("pairing-headline");
   const detail = el("pairing-detail");
@@ -414,8 +455,7 @@ function renderPairingWindow() {
     // reached zero. Saying so beats counting "剩 0:00" until the next read.
     headline.textContent = left === 0 ? "配對視窗已到期，正在向節點確認…" : "配對視窗開啟中";
     detail.append(announceLine(announcing));
-    note.textContent = "時間到會自動停止。在這段時間內，同網段的人都能看到這台機器在跑 AgentHub，" +
-      "以及這個節點的名稱、平台與指紋。";
+    note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
   } else if (!canAnnounce) {
     // Not "opening it would achieve nothing" — the node will not open it. Two
     // different sentences, and the earlier one sat directly above a note
@@ -427,8 +467,7 @@ function renderPairingWindow() {
     note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
   } else {
     headline.textContent = "配對視窗未開啟。";
-    note.textContent = "開啟後，同網段的人都會知道這台機器在跑 AgentHub，並看到這個節點的名稱、平台與指紋" +
-      "（不含公鑰）。這是為了配對而明確接受的取捨，時間到會自動停止。";
+    note.replaceChildren(...broadcastWarning("開啟後，", "這是為了配對而明確接受的取捨，時間到會自動停止。"));
   }
 }
 
@@ -1159,6 +1198,13 @@ async function loadPairing() {
   }
   pairingApplied = sequence;
   state.pairing = result;
+  // Only on a read that reached the node. An unreachable node answers with no
+  // name, and blanking the warning to "（未知）" because one poll failed would
+  // drop the one string the warning exists to show.
+  if (result.state?.displayName) {
+    state.localName = result.state.displayName;
+    state.localNameIsChosen = Boolean(result.state.nameIsChosen);
+  }
   // Stamped when the answer is applied, from the monotonic clock the countdown
   // is subtracted against.
   state.pairingReadAt = performance.now();

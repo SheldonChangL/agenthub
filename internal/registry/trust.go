@@ -324,7 +324,7 @@ func validateTrustedNode(node TrustedNode) error {
 	if node.PublicKey == "" || node.Fingerprint == "" {
 		return fmt.Errorf("%w: node %q has no key material", ErrInvalidSession, node.NodeID)
 	}
-	if node.DisplayName == "" || len(node.DisplayName) > 128 {
+	if node.DisplayName == "" || len(node.DisplayName) > MaxDisplayName {
 		return fmt.Errorf("%w: node %q has no usable display name", ErrInvalidSession, node.NodeID)
 	}
 	return nil

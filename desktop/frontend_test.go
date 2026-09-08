@@ -213,6 +213,12 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		// The only thing between a hostile message body and someone acting on
 		// it. Styled like body text, it is read as body text.
 		"the data-not-instruction warning": "\n.modal-card .warning {",
+		// The name this node broadcasts, set apart from the prose around it.
+		// Scoped to the inbox, as it was, the pairing note's span rendered
+		// identically to the sentence it sat in — the class was there and did
+		// nothing, and a test asserting only the class was green.
+		"a string somebody chose, inside prose": "\n.claimed {",
+		"that string against the muted note":    "\n#pairing-note .claimed {",
 	} {
 		if !strings.Contains(css, selector) {
 			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
