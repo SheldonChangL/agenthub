@@ -234,7 +234,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, and there is no `ah` subcommand for it yet |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
-| `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node |
+| `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |

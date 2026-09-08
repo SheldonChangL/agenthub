@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -585,4 +587,190 @@ func TestRunPairingRefusesADurationItCannotSend(t *testing.T) {
 			}
 		})
 	}
+}
+
+// `ah peers` answers "who can I send to, and what did they publish".
+//
+// It exists because that answer had no command. A remote session never appears
+// in `ah list`, which is owner-local; it appears only in the presence endpoint,
+// addressed as <node-id>/<session-id>. Without this the only way to find the id
+// was to read that endpoint with curl — and `ah send` to a bare session id
+// answers "session not found", which is true and unhelpful. It cost time in the
+// two-host run before it existed.
+func TestRunPeersShowsTheAddressToSendTo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/peers" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"peers":[
+			{"nodeId":"node_aaaa","displayName":"the other desk","online":true,
+			 "receivedAt":"2026-09-08T04:00:00Z",
+			 "sessions":[{"id":"node_aaaa/codex:abc","provider":"codex","status":"inactive"}]}
+		]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run(context.Background(), []string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+	}
+	out := stdout.String()
+	// The whole point: the qualified address, not the bare session id.
+	if !strings.Contains(out, "node_aaaa/codex:abc") {
+		t.Errorf("the address to send to is missing: %q", out)
+	}
+	// The row as a whole, not substrings that another column already satisfies:
+	// asserting "codex" was met by the SEND TO id, so blanking PROVIDER passed,
+	// and STATUS was never asserted at all.
+	fields := strings.Fields(out[strings.Index(out, "node_aaaa/codex:abc"):])
+	want := []string{"node_aaaa/codex:abc", "codex", "inactive", "node_aaaa"}
+	for i, field := range want {
+		if i >= len(fields) || fields[i] != field {
+			t.Errorf("column %d = %q, want %q; whole row: %q",
+				i, func() string {
+					if i < len(fields) {
+						return fields[i]
+					}
+					return "(missing)"
+				}(), field, out)
+		}
+	}
+	// And the display name is present as a quoted label rather than an
+	// identifier, because it is not one.
+	if !strings.Contains(out, `"the other desk"`) {
+		t.Errorf("the display name is not shown as a quoted label: %q", out)
+	}
+}
+
+// The three states a peer can be in are different facts, and an owner waiting
+// for a machine to appear needs to know which one they are looking at. An empty
+// row for all three would say the same thing about a peer that has published
+// nothing, one this node refused, and one never heard from.
+func TestRunPeersDistinguishesSilenceFromRefusalAndFromNeverHeard(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		peer      string
+		wantInOut string
+		notInOut  string
+	}{
+		"published nothing": {
+			`{"nodeId":"node_a","displayName":"quiet","online":true,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[]}`,
+			"nothing published", "refused",
+		},
+		"this node refused what it sent": {
+			`{"nodeId":"node_b","displayName":"refused one","online":true,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[],"sessionsWithheld":true}`,
+			"refused", "nothing published",
+		},
+		"never heard from": {
+			`{"nodeId":"node_c","displayName":"silent","online":false,"sessions":[]}`,
+			"never heard from", "offline since",
+		},
+		// The fourth state, and the one every sleeping machine is in. The node
+		// stops serving what an expired snapshot held, so the empty list is
+		// this node withholding stale state — saying the peer published nothing
+		// is a claim about the peer that nothing supports. It may have
+		// published five sessions two minutes ago.
+		"offline with a lapsed snapshot": {
+			`{"nodeId":"node_d","displayName":"asleep","online":false,
+			  "receivedAt":"2026-09-08T04:00:00Z","sessions":[]}`,
+			"offline since", "nothing published",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"peers":[` + testCase.peer + `]}`))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if exit := Run(context.Background(),
+				[]string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+				t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, testCase.wantInOut) {
+				t.Errorf("output does not say %q: %q", testCase.wantInOut, out)
+			}
+			if strings.Contains(out, testCase.notInOut) {
+				t.Errorf("output says %q, which is a different fact: %q", testCase.notInOut, out)
+			}
+		})
+	}
+}
+
+// With nothing paired, the answer is what to do next rather than an empty table.
+func TestRunPeersSaysWhatToDoWhenNothingIsPaired(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"peers":[]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if exit := Run(context.Background(), []string{"--url", server.URL, "peers"}, &stdout, &stderr); exit != 0 {
+		t.Fatalf("exit = %d, stderr = %s", exit, stderr.String())
+	}
+	for _, want := range []string{"ah pair", "ah candidates"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("the empty answer does not point at %q: %q", want, stdout.String())
+		}
+	}
+}
+
+// Every command the switch implements has to appear in the usage summary.
+//
+// `peers` did not: it was added to the detail lines below the summary but not to
+// the enumeration a reader scans first, and nothing noticed. The summary is
+// three separate Fprintln calls, so an edit that looks like it covers them can
+// miss one.
+func TestUsageListsEveryCommandTheSwitchImplements(t *testing.T) {
+	source, err := os.ReadFile("cli.go")
+	if err != nil {
+		t.Fatalf("read cli.go: %v", err)
+	}
+	body := string(source)
+	start := strings.Index(body, "switch args[0] {")
+	if start < 0 {
+		t.Fatal("the command switch is not where this test expects it")
+	}
+	end := strings.Index(body[start:], "\n\tdefault:")
+	if end < 0 {
+		t.Fatal("could not find the end of the command switch")
+	}
+
+	// No arguments prints the usage, to stderr.
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	usage := stdout.String() + stderr.String()
+
+	// The enumeration only, not the detail lines below it. Checking the whole
+	// output let a command satisfy this from its own detail line: removing
+	// `peers` from the summary passed, because "ah peers   what paired nodes
+	// have published…" was still there.
+	from := strings.Index(usage, "commands:")
+	if from < 0 {
+		t.Fatalf("this test is not reading the usage output: %q", usage)
+	}
+	summary := usage[from:]
+	if end := strings.Index(summary, "\n  ah "); end > 0 {
+		summary = summary[:end]
+	}
+	if strings.Contains(summary, "  ah ") {
+		t.Fatalf("the summary was not separated from the detail lines: %q", summary)
+	}
+
+	implemented := regexp.MustCompile(`\n\tcase "([a-z-]+)"`).FindAllStringSubmatch(body[start:start+end], -1)
+	if len(implemented) == 0 {
+		t.Fatal("found no commands in the switch; this test would pass vacuously")
+	}
+	for _, match := range implemented {
+		name := match[1]
+		if !strings.Contains(summary, name) {
+			t.Errorf("`ah %s` is implemented but absent from the commands summary: %q", name, summary)
+		}
+	}
+	t.Logf("checked %d commands", len(implemented))
 }
