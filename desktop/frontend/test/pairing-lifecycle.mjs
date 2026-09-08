@@ -58,9 +58,17 @@ const noop = async () => ({});
 // The inbox bindings, recorded so the destructive button can be followed.
 const inboxReads = [];
 const clearCalls = [];
+// Answers after a delay the test controls, so a slow read really can land after
+// a fast one. Without that the race the guard exists for never happens and
+// removing the guard passes.
+const inboxDelays = new Map();
 const InboxStub = async (sessionId) => {
   inboxReads.push(sessionId);
-  return { sessionId, messages: [], held: 0, capacity: 500, full: false, showing: 0, more: false };
+  const delay = inboxDelays.get(sessionId) ?? 0;
+  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  return {
+    sessionId, messages: [], held: 0, capacity: 500, full: false, showing: 0, more: false,
+  };
 };
 const ClearInboxStub = async (sessionId) => { clearCalls.push(sessionId); };
 
@@ -241,15 +249,28 @@ if (clearCalls.length !== 1 || clearCalls[0] !== "claude:shown") {
 
 // 9. A slow read landing after a newer one must not repaint the dialog, because
 //    the clear button aims at whatever the dialog says it is showing.
+inboxDelays.set("claude:slow", 60);
 const slowInbox = scope.openInbox("claude:slow");
 const fastInbox = scope.openInbox("claude:fast");
 await Promise.all([slowInbox, fastInbox]);
 await settle();
+inboxDelays.clear();
 if (scope.state.inboxSession !== "claude:fast") {
   failures.push(`a stale read left the dialog aimed at ${scope.state.inboxSession}`);
 }
 if (!el("inbox-meta").serialize().includes("claude:fast")) {
   failures.push(`the dialog shows ${el("inbox-meta").serialize()} while clear targets claude:fast`);
+}
+if (el("inbox-meta").serialize().includes("claude:slow")) {
+  failures.push("the slow read repainted the dialog after the fast one landed");
+}
+// And the button follows the dialog, not the last read to finish. This is the
+// irreversible one.
+clearCalls.length = 0;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls[0] !== "claude:fast") {
+  failures.push(`clear aimed at ${clearCalls[0]}, not the session the dialog is showing`);
 }
 
 // 10. Closing forgets which session it was, so a later clear cannot fire at it.

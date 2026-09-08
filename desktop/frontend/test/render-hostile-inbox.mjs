@@ -104,6 +104,15 @@ if (!rendered.includes("自稱")) {
 if (!rendered.includes('class="claimed">codex:')) {
   failures.push("the session id is not marked as the sender's own label");
 }
+// The proven half must contain only the node id — not the whole address. A
+// single span holding both still matches a "starts with node_evil" check.
+const provenHalf = /<span class="fingerprint">([^<]*)<\/span>/.exec(rendered);
+if (!provenHalf) {
+  failures.push("no proven-half span was rendered");
+} else if (provenHalf[1] !== "node_evil") {
+  failures.push(`the proven half is ${JSON.stringify(provenHalf[1])}, want just the node id — ` +
+    "a span holding the whole address presents a chosen label as verified");
+}
 // A locally queued message has no node id at all, and must not render a bare
 // session id that reads like a peer's.
 renderInbox({
@@ -113,6 +122,17 @@ renderInbox({
 const localRow = el("inbox-body").serialize();
 if (!localRow.includes("本機")) {
   failures.push("a locally queued message was not marked as local");
+}
+
+// 1b. A read in flight is not an empty inbox. They rendered identically, for up
+//     to the client's fifteen-second timeout.
+renderInbox({ sessionId: "claude:mine", loading: true, messages: [] });
+const loading = el("inbox-body").serialize();
+if (loading.includes("還沒有任何訊息")) {
+  failures.push("a read in flight was rendered as an empty inbox");
+}
+if (!loading.includes("讀取")) {
+  failures.push("a read in flight did not say it was loading");
 }
 
 // 2. A failed read is not an empty inbox.
@@ -148,28 +168,27 @@ if (empty.includes("讀不到")) {
 // call nothing, or call with the wrong id, and every assertion above would
 // still pass.
 scope.state.selected = new Set();
-renderRows([{
-  id: "claude:the-one-clicked",
-  provider: "claude",
-  status: "idle",
-  management: "unmanaged",
-  audience: { mode: "none" },
-  cwd: "/tmp",
-  lastSeenAt: new Date().toISOString(),
-}]);
+// Two rows, and the second is clicked. With one there is no wrong answer to
+// give: a button hard-wired to rows[0] passes.
+const row = (id) => ({
+  id, provider: "claude", status: "idle", management: "unmanaged",
+  audience: { mode: "none" }, cwd: "/tmp", lastSeenAt: new Date().toISOString(),
+});
+renderRows([row("claude:not-this-one"), row("claude:the-one-clicked")]);
 // Walked rather than indexed: the shim keeps a document fragment as a single
 // child rather than flattening it, so the rows sit one level deeper than they
 // would in a browser.
-function findButton(node) {
-  if (!node || typeof node !== "object") return null;
-  if (node.tagName === "button") return node;
-  for (const child of node.children ?? []) {
-    const found = findButton(child);
-    if (found) return found;
-  }
-  return null;
+function findButtons(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (node.tagName === "button") found.push(node);
+  for (const child of node.children ?? []) findButtons(child, found);
+  return found;
 }
-const button = findButton(document.getElementById("rows"));
+const buttons = findButtons(document.getElementById("rows"));
+if (buttons.length !== 2) {
+  failures.push(`rendered ${buttons.length} inbox buttons for two rows, want 2`);
+}
+const button = buttons[1];
 if (!button) {
   failures.push("no inbox button was rendered on a session row");
 } else if (typeof button.onclick !== "function") {
