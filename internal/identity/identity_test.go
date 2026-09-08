@@ -373,6 +373,28 @@ func TestPassingAnEmptyNameReleasesAPinnedOne(t *testing.T) {
 		t.Errorf("node id changed from %q to %q", kept.ID, released.ID)
 	}
 
+	// A value of nothing but spaces releases too, because the trim runs first.
+	// Documented in the flag help because the neighbouring case does not: a
+	// zero-width space is not unicode.IsSpace, so it survives the trim and is
+	// refused by name. Two outcomes for two things that look identical.
+	for _, blank := range []string{"   ", "\t\n", "\u00a0", "\u3000"} {
+		if _, err := LoadOrCreate(ctx, store, "pinned again", true); err != nil {
+			t.Fatal(err)
+		}
+		got, err := LoadOrCreate(ctx, store, blank, true)
+		if err != nil {
+			t.Errorf("LoadOrCreate(%q) error = %v", blank, err)
+			continue
+		}
+		if got.NameIsChosen || got.DisplayName != "sheldon.chang mac" {
+			t.Errorf("LoadOrCreate(%q) left %q (chosen=%v); a blank value has to release",
+				blank, got.DisplayName, got.NameIsChosen)
+		}
+	}
+	if _, err := LoadOrCreate(ctx, store, "\u200b", true); err == nil {
+		t.Error("a zero-width space was treated as a release rather than refused by name")
+	}
+
 	// And it follows the machine from then on.
 	withMachineName(t, "a different name")
 	followed, err := LoadOrCreate(ctx, store, "", false)
