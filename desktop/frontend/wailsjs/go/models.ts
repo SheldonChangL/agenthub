@@ -1,10 +1,49 @@
 export namespace main {
 	
+	export class AnnounceStatus {
+	    announceableAddresses: number;
+	    // Go type: time
+	    lastAttemptAt: any;
+	    // Go type: time
+	    lastAnnouncedAt: any;
+	    lastError?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AnnounceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.announceableAddresses = source["announceableAddresses"];
+	        this.lastAttemptAt = this.convertValues(source["lastAttemptAt"], null);
+	        this.lastAnnouncedAt = this.convertValues(source["lastAnnouncedAt"], null);
+	        this.lastError = source["lastError"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Audience {
 	    mode: string;
 	    nodes?: string[];
 	    exportCwd: boolean;
 	    acceptMessages: boolean;
+	    allowOutbound: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Audience(source);
@@ -16,7 +55,56 @@ export namespace main {
 	        this.nodes = source["nodes"];
 	        this.exportCwd = source["exportCwd"];
 	        this.acceptMessages = source["acceptMessages"];
+	        this.allowOutbound = source["allowOutbound"];
 	    }
+	}
+	export class Candidate {
+	    nodeId: string;
+	    address: string;
+	    displayName?: string;
+	    platform?: string;
+	    fingerprint: string;
+	    // Go type: time
+	    firstSeen: any;
+	    // Go type: time
+	    lastSeen: any;
+	    duplicate?: boolean;
+	    contested?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Candidate(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.nodeId = source["nodeId"];
+	        this.address = source["address"];
+	        this.displayName = source["displayName"];
+	        this.platform = source["platform"];
+	        this.fingerprint = source["fingerprint"];
+	        this.firstSeen = this.convertValues(source["firstSeen"], null);
+	        this.lastSeen = this.convertValues(source["lastSeen"], null);
+	        this.duplicate = source["duplicate"];
+	        this.contested = source["contested"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class NodeIdentity {
 	    id: string;
@@ -69,6 +157,7 @@ export namespace main {
 	    // Go type: time
 	    expiresAt: any;
 	    sessions: Session[];
+	    sessionsWithheld?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Peer(source);
@@ -83,6 +172,7 @@ export namespace main {
 	        this.receivedAt = this.convertValues(source["receivedAt"], null);
 	        this.expiresAt = this.convertValues(source["expiresAt"], null);
 	        this.sessions = this.convertValues(source["sessions"], Session);
+	        this.sessionsWithheld = source["sessionsWithheld"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -249,6 +339,89 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class PairingState {
+	    open: boolean;
+	    // Go type: time
+	    openedAt: any;
+	    // Go type: time
+	    expiresAt: any;
+	    remainingSeconds: number;
+	    announcing: AnnounceStatus;
+	
+	    static createFrom(source: any = {}) {
+	        return new PairingState(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.open = source["open"];
+	        this.openedAt = this.convertValues(source["openedAt"], null);
+	        this.expiresAt = this.convertValues(source["expiresAt"], null);
+	        this.remainingSeconds = source["remainingSeconds"];
+	        this.announcing = this.convertValues(source["announcing"], AnnounceStatus);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Pairing {
+	    state: PairingState;
+	    candidates: Candidate[];
+	    full: boolean;
+	    notice: string;
+	    availability: string;
+	    error?: string;
+	    candidatesError?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Pairing(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = this.convertValues(source["state"], PairingState);
+	        this.candidates = this.convertValues(source["candidates"], Candidate);
+	        this.full = source["full"];
+	        this.notice = source["notice"];
+	        this.availability = source["availability"];
+	        this.error = source["error"];
+	        this.candidatesError = source["candidatesError"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	
 	
 	

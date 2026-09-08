@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 // A minimal DOM good enough for the table renderer, plus a serializer.
 //
 // `textContent` and `append` escape on serialization, while `innerHTML` keeps
@@ -50,8 +54,28 @@ class Node {
     return this._raw !== undefined ? new Node("input") : null;
   }
 
+  // Enough of a classList for the renderers: a set behind add, remove,
+  // contains and toggle. Not a browser's — it does not reject a name with a
+  // space in it, and nothing here needs `replace` or iteration — but toggle
+  // follows the specified rule, so a falsy second argument removes rather than
+  // adds. Getting that backwards would let a test pass over code that leaves a
+  // panel visible when it should be hidden.
   get classList() {
-    return { toggle: (name, on) => { this.className = on ? name : ""; } };
+    const classes = () => new Set(String(this.className || "").split(/\s+/).filter(Boolean));
+    const write = (set) => { this.className = [...set].join(" "); };
+    return {
+      add: (name) => { const set = classes(); set.add(name); write(set); },
+      remove: (name) => { const set = classes(); set.delete(name); write(set); },
+      contains: (name) => classes().has(name),
+      toggle: (name, on) => {
+        const set = classes();
+        const wanted = on === undefined ? !set.has(name) : Boolean(on);
+        if (wanted) set.add(name);
+        else set.delete(name);
+        write(set);
+        return wanted;
+      },
+    };
   }
 
   serialize() {
@@ -78,11 +102,45 @@ class Fragment extends Node {
 
 const byId = new Map();
 
+// The classes each id actually carries in index.html.
+//
+// Without this every fabricated element starts with className "", so the
+// `hidden` class the real markup uses never exists — and an assertion that a
+// panel was un-hidden passes whether or not anything un-hid it. Measured:
+// deleting the classList.remove("hidden") that opens the pairing dialog left
+// the whole suite green, so a click could have opened nothing.
+const initialClasses = (() => {
+  const classes = new Map();
+  try {
+    const markup = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+    const tag = /<[a-zA-Z][^>]*>/g;
+    for (const [element] of markup.matchAll(tag)) {
+      const id = /\sid="([^"]+)"/.exec(element);
+      if (!id) continue;
+      const className = /\sclass="([^"]*)"/.exec(element);
+      classes.set(id[1], className ? className[1] : "");
+    }
+  } catch {
+    // A shim that cannot find the markup is still usable; it is just back to
+    // fabricating bare elements, which is what it did before.
+  }
+  return classes;
+})();
+
 export const document = {
   createElement: (tag) => new Node(tag),
   createDocumentFragment: () => new Fragment(),
   getElementById: (id) => {
-    if (!byId.has(id)) byId.set(id, new Node("div"));
+    if (!byId.has(id)) {
+      const node = new Node("div");
+      node.className = initialClasses.get(id) ?? "";
+      byId.set(id, node);
+    }
     return byId.get(id);
   },
+  // The module's wiring queries for the view switch and the audience radios.
+  // Empty is right for a test that drives the renderers directly: there is no
+  // markup here for those to be found in.
+  querySelectorAll: () => [],
 };
