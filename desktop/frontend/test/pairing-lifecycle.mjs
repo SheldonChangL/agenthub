@@ -62,10 +62,12 @@ const clearCalls = [];
 // a fast one. Without that the race the guard exists for never happens and
 // removing the guard passes.
 const inboxDelays = new Map();
+const inboxRejects = new Set();
 const InboxStub = async (sessionId) => {
   inboxReads.push(sessionId);
   const delay = inboxDelays.get(sessionId) ?? 0;
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  if (inboxRejects.has(sessionId)) throw new Error("contact node: connection refused");
   return {
     sessionId, messages: [], held: 0, capacity: 500, full: false, showing: 0, more: false,
   };
@@ -226,6 +228,8 @@ if (typeof offClick !== "function") {
   }
 }
 
+const closeInboxHandler = () => el("inbox-close").onclick();
+
 // 8. The clear button empties the session the dialog is showing, and only
 //    after the owner says yes.
 //
@@ -285,6 +289,47 @@ if (clearCalls.length !== 0) {
 await pending;
 await settle();
 inboxDelays.clear();
+
+// 9c. A binding that rejects shows its reason in the dialog. It used to reach a
+//     banner the modal covers, so the owner saw an open dialog saying nothing
+//     while the error sat behind it.
+inboxRejects.add("claude:broken");
+await scope.openInbox("claude:broken");
+await settle();
+inboxRejects.clear();
+const brokenBody = el("inbox-body").serialize();
+if (!brokenBody.includes("connection refused")) {
+  failures.push(`a rejected read did not show its reason in the dialog: ${brokenBody}`);
+}
+if (brokenBody.includes("還沒有任何訊息")) {
+  failures.push("a rejected read was rendered as an empty inbox");
+}
+if (el("inbox-modal").classList.contains("hidden")) {
+  failures.push("a rejected read closed the dialog");
+}
+// And clear stays available, deliberately: a read that fails because the
+// inbox is too large to decode is exactly when emptying it is the way out, and
+// the truncation message says so. It must still aim at the session that was
+// asked for.
+clearCalls.length = 0;
+await el("inbox-clear").onclick();
+await settle();
+if (clearCalls[0] !== "claude:broken") {
+  failures.push(`after a failed read clear aimed at ${clearCalls[0]}, want claude:broken`);
+}
+
+// 9d. Closing retires a read in flight, so its answer cannot repaint a hidden
+//     dialog and re-arm the button. Today that is safe only because the button
+//     is unclickable while hidden — a guard leaning on a CSS rule.
+inboxDelays.set("claude:abandoned", 60);
+const abandoned = scope.openInbox("claude:abandoned");
+closeInboxHandler();
+await abandoned;
+await settle();
+inboxDelays.clear();
+if (scope.state.inboxSession !== null) {
+  failures.push(`a read that landed after closing re-armed the button at ${scope.state.inboxSession}`);
+}
 
 // 10. Closing forgets which session it was, so a later clear cannot fire at it.
 el("inbox-close").onclick();

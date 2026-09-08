@@ -311,8 +311,13 @@ func (a *App) Inbox(sessionID string) InboxView {
 	view.Full = inbox.Full
 	// Said rather than left to be inferred from a short list: an inbox holding
 	// five hundred, shown ten at a time, must not read as an inbox holding ten.
+	//
+	// The cursor alone does not mean more: the node issues one whenever a page
+	// comes back full, so an inbox holding exactly ten answers with one. Taking
+	// it at face value put "there is more, clear some to see it" beside the one
+	// irreversible button in the dialog, about messages that do not exist.
 	view.Showing = len(inbox.Messages)
-	view.More = inbox.Next != ""
+	view.More = inbox.Next != "" && inbox.Held > len(inbox.Messages)
 	return view
 }
 
@@ -320,17 +325,32 @@ func (a *App) Inbox(sessionID string) InboxView {
 // not larger.
 const inboxPageSize = 10
 
+// ClearedInbox is what emptying did, for the dialog to show. Not a banner: the
+// modal is fixed over the whole window, so a banner behind it is a message
+// nobody reads — the same reason read errors are shown in the dialog.
+type ClearedInbox struct {
+	Removed int    `json:"removed"`
+	Error   string `json:"error,omitempty"`
+}
+
 // ClearInbox empties one session's inbox.
 //
 // Destructive and not undoable, so the frontend asks first. It exists because
 // an inbox that only grows is one an owner cannot keep usable, and because a
 // full one refuses new messages.
-func (a *App) ClearInbox(sessionID string) (int, error) {
+func (a *App) ClearInbox(sessionID string) ClearedInbox {
 	if strings.TrimSpace(sessionID) == "" {
-		return 0, fmt.Errorf("select a session first")
+		return ClearedInbox{Error: "select a session first"}
 	}
 	activeClient, _ := a.current()
-	return activeClient.clearInbox(a.ctx, sessionID)
+	removed, err := activeClient.clearInbox(a.ctx, sessionID)
+	if err != nil {
+		// Returned rather than thrown, so the dialog can say the destructive
+		// action did not happen. Thrown, it reached a banner the dialog covers
+		// while the list below sat unchanged.
+		return ClearedInbox{Error: err.Error()}
+	}
+	return ClearedInbox{Removed: removed}
 }
 
 // Discover triggers a provider rescan on the node.

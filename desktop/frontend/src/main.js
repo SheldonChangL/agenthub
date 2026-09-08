@@ -37,6 +37,7 @@ const state = {
   // inboxSession is whose inbox the modal is showing, so Clear knows what it
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
+  localNodeId: "",
 };
 
 const el = (id) => document.getElementById(id);
@@ -251,6 +252,10 @@ async function load() {
   state.nodes = overview.nodes || [];
   state.counts = overview.counts || {};
   state.localFingerprint = overview.node?.fingerprint || "";
+  // Needed to tell this machine's own messages from a peer's. Without it a
+  // qualified sender naming this node reads as a peer, and a bare one reads as
+  // local — which is the dangerous direction.
+  state.localNodeId = overview.node?.id || "";
   if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
     state.selectedNode = null;
   }
@@ -864,6 +869,14 @@ function renderInbox(view) {
     return;
   }
 
+  if (view.cleared) {
+    // What the destructive action did, where the person who pressed it is
+    // looking. The count matters because messages can arrive between reading
+    // the list and confirming, and those go with the rest.
+    body.append(view.cleared.error
+      ? element("div", "stale", `清空失敗，收件匣沒有變動：${view.cleared.error}`)
+      : element("div", "muted", `已清空，移除 ${view.cleared.removed} 則。`));
+  }
   meta.textContent = view.more
     ? `${view.sessionId} · 顯示最舊的 ${view.showing} 則，共 ${view.held} / ${view.capacity} 則`
     : `${view.sessionId} · ${view.held} / ${view.capacity} 則`;
@@ -911,22 +924,74 @@ let inboxApplied = 0;
 // the id given the same monospace treatment as a fingerprint.
 function senderLine(from) {
   const line = element("div", "sender");
-  const slash = String(from ?? "").indexOf("/");
-  if (slash < 0) {
-    // No node id: a message queued on this machine for one of its own
-    // sessions. Saying so beats leaving a bare id that looks like a peer's.
-    line.append(element("span", "muted", "本機 "));
-    line.append(element("span", "mono", from || "—"));
+  const value = String(from ?? "");
+  const slash = value.indexOf("/");
+
+  if (slash >= 0) {
+    const nodeId = value.slice(0, slash);
+    const session = value.slice(slash + 1);
+    if (nodeId === state.localNodeId && state.localNodeId !== "") {
+      // This machine's own queue. The owner's API qualifies with the local node
+      // id, so this is what an ordinary local message looks like — not the
+      // bare form below.
+      line.append(element("span", "muted", "本機 "));
+      line.append(element("span", "claimed", session));
+      return line;
+    }
+    line.append(element("span", "fingerprint", nodeId));
+    line.append(element("span", "muted", " 自稱 "));
+    // The half they chose, marked as such.
+    line.append(element("span", "claimed", session));
     return line;
   }
-  line.append(element("span", "fingerprint", from.slice(0, slash)));
-  line.append(element("span", "muted", " 自稱 "));
-  // The half they chose, marked as such.
-  line.append(element("span", "claimed", from.slice(slash + 1)));
+
+  // No separator. This is where getting it backwards is dangerous, so it
+  // follows describeSender in internal/mcpserver/inbox.go rather than guessing:
+  // a peer may omit its sending session, and the node then stores the bare
+  // proven peer node id. Reading that as local would put a hostile message
+  // behind the most trustworthy label the envelope can carry.
+  if (value === "") {
+    // qualifiedSender never yields empty for a peer — it falls back to the
+    // proven node id — so empty means the owner's API queued this unnamed.
+    line.append(element("span", "muted", "本機"));
+    return line;
+  }
+  if (value === state.localNodeId) {
+    line.append(element("span", "muted", "本機"));
+    return line;
+  }
+  if (state.nodes.some((node) => node.nodeId === value)) {
+    // A paired node's own id settles a bare value whatever shape it has.
+    line.append(element("span", "fingerprint", value));
+    line.append(element("span", "muted", " 未指明 session"));
+    return line;
+  }
+  if (looksLikeNodeId(value)) {
+    line.append(element("span", "fingerprint", value));
+    line.append(element("span", "muted", " 未指明 session"));
+    return line;
+  }
+  // Session-shaped and not paired: a local message from before senders were
+  // self-describing, or a peer paired under an older rule and since revoked.
+  // Indistinguishable, so claim no origin rather than the wrong one.
+  line.append(element("span", "muted", "來源不明 "));
+  line.append(element("span", "claimed", value));
   return line;
 }
 
-async function openInbox(sessionId) {
+// looksLikeNodeId is model.ValidateNodeID's shape test: 16 to 128 printable
+// ASCII characters, no separator, and not readable as a session id.
+function looksLikeNodeId(value) {
+  if (value.length < 16 || value.length > 128) return false;
+  if (value.includes("/")) return false;
+  for (const character of value) {
+    const code = character.codePointAt(0);
+    if (code < 0x21 || code > 0x7e) return false;
+  }
+  return !/^(claude|codex):/.test(value);
+}
+
+async function openInbox(sessionId, cleared) {
   const sequence = ++inboxRequest;
   // Cleared, not pointed at the new session. inboxSession is what the clear
   // button empties, so it may only ever name the session whose messages are on
@@ -951,12 +1016,25 @@ async function openInbox(sessionId) {
     return;
   }
   inboxApplied = sequence;
-  // Now, and only now: the messages below the button are this session's.
+  // Armed only once an answer for this session has come back — never while one
+  // is in flight, which is when the dialog still shows another session's
+  // messages.
+  //
+  // Including a failed answer, deliberately: a read that fails because the
+  // inbox is too large to decode is exactly when emptying it is the way out,
+  // and the truncation message tells the owner so. What must not happen is the
+  // button aiming at a session other than the one asked for.
   state.inboxSession = view.sessionId ?? sessionId;
-  renderInbox(view);
+  renderInbox({ ...view, cleared });
 }
 
 function closeInbox() {
+  // Retire whatever is in flight. Otherwise its answer still applies on
+  // arrival, repainting a hidden card and re-arming the clear target — which
+  // is safe today only because `.hidden` makes the button unclickable, and a
+  // guard that leans on a CSS rule is not one.
+  inboxApplied = inboxRequest;
+  state.inboxSession = null;
   el("inbox-modal").classList.add("hidden");
   el("inbox-body").replaceChildren();
   el("inbox-meta").textContent = "";
@@ -1099,14 +1177,13 @@ el("inbox-clear").onclick = () => {
   // with the rest.
   if (!confirm(`清空 ${session} 的收件匣？這個動作無法復原。`)) return;
   withBusy("清空收件匣", async () => {
-    const removed = await ClearInbox(session);
-    // The count, because messages can arrive between reading the list and
-    // confirming, and those go with the rest. It is the only way the owner
-    // learns that happened.
-    banner(`已清空 ${session}，移除 ${removed} 則。`, true);
+    const cleared = await ClearInbox(session);
     // Re-read through openInbox, so the answer is sequence-guarded like every
-    // other read and lands on the session it was asked about.
-    await openInbox(session);
+    // other read and lands on the session it was asked about. The outcome is
+    // carried into the dialog rather than a banner, which the dialog covers —
+    // and a failure has to be visible there, or the owner is left with an
+    // unchanged list and no sign the action did not happen.
+    await openInbox(session, cleared);
   });
 };
 

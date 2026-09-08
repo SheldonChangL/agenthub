@@ -571,6 +571,13 @@ table.peer-sessions td.mono {
   overflow-wrap: anywhere;
 }
 
+/* Each half reorders only within itself. A session id may contain a bidi
+   override — the node bans only "/" and a length — and without this it could
+   reorder the proven node id beside it. */
+.inboxrow .sender span {
+  unicode-bidi: isolate;
+}
+
 /* The proven half and the chosen half, told apart. */
 .inboxrow .sender .fingerprint {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

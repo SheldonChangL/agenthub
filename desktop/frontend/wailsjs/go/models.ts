@@ -106,6 +106,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ClearedInbox {
+	    removed: number;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ClearedInbox(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.removed = source["removed"];
+	        this.error = source["error"];
+	    }
+	}
 	export class InboxMessage {
 	    id: string;
 	    from: string;

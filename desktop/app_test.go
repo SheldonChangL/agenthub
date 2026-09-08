@@ -548,7 +548,7 @@ func TestInboxRefusesWithoutASession(t *testing.T) {
 	if view := app.Inbox("  "); view.Error == "" {
 		t.Error("reading with no session reported no error")
 	}
-	if _, err := app.ClearInbox(""); err == nil {
+	if cleared := app.ClearInbox(""); cleared.Error == "" {
 		t.Error("clearing with no session reported success")
 	}
 	if called != 0 {
@@ -567,14 +567,14 @@ func TestClearInboxDeletesTheSessionItWasGiven(t *testing.T) {
 	defer server.Close()
 
 	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
-	removed, err := app.ClearInbox("claude:the-one-asked-for")
-	if err != nil {
-		t.Fatalf("ClearInbox: %v", err)
+	cleared := app.ClearInbox("claude:the-one-asked-for")
+	if cleared.Error != "" {
+		t.Fatalf("ClearInbox: %s", cleared.Error)
 	}
 	// The count travels, because it is the only sign that something arrived
 	// between the read and the confirm and was destroyed unseen.
-	if removed != 3 {
-		t.Errorf("removed = %d, want 3", removed)
+	if cleared.Removed != 3 {
+		t.Errorf("removed = %d, want 3", cleared.Removed)
 	}
 	if method != http.MethodDelete {
 		t.Errorf("method = %s, want DELETE; a GET would report success having emptied nothing", method)
@@ -636,5 +636,65 @@ func TestATruncatedAnswerSaysSoRatherThanFailingToDecode(t *testing.T) {
 	}
 	if !strings.Contains(view.Error, "cut off") {
 		t.Errorf("error = %q, want it to say what happened", view.Error)
+	}
+}
+
+// A clear that fails has to come back as a fact the dialog can show, not as a
+// thrown error: the modal is fixed over the whole window, so a banner behind it
+// leaves the owner with an unchanged list and no sign the action did not
+// happen.
+func TestClearInboxReportsAFailureRatherThanThrowing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": "REGISTRY_ERROR", "message": "the inbox could not be emptied",
+		}})
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	cleared := app.ClearInbox("claude:abc")
+	if cleared.Error == "" {
+		t.Fatal("a failed clear reported success")
+	}
+	if !strings.Contains(cleared.Error, "could not be emptied") {
+		t.Errorf("error = %q, want the node's own reason", cleared.Error)
+	}
+	if cleared.Removed != 0 {
+		t.Errorf("removed = %d after a failure", cleared.Removed)
+	}
+}
+
+// A cursor is not evidence of more. The node issues one whenever a page comes
+// back full, so an inbox holding exactly one page answers with one — and taking
+// it at face value put "there is more, clear some to see it" beside the
+// irreversible button, about messages that do not exist.
+func TestAFullPageIsNotTakenAsProofOfMore(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		body     string
+		wantMore bool
+	}{
+		"a full page that is the whole inbox": {
+			`{"messages":[{"id":"m1"},{"id":"m2"}],"held":2,"capacity":500,"next":"cursor"}`, false,
+		},
+		"a full page with more behind it": {
+			`{"messages":[{"id":"m1"},{"id":"m2"}],"held":500,"capacity":500,"next":"cursor"}`, true,
+		},
+		"a short page": {
+			`{"messages":[{"id":"m1"}],"held":1,"capacity":500}`, false,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer server.Close()
+
+			app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+			if got := app.Inbox("claude:abc").More; got != testCase.wantMore {
+				t.Errorf("more = %v, want %v", got, testCase.wantMore)
+			}
+		})
 	}
 }
