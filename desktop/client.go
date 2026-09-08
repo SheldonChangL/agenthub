@@ -21,6 +21,7 @@ type Audience struct {
 	ExportCWD      bool     `json:"exportCwd"`
 	AcceptMessages bool     `json:"acceptMessages"`
 	AllowOutbound  bool     `json:"allowOutbound"`
+	AutoWake       bool     `json:"autoWake"`
 }
 
 type Session struct {
