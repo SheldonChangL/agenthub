@@ -270,7 +270,7 @@ address nothing is listening on: the peer would see a candidate that looks
 right, with a matching fingerprint, and get a refused connection.
 
 A node with `-discover` joins the group on every interface that can carry it,
-re-checked every 30 seconds so an adapter plugged in after startup is picked up
+re-checked every ten seconds so an adapter plugged in after startup is picked up
 without a restart — which is how a peer whose own listener is on a direct cable
 gets heard rather than silently missed. `GET /v1/pairing` carries `announcing`
 because an open window and a machine that is actually sending packets are

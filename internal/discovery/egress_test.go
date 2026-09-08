@@ -914,3 +914,51 @@ func TestOnlyInterfacesThatCouldDeliverAreNamed(t *testing.T) {
 		}
 	}
 }
+
+// hasIPv4 decides which interfaces the startup line names, and the test that
+// checks that line used hasIPv4 to compute its own expectation — so making it
+// answer always-true or always-false left the suite green. An oracle has to be
+// built from something else.
+//
+// Here that is the standard library's own IPv4 test, net.IP.To4, over the
+// addresses read directly rather than through the function under test.
+func TestHasIPv4AgreesWithAnIndependentReading(t *testing.T) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Skipf("cannot list interfaces: %v", err)
+	}
+	var withAddress, without int
+	for i := range interfaces {
+		iface := &interfaces[i]
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		expected := false
+		for _, addr := range addrs {
+			prefix, ok := addr.(*net.IPNet)
+			if ok && prefix.IP.To4() != nil {
+				expected = true
+				break
+			}
+		}
+		if got := hasIPv4(iface); got != expected {
+			t.Errorf("hasIPv4(%s) = %v, want %v", iface.Name, got, expected)
+		}
+		if expected {
+			withAddress++
+		} else {
+			without++
+		}
+	}
+	// Both answers have to occur, or an always-true or always-false
+	// implementation would satisfy every assertion above.
+	if withAddress == 0 {
+		t.Skip("no interface here has an IPv4 address, so a true answer is never required")
+	}
+	if without == 0 {
+		t.Skip("every interface here has an IPv4 address, so a false answer is never required")
+	}
+	t.Logf("%d interfaces with an IPv4 address, %d without", withAddress, without)
+}

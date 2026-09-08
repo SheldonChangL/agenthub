@@ -145,7 +145,12 @@ func run() error {
 		// an owner cannot see from the other machine.
 		endpoint, err := pairing.PeerEndpoint(deliveryPolicy, *peerListenAddress)
 		if err != nil {
-			return fmt.Errorf("read the peer listener for announcements: %w", err)
+			// Stopping the node rather than starting one that cannot pair: the
+			// owner asked for -discover, and a peer listener an announcement
+			// cannot describe makes that request impossible to honour. The
+			// error says what is wrong with the address, not that reading it
+			// failed.
+			return fmt.Errorf("-discover needs a peer listener an announcement can describe: %w", err)
 		}
 		announcer = pairing.NewAnnouncer(pairingMode, discovery.MulticastGroupV4(),
 			node.ID, node.ID, endpoint,

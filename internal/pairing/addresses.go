@@ -45,7 +45,9 @@ func PeerEndpoint(policy func(address string) error, peerListen string) (Endpoin
 	// listener ends up on; announcing it would invite a connection to nothing.
 	if port == 0 {
 		return Endpoint{}, fmt.Errorf(
-			"the peer listener %q must name a fixed port, not 0, so an announcement can carry it", peerListen)
+			"-peer-listen %q asks the kernel to choose a port, so this node cannot say where a "+
+				"peer should connect: an announcement carries the port, and port 0 is not the "+
+				"one the listener ends up on. Give a fixed port", peerListen)
 	}
 	address, unannounceable := reachableAt(policy, host, port)
 	endpoint := Endpoint{Port: port, Unannounceable: unannounceable}

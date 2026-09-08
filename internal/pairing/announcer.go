@@ -126,8 +126,10 @@ func (a *Announcer) Status() Status {
 	// few seconds. The alternative, answering from what was true at startup, is
 	// the whole class of bug this PR has been about.
 	status.Addresses = len(a.addresses())
-	switch unannounceable := a.Unannounceable(); {
-	case unannounceable != "":
+	// A recorded send failure, with the configuration fine, is left as it is:
+	// that was one attempt, not a statement about this node, so the address
+	// count stands beside it.
+	if unannounceable := a.Unannounceable(); unannounceable != "" {
 		// The configuration wins over a recorded attempt, because it explains
 		// the state and outlasts it. Filling LastError only when it was empty
 		// left the two disagreeing the other way: a send that failed once with
@@ -137,9 +139,6 @@ func (a *Announcer) Status() Status {
 		status.LastError = unannounceable
 		// And none of the addresses can be used, so none is announceable.
 		status.Addresses = 0
-	case status.LastError != "":
-		// A recorded send failure, with the configuration fine. The count
-		// stands: that was one attempt, not a statement about this node.
 	}
 	return status
 }
