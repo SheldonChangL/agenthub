@@ -110,6 +110,10 @@ func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNod
 		DestinationNodeID: s.node.ID,
 		Body:              payload.Body,
 		CreatedAt:         time.Now().UTC(),
+		// Taken from the sender. It can lie, and only downwards is useful to
+		// it — which buys one more hop before the per-pair limit ends the
+		// exchange regardless.
+		WakeHops: payload.WakeHops,
 	})
 	switch {
 	case err == nil && stored:

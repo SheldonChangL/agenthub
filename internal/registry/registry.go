@@ -127,7 +127,8 @@ CREATE TABLE IF NOT EXISTS messages (
     recipient_id TEXT NOT NULL REFERENCES sessions(id),
     destination_node_id TEXT NOT NULL DEFAULT '',
     body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 32768),
-    created_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL,
+    wake_hops INTEGER NOT NULL DEFAULT 0 CHECK (wake_hops >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
     ON messages(recipient_id, created_at_ms ASC, id ASC);
@@ -145,6 +146,12 @@ CREATE INDEX IF NOT EXISTS idx_messages_recipient_created
 		return err
 	}
 	if err := r.addNodeNameProvenance(ctx); err != nil {
+		return err
+	}
+	if err := r.addMessageWakeHops(ctx); err != nil {
+		return err
+	}
+	if err := r.addOutboundWakeHops(ctx); err != nil {
 		return err
 	}
 	// Indexes come last: a database created by an earlier build only gains the
@@ -173,6 +180,45 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 // could route anywhere else — but writing this node's id into those rows would
 // be inventing a record that was never made. Empty reads as "not recorded",
 // which is what is true of them.
+// addMessageWakeHops brings a database created by an earlier build up to
+// recording how far an automatic exchange has travelled.
+//
+// Existing rows default to 0, which reads as "a person started this". That is
+// right for every message written before waking existed: none of them was
+// caused by one.
+func (r *Registry) addMessageWakeHops(ctx context.Context) error {
+	has, err := r.hasColumn(ctx, "messages", "wake_hops")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add messages wake hop column: %w", err)
+	}
+	return nil
+}
+
+// addOutboundWakeHops does for the send queue what addMessageWakeHops does for
+// the inbox. The queue is created by CREATE TABLE IF NOT EXISTS, which does not
+// revisit a table that already exists.
+func (r *Registry) addOutboundWakeHops(ctx context.Context) error {
+	has, err := r.hasColumn(ctx, "outbound_messages", "wake_hops")
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`ALTER TABLE outbound_messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add outbound wake hop column: %w", err)
+	}
+	return nil
+}
+
 func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
 	has, err := r.hasColumn(ctx, "messages", "destination_node_id")
 	if err != nil {
@@ -420,9 +466,9 @@ func (r *Registry) CreateMessage(ctx context.Context, message model.Message) (mo
 		message.CreatedAt = time.Now().UTC()
 	}
 	if _, err := r.db.ExecContext(ctx, `
-INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms)
-VALUES (?, ?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.DestinationNodeID,
-		message.Body, message.CreatedAt.UTC().UnixMilli()); err != nil {
+INSERT INTO messages (id, sender_id, recipient_id, destination_node_id, body, created_at_ms, wake_hops)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, message.ID, message.From, message.To, message.DestinationNodeID,
+		message.Body, message.CreatedAt.UTC().UnixMilli(), message.WakeHops); err != nil {
 		return model.Message{}, fmt.Errorf("create message: %w", err)
 	}
 	return message, nil
@@ -501,7 +547,7 @@ func (r *Registry) Inbox(ctx context.Context, recipientID string, limit int, aft
 		limit = 50
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms
+SELECT id, sender_id, recipient_id, destination_node_id, body, created_at_ms, wake_hops
 FROM messages
 WHERE recipient_id = ? AND (created_at_ms > ? OR (created_at_ms = ? AND id > ?))
 ORDER BY created_at_ms ASC, id ASC LIMIT ?`,
@@ -515,7 +561,7 @@ ORDER BY created_at_ms ASC, id ASC LIMIT ?`,
 		var message model.Message
 		var createdMS int64
 		if err := rows.Scan(&message.ID, &message.From, &message.To, &message.DestinationNodeID,
-			&message.Body, &createdMS); err != nil {
+			&message.Body, &createdMS, &message.WakeHops); err != nil {
 			return nil, fmt.Errorf("scan inbox message: %w", err)
 		}
 		message.CreatedAt = time.UnixMilli(createdMS).UTC()
