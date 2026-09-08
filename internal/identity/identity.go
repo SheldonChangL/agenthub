@@ -15,9 +15,11 @@ import (
 	"agenthub.local/agenthub/internal/registry"
 )
 
-// MaxDisplayName is what the trust store accepts for a peer's name, applied to
-// this node's own so it cannot store a name a peer would refuse.
-const MaxDisplayName = 128
+// MaxDisplayName is the store's bound, re-exported so callers naming a node do
+// not have to know where it is enforced. Not a second copy of the number: a
+// name this node accepts for itself but a peer refuses would fail on the other
+// machine, which is the hardest place to see it.
+const MaxDisplayName = registry.MaxDisplayName
 
 // LoadOrCreate returns this node's identity, creating it on first run.
 //

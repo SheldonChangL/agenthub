@@ -134,3 +134,37 @@ func TestANameTooLongForAPeerIsRefused(t *testing.T) {
 		t.Errorf("a name of exactly the maximum was refused: %v", err)
 	}
 }
+
+// A machine name over the bound is cut on a rune boundary.
+//
+// Tested directly because no machine here has a name that long, so the branch
+// is never reached by TestTheMachineNameIsNotWhateverTheNetworkCallsIt. A cut
+// through the middle of a multi-byte rune produces a name that is not valid
+// UTF-8, which the announcement would carry to every peer on the segment.
+func TestALongMachineNameIsCutOnARuneBoundary(t *testing.T) {
+	// 三 is three bytes, so 43 of them is 129: one byte over, and the cut at
+	// MaxDisplayName lands inside the last rune rather than between two.
+	long := strings.Repeat("三", 43)
+	if len(long) <= MaxDisplayName {
+		t.Fatalf("the fixture is %d bytes, which does not exceed the %d limit it exists to cross",
+			len(long), MaxDisplayName)
+	}
+	cut := truncateName(long)
+	if len(cut) > MaxDisplayName {
+		t.Errorf("truncateName() returned %d bytes, over the %d a peer accepts", len(cut), MaxDisplayName)
+	}
+	if !utf8.ValidString(cut) {
+		t.Errorf("truncateName() = %q, which is not valid UTF-8", cut)
+	}
+	if cut == "" {
+		t.Error("truncateName() emptied a name that had 42 whole runes to keep")
+	}
+	if !strings.HasPrefix(long, cut) {
+		t.Errorf("truncateName() = %q, which is not a prefix of the name it shortened", cut)
+	}
+
+	// A name already inside the bound is returned untouched, bytes and all.
+	if got := truncateName("三四五"); got != "三四五" {
+		t.Errorf("truncateName(%q) = %q; a short name must not be altered", "三四五", got)
+	}
+}
