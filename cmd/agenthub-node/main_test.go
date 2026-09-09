@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -131,16 +132,25 @@ func TestTheOwnerListenerAndTheAPIAgreeOnTheWriteDeadline(t *testing.T) {
 // pinned the Drain call, and deleting it passed the whole suite while taking
 // shutdown from 0.10s to 5.08s and exit 1.
 func TestShutdownDrainsBeforeWaiting(t *testing.T) {
+	var release sync.Once
 	drained := make(chan struct{})
+	// Released whatever happens, so a shutdown that never drains fails this
+	// test instead of hanging it: an httptest server's Close waits for its
+	// handlers, and a test that burns the whole CI timeout says less than one
+	// that fails in three seconds.
+	defer release.Do(func() { close(drained) })
+
 	held := make(chan struct{})
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	owner := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		close(held)
 		<-drained
-	})
-	owner := httptest.NewServer(handler)
-	defer owner.Close()
+	}))
 	peers := httptest.NewServer(http.NotFoundHandler())
-	defer peers.Close()
+	defer func() {
+		release.Do(func() { close(drained) })
+		owner.Close()
+		peers.Close()
+	}()
 
 	go func() { _, _ = http.Get(owner.URL) }()
 	<-held
@@ -148,9 +158,11 @@ func TestShutdownDrainsBeforeWaiting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	started := time.Now()
-	err := shutDown(ctx, drainer(func() { close(drained) }), owner.Config, peers.Config)
+	err := shutDown(ctx, drainer(func() { release.Do(func() { close(drained) }) }),
+		owner.Config, peers.Config)
 	if err != nil {
-		t.Fatalf("shutDown() error = %v; a held request outlasted the budget", err)
+		t.Fatalf("shutDown() error = %v; a held request outlasted the budget, which is "+
+			"what happens when nothing drains it first", err)
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Errorf("shutdown took %s with one held request", elapsed)
