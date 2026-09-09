@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "agenthub": {
-      "command": "/Users/sheldon.chang/Projects/others/agenthub/bin/agenthub-mcp",
-      "args": ["-as", "claude:74d8025b-60bf-4de6-86ea-95040d152fd6"]
-    }
-  }
-}
