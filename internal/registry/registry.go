@@ -169,7 +169,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	if err := r.migrateSequence(ctx); err != nil {
 		return err
 	}
-	return r.migratePresence(ctx)
+	if err := r.migratePresence(ctx); err != nil {
+		return err
+	}
+	return r.migrateWakeEvents(ctx)
 }
 
 // addMessageDestinationColumn brings a database created by an earlier build up
