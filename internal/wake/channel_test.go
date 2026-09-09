@@ -237,9 +237,17 @@ func TestTheHandoffSurvivesSubscribersComingAndGoing(t *testing.T) {
 	for range 500 {
 		subscription := driver.Subscribe("claude:target")
 		if previous != nil {
-			// The old one is still registered when the new one arrives, so
-			// this Subscribe displaced it.
-			displacements++
+			// Counted from what the driver did, not from the shape of the
+			// loop: Subscribe ends the subscription it replaces before it
+			// returns, and nothing else here has closed this one yet. The
+			// previous count incremented once per iteration whatever
+			// Subscribe did, so it read 499 against a driver with the
+			// replacement branch deleted.
+			select {
+			case <-previous.Done:
+				displacements++
+			default:
+			}
 			previous.Close()
 		}
 		select {
