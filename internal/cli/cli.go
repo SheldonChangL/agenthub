@@ -221,6 +221,18 @@ func (r runner) command(ctx context.Context, args []string) error {
 			return errors.New("usage: ah inbox <session-id>")
 		}
 		return r.inbox(ctx, args[1])
+	case "wakes":
+		// What moved an agent while nobody was looking. The refusals are in
+		// here too: an owner seeing nothing needs to know whether the node was
+		// quiet or a limit was doing its job.
+		if len(args) > 2 {
+			return errors.New("usage: ah wakes [session-id]")
+		}
+		path := "/v1/wakes"
+		if len(args) == 2 {
+			path += "?session=" + url.QueryEscape(args[1])
+		}
+		return r.wakes(ctx, path)
 	case "inbox-clear":
 		// The inbox is bounded, so it needs emptying. Deletion is explicit
 		// rather than inferred from reading: nothing tracks what has been read.
@@ -645,17 +657,91 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
-	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound, node,")
-	_, _ = fmt.Fprintln(output, "          heartbeat, pairing, candidates")
+	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound,")
+	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
 	_, _ = fmt.Fprintln(output, "                                               with the address to send to")
-	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound]")
+	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
+	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")
+}
+
+// wakes renders the trail of what has started a turn with nobody watching.
+func (r runner) wakes(ctx context.Context, path string) error {
+	body, err := r.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var decoded struct {
+		Wakes []struct {
+			MessageID          string    `json:"messageId"`
+			SourceNodeID       string    `json:"sourceNodeId"`
+			SourceSession      string    `json:"sourceSession"`
+			DestinationSession string    `json:"destinationSession"`
+			Hops               int       `json:"hops"`
+			Outcome            string    `json:"outcome"`
+			Detail             string    `json:"detail"`
+			At                 time.Time `json:"at"`
+		} `json:"wakes"`
+		Limits struct {
+			Hops          int    `json:"hops"`
+			Pair          int    `json:"pair"`
+			PairWindow    string `json:"pairWindow"`
+			Session       int    `json:"session"`
+			SessionWindow string `json:"sessionWindow"`
+			Node          int    `json:"node"`
+			NodeWindow    string `json:"nodeWindow"`
+		} `json:"limits"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode wakes: %w", err)
+	}
+	if len(decoded.Wakes) == 0 {
+		// Two different quiets, and the difference matters: a node where
+		// nothing has been turned on cannot wake, and saying "nothing woke
+		// anything" would read as reassurance about a setting that is off.
+		_, _ = fmt.Fprintln(r.stdout, "No agent has been woken on this node. Waking is per session "+
+			"and closed by default; `ah audience <session-id> ... --auto-wake` opens it.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(r.stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "WHEN\tWOKE\tFROM\tHOPS\tOUTCOME")
+	for _, event := range decoded.Wakes {
+		// Every one of these came off the wire from another machine. Quoted so
+		// a control character in a session label cannot forge a row, the same
+		// treatment `ah peers` gives a display name.
+		source := fmt.Sprintf("%q", event.SourceSession)
+		if event.SourceSession == "" {
+			source = "this machine"
+		}
+		outcome := event.Outcome
+		if event.Detail != "" {
+			outcome += " (" + event.Detail + ")"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%q\t%s\t%d\t%s\n",
+			event.At.Format(time.RFC3339), event.DestinationSession, source, event.Hops, outcome)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	// The rules, beside the trail. A refusal is only legible next to the limit
+	// that produced it, and an owner reading "refused_pair_rate" with no idea
+	// what the pair limit is cannot tell whether it is tuned wrongly.
+	_, _ = fmt.Fprintf(r.stdout, "\nLimits: %d hops; %d per pair / %s; %d per session / %s; %d per node / %s.\n",
+		decoded.Limits.Hops, decoded.Limits.Pair, decoded.Limits.PairWindow,
+		decoded.Limits.Session, decoded.Limits.SessionWindow,
+		decoded.Limits.Node, decoded.Limits.NodeWindow)
+	_, _ = fmt.Fprintln(r.stdout, "A message held back by a limit is still in the inbox; `ah inbox <session-id>` reads it.")
+	return nil
 }
