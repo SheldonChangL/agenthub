@@ -101,12 +101,7 @@ type listResult struct {
 // MCPServer builds the SDK server with this surface registered.
 func (s *server) MCPServer() *mcp.Server {
 	capabilities := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
-	if s.channels {
-		// Presence registers the listener; the value is always an empty
-		// object. Declared only when the owner asked for it — a server that
-		// declares one and never pushes has registered a listener for nothing.
-		capabilities.Experimental = map[string]any{ChannelCapability: map[string]any{}}
-	}
+	capabilities.Experimental = s.capabilities()
 	sdk := mcp.NewServer(
 		&mcp.Implementation{Name: "agenthub", Version: Version()},
 		&mcp.ServerOptions{
@@ -262,4 +257,18 @@ func (s *server) pushWakes(ctx context.Context, transport *injectingTransport) {
 			log.Printf("agenthub: could not push message %s: %v", push.MessageID, err)
 		}
 	}
+}
+
+// capabilities is the experimental map this server declares.
+//
+// Presence of the channel key registers the listener in Claude Code; the value
+// is always an empty object. Declared only when the owner asked for it — a
+// server that declares one and never pushes has registered a listener for
+// nothing, and the owner reading their own configuration would see a channel
+// where none is served.
+func (s *server) capabilities() map[string]any {
+	if !s.channels {
+		return nil
+	}
+	return map[string]any{ChannelCapability: map[string]any{}}
 }
