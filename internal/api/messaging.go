@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -183,12 +184,15 @@ func qualifiedSender(senderNodeID, claimed string) string {
 // contract: the message is queued here and nothing else has happened. The peer
 // may be asleep. Answering as though it had arrived would make `ah send`
 // success mean something it cannot know.
-func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination address.Address, from, body string) {
+func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination address.Address,
+	from, senderSessionID, body string,
+) {
 	queued, err := s.store.QueueOutbound(r.Context(), registry.OutboundMessage{
 		DestinationNodeID: destination.NodeID,
 		To:                destination.SessionID,
 		From:              from,
 		Body:              body,
+		WakeHops:          s.hopsFor(r.Context(), senderSessionID),
 	})
 	switch {
 	case err == nil:
@@ -227,4 +231,32 @@ func (s *Server) outboundStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, message)
+}
+
+// hopsFor is how far along an automatic exchange a message from this session
+// is.
+//
+// Reconstructed from the wake trail rather than told to us: nothing links an
+// agent's decision to send to the message that woke it, because the agent
+// calls agent_send like any other caller and no provider says why. So a send
+// shortly after a wake is treated as caused by it.
+//
+// Wrong in both directions and deliberately so. A person typing during the
+// window has their message counted as a hop, which costs them nothing but an
+// earlier stop; an agent that thinks for longer than the window resets to
+// zero, which is why the per-pair limit and not this is what ends a
+// two-machine loop. Hops are for the cycle a pair limit cannot see.
+func (s *Server) hopsFor(ctx context.Context, senderSessionID string) int {
+	if senderSessionID == "" {
+		return 0
+	}
+	hops, err := s.store.LastWakeHops(ctx, senderSessionID, time.Now().UTC())
+	if err != nil {
+		// Not fatal to the send. Failing a message because the trail could not
+		// be read would turn a working outbox into a broken one over a count
+		// that only ever stops things early.
+		log.Printf("wake: cannot read the hop count for %q: %v", senderSessionID, err)
+		return 0
+	}
+	return hops
 }

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -306,6 +307,47 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		return WakeEvent{}, fmt.Errorf("record wake event: %w", err)
 	}
 	return event, nil
+}
+
+// WakeAttributionWindow is how long after being woken a session's outbound
+// message is treated as caused by that wake.
+//
+// A heuristic, and named as one. Nothing links an agent's decision to send to
+// the message that woke it: the agent calls agent_send like any other caller,
+// and no provider tells this node why. So the chain is reconstructed by
+// proximity, which over-counts a person who happens to send during the window
+// and under-counts an agent that thinks for longer than it.
+//
+// Over-counting is the safe direction — it stops an exchange early — and the
+// per-pair limit is what actually ends a two-machine loop. Hops exist for the
+// cycle a pair limit cannot see, A to B to C to A, and being approximate there
+// is worth more than not counting at all.
+const WakeAttributionWindow = 15 * time.Minute
+
+// LastWakeHops reports the hop count a message from this session should carry.
+//
+// Zero when the session has not been woken recently, which is the answer for a
+// person typing into their own agent, and the answer this returns whenever it
+// cannot tell.
+func (r *Registry) LastWakeHops(ctx context.Context, sessionID string, now time.Time) (int, error) {
+	if sessionID == "" {
+		return 0, nil
+	}
+	var hops int
+	err := r.db.QueryRowContext(ctx, `
+SELECT hops FROM wake_events
+WHERE destination_session = ? AND outcome = ? AND at_ms >= ?
+ORDER BY at_ms DESC, id DESC LIMIT 1`,
+		sessionID, string(WakeWoken), now.Add(-WakeAttributionWindow).UTC().UnixMilli()).Scan(&hops)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the last wake of %q: %w", sessionID, err)
+	}
+	// One more than the wake that caused it. A message this node sends because
+	// it was woken is one hop further along than the message that woke it.
+	return hops + 1, nil
 }
 
 // ListWakes returns the most recent wake events, newest first.
