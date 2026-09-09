@@ -190,7 +190,7 @@ func (r *Registry) addMessageWakeHops(ctx context.Context) error {
 		return nil
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`ALTER TABLE messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0`); err != nil {
+		`ALTER TABLE messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0 CHECK (wake_hops >= 0)`); err != nil {
 		return fmt.Errorf("add messages wake hop column: %w", err)
 	}
 	return nil
@@ -208,7 +208,7 @@ func (r *Registry) addOutboundWakeHops(ctx context.Context) error {
 		return nil
 	}
 	if _, err := r.db.ExecContext(ctx,
-		`ALTER TABLE outbound_messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0`); err != nil {
+		`ALTER TABLE outbound_messages ADD COLUMN wake_hops INTEGER NOT NULL DEFAULT 0 CHECK (wake_hops >= 0)`); err != nil {
 		return fmt.Errorf("add outbound wake hop column: %w", err)
 	}
 	return nil
