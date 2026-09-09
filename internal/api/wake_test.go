@@ -24,17 +24,25 @@ type recordingWaker struct {
 	mu      sync.Mutex
 	seen    []model.Message
 	from    []string
+	nodes   []string
 	arrived chan struct{}
+	// before runs at the top of Consider, so a test can hold the gate open
+	// and watch what the request does meanwhile.
+	before func()
 }
 
 func newRecordingWaker() *recordingWaker {
 	return &recordingWaker{arrived: make(chan struct{}, 64)}
 }
 
-func (w *recordingWaker) Consider(_ context.Context, message model.Message, fingerprint string) {
+func (w *recordingWaker) Consider(_ context.Context, message model.Message, nodeID, fingerprint string) {
+	if w.before != nil {
+		w.before()
+	}
 	w.mu.Lock()
 	w.seen = append(w.seen, message)
 	w.from = append(w.from, fingerprint)
+	w.nodes = append(w.nodes, nodeID)
 	w.mu.Unlock()
 	w.arrived <- struct{}{}
 }
@@ -336,4 +344,173 @@ func TestTheWakeTrailIsReadableAndOwnerOnly(t *testing.T) {
 	if fromPeer := perform(t, peers, http.MethodGet, "/v1/wakes", nil); fromPeer.Code == http.StatusOK {
 		t.Errorf("a peer read the wake trail: %d %s", fromPeer.Code, fromPeer.Body.String())
 	}
+}
+
+// A peer that omits `from` is still counted as that peer.
+//
+// The composition is what was wrong, and both halves were separately correct:
+// an empty `from` is stored as a bare node id, and PairKey reads a node id off
+// the label only when the label has a slash in it. So a peer that simply left
+// the field out was bucketed as "local" — a second bucket worth another three
+// wakes, and an audit row naming a peer's wake as this machine's own.
+func TestAPeerThatOmitsItsSenderLabelIsStillCountedAsThatPeer(t *testing.T) {
+	store, owner, peers, waker := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:wake-target")
+
+	envelope, err := protocol.NewMessageEnvelope(peerNodeID, testNodeID, protocol.MessagePayload{
+		MessageID: "msg_anon", To: session, Body: "no sender named",
+		SentAt: time.Now().UTC(),
+	}, peer.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
+	}
+	waker.await(t, 1)
+
+	waker.mu.Lock()
+	nodeID := waker.nodes[0]
+	waker.mu.Unlock()
+	if nodeID != peerNodeID {
+		t.Fatalf("the gate saw sender node %q, want the one the envelope proved", nodeID)
+	}
+	// And that is what the bucket is keyed on.
+	event := registry.WakeEvent{SourceNodeID: nodeID, SourceSession: peerNodeID}
+	if got := event.PairKey(); got != "node:"+peerNodeID {
+		t.Errorf("a peer with no sender label lands in bucket %q, not its own", got)
+	}
+}
+
+// The hop count reaches the wire, not only the local inbox.
+//
+// Every other assertion about it is on the local delivery path or inside the
+// registry. The leg that crosses machines is the only leg the hop count exists
+// for — a loop between two nodes — and replacing the outbound count with zero
+// passed everything. That is the same defect this branch already fixed once on
+// the other half.
+func TestTheHopCountReachesTheOutboundQueue(t *testing.T) {
+	ctx := context.Background()
+	store, owner, peers, waker := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:woken")
+	if err := store.SetAudience(ctx, session, model.Audience{
+		Mode: model.AudienceAllPaired, AcceptMessages: true, AllowOutbound: true, AutoWake: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A peer wakes it, one hop in.
+	envelope, err := protocol.NewMessageEnvelope(peerNodeID, testNodeID, protocol.MessagePayload{
+		MessageID: "msg_in", To: session, From: "codex:theirs", Body: "your turn",
+		SentAt: time.Now().UTC(), WakeHops: 1,
+	}, peer.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
+	}
+	waker.await(t, 1)
+	if _, err := store.ReserveWake(ctx, registry.WakeEvent{
+		MessageID: "msg_in", SourceNodeID: peerNodeID, DestinationSession: session, Hops: 1,
+	}, registry.DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The agent answers the peer. That message leaves this machine.
+	reply := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": peerNodeID + "/codex:theirs", "from": session, "body": "answering",
+	})
+	if reply.Code != http.StatusAccepted {
+		t.Fatalf("reply = %d %s", reply.Code, reply.Body.String())
+	}
+
+	queued, err := store.PendingOutbound(ctx, peerNodeID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("the queue holds %d messages", len(queued))
+	}
+	if queued[0].WakeHops != 2 {
+		t.Errorf("the message crossing to the peer carries %d hops, want 2: it answers one "+
+			"that arrived at 1, and a loop between two nodes is what the count is for",
+			queued[0].WakeHops)
+	}
+}
+
+// A send that failed does not spend the chain.
+//
+// The claim used to happen inside the argument list, before anything was
+// stored, so a woken agent could zero its own chain with one throwaway message
+// addressed at a session that does not exist: the send is refused, the claim
+// is gone, and its real reply then goes out at zero hops.
+func TestAFailedSendDoesNotSpendTheChain(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _, waker := wakingSurfaces(t)
+	session := acceptingLocalSession(t, store, owner, "codex:woken")
+	other := acceptingLocalSession(t, store, owner, "codex:neighbour")
+	if _, err := store.ReserveWake(ctx, registry.WakeEvent{
+		MessageID: "msg_in", SourceNodeID: peerNodeID, DestinationSession: session, Hops: 2,
+	}, registry.DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One throwaway, at a session that is not here.
+	refused := perform(t, owner, http.MethodPost, "/v1/messages",
+		map[string]string{"to": "codex:not-a-session", "from": session, "body": "nowhere"})
+	if refused.Code < 400 {
+		t.Fatalf("the throwaway was accepted: %d %s", refused.Code, refused.Body.String())
+	}
+
+	// The real reply still carries the chain.
+	reply := perform(t, owner, http.MethodPost, "/v1/messages",
+		map[string]string{"to": other, "from": session, "body": "answering"})
+	if reply.Code != http.StatusCreated {
+		t.Fatalf("reply = %d %s", reply.Code, reply.Body.String())
+	}
+	waker.await(t, 1)
+	seen := waker.messages()
+	if last := seen[len(seen)-1]; last.WakeHops != 3 {
+		t.Errorf("the reply carries %d hops, want 3; a refused send spent the chain",
+			last.WakeHops)
+	}
+}
+
+// The wake does not run inline: a slow provider must not hold the ack.
+//
+// A peer waits on the ack under its own ten-second delivery timeout, and a
+// cold start spawns an app-server and resumes a thread before the turn is even
+// sent. Run inline, the sender gives up and retries into a duplicate.
+func TestTheAckDoesNotWaitForTheWake(t *testing.T) {
+	store, owner, peers, waker := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:slow")
+
+	// The gate blocks until released, standing in for a cold start.
+	release := make(chan struct{})
+	waker.before = func() { <-release }
+
+	answered := make(chan int, 1)
+	go func() {
+		envelope := peer.messageEnvelope(t, testNodeID, "msg_slow", session, "codex:theirs", "hello")
+		answered <- perform(t, peers, http.MethodPost, "/v1/messages", envelope).Code
+	}()
+
+	select {
+	case code := <-answered:
+		if code != http.StatusOK {
+			t.Fatalf("delivery = %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the ack waited for the wake; a slow provider would time the sender out")
+	}
+	close(release)
+	waker.await(t, 1)
 }

@@ -66,7 +66,7 @@ type Server struct {
 // exists to catch: there are two independent writes into the inbox, and a wake
 // wired to one of them looks entirely correct from the other.
 type Waker interface {
-	Consider(ctx context.Context, message model.Message, senderFingerprint string)
+	Consider(ctx context.Context, message model.Message, senderNodeID, senderFingerprint string)
 }
 
 // Option adjusts a Server at construction.
@@ -619,11 +619,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// this path is always addressed to this node. The outbound row written by
 	// the branch above carries a peer's id in the same column, so a reader must
 	// not have to infer the destination from the absence of a prefix.
+	// Two sessions on one machine can answer each other as readily as two
+	// machines can, and nothing about the local path makes that cheaper.
+	hops, chain := s.hopsFor(r.Context(), senderSessionID)
 	message, err := s.store.CreateMessage(r.Context(), model.Message{
 		To: to, From: from, DestinationNodeID: s.node.ID, Body: input.Body,
-		// Two sessions on one machine can answer each other as readily as two
-		// machines can, and nothing about the local path makes that cheaper.
-		WakeHops: s.hopsFor(r.Context(), senderSessionID),
+		WakeHops: hops,
 	})
 	if err != nil {
 		// CreateMessage resolves the destination session, so a store failure
@@ -633,11 +634,14 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	s.claimChain(r.Context(), chain)
 	// The local half of the wake path. A message from an agent on this machine
 	// to a session on this machine never touches the peer handler, so a wake
 	// wired only there would work for every peer and silently do nothing for
 	// the case that is easiest to test with.
-	s.considerWake(message, "")
+	// No node id: this message never crossed a network, so there is nothing an
+	// envelope proved about where it came from.
+	s.considerWake(message, "", "")
 	writeJSON(w, http.StatusCreated, message)
 }
 
@@ -662,7 +666,14 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 //
 // Nothing waits on the result. The message is already stored and already
 // acknowledged; everything the gate decides is recorded rather than returned.
-func (s *Server) considerWake(message model.Message, senderFingerprint string) {
+//
+// senderNodeID is what the envelope's signature proved, passed rather than
+// re-derived. Deriving it from the stored label looked equivalent and was not:
+// a peer that omits `from` is labelled with a bare node id, which is
+// indistinguishable from a local send by shape, and the pair limit then
+// counted that peer in the local bucket — a second bucket, and an audit row
+// that named a peer's wake as this machine's own.
+func (s *Server) considerWake(message model.Message, senderNodeID, senderFingerprint string) {
 	if s.waker == nil {
 		return
 	}
@@ -671,7 +682,7 @@ func (s *Server) considerWake(message model.Message, senderFingerprint string) {
 		// wedged provider cannot accumulate goroutines for ever.
 		ctx, cancel := context.WithTimeout(context.Background(), wakeTimeout)
 		defer cancel()
-		s.waker.Consider(ctx, message, senderFingerprint)
+		s.waker.Consider(ctx, message, senderNodeID, senderFingerprint)
 	}()
 }
 

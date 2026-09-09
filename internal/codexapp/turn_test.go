@@ -155,8 +155,16 @@ func TestAWokenTurnApprovesNothing(t *testing.T) {
 			t.Errorf("%s decision = %v, want a denied object", method, result["decision"])
 			continue
 		}
-		if _, ok := decision["denied"]; !ok {
+		denied, ok := decision["denied"].(map[string]any)
+		if !ok {
 			t.Errorf("%s decision = %v, want denied", method, decision)
+			continue
+		}
+		// rejection is required by DeniedReviewDecision. An empty object is
+		// schema-invalid, which the app-server is free to treat as a
+		// malformed answer — and an answer it discards is one nobody gave.
+		if rejection, _ := denied["rejection"].(string); rejection == "" {
+			t.Errorf("%s sent denied with no rejection: %v", method, denied)
 		}
 	}
 

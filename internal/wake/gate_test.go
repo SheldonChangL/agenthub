@@ -61,6 +61,10 @@ func gateFixture(t *testing.T, autoWake bool) (*registry.Registry, *recordingDri
 	return store, driver, New(store, registry.DefaultWakeLimits(), driver), session
 }
 
+// peerNode is what an envelope's signature proved, as the peer surface passes
+// it: never parsed back out of the label.
+const peerNode = "node_peer0000000000000"
+
 func arrived(session string, hops int) model.Message {
 	return model.Message{
 		ID: "msg_1", To: session, From: "node_peer0000000000000/codex:theirs",
@@ -77,7 +81,7 @@ func TestAClosedSwitchDrivesNothingAndRecordsNothing(t *testing.T) {
 	ctx := context.Background()
 	store, driver, gate, session := gateFixture(t, false)
 
-	gate.Consider(ctx, arrived(session.ID, 0), "fingerprint")
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "fingerprint")
 
 	if driver.count() != 0 {
 		t.Error("a session with waking closed was driven")
@@ -96,7 +100,7 @@ func TestAnOpenSwitchDrivesTheAgent(t *testing.T) {
 	ctx := context.Background()
 	store, driver, gate, session := gateFixture(t, true)
 
-	gate.Consider(ctx, arrived(session.ID, 0), "2DCF 9604 DBA9 778A")
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "2DCF 9604 DBA9 778A")
 
 	if driver.count() != 1 {
 		t.Fatalf("the driver was called %d times", driver.count())
@@ -124,7 +128,7 @@ func TestAMessageAtTheHopLimitIsStopped(t *testing.T) {
 	ctx := context.Background()
 	store, driver, gate, session := gateFixture(t, true)
 
-	gate.Consider(ctx, arrived(session.ID, protocol.MaxWakeHops), "fingerprint")
+	gate.Consider(ctx, arrived(session.ID, protocol.MaxWakeHops), peerNode, "fingerprint")
 
 	if driver.count() != 0 {
 		t.Error("an exchange past the hop limit kept going")
@@ -148,7 +152,7 @@ func TestADriverThatRefusesIsRecordedAsFailed(t *testing.T) {
 	store, driver, gate, session := gateFixture(t, true)
 	driver.failWith = context.DeadlineExceeded
 
-	gate.Consider(ctx, arrived(session.ID, 0), "fingerprint")
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "fingerprint")
 
 	events, err := store.ListWakes(ctx, session.ID, 10)
 	if err != nil {
@@ -176,7 +180,7 @@ func TestAProviderWithNoDriverIsRecordedAsFailed(t *testing.T) {
 	// A gate with no drivers at all.
 	gate := New(store, registry.DefaultWakeLimits())
 
-	gate.Consider(ctx, arrived(session.ID, 0), "fingerprint")
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "fingerprint")
 
 	events, err := store.ListWakes(ctx, session.ID, 10)
 	if err != nil {
@@ -184,5 +188,57 @@ func TestAProviderWithNoDriverIsRecordedAsFailed(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Outcome != registry.WakeFailed {
 		t.Fatalf("events = %+v", events)
+	}
+}
+
+// A refused reservation drives nothing.
+//
+// The registry decides; this is the line that obeys it, and deleting it made
+// every limit decorative while the whole root suite still passed. The rate
+// limits are what the ADR calls the sound half of the loop defence, and the
+// only thing between a compromised peer and an agent it can run all night.
+func TestARefusedReservationDrivesNothing(t *testing.T) {
+	ctx := context.Background()
+	store, driver, _, session := gateFixture(t, true)
+	limits := registry.DefaultWakeLimits()
+	limits.Pair = 1
+	gate := New(store, limits, driver)
+
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "fingerprint")
+	if driver.count() != 1 {
+		t.Fatalf("the first wake drove %d times", driver.count())
+	}
+
+	// The pair's slot is taken, and it is still taken while the turn runs.
+	second := arrived(session.ID, 0)
+	second.ID = "msg_2"
+	gate.Consider(ctx, second, peerNode, "fingerprint")
+	if driver.count() != 1 {
+		t.Errorf("a refused reservation drove the agent anyway (%d calls); every limit is "+
+			"decorative if this line is not here", driver.count())
+	}
+
+	events, err := store.ListWakes(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Outcome != registry.WakeRefusedPair {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+// Every refusal stops the drive, not just the pair one.
+func TestEveryRefusalStopsTheDrive(t *testing.T) {
+	ctx := context.Background()
+	for name, limits := range map[string]registry.WakeLimits{
+		"pair":    {Pair: 0, PairWindow: time.Hour, Session: 9, SessionWindow: time.Hour, Node: 9, NodeWindow: time.Hour},
+		"session": {Pair: 9, PairWindow: time.Hour, Session: 0, SessionWindow: time.Hour, Node: 9, NodeWindow: time.Hour},
+		"node":    {Pair: 9, PairWindow: time.Hour, Session: 9, SessionWindow: time.Hour, Node: 0, NodeWindow: time.Hour},
+	} {
+		store, driver, _, session := gateFixture(t, true)
+		New(store, limits, driver).Consider(ctx, arrived(session.ID, 0), peerNode, "fingerprint")
+		if driver.count() != 0 {
+			t.Errorf("the %s limit was at zero and the agent was driven anyway", name)
+		}
 	}
 }
