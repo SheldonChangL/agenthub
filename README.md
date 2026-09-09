@@ -330,6 +330,11 @@ A session with no subscriber has no agent running, so the wake fails and the
 message stays in the inbox — which is also how `ah wakes` can tell you the
 difference between "nobody was listening" and "nothing arrived".
 
+The MCP server holds a long poll against the node, and the node answers it just
+short of its own write deadline and says how long it held. There is a gap
+between one poll ending and the next beginning; a message landing in it is
+recorded as failed and waits in the inbox for the poll after.
+
 Claude Code additionally needs channels turned on for you, and during the
 research preview that is more than one step:
 
