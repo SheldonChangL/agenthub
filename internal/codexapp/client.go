@@ -258,6 +258,12 @@ func (c *Client) Initialize(ctx context.Context) (InitializeResult, error) {
 	var result InitializeResult
 	params := map[string]any{
 		"clientInfo": map[string]string{"name": "agenthub", "version": buildinfo.Version()},
+		// experimentalApi is what turn/start.additionalContext is behind.
+		// Measured: without it, starting a turn with a context fragment is
+		// refused with "requires experimentalApi capability" — so the
+		// untrusted-context marking, which is the strongest barrier available
+		// on this side, is opt-in.
+		"capabilities": map[string]any{"experimentalApi": true},
 	}
 	if err := c.call(ctx, "initialize", params, &result); err != nil {
 		return InitializeResult{}, err
