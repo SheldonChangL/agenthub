@@ -1,8 +1,12 @@
 package mcpserver
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func samplePush() ChannelPush {
@@ -121,9 +125,35 @@ func TestTheChannelCapabilityIsDeclaredOnlyWhenAskedFor(t *testing.T) {
 	}
 }
 
-// declaredChannel reports whether the built server declares the channel
-// capability, read off the server the SDK was handed rather than the flag.
+// declaredChannel reports what a client sees in the initialize result.
+//
+// A real handshake over an in-memory pair, not s.capabilities(): the latter is
+// one hop from the flag, and deleting the line that hands the map to the SDK
+// passed a test written that way while registering no listener at all — the
+// exact failure its doc comment claimed to prevent. What matters is what
+// reaches the client, so that is what is read.
 func declaredChannel(t *testing.T, s *server) bool {
 	t.Helper()
-	return s.capabilities()[ChannelCapability] != nil
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	serverSide, clientSide := mcp.NewInMemoryTransports()
+	session, err := s.MCPServer().Connect(ctx, serverSide, nil)
+	if err != nil {
+		t.Fatalf("connect the server: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "probe", Version: "0"}, nil)
+	clientSession, err := client.Connect(ctx, clientSide, nil)
+	if err != nil {
+		t.Fatalf("connect the client: %v", err)
+	}
+	defer func() { _ = clientSession.Close() }()
+
+	result := clientSession.InitializeResult()
+	if result == nil || result.Capabilities == nil {
+		t.Fatal("the client saw no capabilities at all")
+	}
+	return result.Capabilities.Experimental[ChannelCapability] != nil
 }

@@ -998,15 +998,16 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wait := s.wakeStreamWait(0)
+	wait := s.WakeStreamWait(0)
 	if value := r.URL.Query().Get("wait"); value != "" {
 		parsed, err := time.ParseDuration(value)
-		if err != nil || parsed < time.Second || parsed > 5*time.Minute {
+		if err != nil || parsed < MinWakeStreamWait || parsed > MaxWakeStreamWait {
 			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
-				"wait must be a duration between 1s and 5m")
+				fmt.Sprintf("wait must be a duration between %s and %s",
+					MinWakeStreamWait, MaxWakeStreamWait))
 			return
 		}
-		wait = s.wakeStreamWait(parsed)
+		wait = s.WakeStreamWait(parsed)
 	}
 
 	// Registered before the reply is written, so a message arriving in the gap
@@ -1053,7 +1054,7 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// wakeStreamWait keeps a poll strictly shorter than the write deadline of the
+// WakeStreamWait keeps a poll strictly shorter than the write deadline of the
 // server carrying it.
 //
 // A poll as long as the deadline can never answer: Go arms the write deadline
@@ -1062,7 +1063,7 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 // WriteTimeout is 30s: wait=29s answered 204, wait=30s produced an empty
 // reply, every time. The default poll was 30s, so in steady state every poll
 // failed and the subscriber spent most of its life unregistered.
-func (s *Server) wakeStreamWait(requested time.Duration) time.Duration {
+func (s *Server) WakeStreamWait(requested time.Duration) time.Duration {
 	limit := s.writeTimeout
 	if limit <= 0 {
 		limit = 30 * time.Second
@@ -1070,14 +1071,29 @@ func (s *Server) wakeStreamWait(requested time.Duration) time.Duration {
 	// A margin for the response itself and for the clock the two timers do not
 	// share.
 	longest := limit - 3*time.Second
-	if longest < time.Second {
-		longest = time.Second
+	// Clamped to the same range the handler accepts, because the wait it
+	// settles on is reported to the client and comes back as the next
+	// request's. Outside that range the client would be answered 400 for a
+	// number this node chose, every poll, with nothing to recover from it.
+	if longest > MaxWakeStreamWait {
+		longest = MaxWakeStreamWait
+	}
+	if longest < MinWakeStreamWait {
+		longest = MinWakeStreamWait
 	}
 	if requested <= 0 || requested > longest {
 		return longest
 	}
 	return requested
 }
+
+// The range a poll may ask to be held for. The lower bound keeps a client from
+// making a request per second; the upper keeps one connection from being held
+// for an afternoon.
+const (
+	MinWakeStreamWait = time.Second
+	MaxWakeStreamWait = 5 * time.Minute
+)
 
 // channelView is one message on its way to an agent this node cannot reach.
 //

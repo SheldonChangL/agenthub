@@ -70,9 +70,6 @@ type Subscription struct {
 	// Done closes when this subscription ends, whether because the poll
 	// finished or because a later one displaced it.
 	Done <-chan struct{}
-	// Displaced reports whether a later subscriber took this session over,
-	// which is the one ending the poll must tell its client about.
-	Displaced func() bool
 	// Close ends the subscription. Safe to call more than once.
 	Close func()
 }
@@ -85,8 +82,6 @@ type Subscription struct {
 // than waiting out its deadline.
 func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
 	fresh := &subscriber{envelopes: make(chan Envelope), done: make(chan struct{})}
-	displaced := false
-
 	d.mu.Lock()
 	if existing, ok := d.waiting[sessionID]; ok {
 		existing.end()
@@ -97,14 +92,6 @@ func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
 	return Subscription{
 		Messages: fresh.envelopes,
 		Done:     fresh.done,
-		Displaced: func() bool {
-			d.mu.Lock()
-			defer d.mu.Unlock()
-			// Displaced means somebody else holds the slot now. A poll that
-			// simply ended still holds it until it removes itself.
-			current, ok := d.waiting[sessionID]
-			return displaced || (ok && current != fresh)
-		},
 		Close: func() {
 			d.mu.Lock()
 			// Only if it is still ours: a later Subscribe may already have
@@ -112,8 +99,6 @@ func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
 			// live agent.
 			if current, ok := d.waiting[sessionID]; ok && current == fresh {
 				delete(d.waiting, sessionID)
-			} else {
-				displaced = true
 			}
 			d.mu.Unlock()
 			fresh.end()

@@ -17,6 +17,7 @@ type nodeStub struct {
 	calls   atomic.Int64
 	waits   chan string
 	answer  func(call int64) (int, string, string)
+	hang    bool
 	baseURL string
 }
 
@@ -28,6 +29,10 @@ func newNodeStub(t *testing.T, answer func(call int64) (int, string, string)) *n
 		select {
 		case stub.waits <- r.URL.Query().Get("wait"):
 		default:
+		}
+		if stub.hang {
+			<-r.Context().Done()
+			return
 		}
 		status, header, body := stub.answer(call)
 		if header != "" {
@@ -196,4 +201,54 @@ func pushServer(t *testing.T, stub *nodeStub) *server {
 		t.Fatal(err)
 	}
 	return built
+}
+
+// The long-poll client has no fixed timeout of its own.
+//
+// How long a poll may take changes with what the node says it holds one for,
+// so a client timeout chosen on the first call is wrong for every later one:
+// putting a fifteen-second one back cut every twenty-five-second poll, and the
+// suite stayed green. The deadline belongs on the request.
+func TestTheLongPollClientHasNoFixedTimeout(t *testing.T) {
+	stub := newNodeStub(t, func(int64) (int, string, string) {
+		return http.StatusNoContent, "", ""
+	})
+	client := stubClient(t, stub)
+	if _, err := client.WaitForWake(context.Background(), "claude:x"); err != nil {
+		t.Fatal(err)
+	}
+	if client.longPoll == nil {
+		t.Fatal("no long-poll client was built")
+	}
+	if client.longPoll.Timeout != 0 {
+		t.Errorf("the long-poll client has a %s timeout; a poll the node holds for longer "+
+			"is cut by it, and how long the node holds one is not known here",
+			client.longPoll.Timeout)
+	}
+}
+
+// A poll that outlasts what the node said it would hold gives up.
+//
+// The deadline is on the request instead, so it moves with the wait — a node
+// that stops answering mid-poll is noticed rather than held forever.
+func TestAPollThatOutlastsTheNodeGivesUp(t *testing.T) {
+	stub := newNodeStub(t, func(int64) (int, string, string) {
+		return http.StatusNoContent, "1s", ""
+	})
+	client := stubClient(t, stub)
+	// Learn the short wait, then make the node stop answering.
+	if _, err := client.WaitForWake(context.Background(), "claude:x"); err != nil {
+		t.Fatal(err)
+	}
+	// Hangs until the client gives up, rather than sleeping blindly: a handler
+	// that outlives the test blocks httptest.Server.Close.
+	stub.hang = true
+
+	started := time.Now()
+	if _, err := client.WaitForWake(context.Background(), "claude:x"); err == nil {
+		t.Error("a poll the node never answered came back without an error")
+	}
+	if elapsed := time.Since(started); elapsed > 40*time.Second {
+		t.Errorf("it waited %s on a node holding a 1s poll open", elapsed)
+	}
 }

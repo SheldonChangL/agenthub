@@ -367,3 +367,40 @@ func TestDrainingEndsAHeldPoll(t *testing.T) {
 	// And draining twice is not a panic.
 	server.Drain()
 }
+
+// The wait a node settles on is one it would accept back.
+//
+// It is reported to the client and returned as the next request's, so a value
+// outside the range the same handler enforces would be answered 400 — for a
+// number this node chose, on every poll, with nothing to recover from it. The
+// clamp was against the write deadline only, so a long deadline produced a
+// wait past the upper bound and a very short one produced a wait at or past
+// the deadline it was meant to stay under.
+func TestTheWaitANodeSettlesOnIsOneItWouldAccept(t *testing.T) {
+	for name, writeTimeout := range map[string]time.Duration{
+		"unset":      0,
+		"very short": time.Second,
+		"short":      4 * time.Second,
+		"the node's": 60 * time.Second,
+		"very long":  10 * time.Minute,
+		"absurd":     24 * time.Hour,
+	} {
+		server := NewServer(nil, nil, nil, model.NodeIdentity{}, WithWriteTimeout(writeTimeout))
+		settled := server.WakeStreamWait(0)
+		if settled < MinWakeStreamWait || settled > MaxWakeStreamWait {
+			t.Errorf("with a %s deadline the node settles on %s, outside the %s..%s it "+
+				"accepts — the client would be answered 400 for the node's own number",
+				name, settled, MinWakeStreamWait, MaxWakeStreamWait)
+		}
+		// And a poll must still be able to answer, wherever the deadline is.
+		if writeTimeout > MinWakeStreamWait && settled >= writeTimeout {
+			t.Errorf("with a %s deadline the node holds for %s, so the connection is cut "+
+				"before the response", name, settled)
+		}
+		// A caller asking for something inside the range gets it, unless the
+		// deadline forces a shorter one.
+		if asked := server.WakeStreamWait(2 * time.Second); asked > settled || asked <= 0 {
+			t.Errorf("with a %s deadline, asking for 2s gave %s", name, asked)
+		}
+	}
+}
