@@ -177,13 +177,18 @@ func TestADriverThatRefusesIsRecordedAsFailed(t *testing.T) {
 		t.Fatalf("events = %+v", events)
 	}
 	// And it stops counting, so the next message is not blocked by a turn that
-	// never ran.
-	count, err := store.CountWakes(ctx, "", session.ID, time.Now().Add(-time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Errorf("a failed wake counts %d against the limit", count)
+	// never ran. Asserted by driving another one rather than by counting: the
+	// count was a number nobody acts on, and "not zero" is satisfied by almost
+	// any bug.
+	driver.failWith = nil
+	next := arrived(session.ID, 0)
+	next.ID = "msg_after"
+	limits := registry.DefaultWakeLimits()
+	limits.Pair = 1
+	New(store, limits, driver).Consider(ctx, next, peerNode, "fingerprint")
+	if driver.count() != 1 {
+		t.Errorf("a wake that failed still holds its slot: the retry drove %d times",
+			driver.count())
 	}
 }
 

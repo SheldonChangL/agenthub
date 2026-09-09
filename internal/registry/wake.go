@@ -294,35 +294,6 @@ func (r *Registry) SettleWake(ctx context.Context, wakeID string, outcome WakeOu
 	return nil
 }
 
-// CountWakes counts the wakes that actually happened in a window.
-//
-// Only WakeWoken is counted. A refusal cost nothing — no turn ran, no tokens
-// were spent — so counting it would let a burst of refusals hold down a limit
-// that exists to bound work actually done, and an exchange stopped by the pair
-// limit would then also be counted against the node.
-//
-// sourceSession is optional: empty counts every source, which is how the
-// per-session and node-wide limits are asked for. destinationSession empty
-// counts every destination, which is the node-wide one.
-func (r *Registry) CountWakes(ctx context.Context, pairKey, destinationSession string,
-	since time.Time) (int, error) {
-	query := `SELECT count(*) FROM wake_events WHERE outcome = ? AND at_ms >= ?`
-	arguments := []any{string(WakeWoken), since.UTC().UnixMilli()}
-	if pairKey != "" {
-		query += ` AND pair_key = ?`
-		arguments = append(arguments, pairKey)
-	}
-	if destinationSession != "" {
-		query += ` AND destination_session = ?`
-		arguments = append(arguments, destinationSession)
-	}
-	var count int
-	if err := r.db.QueryRowContext(ctx, query, arguments...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count wake events: %w", err)
-	}
-	return count, nil
-}
-
 // queryRower is satisfied by both *sql.DB and *sql.Tx, so the count a
 // reservation takes and the one a caller can ask for are the same query.
 type queryRower interface {
@@ -439,8 +410,10 @@ ORDER BY at_ms DESC, rowid DESC LIMIT 1`,
 //
 // Called after the message that inherited it is safely stored. "Later", not
 // "another": peek and claim are two statements, so sends that overlap between
-// them all see the same unclaimed wake and all carry its count. Measured at
-// four of four concurrent sends from one session.
+// them all see the same unclaimed wake and all carry its count. How many
+// overlap is a race — four concurrent sends were measured inheriting
+// anything between two and four times — so the bound is "no message after
+// the claim lands", not a number.
 //
 // Left that way rather than claimed at peek time, which is what the split
 // undid: an eager claim let a woken agent zero its own chain with one

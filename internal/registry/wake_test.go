@@ -404,23 +404,26 @@ func TestWakesInTheSameMillisecondAreOrderedByWhatHappened(t *testing.T) {
 	store := openTestRegistry(t)
 	sameMoment := time.Now().UTC().Truncate(time.Millisecond)
 
-	for i, hops := range []int{0, 3} {
+	// Six rows, not two. With a random-hex tie-break two rows come out right
+	// half the time, so a two-row version of this passed eleven runs in thirty
+	// against code ordering by id — a test that reports a coin flip.
+	for i := range 6 {
 		event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
 		event.SourceNodeID = "node_peer0000000000000"
 		event.MessageID = fmt.Sprintf("msg_%d", i)
-		event.Hops, event.At = hops, sameMoment
+		event.Hops, event.At = i, sameMoment
 		event.Outcome = WakeWoken
 		if _, err := store.RecordWake(ctx, event); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The second insert is the later wake, so its 3 is the one to inherit.
+	// The last insert is the latest wake, so its 5 is the one to inherit.
 	got, _, err := store.PeekWakeChain(ctx, "claude:mine", sameMoment)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 4 {
-		t.Errorf("hops = %d, want 4 from the wake that was recorded second", got)
+	if got != 6 {
+		t.Errorf("hops = %d, want 6 from the wake that was recorded last", got)
 	}
 }
 
