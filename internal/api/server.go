@@ -138,6 +138,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
+	// The wake trail. Owner surface only: it names which peers made this
+	// machine move, which is exactly what a peer must not be able to read.
+	mux.HandleFunc("GET /v1/wakes", s.wakes)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
@@ -818,4 +821,52 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// wakes answers with what has woken agents on this node, newest first.
+//
+// The question this exists for is "what made my agent move while I was not
+// looking", so the answer includes the refusals: an owner who sees nothing may
+// be looking at a quiet node or at a limit doing its job, and those need
+// different actions.
+func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if session != "" {
+		// Resolved through the same check every other session-scoped endpoint
+		// uses, so a qualified address for another node is refused here rather
+		// than returning an empty list that reads as "nothing happened".
+		resolved, ok := s.localSession(w, session)
+		if !ok {
+			return
+		}
+		session = resolved
+	}
+	events, err := s.store.ListWakes(r.Context(), session, limit)
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"wakes": events,
+		// The limits are reported with the trail because a refusal is only
+		// legible beside the rule that produced it.
+		"limits": map[string]any{
+			"hops":          protocol.MaxWakeHops,
+			"pair":          registry.MaxWakesPerPair,
+			"pairWindow":    registry.WakePairWindow.String(),
+			"session":       registry.MaxWakesPerSession,
+			"sessionWindow": registry.WakeSessionWindow.String(),
+			"node":          registry.MaxWakesPerNode,
+			"nodeWindow":    registry.WakeNodeWindow.String(),
+		},
+	})
 }
