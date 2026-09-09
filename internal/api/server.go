@@ -25,6 +25,7 @@ import (
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 	"agenthub.local/agenthub/internal/transport"
+	"agenthub.local/agenthub/internal/wake"
 )
 
 // maxBatchSessions bounds one batch so a single request cannot hold a write
@@ -57,6 +58,8 @@ type Server struct {
 	// Nil on a node with no wake drivers configured, which is the default:
 	// storing a message must not depend on a provider being reachable.
 	waker Waker
+	// channels is where an agent this node cannot reach waits to be told.
+	channels ChannelSubscriber
 }
 
 // Waker is the wake gate, as this package needs it.
@@ -141,6 +144,10 @@ func (s *Server) Handler() http.Handler {
 	// The wake trail. Owner surface only: it names which peers made this
 	// machine move, which is exactly what a peer must not be able to read.
 	mux.HandleFunc("GET /v1/wakes", s.wakes)
+	// Where an agent's MCP server waits to be told its session has a message.
+	// Owner surface, like everything else here — it is reached over loopback
+	// by a process the owner started.
+	mux.HandleFunc("GET /v1/sessions/{id}/wake-stream", s.wakeStream)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
@@ -908,4 +915,97 @@ func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
 			"nodeWindow":    registry.WakeNodeWindow.String(),
 		},
 	})
+}
+
+// ChannelSubscriber is the wake path for agents this node cannot reach.
+//
+// An interface so the API does not depend on the wake package, and so a test
+// can drive the endpoint without a gate behind it.
+type ChannelSubscriber interface {
+	Subscribe(sessionID string) (<-chan wake.Envelope, func())
+}
+
+// WithChannelSubscriber gives the API somewhere for an agent to wait.
+func WithChannelSubscriber(subscriber ChannelSubscriber) Option {
+	return func(s *Server) { s.channels = subscriber }
+}
+
+// wakeStream holds a request open until this session has a message to act on.
+//
+// A long poll rather than a stream of many: one message per response keeps the
+// contract the same shape as everything else here, and the subscriber comes
+// straight back for the next one. It also means a client that dies mid-handoff
+// loses at most the message it was handed, which is still in the inbox.
+//
+// Why the direction is inverted at all: an agent's MCP server is a stdio child
+// of that agent and reaches this node over loopback, outbound only. Nothing
+// here can open a connection to it, so it has to ask.
+func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeError(w, http.StatusNotFound, "WAKE_UNAVAILABLE",
+			"this node was started without wake support; restart it with -auto-wake")
+		return
+	}
+	sessionID, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	wait := 30 * time.Second
+	if value := r.URL.Query().Get("wait"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < time.Second || parsed > 5*time.Minute {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				"wait must be a duration between 1s and 5m")
+			return
+		}
+		wait = parsed
+	}
+
+	// Registered before the reply is written, so a message arriving in the gap
+	// between the subscriber's last poll and this one is not driven at a
+	// session that looks absent.
+	messages, unsubscribe := s.channels.Subscribe(sessionID)
+	defer unsubscribe()
+
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	select {
+	case envelope, open := <-messages:
+		if !open {
+			// Displaced by a later subscriber for the same session. Answering
+			// 409 rather than an empty 204 tells the loser to stop rather than
+			// poll again and displace the winner in turn.
+			writeError(w, http.StatusConflict, "WAKE_STREAM_REPLACED",
+				"another subscriber took over this session")
+			return
+		}
+		writeJSON(w, http.StatusOK, channelView{
+			MessageID: envelope.MessageID, Body: envelope.Body,
+			SenderNodeID: envelope.SenderNodeID, SenderLabel: envelope.SenderLabel,
+			Fingerprint: envelope.Fingerprint, Hops: envelope.Hops,
+			Notice: wake.Notice,
+		})
+	case <-deadline.C:
+		// Nothing arrived. Not an error: it is the normal end of a poll, and
+		// the subscriber comes straight back.
+		w.WriteHeader(http.StatusNoContent)
+	case <-r.Context().Done():
+		// The subscriber gave up. Nothing to write to.
+	}
+}
+
+// channelView is one message on its way to an agent this node cannot reach.
+//
+// The notice travels with it rather than being written by the subscriber: the
+// words an agent is given about what a message is worth are this node's to
+// choose, and a subscriber that composed its own could drift from the one the
+// inbox and the Codex path use.
+type channelView struct {
+	MessageID    string `json:"messageId"`
+	Body         string `json:"body"`
+	SenderNodeID string `json:"senderNodeId,omitempty"`
+	SenderLabel  string `json:"senderLabel,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
+	Hops         int    `json:"hops"`
+	Notice       string `json:"notice"`
 }

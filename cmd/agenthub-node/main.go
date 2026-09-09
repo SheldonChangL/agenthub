@@ -211,9 +211,18 @@ func run() error {
 	if *autoWake {
 		supervisor := codexapp.NewSupervisor(codexapp.SupervisorOptions{})
 		defer func() { _ = supervisor.Close() }()
-		options = append(options, api.WithWaker(wake.New(
-			store, registry.DefaultWakeLimits(), codexdriver.New(supervisor),
-		)))
+		// Two drivers, one per provider, because the two providers are reached
+		// in opposite directions: this node dials Codex's app-server, and a
+		// Claude Code agent's MCP server dials this node. The channel driver
+		// is therefore also the subscription point the API serves.
+		channels := wake.NewChannelDriver()
+		options = append(options,
+			api.WithWaker(wake.New(
+				store, registry.DefaultWakeLimits(),
+				codexdriver.New(supervisor), channels,
+			)),
+			api.WithChannelSubscriber(channels),
+		)
 		log.Printf("auto-wake is on for this node; a session is woken only if its own " +
 			"autoWake is also open (ah audience <id> ... --auto-wake)")
 	}
