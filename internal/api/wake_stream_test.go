@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +18,7 @@ import (
 
 // streamingSurfaces builds a node whose gate can reach a Claude session
 // through the same driver the endpoint subscribes to.
-func streamingSurfaces(t *testing.T) (*registry.Registry, http.Handler, http.Handler, *wake.ChannelDriver) {
+func streamingSurfaces(t *testing.T, extra ...Option) (*registry.Registry, http.Handler, http.Handler, *wake.ChannelDriver) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := registry.Open(ctx, t.TempDir()+"/agenthub.db")
@@ -28,8 +30,8 @@ func streamingSurfaces(t *testing.T) (*registry.Registry, http.Handler, http.Han
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
 	channels := wake.NewChannelDriver()
 	gate := wake.New(store, registry.DefaultWakeLimits(), channels)
-	server := NewServer(store, nil, heartbeats, node,
-		WithWaker(gate), WithChannelSubscriber(channels))
+	options := append([]Option{WithWaker(gate), WithChannelSubscriber(channels)}, extra...)
+	server := NewServer(store, nil, heartbeats, node, options...)
 	return store, server.Handler(), server.PeerHandler(), channels
 }
 
@@ -217,4 +219,151 @@ func waitFor(t *testing.T, done func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting")
+}
+
+// A quiet poll answers through a real http.Server carrying the node's own
+// timeouts.
+//
+// This is the seam nothing crossed. Every other test here calls the handler
+// directly, where no write deadline exists — and the shipped node set both the
+// deadline and the default poll to thirty seconds. Go arms the write deadline
+// when the request header is read, so the deadline always won: every quiet
+// poll was cut with nothing written, the subscriber backed off, and the
+// session spent most of its life unregistered. Measured against the binaries
+// before this test existed: wait=29s answered, wait=30s gave an empty reply.
+func TestAQuietPollAnswersThroughARealServerWithProductionTimeouts(t *testing.T) {
+	const writeTimeout = 4 * time.Second
+	store, handler, _, _ := streamingSurfaces(t, WithWriteTimeout(writeTimeout))
+	session := acceptingLocalSession(t, store, handler, "claude:listening")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      writeTimeout,
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	base := "http://" + listener.Addr().String()
+	client := &http.Client{Timeout: writeTimeout + 10*time.Second}
+
+	// Asking for longer than the deadline must not produce a poll that cannot
+	// answer: the node shortens it and says so.
+	response, err := client.Get(base + "/v1/sessions/" + session + "/wake-stream?wait=5m")
+	if err != nil {
+		t.Fatalf("a quiet poll over a real connection: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("a quiet poll answered %d", response.StatusCode)
+	}
+	used, err := time.ParseDuration(response.Header.Get("Agenthub-Wake-Wait"))
+	if err != nil {
+		t.Fatalf("the node did not say how long it waited: %v", err)
+	}
+	if used >= writeTimeout {
+		t.Errorf("the node held for %s against a %s write deadline; a poll that long is "+
+			"one that can never answer", used, writeTimeout)
+	}
+}
+
+// The wait a caller asks for is bounded on both sides.
+func TestTheWakeStreamRefusesAWaitOutsideItsRange(t *testing.T) {
+	store, owner, _, _ := streamingSurfaces(t)
+	session := acceptingLocalSession(t, store, owner, "claude:listening")
+	for _, value := range []string{"0s", "500ms", "6m", "-2s", "soon"} {
+		response := perform(t, owner, http.MethodGet,
+			"/v1/sessions/"+session+"/wake-stream?wait="+value, nil)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("wait=%s answered %d, want 400", value, response.Code)
+		}
+	}
+}
+
+// A session this node does not hold is refused rather than held open.
+//
+// localSession only parses the address, so any string of the right shape used
+// to buy a goroutine and a held connection. The endpoint is reachable by every
+// process on this machine.
+func TestTheWakeStreamRefusesASessionThisNodeDoesNotHold(t *testing.T) {
+	_, owner, _, _ := streamingSurfaces(t)
+	response := perform(t, owner, http.MethodGet,
+		"/v1/sessions/claude:never-heard-of-it/wake-stream?wait=1s", nil)
+	if response.Code != http.StatusNotFound {
+		t.Errorf("an invented session answered %d, want 404", response.Code)
+	}
+}
+
+// Held polls are bounded.
+func TestTheWakeStreamRefusesMoreThanItsShareOfSubscribers(t *testing.T) {
+	store, owner, _, channels := streamingSurfaces(t)
+	session := acceptingLocalSession(t, store, owner, "claude:listening")
+	// Fill the register directly: what the endpoint checks is how many are
+	// held, not who holds them.
+	held := make([]wake.Subscription, 0, MaxWakeSubscribers)
+	for i := range MaxWakeSubscribers {
+		held = append(held, channels.Subscribe(fmt.Sprintf("claude:filler-%d", i)))
+	}
+	t.Cleanup(func() {
+		for _, subscription := range held {
+			subscription.Close()
+		}
+	})
+
+	response := perform(t, owner, http.MethodGet,
+		"/v1/sessions/"+session+"/wake-stream?wait=1s", nil)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Errorf("the %dth subscriber answered %d, want 503",
+			MaxWakeSubscribers+1, response.Code)
+	}
+}
+
+// Draining ends a held poll, so a shutdown finishes inside its budget.
+//
+// http.Server.Shutdown waits for handlers to return and does not cancel their
+// contexts, so one held poll kept the node alive to its own deadline — the
+// shutdown then reported a timeout and the peer listener was never closed.
+func TestDrainingEndsAHeldPoll(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, t.TempDir()+"/agenthub.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	channels := wake.NewChannelDriver()
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}),
+		node, WithChannelSubscriber(channels))
+	handler := server.Handler()
+	session := acceptingLocalSession(t, store, handler, "claude:listening")
+
+	answered := make(chan int, 1)
+	go func() {
+		request := httptest.NewRequest(http.MethodGet,
+			"/v1/sessions/"+session+"/wake-stream?wait=5m", nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		answered <- recorder.Code
+	}()
+	time.Sleep(200 * time.Millisecond)
+
+	started := time.Now()
+	server.Drain()
+	select {
+	case code := <-answered:
+		if code != http.StatusServiceUnavailable {
+			t.Errorf("a drained poll answered %d, want 503", code)
+		}
+		if elapsed := time.Since(started); elapsed > 5*time.Second {
+			t.Errorf("the poll took %s to notice the drain", elapsed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("draining did not end the held poll; every shutdown would time out")
+	}
+	// And draining twice is not a panic.
+	server.Drain()
 }

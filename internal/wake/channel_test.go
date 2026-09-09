@@ -3,6 +3,7 @@ package wake
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,8 +21,7 @@ func claudeSession() model.Session {
 // That is the whole reason the direction is inverted here: this node cannot
 // reach a Claude Code session, so the presence of a subscriber is the only
 // evidence it has that one exists. Reporting success with nobody there would
-// record a wake that could not have happened and lose the message from the
-// owner's attention.
+// record a wake that could not have happened.
 func TestDrivingASessionNobodyIsListeningForFails(t *testing.T) {
 	driver := NewChannelDriver()
 	if driver.Subscribed("claude:target") {
@@ -33,12 +33,15 @@ func TestDrivingASessionNobodyIsListeningForFails(t *testing.T) {
 	}
 }
 
-// A subscriber receives the envelope, with everything a reader needs to judge
-// it.
+// A subscriber receives the envelope, and Drive returns only once it has.
+//
+// The handoff is unbuffered on purpose: a buffered one made Drive returning
+// nil mean "queued", so a message could be recorded as a wake and then thrown
+// away with the channel it was sitting in.
 func TestASubscriberReceivesTheEnvelope(t *testing.T) {
 	driver := NewChannelDriver()
-	waiter, unsubscribe := driver.Subscribe("claude:target")
-	defer unsubscribe()
+	subscription := driver.Subscribe("claude:target")
+	defer subscription.Close()
 	if !driver.Subscribed("claude:target") {
 		t.Fatal("Subscribe did not register")
 	}
@@ -52,7 +55,7 @@ func TestASubscriberReceivesTheEnvelope(t *testing.T) {
 	go func() { done <- driver.Drive(context.Background(), claudeSession(), sent) }()
 
 	select {
-	case got := <-waiter:
+	case got := <-subscription.Messages:
 		if got != sent {
 			t.Errorf("the subscriber received %+v", got)
 		}
@@ -64,15 +67,14 @@ func TestASubscriberReceivesTheEnvelope(t *testing.T) {
 	}
 }
 
-// Unsubscribing takes the session out of reach again, so a wake after an agent
-// exits fails rather than being handed to a channel nobody reads.
-func TestUnsubscribingEndsTheSubscription(t *testing.T) {
+// Closing takes the session out of reach again.
+func TestClosingEndsTheSubscription(t *testing.T) {
 	driver := NewChannelDriver()
-	_, unsubscribe := driver.Subscribe("claude:target")
-	unsubscribe()
+	subscription := driver.Subscribe("claude:target")
+	subscription.Close()
 
 	if driver.Subscribed("claude:target") {
-		t.Error("the session still has a subscriber after unsubscribing")
+		t.Error("the session still has a subscriber after closing")
 	}
 	if err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"}); !errors.Is(err, ErrNoSubscriber) {
 		t.Errorf("Drive() error = %v, want ErrNoSubscriber", err)
@@ -83,24 +85,26 @@ func TestUnsubscribingEndsTheSubscription(t *testing.T) {
 // one is told rather than left hanging until its deadline.
 func TestASecondSubscriberReplacesTheFirst(t *testing.T) {
 	driver := NewChannelDriver()
-	first, _ := driver.Subscribe("claude:target")
-	second, unsubscribe := driver.Subscribe("claude:target")
-	defer unsubscribe()
+	first := driver.Subscribe("claude:target")
+	second := driver.Subscribe("claude:target")
+	defer second.Close()
 
 	select {
-	case _, open := <-first:
-		if open {
-			t.Error("the displaced subscriber received an envelope")
-		}
+	case <-first.Done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the displaced subscriber was left hanging; its poll would wait out its deadline")
 	}
+	if !first.Displaced() {
+		t.Error("the displaced subscriber cannot tell it was displaced, so its poll " +
+			"cannot say so and would come back and displace the winner in turn")
+	}
+	if second.Displaced() {
+		t.Error("the live subscriber believes it was displaced")
+	}
 
-	go func() {
-		_ = driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
-	}()
+	go func() { _ = driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"}) }()
 	select {
-	case got := <-second:
+	case got := <-second.Messages:
 		if got.MessageID != "msg_1" {
 			t.Errorf("the live subscriber received %+v", got)
 		}
@@ -109,19 +113,18 @@ func TestASecondSubscriberReplacesTheFirst(t *testing.T) {
 	}
 }
 
-// Unsubscribing a waiter that has already been replaced must not unsubscribe
+// Closing a subscription that has already been replaced must not unsubscribe
 // its replacement.
-func TestAStaleUnsubscribeLeavesTheLiveSubscriberAlone(t *testing.T) {
+func TestAStaleCloseLeavesTheLiveSubscriberAlone(t *testing.T) {
 	driver := NewChannelDriver()
-	_, unsubscribeFirst := driver.Subscribe("claude:target")
-	_, unsubscribeSecond := driver.Subscribe("claude:target")
-	defer unsubscribeSecond()
+	first := driver.Subscribe("claude:target")
+	second := driver.Subscribe("claude:target")
+	defer second.Close()
 
-	// The first poll ends and cleans up after being displaced.
-	unsubscribeFirst()
+	first.Close()
 
 	if !driver.Subscribed("claude:target") {
-		t.Error("a stale unsubscribe removed the live subscriber; the session became " +
+		t.Error("a stale close removed the live subscriber; the session became " +
 			"unreachable while an agent was still listening")
 	}
 }
@@ -131,20 +134,105 @@ func TestAStaleUnsubscribeLeavesTheLiveSubscriberAlone(t *testing.T) {
 func TestASubscriberThatDoesNotCollectTimesOut(t *testing.T) {
 	driver := NewChannelDriver()
 	driver.handoff = 50 * time.Millisecond
-	// Registered, and nothing reads from it. The buffer of one is filled by
-	// the first message so the second has nowhere to go.
-	_, unsubscribe := driver.Subscribe("claude:target")
-	defer unsubscribe()
-	if err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"}); err != nil {
-		t.Fatalf("the first message was not buffered: %v", err)
-	}
+	subscription := driver.Subscribe("claude:target")
+	defer subscription.Close()
 
 	started := time.Now()
-	err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_2"})
+	err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
 	if err == nil {
-		t.Fatal("a subscriber that never collects took a second message")
+		t.Fatal("a subscriber that never collects took the message")
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Errorf("the handoff waited %s", elapsed)
+	}
+}
+
+// A subscription that ends mid-handoff fails the drive rather than crashing.
+//
+// The driver used to close the channel a Drive might be sending on, and a send
+// on a closed channel panics — on the bare goroutine the wake runs on, with no
+// recover anywhere, so it took the whole node down. A peer sending as a poll
+// turned over was enough, and a poll turns over every half minute.
+func TestASubscriptionEndingMidHandoffFailsRatherThanPanics(t *testing.T) {
+	driver := NewChannelDriver()
+	driver.handoff = 2 * time.Second
+	subscription := driver.Subscribe("claude:target")
+
+	failed := make(chan error, 1)
+	go func() {
+		failed <- driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
+	}()
+	// Let the drive commit to the send, then pull the subscription out from
+	// under it.
+	time.Sleep(100 * time.Millisecond)
+	subscription.Close()
+
+	select {
+	case err := <-failed:
+		if !errors.Is(err, ErrSubscriptionEnded) {
+			t.Errorf("Drive() error = %v, want ErrSubscriptionEnded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drive never noticed the subscription ending")
+	}
+}
+
+// The same, driven hard: closing and displacing while sends are in flight.
+//
+// Run under -race, this is the test that would have caught the panic.
+func TestTheHandoffSurvivesSubscribersComingAndGoing(t *testing.T) {
+	driver := NewChannelDriver()
+	driver.handoff = 20 * time.Millisecond
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg"})
+			}
+		}()
+	}
+	for range 500 {
+		subscription := driver.Subscribe("claude:target")
+		select {
+		case <-subscription.Messages:
+		default:
+		}
+		subscription.Close()
+	}
+	close(stop)
+	wg.Wait()
+}
+
+// Waiting counts what is held, so the endpoint can refuse to hold an unbounded
+// number of them.
+func TestWaitingCountsLiveSubscriptions(t *testing.T) {
+	driver := NewChannelDriver()
+	if driver.Waiting() != 0 {
+		t.Fatalf("a fresh driver is holding %d", driver.Waiting())
+	}
+	first := driver.Subscribe("claude:one")
+	second := driver.Subscribe("claude:two")
+	if driver.Waiting() != 2 {
+		t.Errorf("Waiting() = %d, want 2", driver.Waiting())
+	}
+	// A replacement is not an addition.
+	third := driver.Subscribe("claude:two")
+	if driver.Waiting() != 2 {
+		t.Errorf("Waiting() = %d after a replacement, want 2", driver.Waiting())
+	}
+	first.Close()
+	second.Close()
+	third.Close()
+	if driver.Waiting() != 0 {
+		t.Errorf("Waiting() = %d after everything closed", driver.Waiting())
 	}
 }
