@@ -17,14 +17,42 @@ import (
 	"agenthub.local/agenthub/internal/wake"
 )
 
+// Conversation is the part of a Codex connection this driver uses.
+//
+// An interface, not the concrete client, because everything this package
+// claims lives in which calls it makes and with what — resume before start,
+// the body as untrusted context, the trigger recorded. With a concrete
+// dependency none of that could be tested without a live app-server, and
+// mutation testing found the consequence: deleting the resume, deleting the
+// untrusted marking, and flipping the kind to "application" all passed.
+type Conversation interface {
+	ResumeThread(ctx context.Context, threadID string) (codexapp.ResumeResult, error)
+	StartTurn(ctx context.Context, params codexapp.StartTurnParams) (codexapp.TurnResult, error)
+}
+
+// Connector hands out a connection, opening one if there is not one.
+type Connector interface {
+	Conversation(ctx context.Context) (Conversation, error)
+}
+
 // Driver drives Codex threads.
 type Driver struct {
-	supervisor *codexapp.Supervisor
+	connect Connector
 }
 
 // New returns a driver over a supervisor.
 func New(supervisor *codexapp.Supervisor) *Driver {
-	return &Driver{supervisor: supervisor}
+	return &Driver{connect: supervised{supervisor}}
+}
+
+// NewWith returns a driver over any connector, for tests.
+func NewWith(connector Connector) *Driver { return &Driver{connect: connector} }
+
+// supervised adapts a Supervisor to Connector.
+type supervised struct{ supervisor *codexapp.Supervisor }
+
+func (s supervised) Conversation(ctx context.Context) (Conversation, error) {
+	return s.supervisor.Client(ctx)
 }
 
 // Provider says which sessions this driver serves.
@@ -35,7 +63,7 @@ func (d *Driver) Drive(ctx context.Context, session model.Session, envelope wake
 	if session.ProviderSessionID == "" {
 		return fmt.Errorf("session %q has no Codex thread id", session.ID)
 	}
-	client, err := d.supervisor.Client(ctx)
+	client, err := d.connect.Conversation(ctx)
 	if err != nil {
 		return err
 	}

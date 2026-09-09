@@ -58,7 +58,13 @@ cannot be read as a grant.
 
 Refused rather than left unanswered. An ignored request wedges the session on a
 prompt the owner never saw; a refusal lets the agent carry on and say what it
-could not do.
+could not do. The same reasoning decides *which* refusal: `denied` rather than
+`abort` for the older pair, because abort halts the turn until the user's next
+command and there is no user, and `decline` rather than `cancel` for the newer
+ones for the same reason.
+
+Anything the protocol adds after this was written falls to the same error. A
+request this node does not recognise is one nobody is present to answer.
 
 The consequence to state plainly: **a woken turn can think and can answer, and
 cannot acquire anything it did not already have.** It runs with exactly the
@@ -81,19 +87,40 @@ Claude Code channel (#57) can only be *shown*.
 Two machines that both wake automatically will answer each other until somebody
 notices, and what that burns is money.
 
-The **per-pair limit** is the sound one: three wakes per (source session,
-destination session) in ten minutes, counted and inserted in a single
-transaction so two concurrent arrivals cannot both take the last slot. It
-depends on nothing but this node's own records.
+The **per-pair limit** is the sound one: three wakes per (source, destination
+session) in ten minutes, counted and inserted in a single transaction so two
+concurrent arrivals cannot both take the last slot.
+
+Its key is the node id the envelope's signature proves, and never the session
+label the sender writes. The first draft of this ADR claimed the limit could
+not be evaded, while the code keyed it on `payload.From` — which the sender
+chooses. A review demonstrated the consequence: one peer took the same agent
+from 3 wakes to 12 by varying that string and changing nothing else, and the
+real bound turned out to be the node-wide limit, twenty times what this section
+described. Keying on the node means a peer's sessions share one bucket, which
+is the point — what is being limited is how fast that machine may make this
+agent move, and the machine is the only part of the claim this node can check.
+
+A message that never left this machine gets a `local` bucket. Not the empty
+key, which would mean "count every source" — the session limit wearing the pair
+limit's name — and would charge a local send against every peer sharing its
+destination. It had no bucket at all in the first draft, and no hops either, so
+two sessions here could answer each other unbounded.
 
 The **hop count** is a heuristic and is documented as one. Nothing links an
 agent's decision to send to the message that woke it: the agent calls
 `agent_send` like any other caller and no provider reports why. So the chain is
-reconstructed by proximity — a send within fifteen minutes of a wake carries
-that wake's count plus one. It over-counts a person typing during the window
-and under-counts an agent that thinks for longer. Over-counting stops an
-exchange early, which is the safe direction, and hops exist for the cycle a
-pair limit cannot see: A to B to C to A.
+reconstructed by proximity — the first message a session sends within fifteen
+minutes of being woken carries that wake's count plus one.
+
+The first message, not every message in the window: a wake is claimed once.
+Before that, one wake tainted everything a session sent for fifteen minutes, so
+a person typing five minutes later had their own message refused at the far end
+by a hop limit, with the refusal landing on a trail they cannot read.
+
+It still mis-attributes — a person typing immediately after a wake is counted,
+an agent slower than the window is not — and hops exist for the cycle a pair
+limit cannot see: A to B to C to A.
 
 Anyone reasoning about whether a loop is bounded should reason about the pair
 limit. The hop count is a second net with holes in it.

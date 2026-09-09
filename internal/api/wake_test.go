@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"sync"
@@ -277,5 +278,62 @@ func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
 	seen = waker.messages()
 	if last := seen[len(seen)-1]; last.WakeHops != 0 {
 		t.Errorf("a send from a session nobody woke carries %d hops", last.WakeHops)
+	}
+}
+
+// The trail is readable, and it is the owner's alone.
+//
+// Untested until now: deleting the route registration passed the whole suite,
+// which would have shipped a feature whose entire purpose is to let an owner
+// see what moved their agent, with no way to see it.
+func TestTheWakeTrailIsReadableAndOwnerOnly(t *testing.T) {
+	ctx := context.Background()
+	store, owner, peers, _ := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:watched")
+	if _, err := store.RecordWake(ctx, registry.WakeEvent{
+		MessageID: "msg_1", SourceNodeID: peerNodeID, SourceSession: peerNodeID + "/codex:theirs",
+		DestinationSession: session, Hops: 1, Outcome: registry.WakeRefusedPair,
+		Detail: "3 in the last 10m0s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := perform(t, owner, http.MethodGet, "/v1/wakes", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/wakes = %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Wakes  []registry.WakeEvent `json:"wakes"`
+		Limits map[string]any       `json:"limits"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Wakes) != 1 || body.Wakes[0].Outcome != registry.WakeRefusedPair {
+		t.Fatalf("wakes = %+v", body.Wakes)
+	}
+	// A refusal is only legible beside the rule that produced it.
+	for _, key := range []string{"hops", "pair", "pairWindow", "session", "node"} {
+		if _, ok := body.Limits[key]; !ok {
+			t.Errorf("the limits do not name %q, so a refusal cannot be judged", key)
+		}
+	}
+
+	// Scoped to one session, and a limit that is not a number is refused
+	// rather than silently ignored.
+	scoped := perform(t, owner, http.MethodGet, "/v1/wakes?session="+session, nil)
+	if scoped.Code != http.StatusOK {
+		t.Errorf("scoped read = %d %s", scoped.Code, scoped.Body.String())
+	}
+	if bad := perform(t, owner, http.MethodGet, "/v1/wakes?limit=0", nil); bad.Code != http.StatusBadRequest {
+		t.Errorf("limit=0 = %d, want 400", bad.Code)
+	}
+
+	// And it is not on the peer surface. The trail names which peers made this
+	// machine move, which is exactly what a peer must not be able to read.
+	if fromPeer := perform(t, peers, http.MethodGet, "/v1/wakes", nil); fromPeer.Code == http.StatusOK {
+		t.Errorf("a peer read the wake trail: %d %s", fromPeer.Code, fromPeer.Body.String())
 	}
 }

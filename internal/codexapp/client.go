@@ -44,9 +44,10 @@ type Client struct {
 	// onNotify observes the stream. Nil ignores it.
 	onNotify func(method string, params json.RawMessage)
 
-	done      chan struct{}
-	closeOnce sync.Once
-	readErr   atomic.Pointer[error]
+	done           chan struct{}
+	closeOnce      sync.Once
+	closeTransport sync.Once
+	readErr        atomic.Pointer[error]
 }
 
 // RequestHandler answers a request the server made of the client.
@@ -88,10 +89,16 @@ func NewClientWithOptions(transport io.ReadWriter, options Options) *Client {
 }
 
 // Close stops the reader and closes the transport if it owns one.
+//
+// The two are separate once: a reader that ended on its own has closed `done`
+// already, and sharing one sync.Once with it meant Close then did nothing at
+// all — the transport stayed open and the process behind it stayed running.
+// Closing the transport is also what unblocks a reader still parked in Read,
+// which is the only thing that can.
 func (c *Client) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
 	var err error
-	c.closeOnce.Do(func() {
-		close(c.done)
+	c.closeTransport.Do(func() {
 		if c.closer != nil {
 			err = c.closer.Close()
 		}
@@ -118,8 +125,14 @@ func (c *Client) read() {
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
+		// The id is raw, because RequestId in the protocol schema is
+		// `string | int64`. Decoding it as a number dropped every frame with
+		// a string id as unreadable — including, if the server ever sends
+		// one, an approval request. An unanswered approval wedges the turn on
+		// a prompt nobody is present to see, which is the one failure this
+		// whole handler exists to avoid.
 		var frame struct {
-			ID     *int64          `json:"id"`
+			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 			Result json.RawMessage `json:"result"`
@@ -135,14 +148,16 @@ func (c *Client) read() {
 			log.Printf("codexapp: skipping an unreadable frame: %v", err)
 			continue
 		}
+		hasID := len(frame.ID) > 0 && string(frame.ID) != "null"
 		switch {
-		case frame.ID != nil && frame.Method != "":
+		case hasID && frame.Method != "":
 			// A request from the server. Answered on its own goroutine: a
 			// handler that blocks must not stop the reader, or the answer it
-			// is waiting for could never arrive.
-			go c.answer(*frame.ID, frame.Method, frame.Params)
-		case frame.ID != nil:
-			c.deliver(*frame.ID, frame)
+			// is waiting for could never arrive. The id is echoed verbatim,
+			// so whatever shape it had comes back unchanged.
+			go c.answer(frame.ID, frame.Method, frame.Params)
+		case hasID:
+			c.deliver(frame.ID, frame)
 		case frame.Method != "":
 			if c.onNotify != nil {
 				c.onNotify(frame.Method, frame.Params)
@@ -175,8 +190,8 @@ func (c *Client) stop() {
 	}
 }
 
-func (c *Client) deliver(id int64, frame struct {
-	ID     *int64          `json:"id"`
+func (c *Client) deliver(rawID json.RawMessage, frame struct {
+	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
 	Result json.RawMessage `json:"result"`
@@ -186,6 +201,12 @@ func (c *Client) deliver(id int64, frame struct {
 	} `json:"error"`
 },
 ) {
+	// Only this client's own calls are waited on, and it numbers those, so a
+	// response whose id is not one of ours is for nobody here.
+	var id int64
+	if err := json.Unmarshal(rawID, &id); err != nil {
+		return
+	}
 	c.pendingMu.Lock()
 	waiter, ok := c.pending[id]
 	delete(c.pending, id)
@@ -207,7 +228,7 @@ func (c *Client) deliver(id int64, frame struct {
 }
 
 // answer replies to a request the server made.
-func (c *Client) answer(id int64, method string, params json.RawMessage) {
+func (c *Client) answer(id json.RawMessage, method string, params json.RawMessage) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -221,23 +242,23 @@ func (c *Client) answer(id int64, method string, params json.RawMessage) {
 		return
 	}
 	if err := c.write(struct {
-		ID     int64 `json:"id"`
-		Result any   `json:"result"`
+		ID     json.RawMessage `json:"id"`
+		Result any             `json:"result"`
 	}{ID: id, Result: result}); err != nil {
 		log.Printf("codexapp: cannot answer %s: %v", method, err)
 	}
 }
 
-func (c *Client) writeError(id int64, message string) {
+func (c *Client) writeError(id json.RawMessage, message string) {
 	type rpcError struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	}
 	if err := c.write(struct {
-		ID    int64    `json:"id"`
-		Error rpcError `json:"error"`
+		ID    json.RawMessage `json:"id"`
+		Error rpcError        `json:"error"`
 	}{ID: id, Error: rpcError{Code: -32000, Message: message}}); err != nil {
-		log.Printf("codexapp: cannot refuse request %d: %v", id, err)
+		log.Printf("codexapp: cannot refuse request %s: %v", id, err)
 	}
 }
 

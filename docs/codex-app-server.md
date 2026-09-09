@@ -50,13 +50,29 @@ history, without taking AgentHub's audit trail on trust.
 
 **Nobody is present, so nothing is approved.** A woken turn runs unattended and
 Codex asks before it runs a command, changes a file, or widens its permissions.
-Every such request is refused: a typed `decline` for
-`item/commandExecution/requestApproval` and `item/fileChange/requestApproval`,
-`abort` for the older `execCommandApproval` and `applyPatchApproval`, and a
-JSON-RPC error for the rest. `PermissionsRequestApprovalResponse` has no denial
-variant at all — its only shape is a granted profile — so an error is the only
-answer to it that cannot be read as a grant. Refused rather than ignored: an
-unanswered request wedges the session on a prompt the owner never saw.
+Every such request is refused, with the typed refusal where the response shape
+has one:
+
+| request | answer |
+|---|---|
+| `item/commandExecution/requestApproval` | `decision: decline` |
+| `item/fileChange/requestApproval` | `decision: decline` |
+| `execCommandApproval`, `applyPatchApproval` | `decision: {denied: {rejection}}` |
+| `mcpServer/elicitation/request` | `action: decline` |
+| `item/permissions/requestApproval` | JSON-RPC error |
+| `item/tool/requestUserInput` | JSON-RPC error |
+| anything else | JSON-RPC error |
+
+`decline` rather than `cancel`, and `denied` rather than `abort`: the second of
+each pair halts the turn until the user's next command, and there is no user.
+The two that get an error have no refusal in their result shape at all —
+`PermissionsRequestApprovalResponse` requires a granted profile, so any result
+is a grant.
+
+Refused rather than ignored: an unanswered request wedges the session on a
+prompt the owner never saw. That is also why the reader takes a request id as
+raw JSON — `RequestId` is `string | int64`, and decoding it as a number dropped
+a string-id request as unreadable, answering nothing.
 
 ## Managed or unmanaged
 

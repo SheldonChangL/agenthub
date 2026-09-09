@@ -107,9 +107,14 @@ func (c *Client) StartTurn(ctx context.Context, params StartTurnParams) (TurnRes
 // A refusal lets the agent carry on and say what it could not do.
 //
 // The typed decline is used where the response has one, and a JSON-RPC error
-// where it does not: PermissionsRequestApprovalResponse has no denial variant
-// at all — its only shape is a granted profile — so an error is the only
-// answer to it that cannot be read as a grant.
+// where it does not. Only two have no refusal in their result shape:
+// PermissionsRequestApprovalResponse, whose only shape is a granted profile,
+// and ToolRequestUserInputResponse, which is a map of answers. An error is the
+// only answer to those that cannot be read as a grant.
+//
+// Everything not named — including anything added to the protocol after this
+// was written — falls to the same error. A request this node does not
+// recognise is one nobody is present to answer.
 func RefuseUnattendedApprovals(reason string) RequestHandler {
 	if reason == "" {
 		reason = "this turn was started automatically by AgentHub and nobody is present to approve anything"
@@ -121,16 +126,23 @@ func RefuseUnattendedApprovals(reason string) RequestHandler {
 			// this one thing and lets the agent report what it could not do.
 			return map[string]any{"decision": "decline"}, nil
 		case "execCommandApproval", "applyPatchApproval":
-			// The older pair, whose ReviewDecision has no decline — abort is
-			// its refusal.
-			return map[string]any{"decision": "abort"}, nil
-		case "item/permissions/requestApproval", "item/tool/requestUserInput",
-			"mcpServer/elicitation/request":
+			// ReviewDecision's refusal is `denied`, not `abort`: denied means
+			// "do not execute it, but continue the session", while abort halts
+			// the turn until the user's next command — which for a turn with
+			// no user is a wedge. An earlier version used abort and said
+			// ReviewDecision had no decline; it does.
+			return map[string]any{"decision": map[string]any{
+				"denied": map[string]any{"rejection": reason},
+			}}, nil
+		case "mcpServer/elicitation/request":
+			// It has a typed decline too.
+			return map[string]any{"action": "decline"}, nil
+		case "item/permissions/requestApproval", "item/tool/requestUserInput":
+			// These have no refusal in their result shape.
+			// PermissionsRequestApprovalResponse requires a granted profile —
+			// its only shape is a grant — so an error is the only answer that
+			// cannot be read as one.
 			return nil, fmt.Errorf("%s refused: %s", method, reason)
-		case "currentTime/read":
-			// Not a permission. Refusing it would break a turn for no gain,
-			// and it discloses nothing a peer could not guess.
-			return nil, fmt.Errorf("%s is not answered by agenthub", method)
 		}
 		return nil, fmt.Errorf("%s refused: %s", method, reason)
 	}
