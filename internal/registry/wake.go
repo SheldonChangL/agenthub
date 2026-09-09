@@ -132,6 +132,44 @@ CREATE INDEX IF NOT EXISTS idx_wake_events_at
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate wake events: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS does not revisit a table that already exists,
+	// and neither does CREATE INDEX — so a database written by an earlier
+	// build of this same branch opened without complaint and then failed every
+	// wake with "no such column: pair_key", permanently, with only a log line.
+	// It fails closed, which is the right direction and not a reason to leave
+	// it: every other column added here has this path.
+	added := []string{}
+	for _, column := range []struct{ name, definition string }{
+		{"pair_key", "TEXT NOT NULL DEFAULT 'local'"},
+		{"chain_used", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		has, err := r.hasColumn(ctx, "wake_events", column.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := r.db.ExecContext(ctx,
+			fmt.Sprintf("ALTER TABLE wake_events ADD COLUMN %s %s", column.name, column.definition),
+		); err != nil {
+			return fmt.Errorf("add wake events column %q: %w", column.name, err)
+		}
+		added = append(added, column.name)
+	}
+	if len(added) > 0 {
+		// The pair index was created over the old columns and CREATE INDEX IF
+		// NOT EXISTS will not replace one that exists under the same name — so
+		// after adding pair_key the index still covers source_session, and
+		// every reservation on this node scans the table for the rest of its
+		// life. Dropped and rebuilt rather than left to rot quietly.
+		if _, err := r.db.ExecContext(ctx, `
+DROP INDEX IF EXISTS idx_wake_events_pair;
+CREATE INDEX IF NOT EXISTS idx_wake_events_pair
+    ON wake_events(pair_key, destination_session, at_ms DESC);`); err != nil {
+			return fmt.Errorf("rebuild the wake events pair index: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -355,49 +393,60 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // the far end with a hop-limit refusal they had no way to see.
 const WakeAttributionWindow = 15 * time.Minute
 
-// LastWakeHops reports the hop count a message from this session should carry,
-// and claims the wake it came from so nothing else can inherit it.
+// PeekWakeChain reports the hop count a message from this session should
+// carry, and the id of the wake it came from, without claiming it.
 //
-// Zero when there is no unclaimed wake in the window: the answer for a person
-// typing into their own agent, for a second message after a reply has already
-// been attributed, and whenever this cannot tell.
-func (r *Registry) LastWakeHops(ctx context.Context, sessionID string, now time.Time) (int, error) {
+// Two calls rather than one because the claim must not be spent on a message
+// that then fails to send. Spent eagerly, a woken agent could zero its own
+// chain by addressing one throwaway message at a session that does not exist:
+// the send is refused, the claim is gone, and its real reply goes out at zero
+// hops.
+//
+// Zero and "" when there is no unclaimed wake in the window: the answer for a
+// person typing into their own agent, for a second message after a reply has
+// already been attributed, and whenever this cannot tell.
+func (r *Registry) PeekWakeChain(ctx context.Context, sessionID string, now time.Time) (int, string, error) {
 	if sessionID == "" {
-		return 0, nil
+		return 0, "", nil
 	}
-	transaction, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin hop attribution: %w", err)
-	}
-	defer func() { _ = transaction.Rollback() }()
-
-	var rowID int64
+	var id string
 	var hops int
 	// rowid, not id, for the tie-break. Ids are random hex, so ordering by
 	// them picks arbitrarily between two wakes in the same millisecond —
 	// measured returning 4 from a pair recorded at 0 and 3. rowid is issued in
 	// insert order, which is the order that actually happened.
-	err = transaction.QueryRowContext(ctx, `
-SELECT rowid, hops FROM wake_events
+	err := r.db.QueryRowContext(ctx, `
+SELECT id, hops FROM wake_events
 WHERE destination_session = ? AND outcome = ? AND chain_used = 0 AND at_ms >= ?
 ORDER BY at_ms DESC, rowid DESC LIMIT 1`,
 		sessionID, string(WakeWoken),
-		now.Add(-WakeAttributionWindow).UTC().UnixMilli()).Scan(&rowID, &hops)
+		now.Add(-WakeAttributionWindow).UTC().UnixMilli()).Scan(&id, &hops)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+		return 0, "", nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read the last wake of %q: %w", sessionID, err)
-	}
-	if _, err := transaction.ExecContext(ctx,
-		`UPDATE wake_events SET chain_used = 1 WHERE rowid = ?`, rowID); err != nil {
-		return 0, fmt.Errorf("claim the wake of %q: %w", sessionID, err)
-	}
-	if err := transaction.Commit(); err != nil {
-		return 0, fmt.Errorf("commit hop attribution: %w", err)
+		return 0, "", fmt.Errorf("read the last wake of %q: %w", sessionID, err)
 	}
 	// One more than the wake that caused it.
-	return hops + 1, nil
+	return hops + 1, id, nil
+}
+
+// ClaimWakeChain marks a wake as inherited, so nothing else can inherit it.
+//
+// Called after the message that inherited it is safely stored. Claiming an
+// already-claimed wake is not an error: two sends racing for one chain is the
+// same "at most one inherits it" outcome either way, and the loser carrying a
+// hop count that is one too high stops an exchange early, which is the safe
+// direction.
+func (r *Registry) ClaimWakeChain(ctx context.Context, wakeID string) error {
+	if wakeID == "" {
+		return nil
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE wake_events SET chain_used = 1 WHERE id = ?`, wakeID); err != nil {
+		return fmt.Errorf("claim the wake %q: %w", wakeID, err)
+	}
+	return nil
 }
 
 // ListWakes returns the most recent wake events, newest first.
@@ -417,7 +466,10 @@ FROM wake_events`
 		query += ` WHERE destination_session = ?`
 		arguments = append(arguments, sessionID)
 	}
-	query += ` ORDER BY at_ms DESC, id DESC LIMIT ?`
+	// rowid, not id: ids are random hex, so two wakes in the same millisecond
+	// come back in an arbitrary order — and "newest first" is the whole
+	// contract of this listing. rowid is issued in insert order.
+	query += ` ORDER BY at_ms DESC, rowid DESC LIMIT ?`
 	arguments = append(arguments, limit)
 
 	rows, err := r.db.QueryContext(ctx, query, arguments...)

@@ -3,6 +3,8 @@ package registry
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -354,8 +356,11 @@ func TestOneWakeIsInheritedByOneMessageOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first, err := store.LastWakeHops(ctx, "claude:mine", now)
+	first, chain, err := store.PeekWakeChain(ctx, "claude:mine", now)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ClaimWakeChain(ctx, chain); err != nil {
 		t.Fatal(err)
 	}
 	if first != 3 {
@@ -363,7 +368,7 @@ func TestOneWakeIsInheritedByOneMessageOnly(t *testing.T) {
 	}
 	// Anything the session sends afterwards is its own doing until it is woken
 	// again.
-	second, err := store.LastWakeHops(ctx, "claude:mine", now)
+	second, _, err := store.PeekWakeChain(ctx, "claude:mine", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +383,7 @@ func TestOneWakeIsInheritedByOneMessageOnly(t *testing.T) {
 	if _, err := store.ReserveWake(ctx, next, DefaultWakeLimits()); err != nil {
 		t.Fatal(err)
 	}
-	again, err := store.LastWakeHops(ctx, "claude:mine", now)
+	again, _, err := store.PeekWakeChain(ctx, "claude:mine", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,11 +413,82 @@ func TestWakesInTheSameMillisecondAreOrderedByWhatHappened(t *testing.T) {
 		}
 	}
 	// The second insert is the later wake, so its 3 is the one to inherit.
-	got, err := store.LastWakeHops(ctx, "claude:mine", sameMoment)
+	got, _, err := store.PeekWakeChain(ctx, "claude:mine", sameMoment)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != 4 {
 		t.Errorf("hops = %d, want 4 from the wake that was recorded second", got)
+	}
+}
+
+// A wake trail written by an earlier build gains its new columns.
+//
+// CREATE TABLE IF NOT EXISTS does not revisit a table that exists, and neither
+// does CREATE INDEX — so such a database opened without complaint and then
+// failed every wake with "no such column: pair_key", permanently, with only a
+// log line to say so. It failed closed, which is the right direction and not a
+// reason to leave it.
+func TestAWakeTrailFromAnEarlierBuildGainsItsColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agenthub.db")
+	store := openRegistryAt(t, path)
+	event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	event.SourceNodeID = "node_peer0000000000000"
+	event.Hops = 1
+	if _, err := store.ReserveWake(ctx, event, DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+	// The old shape, index included: the index is what CREATE INDEX IF NOT
+	// EXISTS will decline to replace, so reproducing it is the point.
+	if _, err := store.db.ExecContext(ctx, `
+DROP INDEX idx_wake_events_pair;
+ALTER TABLE wake_events DROP COLUMN pair_key;
+ALTER TABLE wake_events DROP COLUMN chain_used;
+CREATE INDEX idx_wake_events_pair
+    ON wake_events(source_session, destination_session, at_ms DESC);`); err != nil {
+		t.Fatalf("could not reproduce the older schema: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := openRegistryAt(t, path)
+	// Everything that touches those columns has to work, not merely the open.
+	if _, err := reopened.ListWakes(ctx, "", 10); err != nil {
+		t.Errorf("ListWakes on an upgraded trail: %v", err)
+	}
+	if _, _, err := reopened.PeekWakeChain(ctx, "claude:mine", time.Now().UTC()); err != nil {
+		t.Errorf("PeekWakeChain on an upgraded trail: %v", err)
+	}
+	next := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	next.SourceNodeID = "node_peer0000000000000"
+	next.MessageID = "msg_after"
+	stored, err := reopened.ReserveWake(ctx, next, DefaultWakeLimits())
+	if err != nil {
+		t.Fatalf("ReserveWake on an upgraded trail: %v", err)
+	}
+	if stored.Outcome != WakeWoken {
+		t.Errorf("the first wake after an upgrade was refused as %q", stored.Outcome)
+	}
+	// The rows that predate the column read as local, which is the default and
+	// is wrong for a peer — but they are history, not a bucket anyone is
+	// counting into now.
+	if stored.PairKey() != "node:node_peer0000000000000" {
+		t.Errorf("a new wake after the upgrade is bucketed as %q", stored.PairKey())
+	}
+
+	// And the index covers what is now counted. Left over the old column, every
+	// reservation on this node would scan the table for the rest of its life.
+	var plan string
+	if err := reopened.db.QueryRowContext(ctx, `
+EXPLAIN QUERY PLAN SELECT count(*) FROM wake_events
+WHERE outcome = ? AND at_ms >= ? AND pair_key = ? AND destination_session = ?`,
+		string(WakeWoken), 0, "node:node_peer0000000000000", "claude:mine").Scan(
+		new(int), new(int), new(int), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "idx_wake_events_pair") {
+		t.Errorf("the pair count does not use the pair index after an upgrade: %s", plan)
 	}
 }

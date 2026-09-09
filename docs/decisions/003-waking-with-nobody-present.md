@@ -50,11 +50,11 @@ matter of the model's judgement.
 
 A woken Codex turn runs against an app-server that asks the client before it
 runs a command, changes a file, or widens its own permissions. There is no one
-to ask, so every such request is refused: a typed `decline` where the response
-shape has one, `abort` for the older pair, and a JSON-RPC error where it does
-not. `PermissionsRequestApprovalResponse` has no denial variant at all — its
-only shape is a granted profile — so an error is the only answer to it that
-cannot be read as a grant.
+to ask, so every such request is refused, with the typed refusal wherever the
+response shape has one and a JSON-RPC error where it does not. Only two have no refusal in their result shape:
+`PermissionsRequestApprovalResponse`, whose only shape is a granted profile,
+and `ToolRequestUserInputResponse`, which is a map of answers. For those an
+error is the only answer that cannot be read as a grant.
 
 Refused rather than left unanswered. An ignored request wedges the session on a
 prompt the owner never saw; a refusal lets the agent carry on and say what it

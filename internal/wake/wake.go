@@ -87,7 +87,7 @@ func New(store *registry.Registry, limits registry.WakeLimits, drivers ...Driver
 // a wake could not happen would turn a working inbox into a broken one, and
 // the sender would retry a message the recipient already holds. Everything
 // that goes wrong here is recorded and logged instead.
-func (g *Gate) Consider(ctx context.Context, message model.Message, senderFingerprint string) {
+func (g *Gate) Consider(ctx context.Context, message model.Message, senderNodeID, senderFingerprint string) {
 	session, err := g.store.GetSession(ctx, message.To)
 	if err != nil {
 		// Not an error worth recording: a message for a session that is not
@@ -105,10 +105,12 @@ func (g *Gate) Consider(ctx context.Context, message model.Message, senderFinger
 		return
 	}
 
-	sourceNode, sourceSession := splitSender(message.From)
 	event := registry.WakeEvent{
-		MessageID:          message.ID,
-		SourceNodeID:       sourceNode,
+		MessageID: message.ID,
+		// The node the envelope proved, not one parsed back out of the label.
+		// The label is the sender's, and a peer that omits `from` is stored
+		// with a bare node id that no parse can tell from a local send.
+		SourceNodeID:       senderNodeID,
 		SourceSession:      message.From,
 		DestinationSession: message.To,
 		Hops:               message.WakeHops,
@@ -147,8 +149,8 @@ func (g *Gate) Consider(ctx context.Context, message model.Message, senderFinger
 	if err := driver.Drive(ctx, session, Envelope{
 		MessageID:    message.ID,
 		Body:         message.Body,
-		SenderNodeID: sourceNode,
-		SenderLabel:  sourceSession,
+		SenderNodeID: senderNodeID,
+		SenderLabel:  message.From,
 		Fingerprint:  senderFingerprint,
 		Hops:         message.WakeHops,
 	}); err != nil {
@@ -173,18 +175,4 @@ func (g *Gate) settle(ctx context.Context, wakeID string, outcome registry.WakeO
 	if err := g.store.SettleWake(ctx, wakeID, outcome, detail); err != nil {
 		log.Printf("wake: cannot settle %s as %s: %v", wakeID, outcome, err)
 	}
-}
-
-// splitSender takes the node id out of a qualified sender label.
-//
-// The label is <node-id>/<provider>:<id> for a peer and bare for a local send.
-// Both halves are wanted: the node id is what a person compares against a
-// fingerprint, and the whole label is what the pair limit counts by.
-func splitSender(from string) (nodeID, label string) {
-	for i := 0; i < len(from); i++ {
-		if from[i] == '/' {
-			return from[:i], from
-		}
-	}
-	return "", from
 }
