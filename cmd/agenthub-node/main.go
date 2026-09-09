@@ -213,7 +213,6 @@ func run() error {
 	// the request header is read, so a poll as long as the deadline is a poll
 	// that can never answer — measured: at 30s against a 30s deadline, every
 	// quiet poll produced an empty reply instead of its 204.
-	const ownerWriteTimeout = 60 * time.Second
 	if *autoWake {
 		supervisor := codexapp.NewSupervisor(codexapp.SupervisorOptions{})
 		defer func() { _ = supervisor.Close() }()
@@ -234,15 +233,7 @@ func run() error {
 			"autoWake is also open (ah audience <id> ... --auto-wake)")
 	}
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
-	server := &http.Server{
-		Addr:              *listenAddress,
-		Handler:           apiServer.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      ownerWriteTimeout,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+	server := ownerServer(*listenAddress, apiServer.Handler())
 
 	// The peer surface is a second listener, over TLS, presenting this node's
 	// identity key. A peer verifies that key against what it recorded when
@@ -341,24 +332,9 @@ func run() error {
 			return err
 		}
 	case <-stop:
-		// Held requests first. Shutdown waits for handlers to return and does
-		// not cancel their contexts, so one wake stream held the node open to
-		// its own deadline — the shutdown then reported a timeout and the peer
-		// listener below was never closed at all.
-		apiServer.Drain()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		serverErr := server.Shutdown(shutdownCtx)
-		// Attempted whatever the first one did: a peer listener left open is a
-		// socket still accepting deliveries from the network after this
-		// process has decided to stop.
-		peerErr := peerServer.Shutdown(shutdownCtx)
-		if serverErr != nil {
-			return fmt.Errorf("shutdown server: %w", serverErr)
-		}
-		if peerErr != nil {
-			return fmt.Errorf("shutdown peer listener: %w", peerErr)
-		}
+		return shutDown(shutdownCtx, apiServer, server, peerServer)
 	}
 	return nil
 }
@@ -506,4 +482,58 @@ func wasSet(flags *flag.FlagSet, name string) bool {
 		}
 	})
 	return given
+}
+
+// ownerWriteTimeout is the deadline for a response on the owner listener.
+//
+// One number, shared with the API through WithWriteTimeout, because the wake
+// stream holds a request open and has to answer before this cuts it. Go arms
+// the write deadline when the request header is read, so a poll as long as the
+// deadline is a poll that can never answer: at 30s against a 30s deadline,
+// every quiet poll produced an empty reply instead of its 204.
+const ownerWriteTimeout = 60 * time.Second
+
+// ownerServer is the loopback listener the owner's own tools talk to.
+//
+// A function so the deadline it sets and the one the API is told about can be
+// checked against each other. They were two literals, and changing either
+// alone passed every test while putting the wake stream back to holding polls
+// past the deadline that cuts them.
+func ownerServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      ownerWriteTimeout,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+}
+
+// drainable is the part of the API server shutdown needs.
+type drainable interface{ Drain() }
+
+// shutDown ends held requests, then both listeners.
+//
+// Drain first: http.Server.Shutdown waits for handlers to return and does not
+// cancel their contexts, so one held wake stream kept the node alive to its
+// own deadline — the shutdown then reported a timeout and the peer listener
+// below was never closed at all. Measured: 5.08s and exit 1 without it, 0.10s
+// with it.
+//
+// Both listeners are attempted whatever the first one does. A peer listener
+// left open is a socket still accepting deliveries from the network after this
+// process has decided to stop.
+func shutDown(ctx context.Context, apiServer drainable, owner, peers *http.Server) error {
+	apiServer.Drain()
+	ownerErr := owner.Shutdown(ctx)
+	peerErr := peers.Shutdown(ctx)
+	if ownerErr != nil {
+		return fmt.Errorf("shutdown server: %w", ownerErr)
+	}
+	if peerErr != nil {
+		return fmt.Errorf("shutdown peer listener: %w", peerErr)
+	}
+	return nil
 }

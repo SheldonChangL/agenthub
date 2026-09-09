@@ -1,15 +1,20 @@
 package main
 
 import (
+	"agenthub.local/agenthub/internal/api"
+	"agenthub.local/agenthub/internal/model"
 	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/discovery"
 )
@@ -97,3 +102,95 @@ func TestWasSetDistinguishesAPassedFlagFromAnAbsentOne(t *testing.T) {
 		t.Error("an absent flag reads as passed, so every start would release the name")
 	}
 }
+
+// The deadline the owner listener sets is the one the API is told about.
+//
+// They were two literals in two places, and changing either alone passed every
+// test — while putting the wake stream back to holding a poll past the
+// deadline that cuts it, which is the bug that made the whole feature not work
+// in steady state. The API caps a poll below whatever it is told; if it is
+// told the wrong number, the cap is against the wrong deadline.
+func TestTheOwnerListenerAndTheAPIAgreeOnTheWriteDeadline(t *testing.T) {
+	server := ownerServer("127.0.0.1:0", http.NotFoundHandler())
+	if server.WriteTimeout != ownerWriteTimeout {
+		t.Errorf("the listener writes for %s and the API is told %s",
+			server.WriteTimeout, ownerWriteTimeout)
+	}
+	// And a poll capped against it leaves room to answer.
+	if api.NewServer(nil, nil, nil, model.NodeIdentity{},
+		api.WithWriteTimeout(ownerWriteTimeout)).WakeStreamWait(0) >= server.WriteTimeout {
+		t.Error("a poll may run to the connection deadline, so it can never answer")
+	}
+}
+
+// Shutdown ends held requests before waiting for handlers.
+//
+// http.Server.Shutdown waits for handlers to return and does not cancel their
+// contexts, so a held wake stream kept the node alive to its own deadline: the
+// shutdown reported a timeout and the peer listener was never closed. Nothing
+// pinned the Drain call, and deleting it passed the whole suite while taking
+// shutdown from 0.10s to 5.08s and exit 1.
+func TestShutdownDrainsBeforeWaiting(t *testing.T) {
+	drained := make(chan struct{})
+	held := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(held)
+		<-drained
+	})
+	owner := httptest.NewServer(handler)
+	defer owner.Close()
+	peers := httptest.NewServer(http.NotFoundHandler())
+	defer peers.Close()
+
+	go func() { _, _ = http.Get(owner.URL) }()
+	<-held
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := shutDown(ctx, drainer(func() { close(drained) }), owner.Config, peers.Config)
+	if err != nil {
+		t.Fatalf("shutDown() error = %v; a held request outlasted the budget", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Errorf("shutdown took %s with one held request", elapsed)
+	}
+}
+
+// Both listeners are closed even when the first shutdown fails.
+//
+// A peer listener left open is a socket still accepting deliveries from the
+// network after this process has decided to stop, and it was skipped by an
+// early return whenever the owner listener timed out.
+func TestShutdownClosesThePeerListenerEvenWhenTheOwnerOneFails(t *testing.T) {
+	stuck := make(chan struct{})
+	owner := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		<-stuck
+	}))
+	// Released before Close, not after: httptest.Server.Close waits for
+	// handlers, and a deferred close runs last.
+	defer func() { close(stuck); owner.Close() }()
+	peers := httptest.NewServer(http.NotFoundHandler())
+	peerURL := peers.URL
+	defer peers.Close()
+
+	reached := make(chan struct{})
+	go func() { close(reached); _, _ = http.Get(owner.URL) }()
+	<-reached
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	// A drainer that does nothing, so the owner shutdown really does time out.
+	if err := shutDown(ctx, drainer(func() {}), owner.Config, peers.Config); err == nil {
+		t.Fatal("a shutdown that could not finish reported success")
+	}
+	if _, err := http.Get(peerURL); err == nil {
+		t.Error("the peer listener is still accepting after shutdown; an early return " +
+			"on the owner listener's failure used to skip it entirely")
+	}
+}
+
+type drainer func()
+
+func (d drainer) Drain() { d() }

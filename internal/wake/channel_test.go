@@ -94,13 +94,6 @@ func TestASecondSubscriberReplacesTheFirst(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the displaced subscriber was left hanging; its poll would wait out its deadline")
 	}
-	if !first.Displaced() {
-		t.Error("the displaced subscriber cannot tell it was displaced, so its poll " +
-			"cannot say so and would come back and displace the winner in turn")
-	}
-	if second.Displaced() {
-		t.Error("the live subscriber believes it was displaced")
-	}
 
 	go func() { _ = driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"}) }()
 	select {

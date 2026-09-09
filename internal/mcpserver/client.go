@@ -629,7 +629,9 @@ func (c *Client) WaitForWake(ctx context.Context, sessionID string) (*ChannelPus
 		return &push, nil
 	case http.StatusNotFound:
 		// Either the node has no wake support or it does not have this
-		// session. Both mean stop polling, and the message says which.
+		// session. Both can change under a node that is restarting, so the
+		// caller waits and tries again rather than stopping; the message says
+		// which it was.
 		return nil, fmt.Errorf("%w: %s", ErrWakeUnavailable, strings.TrimSpace(string(body)))
 	case http.StatusConflict:
 		return nil, ErrWakeReplaced
