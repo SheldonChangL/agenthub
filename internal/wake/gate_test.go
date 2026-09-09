@@ -262,3 +262,50 @@ func TestEveryRefusalStopsTheDrive(t *testing.T) {
 		}
 	}
 }
+
+// The count the gate records is the one a reply inherits.
+//
+// This is the origin of the whole chain: PeekWakeChain reads it back and
+// returns it plus one, so a gate that records zero makes every leg of an
+// exchange go out at 1 and MaxWakeHops never fires at all. Deleting it left
+// the whole repository green — the API tests hand-write the value into
+// ReserveWake with a comment saying they are standing in for the gate, so the
+// producer was simulated and never observed.
+func TestTheRecordedHopCountIsWhatAReplyInherits(t *testing.T) {
+	ctx := context.Background()
+	store, driver, gate, session := gateFixture(t, true)
+
+	gate.Consider(ctx, arrived(session.ID, 3), peerNode, "fingerprint")
+	if driver.count() != 1 {
+		t.Fatalf("the driver was called %d times", driver.count())
+	}
+
+	events, err := store.ListWakes(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Hops != 3 {
+		t.Fatalf("the gate recorded %+v, want the 3 hops the message arrived with", events)
+	}
+	// And that is what the next message out of this session carries.
+	hops, chain, err := store.PeekWakeChain(ctx, session.ID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hops != 4 {
+		t.Errorf("a reply would go out at %d hops, want 4; the limit is %d and would never fire",
+			hops, protocol.MaxWakeHops)
+	}
+	if chain == "" {
+		t.Error("the reply has no chain to claim, so it can never be spent")
+	}
+
+	// The agent is told how far in it is, too — that is the sentence in its
+	// prompt warning that a reply may wake the other side again.
+	driver.mu.Lock()
+	told := driver.driven[0].Hops
+	driver.mu.Unlock()
+	if told != 3 {
+		t.Errorf("the driver was told %d hops", told)
+	}
+}

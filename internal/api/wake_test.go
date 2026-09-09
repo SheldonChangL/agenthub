@@ -275,6 +275,21 @@ func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
 			answered.WakeHops)
 	}
 
+	// And the wake is spent: the agent's next message is its own doing, not a
+	// second inheritance of the same wake. Without this a person typing five
+	// minutes later has their own message carried at the agent's count and
+	// refused at the far end, on a trail they cannot read.
+	again := perform(t, owner, http.MethodPost, "/v1/messages",
+		map[string]string{"to": other, "from": session, "body": "and again"})
+	if again.Code != http.StatusCreated {
+		t.Fatalf("second reply = %d %s", again.Code, again.Body.String())
+	}
+	waker.await(t, 1)
+	seen = waker.messages()
+	if last := seen[len(seen)-1]; last.WakeHops != 0 {
+		t.Errorf("a second message inherited the same wake and carries %d hops", last.WakeHops)
+	}
+
 	// A session nobody woke sends at zero, so a person typing is not counted
 	// into somebody else's exchange.
 	fresh := perform(t, owner, http.MethodPost, "/v1/messages",
@@ -440,6 +455,35 @@ func TestTheHopCountReachesTheOutboundQueue(t *testing.T) {
 		t.Errorf("the message crossing to the peer carries %d hops, want 2: it answers one "+
 			"that arrived at 1, and a loop between two nodes is what the count is for",
 			queued[0].WakeHops)
+	}
+
+	// And spent, on this path too. The two paths claim in different files, and
+	// only the failed direction was asserted on either.
+	second := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": peerNodeID + "/codex:theirs", "from": session, "body": "and again",
+	})
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second reply = %d %s", second.Code, second.Body.String())
+	}
+	queued, err = store.PendingOutbound(ctx, peerNodeID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("the queue holds %d messages", len(queued))
+	}
+	// By body, not by index: both were queued in the same millisecond and the
+	// listing breaks that tie on a random id, so queued[1] is a coin flip.
+	byBody := map[string]int{}
+	for _, message := range queued {
+		byBody[message.Body] = message.WakeHops
+	}
+	if byBody["answering"] != 2 {
+		t.Errorf("the first reply carries %d hops, want 2", byBody["answering"])
+	}
+	if byBody["and again"] != 0 {
+		t.Errorf("a second message inherited the same wake and carries %d hops",
+			byBody["and again"])
 	}
 }
 

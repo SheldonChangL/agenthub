@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"agenthub.local/agenthub/internal/model"
 )
 
 func wakeEvent(source, destination string) WakeEvent {
@@ -404,12 +406,14 @@ func TestWakesInTheSameMillisecondAreOrderedByWhatHappened(t *testing.T) {
 	store := openTestRegistry(t)
 	sameMoment := time.Now().UTC().Truncate(time.Millisecond)
 
-	// Six rows, not two. With a random-hex tie-break two rows come out right
-	// half the time, so a two-row version of this passed eleven runs in thirty
-	// against code ordering by id — a test that reports a coin flip.
+	// Ids that descend as insert order ascends, so ordering by id gives the
+	// exact opposite answer and the mutant dies every run. Six random-hex rows
+	// would still be a one-in-six pin — a test that mostly reports the bug is
+	// a test that sometimes reports the opposite.
 	for i := range 6 {
 		event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
 		event.SourceNodeID = "node_peer0000000000000"
+		event.ID = fmt.Sprintf("wake_%06d", 6-i)
 		event.MessageID = fmt.Sprintf("msg_%d", i)
 		event.Hops, event.At = i, sameMoment
 		event.Outcome = WakeWoken
@@ -591,3 +595,58 @@ func TestTheTrailReadsNewestFirstWithinAMillisecond(t *testing.T) {
 }
 
 func ordinal(n int) string { return fmt.Sprintf("#%d", n+1) }
+
+// The hop count a message was stored with is the one that comes back.
+//
+// Three places write it — the peer path, the local path, and the send queue —
+// and nothing asserted any of them. Zeroing any write, or dropping the column
+// from either read, left the whole repository green. It is what the gate reads
+// when it decides whether an exchange has gone far enough, so a count that
+// does not survive storage is a limit that never fires.
+func TestAStoredMessageKeepsItsHopCount(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	session := acceptingSession(t, store)
+
+	created, err := store.CreateMessage(ctx, model.Message{
+		To: session.ID, From: "codex:mine", DestinationNodeID: testNodeID,
+		Body: "local", WakeHops: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.WakeHops != 2 {
+		t.Errorf("CreateMessage returned %d hops", created.WakeHops)
+	}
+
+	stored, err := store.StoreIncomingMessage(ctx, model.Message{
+		ID: "msg_from_peer", To: session.ID, From: "node_peer0000000000000/codex:theirs",
+		DestinationNodeID: testNodeID, Body: "from a peer", WakeHops: 3,
+	})
+	if err != nil || !stored {
+		t.Fatalf("StoreIncomingMessage() = %v, %v", stored, err)
+	}
+
+	// Read back both ways: the inbox listing and the by-id lookup.
+	held, err := store.Inbox(ctx, session.ID, 10, InboxCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]int{}
+	for _, message := range held {
+		byID[message.ID] = message.WakeHops
+	}
+	if byID[created.ID] != 2 {
+		t.Errorf("the local message reads back at %d hops, want 2", byID[created.ID])
+	}
+	if byID["msg_from_peer"] != 3 {
+		t.Errorf("the peer's message reads back at %d hops, want 3", byID["msg_from_peer"])
+	}
+	one, err := store.MessageByID(ctx, "msg_from_peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one.WakeHops != 3 {
+		t.Errorf("MessageByID gives %d hops", one.WakeHops)
+	}
+}

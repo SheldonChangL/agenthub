@@ -140,11 +140,11 @@ CREATE INDEX IF NOT EXISTS idx_wake_events_at
 	// it: every other column added here has this path.
 	added := []string{}
 	for _, column := range []struct{ name, definition string }{
+		// The definitions the fresh schema uses, CHECK included: an upgraded
+		// database whose constraints differ from a new one is two schemas
+		// wearing one version number.
 		{"pair_key", "TEXT NOT NULL DEFAULT 'local'"},
-		// Without the CHECK the fresh schema carries: SQLite's ALTER TABLE
-		// cannot add one, and rebuilding the table to gain it would cost more
-		// than a constraint on a column only this file writes is worth.
-		{"chain_used", "INTEGER NOT NULL DEFAULT 0"},
+		{"chain_used", "INTEGER NOT NULL DEFAULT 0 CHECK (chain_used IN (0, 1))"},
 	} {
 		has, err := r.hasColumn(ctx, "wake_events", column.name)
 		if err != nil {
@@ -220,7 +220,7 @@ func DefaultWakeLimits() WakeLimits {
 // A reserved wake is written as WakeWoken before the provider is called,
 // because the count has to include it while the turn is running — that is
 // exactly when a second message must not start another. SettleWake flips it
-// afterwards if the provider refused, and CountWakes stops counting it then,
+// afterwards if the provider refused, and it stops being counted then,
 // which is right: nothing ran, so nothing was spent.
 func (r *Registry) ReserveWake(ctx context.Context, event WakeEvent, limits WakeLimits) (WakeEvent, error) {
 	if event.DestinationSession == "" {
@@ -294,8 +294,7 @@ func (r *Registry) SettleWake(ctx context.Context, wakeID string, outcome WakeOu
 	return nil
 }
 
-// queryRower is satisfied by both *sql.DB and *sql.Tx, so the count a
-// reservation takes and the one a caller can ask for are the same query.
+// queryRower is satisfied by both *sql.DB and *sql.Tx.
 type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
