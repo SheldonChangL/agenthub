@@ -19,6 +19,8 @@ import (
 
 	"agenthub.local/agenthub/internal/api"
 	"agenthub.local/agenthub/internal/buildinfo"
+	"agenthub.local/agenthub/internal/codexapp"
+	"agenthub.local/agenthub/internal/codexdriver"
 	"agenthub.local/agenthub/internal/discovery"
 	"agenthub.local/agenthub/internal/hub"
 	"agenthub.local/agenthub/internal/identity"
@@ -28,6 +30,7 @@ import (
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 	"agenthub.local/agenthub/internal/transport"
+	"agenthub.local/agenthub/internal/wake"
 )
 
 func main() {
@@ -57,6 +60,10 @@ func run() error {
 			"the segment while pairing mode is open. Pinned once given: without this flag the "+
 			"name follows the machine's own name, which is not always the one the network calls "+
 			"it. Pass it empty, or as nothing but spaces, to hand the name back to the machine")
+	autoWake := flag.Bool("auto-wake", false,
+		"let an arriving message start a turn in the agent it was addressed to, for sessions "+
+			"whose owner opened that per-session switch. Off here means no session can be woken "+
+			"whatever its own setting says")
 	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
 	allowLAN := flag.Bool("allow-lan", false,
 		"serve paired peers on a private network address instead of loopback only")
@@ -195,6 +202,20 @@ func run() error {
 				*peerListenAddress, reason)
 		}
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
+	}
+	// Waking is off at the node as well as at the session, and both have to be
+	// open. A per-session switch alone would mean an owner who set one months
+	// ago, before this existed, finds turns starting after an upgrade; a node
+	// switch alone would wake every session at once. Two switches, and the
+	// narrow one is not enough on its own.
+	if *autoWake {
+		supervisor := codexapp.NewSupervisor(codexapp.SupervisorOptions{})
+		defer func() { _ = supervisor.Close() }()
+		options = append(options, api.WithWaker(wake.New(
+			store, registry.DefaultWakeLimits(), codexdriver.New(supervisor),
+		)))
+		log.Printf("auto-wake is on for this node; a session is woken only if its own " +
+			"autoWake is also open (ah audience <id> ... --auto-wake)")
 	}
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := &http.Server{
