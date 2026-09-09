@@ -85,7 +85,10 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.storeIncoming(w, r, envelope.NodeID, payload)
+	// The fingerprint travels with the message into a woken turn: it is the
+	// one thing about a sender a person can check out of band, and a woken
+	// agent has nobody present to ask for it.
+	s.storeIncoming(w, r, envelope.NodeID, peer.Fingerprint, payload)
 }
 
 // storeIncoming writes an authenticated message to the local inbox and answers.
@@ -100,7 +103,8 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 // Every refusal that is a decision reads the same. A sender that could tell "no
 // such session" from "that session declines messages" — or from "that id is
 // taken" — could map this node by addressing guesses at it.
-func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNodeID string, payload protocol.MessagePayload) {
+func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNodeID,
+	senderFingerprint string, payload protocol.MessagePayload) {
 	const refusal = "the addressed session does not accept messages from this node"
 
 	stored, err := s.store.StoreIncomingMessage(r.Context(), model.Message{
@@ -118,6 +122,15 @@ func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNod
 	switch {
 	case err == nil && stored:
 		log.Printf("queued a message from %q for %q", senderNodeID, payload.To)
+		// The peer half of the wake path. Only on a fresh store: a redelivery
+		// of something already held must not start a second turn, which is the
+		// one way a sender could wake an agent as often as it liked without
+		// passing any limit — every retry would be a new wake.
+		s.considerWake(r.Context(), model.Message{
+			ID: payload.MessageID, To: payload.To,
+			From:              qualifiedSender(senderNodeID, payload.From),
+			DestinationNodeID: s.node.ID, Body: payload.Body, WakeHops: payload.WakeHops,
+		}, senderFingerprint)
 		writeJSON(w, http.StatusOK, protocol.AckPayload{
 			MessageID: payload.MessageID, Status: protocol.AckQueued,
 		})
