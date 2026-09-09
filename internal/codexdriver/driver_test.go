@@ -156,9 +156,31 @@ func TestDriveSendsTheBodyAsUntrustedContext(t *testing.T) {
 	if entry.Value != body {
 		t.Errorf("the fragment carries %q", entry.Value)
 	}
-	if entry.Kind != codexapp.ContextUntrusted {
-		t.Errorf("kind = %q, want %q: this is the one barrier that does not rely on "+
-			"the agent believing a sentence", entry.Kind, codexapp.ContextUntrusted)
+	// The literal, not the constant. Comparing codexapp.ContextUntrusted to
+	// itself is an assertion both sides of which move together: changing the
+	// constant to "application" — the mutation this test's comment claims to
+	// catch — passed the whole suite. What Codex reads is a string, and a
+	// string is what has to be checked.
+	if entry.Kind != "untrusted" {
+		t.Errorf("kind = %q, want \"untrusted\": this is the one barrier that does not rely "+
+			"on the agent believing a sentence", entry.Kind)
+	}
+	// The prompt reaches the turn, and it is what the agent reads first.
+	//
+	// Emptying it survived the whole suite: prompt() is well tested on its own
+	// and the other three fields of the turn are pinned, but nothing asserted
+	// the two were connected. A woken agent would then get a turn whose only
+	// instruction is the stranger's message — no notice that it is data rather
+	// than instruction, no sender, no fingerprint.
+	if len(turn.Input) == 0 {
+		t.Fatal("the turn carries no input at all")
+	}
+	if !strings.Contains(turn.Input[0].Text, wake.Notice) {
+		t.Errorf("the turn's input does not carry the notice; the agent is handed a "+
+			"stranger's message with nothing saying what it is: %q", turn.Input[0].Text)
+	}
+	if !strings.Contains(turn.Input[0].Text, "node_peer0000000000000") {
+		t.Error("the turn's input does not name who sent this")
 	}
 	for _, input := range turn.Input {
 		if strings.Contains(input.Text, body) {

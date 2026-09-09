@@ -81,7 +81,7 @@ func TestThePairLimitStopsAnExchange(t *testing.T) {
 // Counting and inserting apart is not a limit: two deliveries arriving together
 // both count the same number, both find room, and both wake. This is the test
 // that says the reservation is atomic, and it is the reason ReserveWake exists
-// rather than a CountWakes call followed by a RecordWake.
+// rather than a count followed by a separate insert.
 func TestConcurrentArrivalsCannotBothTakeTheLastSlot(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
@@ -661,5 +661,109 @@ func TestAStoredMessageKeepsItsHopCount(t *testing.T) {
 	}
 	if one.WakeHops != 3 {
 		t.Errorf("MessageByID gives %d hops", one.WakeHops)
+	}
+}
+
+// The two message tables gain their hop column, with the constraint a fresh
+// database has.
+//
+// Of the four columns this work migrates, two had tests and these did not:
+// no-oping either migration left the whole repository green, and both ALTERs
+// omitted the `CHECK (wake_hops >= 0)` the fresh schema carries. The refusal
+// on the wire and the constraint in the store are documented as a pair, and on
+// an upgraded database it was one layer.
+func TestTheMessageTablesGainTheirHopColumnAndItsConstraint(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "agenthub.db")
+	store := openRegistryAt(t, path)
+	session := acceptingSession(t, store)
+	node := trustedPeer(t, store)
+	for _, statement := range []string{
+		"ALTER TABLE messages DROP COLUMN wake_hops",
+		"ALTER TABLE outbound_messages DROP COLUMN wake_hops",
+	} {
+		if _, err := store.db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("could not reproduce the older schema: %v", err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := openRegistryAt(t, path)
+	created, err := reopened.CreateMessage(ctx, model.Message{
+		To: session.ID, From: "codex:mine", DestinationNodeID: testNodeID,
+		Body: "after the upgrade", WakeHops: 2,
+	})
+	if err != nil {
+		t.Fatalf("CreateMessage after an upgrade: %v", err)
+	}
+	if created.WakeHops != 2 {
+		t.Errorf("the upgraded inbox lost the hop count: %d", created.WakeHops)
+	}
+	if _, err := reopened.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "outbound", WakeHops: 3,
+	}); err != nil {
+		t.Fatalf("QueueOutbound after an upgrade: %v", err)
+	}
+	queued, err := reopened.PendingOutbound(ctx, node, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].WakeHops != 3 {
+		t.Errorf("the upgraded queue holds %+v", queued)
+	}
+
+	// The constraint a fresh database has. An upgraded schema missing it is
+	// the wire refusal standing alone, which the design says it does not.
+	for _, table := range []string{"messages", "outbound_messages"} {
+		if _, err := reopened.db.ExecContext(ctx,
+			"UPDATE "+table+" SET wake_hops = -5"); err == nil {
+			t.Errorf("%s accepted -5 hops after an upgrade; the fresh schema refuses it", table)
+		}
+	}
+}
+
+// The attribution window has an end, and only a wake that happened arms a
+// chain.
+//
+// Both bounds survived removal. They fail in the over-counting direction the
+// code documents as safe, but "safe direction" is a reason not to panic, not a
+// reason to leave the rule unstated: without the window a wake from last week
+// still taints a send, and without the outcome filter a refusal — a turn that
+// never ran — hands its count to the next message out.
+func TestOnlyARecentWakeThatHappenedArmsAChain(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	stale := openTestRegistry(t)
+	old := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	old.SourceNodeID = "node_peer0000000000000"
+	old.Hops, old.Outcome = 2, WakeWoken
+	old.At = now.Add(-WakeAttributionWindow - time.Minute)
+	if _, err := stale.RecordWake(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	hops, chain, err := stale.PeekWakeChain(ctx, "claude:mine", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hops != 0 || chain != "" {
+		t.Errorf("a wake from outside the window armed a chain at %d hops", hops)
+	}
+
+	refused := openTestRegistry(t)
+	held := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	held.SourceNodeID = "node_peer0000000000000"
+	held.Hops, held.Outcome, held.At = 2, WakeRefusedPair, now
+	if _, err := refused.RecordWake(ctx, held); err != nil {
+		t.Fatal(err)
+	}
+	hops, chain, err = refused.PeekWakeChain(ctx, "claude:mine", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hops != 0 || chain != "" {
+		t.Errorf("a refused wake armed a chain at %d hops; no turn ran", hops)
 	}
 }

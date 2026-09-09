@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -591,10 +593,20 @@ func TestTheAckDoesNotWaitForTheWake(t *testing.T) {
 	release := make(chan struct{})
 	waker.before = func() { <-release }
 
+	// Built on this goroutine: both helpers can t.Fatal, and doing that from a
+	// goroutine other than the test's is undefined.
+	envelope := peer.messageEnvelope(t, testNodeID, "msg_slow", session, "codex:theirs", "hello")
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
 	answered := make(chan int, 1)
 	go func() {
-		envelope := peer.messageEnvelope(t, testNodeID, "msg_slow", session, "codex:theirs", "hello")
-		answered <- perform(t, peers, http.MethodPost, "/v1/messages", envelope).Code
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		peers.ServeHTTP(recorder, request)
+		answered <- recorder.Code
 	}()
 
 	select {
@@ -608,4 +620,59 @@ func TestTheAckDoesNotWaitForTheWake(t *testing.T) {
 	}
 	close(release)
 	waker.await(t, 1)
+}
+
+// The switch can be opened and closed through the API, and closing it stops
+// the waking.
+//
+// The only way anyone turns this on is `ah audience … --auto-wake` or the
+// desktop checkbox, and both route through this endpoint. Two of the three
+// hops were unpinned — the API's audienceInput field and the CLI's flag — so
+// the switch could be silently disconnected from the thing it governs while
+// the registry tests, which set the flag directly, stayed green.
+func TestTheWakeSwitchTravelsThroughTheAudienceEndpoint(t *testing.T) {
+	store, owner, _, _ := wakingSurfaces(t)
+	session := acceptingLocalSession(t, store, owner, "codex:switched")
+
+	set := func(t *testing.T, autoWake bool) {
+		t.Helper()
+		response := perform(t, owner, http.MethodPut, "/v1/sessions/"+session+"/audience",
+			map[string]any{"mode": "none", "acceptMessages": true, "autoWake": autoWake})
+		if response.Code != http.StatusOK {
+			t.Fatalf("PUT audience = %d %s", response.Code, response.Body.String())
+		}
+		read := perform(t, owner, http.MethodGet, "/v1/sessions/"+session+"/audience", nil)
+		var body struct {
+			AutoWake bool `json:"autoWake"`
+		}
+		if err := json.Unmarshal(read.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.AutoWake != autoWake {
+			t.Fatalf("the endpoint reports autoWake %v after setting it %v", body.AutoWake, autoWake)
+		}
+	}
+
+	set(t, true)
+	stored, err := store.GetAudience(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.AutoWake {
+		t.Fatal("the endpoint accepted the switch and the store did not receive it")
+	}
+
+	// Closing it again is the action an owner takes when a peer misbehaves,
+	// and it has to reach the store too.
+	set(t, false)
+	stored, err = store.GetAudience(context.Background(), session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.AutoWake {
+		t.Error("closing the switch did not reach the store")
+	}
+	if !stored.AcceptMessages {
+		t.Error("closing the wake switch also closed the inbox")
+	}
 }
