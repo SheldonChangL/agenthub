@@ -121,6 +121,21 @@ func TestAnOpenSwitchDrivesTheAgent(t *testing.T) {
 	if len(events) != 1 || events[0].Outcome != registry.WakeWoken {
 		t.Fatalf("events = %+v", events)
 	}
+	// The bucket the gate wrote, read back from the store.
+	//
+	// Asserting a PairKey() on an event built here proves only that the
+	// function works; the bug it exists for was the gate handing it the wrong
+	// SourceNodeID, and that is invisible unless the recorded row is the thing
+	// checked. Blanking the field passed the whole suite: every peer and every
+	// local send back in one bucket, with audit rows naming a peer's wake as
+	// this machine's own.
+	if events[0].SourceNodeID != peerNode {
+		t.Errorf("the recorded source node is %q, want the one the envelope proved",
+			events[0].SourceNodeID)
+	}
+	if got := events[0].PairKey(); got != "node:"+peerNode {
+		t.Errorf("the wake was bucketed as %q, want the peer's own bucket", got)
+	}
 }
 
 // A message already at the hop limit is stopped, and the owner is told.
