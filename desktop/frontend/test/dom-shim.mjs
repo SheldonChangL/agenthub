@@ -143,4 +143,8 @@ export const document = {
   // Empty is right for a test that drives the renderers directly: there is no
   // markup here for those to be found in.
   querySelectorAll: () => [],
+  // And null for a single one, which is what "nothing is selected" looks like.
+  // Returning undefined instead made every caller throw on the optional chain
+  // that follows, which reads as a broken shim rather than an empty document.
+  querySelector: () => null,
 };

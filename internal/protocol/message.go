@@ -51,7 +51,30 @@ type MessagePayload struct {
 	Body string `json:"body"`
 	// SentAt is when the sender created the message, not when it was delivered.
 	SentAt time.Time `json:"sentAt"`
+	// WakeHops counts the automatic wakes that led to this message. Zero means
+	// a person started it, or nothing could be attributed.
+	//
+	// Two machines that both wake automatically will answer each other until
+	// somebody notices, and what that burns is real money. This is the count
+	// that stops a cycle longer than one pair, where a per-pair limit sees only
+	// one leg of it.
+	//
+	// A sender's own count, so a peer can lie about it — it can only lie
+	// downwards, which buys it one more hop before the per-pair limit stops the
+	// exchange anyway. Omitted by an older peer, which reads as zero: that is
+	// the same answer a person's message gives, and correct for it, because a
+	// node that does not know about hops cannot be the second half of an
+	// automatic loop either.
+	WakeHops int `json:"wakeHops,omitempty"`
 }
+
+// MaxWakeHops is how far an automatic exchange may travel before this node
+// stops relaying it.
+//
+// Not a round-trip count: A waking B is one hop, B's answer waking A is two.
+// Four allows an exchange to develop and stops well short of a bill anyone
+// would notice.
+const MaxWakeHops = 4
 
 // Validate refuses a payload this node will not store.
 //
@@ -96,8 +119,21 @@ func (p MessagePayload) Validate() error {
 			return fmt.Errorf("sender address: %w", err)
 		}
 	}
+	// Refused rather than clamped. A negative count is not a message this node
+	// failed to understand, it is one built to slip under a limit, and a sender
+	// that produces one should hear about it rather than have it quietly
+	// corrected. The upper bound keeps the stored value from being arbitrary;
+	// anything at or over MaxWakeHops will not wake anything regardless.
+	if p.WakeHops < 0 || p.WakeHops > maxStoredWakeHops {
+		return fmt.Errorf("wake hop count %d is outside 0 to %d", p.WakeHops, maxStoredWakeHops)
+	}
 	return nil
 }
+
+// maxStoredWakeHops bounds what may be written down, well above MaxWakeHops so
+// that a message which already exceeded the limit still records how far over it
+// was rather than arriving indistinguishable from one exactly at it.
+const maxStoredWakeHops = 1024
 
 // AckStatus says what the recipient did with a message.
 //

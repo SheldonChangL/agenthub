@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,20 @@ type Server struct {
 	// One entry per node id the owner has paired, dropped on revoke.
 	refusedMu sync.Mutex
 	refused   map[string]uint64
+	// waker decides whether a message that has just landed may start a turn.
+	// Nil on a node with no wake drivers configured, which is the default:
+	// storing a message must not depend on a provider being reachable.
+	waker Waker
+}
+
+// Waker is the wake gate, as this package needs it.
+//
+// An interface rather than the concrete gate so the two delivery paths can be
+// tested for whether they consult it at all. That is the failure this shape
+// exists to catch: there are two independent writes into the inbox, and a wake
+// wired to one of them looks entirely correct from the other.
+type Waker interface {
+	Consider(ctx context.Context, message model.Message, senderNodeID, senderFingerprint string)
 }
 
 // Option adjusts a Server at construction.
@@ -76,6 +91,13 @@ func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer
 // been told to serve peers on a network.
 func WithDeliveryPolicy(policy func(string) error) Option {
 	return func(s *Server) { s.deliveryPolicy = policy }
+}
+
+// WithWaker gives the API a wake gate. Without one, nothing is ever woken and
+// every message waits to be read, which is what a node does until its owner
+// turns waking on for at least one session.
+func WithWaker(waker Waker) Option {
+	return func(s *Server) { s.waker = waker }
 }
 
 func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity, options ...Option) *Server {
@@ -116,6 +138,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/heartbeat", s.heartbeat)
 	mux.HandleFunc("GET /v1/peers", s.listPeers)
 	mux.HandleFunc("POST /v1/messages", s.sendMessage)
+	// The wake trail. Owner surface only: it names which peers made this
+	// machine move, which is exactly what a peer must not be able to read.
+	mux.HandleFunc("GET /v1/wakes", s.wakes)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
@@ -359,6 +384,7 @@ type audienceInput struct {
 	ExportCWD      bool               `json:"exportCwd"`
 	AcceptMessages bool               `json:"acceptMessages"`
 	AllowOutbound  bool               `json:"allowOutbound"`
+	AutoWake       bool               `json:"autoWake"`
 }
 
 func (i audienceInput) audience() model.Audience {
@@ -368,6 +394,7 @@ func (i audienceInput) audience() model.Audience {
 		ExportCWD:      i.ExportCWD,
 		AcceptMessages: i.AcceptMessages,
 		AllowOutbound:  i.AllowOutbound,
+		AutoWake:       i.AutoWake,
 	}
 }
 
@@ -584,7 +611,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 					"deliberate: a message may have been suggested by content that arrived from another machine")
 			return
 		}
-		s.queueForPeer(w, r, destination, from, input.Body)
+		s.queueForPeer(w, r, destination, from, senderSessionID, input.Body)
 		return
 	}
 	to := destination.SessionID
@@ -592,8 +619,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// this path is always addressed to this node. The outbound row written by
 	// the branch above carries a peer's id in the same column, so a reader must
 	// not have to infer the destination from the absence of a prefix.
+	// Two sessions on one machine can answer each other as readily as two
+	// machines can, and nothing about the local path makes that cheaper.
+	hops, chain := s.hopsFor(r.Context(), senderSessionID)
 	message, err := s.store.CreateMessage(r.Context(), model.Message{
 		To: to, From: from, DestinationNodeID: s.node.ID, Body: input.Body,
+		WakeHops: hops,
 	})
 	if err != nil {
 		// CreateMessage resolves the destination session, so a store failure
@@ -603,8 +634,60 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	s.claimChain(r.Context(), chain)
+	// The local half of the wake path. A message from an agent on this machine
+	// to a session on this machine never touches the peer handler, so a wake
+	// wired only there would work for every peer and silently do nothing for
+	// the case that is easiest to test with.
+	// No node id: this message never crossed a network, so there is nothing an
+	// envelope proved about where it came from.
+	s.considerWake(message, "", "")
 	writeJSON(w, http.StatusCreated, message)
 }
+
+// considerWake hands a stored message to the wake gate, if there is one.
+//
+// Called from both places a message becomes durable, and from nowhere else.
+// The two are separate functions in separate files, so the single call this
+// wraps is the thing a test can hold down.
+//
+// On its own goroutine, with a context that is not the request's. The request
+// is a peer waiting on an ack under its own ten-second delivery timeout, and a
+// wake can take longer than that on its own: a cold start spawns
+// `codex app-server`, initializes it, and resumes a thread before the turn is
+// even sent. Run inline, a slow wake would hold the ack past the sender's
+// timeout, the sender would give up and retry, and the retry would be refused
+// as a duplicate — a working delivery reported as a failure.
+//
+// Worse, the request's context dies with it: the reservation is written, the
+// drive is cancelled halfway, and the settle that should mark it failed runs
+// on the same dead context and fails too. The row keeps saying "woken" for a
+// turn that never finished.
+//
+// Nothing waits on the result. The message is already stored and already
+// acknowledged; everything the gate decides is recorded rather than returned.
+//
+// senderNodeID is what the envelope's signature proved, passed rather than
+// re-derived. Deriving it from the stored label looked equivalent and was not:
+// a peer that omits `from` is labelled with a bare node id, which is
+// indistinguishable from a local send by shape, and the pair limit then
+// counted that peer in the local bucket — a second bucket, and an audit row
+// that named a peer's wake as this machine's own.
+func (s *Server) considerWake(message model.Message, senderNodeID, senderFingerprint string) {
+	if s.waker == nil {
+		return
+	}
+	go func() {
+		// Long enough for a cold start and a slow resume, short enough that a
+		// wedged provider cannot accumulate goroutines for ever.
+		ctx, cancel := context.WithTimeout(context.Background(), wakeTimeout)
+		defer cancel()
+		s.waker.Consider(ctx, message, senderNodeID, senderFingerprint)
+	}()
+}
+
+// wakeTimeout bounds one wake, from deciding to the provider taking it.
+const wakeTimeout = 2 * time.Minute
 
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	limit := 50
@@ -777,4 +860,52 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// wakes answers with what has woken agents on this node, newest first.
+//
+// The question this exists for is "what made my agent move while I was not
+// looking", so the answer includes the refusals: an owner who sees nothing may
+// be looking at a quiet node or at a limit doing its job, and those need
+// different actions.
+func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if session != "" {
+		// Resolved through the same check every other session-scoped endpoint
+		// uses, so a qualified address for another node is refused here rather
+		// than returning an empty list that reads as "nothing happened".
+		resolved, ok := s.localSession(w, session)
+		if !ok {
+			return
+		}
+		session = resolved
+	}
+	events, err := s.store.ListWakes(r.Context(), session, limit)
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"wakes": events,
+		// The limits are reported with the trail because a refusal is only
+		// legible beside the rule that produced it.
+		"limits": map[string]any{
+			"hops":          protocol.MaxWakeHops,
+			"pair":          registry.MaxWakesPerPair,
+			"pairWindow":    registry.WakePairWindow.String(),
+			"session":       registry.MaxWakesPerSession,
+			"sessionWindow": registry.WakeSessionWindow.String(),
+			"node":          registry.MaxWakesPerNode,
+			"nodeWindow":    registry.WakeNodeWindow.String(),
+		},
+	})
 }

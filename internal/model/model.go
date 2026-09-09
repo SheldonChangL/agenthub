@@ -99,6 +99,20 @@ type Audience struct {
 	// check is the boundary — any process here can reach the owner's API, and
 	// the node cannot tell the owner's CLI from an agent talked into calling it.
 	AllowOutbound bool `json:"allowOutbound"`
+	// AutoWake lets a message arriving for this session start a turn in the
+	// agent bound to it, with nobody present.
+	//
+	// The third switch, independent of the other two, and the one that changes
+	// what an attacker gets. Under AcceptMessages alone a hostile message waits
+	// in an inbox until a person asks an agent to read it, and that person is
+	// at the keyboard when it lands in the context. Under AutoWake the same
+	// bytes start a turn at three in the morning. Same message, different
+	// blast radius, so it is a different decision and it is asked separately.
+	//
+	// Willing to receive is not willing to be woken, and neither implies
+	// willing to answer: AllowOutbound still decides whether whatever the agent
+	// concludes can leave this machine.
+	AutoWake bool `json:"autoWake"`
 }
 
 // PublishesTo reports whether a peer may see the session.
@@ -178,6 +192,11 @@ type Message struct {
 	DestinationNodeID string    `json:"destinationNodeId"`
 	Body              string    `json:"body"`
 	CreatedAt         time.Time `json:"createdAt"`
+	// WakeHops counts the automatic wakes that led here. Stored with the
+	// message because the wake decision is made after the payload is gone, and
+	// because an owner asking why an agent moved at 3am needs the chain, not
+	// just the last link.
+	WakeHops int `json:"wakeHops,omitempty"`
 }
 
 // SessionIDSeparator is the character that joins a node ID to a session ID in

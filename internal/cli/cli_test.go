@@ -154,9 +154,16 @@ func TestAudienceFlagsReachTheNode(t *testing.T) {
 		args []string
 		want map[string]bool
 	}{
-		{"no flags", nil, map[string]bool{"exportCwd": false, "acceptMessages": false, "allowOutbound": false}},
-		{"outbound only", []string{"--outbound"}, map[string]bool{"exportCwd": false, "acceptMessages": false, "allowOutbound": true}},
-		{"all three", []string{"--cwd", "--messages", "--outbound"}, map[string]bool{"exportCwd": true, "acceptMessages": true, "allowOutbound": true}},
+		{"no flags", nil, map[string]bool{
+			"exportCwd": false, "acceptMessages": false, "allowOutbound": false, "autoWake": false}},
+		{"outbound only", []string{"--outbound"}, map[string]bool{
+			"exportCwd": false, "acceptMessages": false, "allowOutbound": true, "autoWake": false}},
+		// Separately from the others, because it is a different decision:
+		// willing to receive is not willing to be woken.
+		{"auto-wake only", []string{"--auto-wake"}, map[string]bool{
+			"exportCwd": false, "acceptMessages": false, "allowOutbound": false, "autoWake": true}},
+		{"all four", []string{"--cwd", "--messages", "--outbound", "--auto-wake"}, map[string]bool{
+			"exportCwd": true, "acceptMessages": true, "allowOutbound": true, "autoWake": true}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
