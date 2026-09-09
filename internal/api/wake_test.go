@@ -14,23 +14,56 @@ import (
 )
 
 // recordingWaker remembers what it was asked about.
+//
+// The gate runs on its own goroutine now — a wake can outlast the sender's
+// delivery timeout, and holding the ack for it would make a working delivery
+// look like a failure — so a test has to wait for it rather than read
+// immediately after the response.
 type recordingWaker struct {
-	mu   sync.Mutex
-	seen []model.Message
-	from []string
+	mu      sync.Mutex
+	seen    []model.Message
+	from    []string
+	arrived chan struct{}
+}
+
+func newRecordingWaker() *recordingWaker {
+	return &recordingWaker{arrived: make(chan struct{}, 64)}
 }
 
 func (w *recordingWaker) Consider(_ context.Context, message model.Message, fingerprint string) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.seen = append(w.seen, message)
 	w.from = append(w.from, fingerprint)
+	w.mu.Unlock()
+	w.arrived <- struct{}{}
 }
 
 func (w *recordingWaker) messages() []model.Message {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return append([]model.Message(nil), w.seen...)
+}
+
+// await waits for n messages to reach the gate, and fails rather than hanging.
+func (w *recordingWaker) await(t *testing.T, n int) {
+	t.Helper()
+	for range n {
+		select {
+		case <-w.arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d of %d messages reached the gate", len(w.messages()), n)
+		}
+	}
+}
+
+// quiet fails if anything reaches the gate in the time given.
+func (w *recordingWaker) quiet(t *testing.T, within time.Duration) {
+	t.Helper()
+	select {
+	case <-w.arrived:
+		t.Fatalf("the gate was asked about %+v", w.messages())
+	case <-time.After(within):
+	}
 }
 
 func wakingSurfaces(t *testing.T) (*registry.Registry, http.Handler, http.Handler, *recordingWaker) {
@@ -43,7 +76,7 @@ func wakingSurfaces(t *testing.T) (*registry.Registry, http.Handler, http.Handle
 	t.Cleanup(func() { _ = store.Close() })
 	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
-	waker := &recordingWaker{}
+	waker := newRecordingWaker()
 	server := NewServer(store, nil, heartbeats, node, WithWaker(waker))
 	return store, server.Handler(), server.PeerHandler(), waker
 }
@@ -76,6 +109,7 @@ func TestBothDeliveryPathsAskTheWakeGate(t *testing.T) {
 		t.Fatalf("local send = %d %s", local.Code, local.Body.String())
 	}
 
+	waker.await(t, 2)
 	seen := waker.messages()
 	if len(seen) != 2 {
 		t.Fatalf("the gate was asked about %d messages, want both paths: %+v", len(seen), seen)
@@ -114,6 +148,8 @@ func TestARedeliveryDoesNotWakeASecondTime(t *testing.T) {
 			t.Fatalf("attempt %d = %d %s", attempt, response.Code, response.Body.String())
 		}
 	}
+	waker.await(t, 1)
+	waker.quiet(t, 500*time.Millisecond)
 	if seen := waker.messages(); len(seen) != 1 {
 		t.Errorf("three deliveries of one message woke the gate %d times", len(seen))
 	}
@@ -143,6 +179,7 @@ func TestTheGateSeesTheHopCountAndTheFingerprint(t *testing.T) {
 		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
 	}
 
+	waker.await(t, 1)
 	seen := waker.messages()
 	if len(seen) != 1 {
 		t.Fatalf("the gate saw %d messages", len(seen))
@@ -203,6 +240,7 @@ func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
 	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
 		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
 	}
+	waker.await(t, 1)
 	if seen := waker.messages(); len(seen) != 1 || seen[0].WakeHops != 2 {
 		t.Fatalf("the gate saw %+v", seen)
 	}
@@ -220,6 +258,7 @@ func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
 	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply = %d %s", reply.Code, reply.Body.String())
 	}
+	waker.await(t, 1)
 	seen := waker.messages()
 	answered := seen[len(seen)-1]
 	if answered.WakeHops != 3 {
@@ -234,6 +273,7 @@ func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
 	if fresh.Code != http.StatusCreated {
 		t.Fatalf("fresh send = %d %s", fresh.Code, fresh.Body.String())
 	}
+	waker.await(t, 1)
 	seen = waker.messages()
 	if last := seen[len(seen)-1]; last.WakeHops != 0 {
 		t.Errorf("a send from a session nobody woke carries %d hops", last.WakeHops)
