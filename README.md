@@ -294,6 +294,80 @@ own, but sending needs the owner to open the gate for that session
 (`ah audience <id> ... --outbound`), and the node refuses an unattributed message
 to another machine regardless.
 
+## Waking an agent
+
+By default a message waits: it lands in an inbox and stays there until somebody
+asks their agent to read it. Waking makes it start a turn on its own, with
+nobody at the keyboard.
+
+That is a different decision from accepting messages, so it is asked
+separately, and it needs **two** switches open:
+
+```bash
+# the node
+bin/agenthub-node --db ./data/agenthub.db --auto-wake
+
+# and the session
+go run ./cmd/ah audience codex:<thread-id> none --messages --auto-wake
+```
+
+Neither is enough alone. Without the node flag no session can be woken whatever
+its own setting says; without the session flag the node wakes nothing.
+
+Codex sessions are supported today: AgentHub resumes the thread through the
+app-server's own API and starts a turn in it — rejoining a running thread
+rather than opening a second one beside the conversation you are watching.
+Claude Code is not wired yet (#57).
+
+### What a woken turn may do
+
+**It approves nothing.** Codex asks before it runs a command, changes a file,
+or widens its permissions, and there is nobody present to answer. Every such
+request is refused, so a woken turn runs with exactly the permissions the
+session already had and cannot acquire more.
+
+**It cannot reply outward unless you opened that too.** `--outbound` is a third,
+separate switch.
+
+**Its answer is bounded, its arrival is not.** A peer you have paired with can
+start turns on your machine whenever it likes, within the limits below. If that
+peer is compromised, revoking it (`ah revoke <node-id>`) or closing `--auto-wake`
+is the remedy — the switches bound what a turn can do, not whether it happens.
+
+A session with broad standing tool permissions and waking open is one whose
+permissions a stranger's message can invoke without asking anyone. AgentHub
+does not shrink those permissions and cannot; that combination is yours to
+avoid.
+
+### Loops and limits
+
+Two machines that both wake automatically would answer each other until someone
+noticed, and that costs real money. Three limits stop it:
+
+| | limit |
+|---|---|
+| one pair of sessions | 3 wakes / 10 minutes |
+| one session, any source | 12 / hour |
+| this node, everything | 60 / hour |
+
+plus a hop count that stops an exchange after 4 automatic wakes. A message
+stopped by any of them stays in the inbox and can be read by hand.
+
+### Seeing what happened
+
+```bash
+go run ./cmd/ah wakes                    # everything, newest first
+go run ./cmd/ah wakes codex:<thread-id>  # one session
+```
+
+Refusals are in there too: an empty answer means the node was quiet, and a
+refused row means something arrived and was held back. Codex also records
+`turnTrigger: agenthub-wake` on turns this node started, so you can find them
+in your own Codex history without taking this trail on trust.
+
+The reasoning behind all of it, including what it deliberately does not solve,
+is [ADR-003](docs/decisions/003-waking-with-nobody-present.md).
+
 ## Desktop app
 
 The desktop app is the owner's management surface for the privacy model. It
