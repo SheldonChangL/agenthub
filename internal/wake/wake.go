@@ -161,8 +161,14 @@ func (g *Gate) Consider(ctx context.Context, message model.Message, senderNodeID
 			message.To, err)
 		return
 	}
-	log.Printf("wake: started a turn in %q from message %s (%d hops)",
-		message.To, message.ID, message.WakeHops)
+	// "Handed to", not "started a turn in". For Codex the two are the same —
+	// turn/start returns a turn id. For a Claude Code session all this node
+	// knows is that a live MCP server took the message: the channel push it
+	// makes next is unacknowledged, and Claude Code drops one it cannot
+	// deliver without saying so. A log line claiming more than the audit
+	// trail can is a line that will be believed.
+	log.Printf("wake: handed message %s to %q (%d hops)",
+		message.ID, message.To, message.WakeHops)
 }
 
 func (g *Gate) record(ctx context.Context, event registry.WakeEvent) {

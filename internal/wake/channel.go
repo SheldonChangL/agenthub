@@ -106,14 +106,6 @@ func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
 	}
 }
 
-// Subscribed reports whether anybody is listening for this session.
-func (d *ChannelDriver) Subscribed(sessionID string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	_, ok := d.waiting[sessionID]
-	return ok
-}
-
 // Waiting reports how many subscriptions are live, for a bound on them.
 func (d *ChannelDriver) Waiting() int {
 	d.mu.Lock()
