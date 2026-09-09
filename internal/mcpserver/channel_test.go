@@ -93,3 +93,37 @@ func TestMetaOmitsWhatTheMessageDidNotCarry(t *testing.T) {
 		t.Errorf("meta = %v, want only the message id", meta)
 	}
 }
+
+// The capability is declared only when the owner asked for it.
+//
+// Declaring it registers a listener inside Claude Code. A server that declares
+// one and never pushes has registered a listener for nothing — and worse, the
+// owner reading their own configuration would see a channel where none is
+// served. It is also the difference between a server that works everywhere and
+// one that needs `--dangerously-load-development-channels` to start at all.
+func TestTheChannelCapabilityIsDeclaredOnlyWhenAskedFor(t *testing.T) {
+	plain, err := New(&Client{}, Binding{sessionID: "claude:x"}, "node_1234567890123456")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared := declaredChannel(t, plain); declared {
+		t.Error("a server built without WithChannel declared the channel capability")
+	}
+
+	withChannel, err := New(&Client{}, Binding{sessionID: "claude:x"}, "node_1234567890123456",
+		WithChannel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if declared := declaredChannel(t, withChannel); !declared {
+		t.Error("a server built with WithChannel did not declare the channel capability; " +
+			"Claude Code registers no listener and every push is dropped in silence")
+	}
+}
+
+// declaredChannel reports whether the built server declares the channel
+// capability, read off the server the SDK was handed rather than the flag.
+func declaredChannel(t *testing.T, s *server) bool {
+	t.Helper()
+	return s.capabilities()[ChannelCapability] != nil
+}
