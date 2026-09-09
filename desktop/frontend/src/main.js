@@ -854,6 +854,21 @@ function syncAudienceForm() {
 
 function openAudienceModal() {
   el("audience-count").textContent = String(state.selected.size);
+  // Every flag starts off, every time.
+  //
+  // The dialog applies to whatever is selected and reads its values from the
+  // boxes, so a box left ticked from the last time it was opened is a setting
+  // about to be applied to a different set of sessions. That was survivable
+  // while the flags only governed what could be read; one of them now starts
+  // turns in an agent with nobody watching, and inheriting that from a
+  // previous dialog is not something anyone would choose on purpose.
+  //
+  // Off rather than the current value: these apply to a selection, which may
+  // hold sessions that disagree, and there is no honest way to show one state
+  // for several. Off is the safe half of that disagreement.
+  for (const id of ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"]) {
+    el(id).checked = false;
+  }
   el("audience-modal").classList.remove("hidden");
   syncAudienceForm();
 }
@@ -877,6 +892,7 @@ function readAudienceForm() {
     exportCwd: el("audience-cwd").checked,
     acceptMessages: el("audience-messages").checked,
     allowOutbound: el("audience-outbound").checked,
+    autoWake: el("audience-autowake").checked,
   };
 }
 
@@ -1144,7 +1160,11 @@ el("audience-apply").onclick = () => {
   applyAudience(audience, noun);
 };
 
-el("btn-unpublish").onclick = () => applyAudience({ mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false }, "收回");
+el("btn-unpublish").onclick = () =>
+  applyAudience(
+    { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
+    "收回",
+  );
 
 el("btn-reload").onclick = () => withBusy("重新整理", load);
 

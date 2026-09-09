@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
@@ -85,7 +86,10 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.storeIncoming(w, r, envelope.NodeID, payload)
+	// The fingerprint travels with the message into a woken turn: it is the
+	// one thing about a sender a person can check out of band, and a woken
+	// agent has nobody present to ask for it.
+	s.storeIncoming(w, r, envelope.NodeID, peer.Fingerprint, payload)
 }
 
 // storeIncoming writes an authenticated message to the local inbox and answers.
@@ -100,7 +104,8 @@ func (s *Server) receiveMessage(w http.ResponseWriter, r *http.Request) {
 // Every refusal that is a decision reads the same. A sender that could tell "no
 // such session" from "that session declines messages" — or from "that id is
 // taken" — could map this node by addressing guesses at it.
-func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNodeID string, payload protocol.MessagePayload) {
+func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNodeID,
+	senderFingerprint string, payload protocol.MessagePayload) {
 	const refusal = "the addressed session does not accept messages from this node"
 
 	stored, err := s.store.StoreIncomingMessage(r.Context(), model.Message{
@@ -110,10 +115,23 @@ func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNod
 		DestinationNodeID: s.node.ID,
 		Body:              payload.Body,
 		CreatedAt:         time.Now().UTC(),
+		// Taken from the sender. It can lie, and only downwards is useful to
+		// it — which buys one more hop before the per-pair limit ends the
+		// exchange regardless.
+		WakeHops: payload.WakeHops,
 	})
 	switch {
 	case err == nil && stored:
 		log.Printf("queued a message from %q for %q", senderNodeID, payload.To)
+		// The peer half of the wake path. Only on a fresh store: a redelivery
+		// of something already held must not start a second turn, which is the
+		// one way a sender could wake an agent as often as it liked without
+		// passing any limit — every retry would be a new wake.
+		s.considerWake(model.Message{
+			ID: payload.MessageID, To: payload.To,
+			From:              qualifiedSender(senderNodeID, payload.From),
+			DestinationNodeID: s.node.ID, Body: payload.Body, WakeHops: payload.WakeHops,
+		}, senderNodeID, senderFingerprint)
 		writeJSON(w, http.StatusOK, protocol.AckPayload{
 			MessageID: payload.MessageID, Status: protocol.AckQueued,
 		})
@@ -166,15 +184,20 @@ func qualifiedSender(senderNodeID, claimed string) string {
 // contract: the message is queued here and nothing else has happened. The peer
 // may be asleep. Answering as though it had arrived would make `ah send`
 // success mean something it cannot know.
-func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination address.Address, from, body string) {
+func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destination address.Address,
+	from, senderSessionID, body string,
+) {
+	hops, chain := s.hopsFor(r.Context(), senderSessionID)
 	queued, err := s.store.QueueOutbound(r.Context(), registry.OutboundMessage{
 		DestinationNodeID: destination.NodeID,
 		To:                destination.SessionID,
 		From:              from,
 		Body:              body,
+		WakeHops:          hops,
 	})
 	switch {
 	case err == nil:
+		s.claimChain(r.Context(), chain)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"id":                queued.ID,
 			"destinationNodeId": queued.DestinationNodeID,
@@ -210,4 +233,49 @@ func (s *Server) outboundStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, message)
+}
+
+// hopsFor is how far along an automatic exchange a message from this session
+// is, and the wake it inherited that from.
+//
+// Reconstructed from the wake trail rather than told to us: nothing links an
+// agent's decision to send to the message that woke it, because the agent
+// calls agent_send like any other caller and no provider says why. So a send
+// shortly after a wake is treated as caused by it.
+//
+// Wrong in both directions and deliberately so. A person typing immediately
+// after a wake has their message counted as a hop, which costs them nothing
+// but an earlier stop; an agent that thinks for longer than the window resets
+// to zero, which is why the per-pair limit and not this is what ends a
+// two-machine loop. Hops are for the cycle a pair limit cannot see.
+//
+// The claim is not spent here. It is spent by claimChain, once the message is
+// stored — eagerly, a woken agent could zero its own chain by addressing one
+// throwaway message at a session that does not exist.
+func (s *Server) hopsFor(ctx context.Context, senderSessionID string) (int, string) {
+	if senderSessionID == "" {
+		return 0, ""
+	}
+	hops, chain, err := s.store.PeekWakeChain(ctx, senderSessionID, time.Now().UTC())
+	if err != nil {
+		// Not fatal to the send. Failing a message because the trail could not
+		// be read would turn a working outbox into a broken one over a count
+		// that only ever stops things early.
+		log.Printf("wake: cannot read the hop count for %q: %v", senderSessionID, err)
+		return 0, ""
+	}
+	return hops, chain
+}
+
+// claimChain spends the wake a stored message inherited from.
+func (s *Server) claimChain(ctx context.Context, chain string) {
+	if chain == "" {
+		return
+	}
+	if err := s.store.ClaimWakeChain(ctx, chain); err != nil {
+		// The chain stays unclaimed, so the next message from this session
+		// inherits it too. Over-counting stops an exchange early, which is the
+		// direction to fail in.
+		log.Printf("wake: cannot claim the chain of %s: %v", chain, err)
+	}
 }

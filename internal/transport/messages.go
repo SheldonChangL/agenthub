@@ -83,6 +83,7 @@ func (p *Publisher) deliverMessage(ctx context.Context, peer registry.TrustedNod
 		From:      message.From,
 		Body:      message.Body,
 		SentAt:    message.CreatedAt,
+		WakeHops:  message.WakeHops,
 	})
 	if err != nil {
 		// The message cannot be built into a valid envelope, so no amount of

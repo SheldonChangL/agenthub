@@ -4,6 +4,7 @@ import (
 	"agenthub.local/agenthub/internal/model"
 	"strings"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/protocol"
 )
@@ -60,5 +61,45 @@ func TestASenderLabelIsBounded(t *testing.T) {
 		strings.Repeat("b", model.MaxProviderSessionIDLength)
 	if err := payload.Validate(); err != nil {
 		t.Errorf("a sender at every limit was refused: %v", err)
+	}
+}
+
+// A hop count below zero is refused on the way in.
+//
+// Not clamped: a negative count is not a message this node failed to parse, it
+// is one built to slip under a limit. A peer declaring -5 would otherwise have
+// its reply leave at -4, and protocol.MaxWakeHops would never be reached however long
+// the exchange ran.
+//
+// The store's CHECK is the second layer and each fails closed alone — with
+// only the CHECK, a negative arrival makes the reservation fail, so no wake
+// happens. It is the pair that has to hold, and both were removable with the
+// whole repository green.
+func TestANegativeHopCountIsRefusedOnArrival(t *testing.T) {
+	valid := protocol.MessagePayload{
+		MessageID: "msg_1", To: "codex:target", Body: "hello", SentAt: time.Now().UTC(),
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("the fixture is not otherwise valid: %v", err)
+	}
+
+	for _, hops := range []int{-1, -5, -1 << 30} {
+		payload := valid
+		payload.WakeHops = hops
+		if err := payload.Validate(); err == nil {
+			t.Errorf("a payload declaring %d hops was accepted", hops)
+		}
+	}
+	// And absurdly high is refused too, so the stored value cannot be
+	// arbitrary. Anything at or above protocol.MaxWakeHops wakes nothing regardless.
+	over := valid
+	over.WakeHops = 1 << 20
+	if err := over.Validate(); err == nil {
+		t.Errorf("a payload declaring %d hops was accepted", over.WakeHops)
+	}
+	at := valid
+	at.WakeHops = protocol.MaxWakeHops
+	if err := at.Validate(); err != nil {
+		t.Errorf("a payload at the hop limit was refused: %v", err)
 	}
 }

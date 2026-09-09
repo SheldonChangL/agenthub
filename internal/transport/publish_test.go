@@ -916,3 +916,60 @@ func TestDeliveryAndListenAgreeOnRefusals(t *testing.T) {
 		t.Errorf("the listen side refused %q: %v", inside, err)
 	}
 }
+
+// The hop count on a queued message reaches the wire.
+//
+// This is the hand-off nothing spanned. The producer is pinned — the API's
+// tests assert the queued row carries the incremented count — and so is the
+// consumer, which asserts the receiving gate sees whatever the envelope
+// declared. Between them sits one line copying the row's count into the
+// payload, and deleting it left the whole repository green.
+//
+// A loop between two machines is the only thing the hop count exists for, and
+// this is the only place it crosses one.
+func TestAQueuedMessageCarriesItsHopCountOntoTheWire(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	peerID := "node_peerhopshopshop"
+	peer := newCapture(t, peerID)
+	trust(t, store, peerID, peer.address(t), peer.public)
+
+	if _, err := store.QueueOutbound(ctx, registry.OutboundMessage{
+		DestinationNodeID: peerID, To: "codex:theirs", From: "codex:mine",
+		Body: "answering", WakeHops: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := publisherFor(t, store).DeliverMessages(ctx)
+	if err != nil {
+		t.Fatalf("DeliverMessages() error = %v", err)
+	}
+	if result.Delivered != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if len(peer.messages) != 1 {
+		t.Fatalf("the peer received %d messages", len(peer.messages))
+	}
+	if peer.messages[0].WakeHops != 2 {
+		t.Errorf("the payload carries %d hops, want the 2 the queued message held; the "+
+			"receiving node's hop limit never fires on the leg it exists for",
+			peer.messages[0].WakeHops)
+	}
+
+	// And a message nobody was woken for arrives at zero rather than
+	// inheriting whatever was last on the wire.
+	if _, err := store.QueueOutbound(ctx, registry.OutboundMessage{
+		DestinationNodeID: peerID, To: "codex:theirs", From: "codex:mine", Body: "unprompted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := publisherFor(t, store).DeliverMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(peer.messages) != 2 {
+		t.Fatalf("the peer received %d messages", len(peer.messages))
+	}
+	if peer.messages[1].WakeHops != 0 {
+		t.Errorf("an unprompted message carries %d hops", peer.messages[1].WakeHops)
+	}
+}
