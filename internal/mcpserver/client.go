@@ -564,6 +564,15 @@ func providerOf(sessionID string) string {
 // 30-second default did against a 30-second deadline, on every quiet poll.
 const WakeWait = 25 * time.Second
 
+// WakeGrace is how far past the node's own wait this request's deadline sits.
+//
+// The node's timer is what should end a quiet poll; this one fires only if the
+// node has stopped answering altogether. It is named so the test that bounds a
+// dead-node poll is derived from it: as a literal here against a literal there
+// the two drifted, and the test's bound was wide enough to accept a grace four
+// times this one.
+const WakeGrace = 15 * time.Second
+
 // ErrWakeUnavailable means the node was started without wake support.
 var ErrWakeUnavailable = errors.New("this node does not serve the wake stream")
 
@@ -589,9 +598,7 @@ func (c *Client) WaitForWake(ctx context.Context, sessionID string) (*ChannelPus
 		wait = WakeWait
 	}
 	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/wake-stream?wait=" + wait.String()
-	// A little beyond the node's own wait, so the node's timer is what ends a
-	// quiet poll and this one fires only if the node has stopped answering.
-	polling, cancel := context.WithTimeout(ctx, wait+15*time.Second)
+	polling, cancel := context.WithTimeout(ctx, wait+WakeGrace)
 	defer cancel()
 	request, err := http.NewRequestWithContext(polling, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {

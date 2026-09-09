@@ -206,3 +206,60 @@ func TestShutdownClosesThePeerListenerEvenWhenTheOwnerOneFails(t *testing.T) {
 type drainer func()
 
 func (d drainer) Drain() { d() }
+
+// run() reaches its listener and its shutdown through the extracted helpers.
+//
+// Both helpers are tested above and neither call site was. Putting the old
+// inline listener back left the owner connection on a 30s write deadline while
+// the API went on capping polls against 60s — the steady-state bug this branch
+// exists to fix — and every test stayed green. Putting the old inline
+// apiServer.Shutdown back took a SIGTERM from 0.15s to 5.08s with the peer
+// listener never closed, also green.
+//
+// This reads run()'s source rather than calling it: run() parses flags, binds
+// two real listeners and blocks on signals, so what can be pinned here is
+// which helper it is wired to. That is text, not behaviour — it would be
+// satisfied by the name in a comment — and it is worth having only because the
+// behaviour on either side of the seam is covered and the seam was not.
+func TestRunGoesThroughTheExtractedListenerAndShutdown(t *testing.T) {
+	body := functionBody(t, "main.go", "func run() error {")
+
+	for what, needle := range map[string]string{
+		"the owner listener is built by ownerServer": "ownerServer(",
+		"the shutdown goes through shutDown":         "shutDown(",
+		"the API is told that same write deadline":   "api.WithWriteTimeout(ownerWriteTimeout)",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("run() has no %q, so %s is no longer true", needle, what)
+		}
+	}
+	// The peer listener is still built inline, so only the owner one is named.
+	for what, needle := range map[string]string{
+		"the owner listener is inline again": "server := &http.Server{",
+		"the shutdown is inline again":       ".Shutdown(",
+	} {
+		if strings.Contains(body, needle) {
+			t.Errorf("run() contains %q: %s", needle, what)
+		}
+	}
+}
+
+// functionBody returns what lies between opener and the line that closes it at
+// column zero, which gofmt guarantees exists.
+func functionBody(t *testing.T, file, opener string) string {
+	t.Helper()
+	source, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(source), opener)
+	if start < 0 {
+		t.Fatalf("%s has no %q; this test pins a function that is gone", file, opener)
+	}
+	rest := string(source)[start+len(opener):]
+	end := strings.Index(rest, "\n}\n")
+	if end < 0 {
+		t.Fatalf("no closing brace at column zero after %q in %s", opener, file)
+	}
+	return rest[:end]
+}

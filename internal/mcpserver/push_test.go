@@ -232,8 +232,9 @@ func TestTheLongPollClientHasNoFixedTimeout(t *testing.T) {
 // The deadline is on the request instead, so it moves with the wait — a node
 // that stops answering mid-poll is noticed rather than held forever.
 func TestAPollThatOutlastsTheNodeGivesUp(t *testing.T) {
+	nodeWait := time.Second
 	stub := newNodeStub(t, func(int64) (int, string, string) {
-		return http.StatusNoContent, "1s", ""
+		return http.StatusNoContent, nodeWait.String(), ""
 	})
 	client := stubClient(t, stub)
 	// Learn the short wait, then make the node stop answering.
@@ -248,7 +249,21 @@ func TestAPollThatOutlastsTheNodeGivesUp(t *testing.T) {
 	if _, err := client.WaitForWake(context.Background(), "claude:x"); err == nil {
 		t.Error("a poll the node never answered came back without an error")
 	}
-	if elapsed := time.Since(started); elapsed > 40*time.Second {
-		t.Errorf("it waited %s on a node holding a 1s poll open", elapsed)
+	// Derived from the deadline the client sets, not a loose number: at a flat
+	// forty seconds this accepted a grace four times the real one, and it
+	// accepted a client that gave up before the node's own timer had run.
+	//
+	// It does not tell a fixed fifteen-second client timeout from the real
+	// deadline at nodeWait+WakeGrace, which is close enough to it — that is
+	// what TestTheLongPollClientHasNoFixedTimeout is for.
+	elapsed := time.Since(started)
+	deadline := nodeWait + WakeGrace
+	if elapsed > deadline+2*time.Second {
+		t.Errorf("it waited %s on a node holding a %s poll open; the deadline is %s",
+			elapsed, nodeWait, deadline)
+	}
+	if elapsed < nodeWait {
+		t.Errorf("it gave up in %s, before the node's own %s wait had run out",
+			elapsed, nodeWait)
 	}
 }
