@@ -637,7 +637,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// to a session on this machine never touches the peer handler, so a wake
 	// wired only there would work for every peer and silently do nothing for
 	// the case that is easiest to test with.
-	s.considerWake(r.Context(), message, "")
+	s.considerWake(message, "")
 	writeJSON(w, http.StatusCreated, message)
 }
 
@@ -646,12 +646,37 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 // Called from both places a message becomes durable, and from nowhere else.
 // The two are separate functions in separate files, so the single call this
 // wraps is the thing a test can hold down.
-func (s *Server) considerWake(ctx context.Context, message model.Message, senderFingerprint string) {
+//
+// On its own goroutine, with a context that is not the request's. The request
+// is a peer waiting on an ack under its own ten-second delivery timeout, and a
+// wake can take longer than that on its own: a cold start spawns
+// `codex app-server`, initializes it, and resumes a thread before the turn is
+// even sent. Run inline, a slow wake would hold the ack past the sender's
+// timeout, the sender would give up and retry, and the retry would be refused
+// as a duplicate — a working delivery reported as a failure.
+//
+// Worse, the request's context dies with it: the reservation is written, the
+// drive is cancelled halfway, and the settle that should mark it failed runs
+// on the same dead context and fails too. The row keeps saying "woken" for a
+// turn that never finished.
+//
+// Nothing waits on the result. The message is already stored and already
+// acknowledged; everything the gate decides is recorded rather than returned.
+func (s *Server) considerWake(message model.Message, senderFingerprint string) {
 	if s.waker == nil {
 		return
 	}
-	s.waker.Consider(ctx, message, senderFingerprint)
+	go func() {
+		// Long enough for a cold start and a slow resume, short enough that a
+		// wedged provider cannot accumulate goroutines for ever.
+		ctx, cancel := context.WithTimeout(context.Background(), wakeTimeout)
+		defer cancel()
+		s.waker.Consider(ctx, message, senderFingerprint)
+	}()
 }
+
+// wakeTimeout bounds one wake, from deciding to the provider taking it.
+const wakeTimeout = 2 * time.Minute
 
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 	limit := 50

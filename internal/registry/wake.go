@@ -40,15 +40,51 @@ const (
 // refusal, it is waking never having been on the table, and a row for every
 // message to every session would bury the rows that mean something.
 type WakeEvent struct {
-	ID                 string      `json:"id"`
-	MessageID          string      `json:"messageId"`
-	SourceNodeID       string      `json:"sourceNodeId,omitempty"`
+	ID        string `json:"id"`
+	MessageID string `json:"messageId"`
+	// SourceNodeID is the node the envelope's signature proves sent this, or
+	// "" for a message that never left this machine.
+	SourceNodeID string `json:"sourceNodeId,omitempty"`
+	// SourceSession is the label the sender chose for itself. Shown to a
+	// person, and never counted on — see PairKey.
 	SourceSession      string      `json:"sourceSession,omitempty"`
 	DestinationSession string      `json:"destinationSession"`
 	Hops               int         `json:"hops"`
 	Outcome            WakeOutcome `json:"outcome"`
-	Detail             string      `json:"detail,omitempty"`
-	At                 time.Time   `json:"at"`
+	// PairKey is what the per-pair limit counts by. Stored rather than derived
+	// at read time so a later change to the derivation cannot silently
+	// re-bucket history that was already counted one way.
+	PairKey_ string    `json:"-"`
+	Detail   string    `json:"detail,omitempty"`
+	At       time.Time `json:"at"`
+}
+
+// PairKey is the identity the per-pair limit counts by.
+//
+// The node id, which the envelope's signature proves, and never the session
+// label, which the sender writes. Keying on the label made the limit
+// decorative: a peer varying `from` on every message minted a fresh bucket
+// each time, and a measured run took the same peer from 3 wakes to 12 by
+// doing nothing but changing a string it controls.
+//
+// A peer's sessions therefore share one bucket. That is the point — the thing
+// being limited is "how fast may that machine make this agent move", and the
+// machine is the only part of the claim this node can check.
+//
+// "local" for a message that never left this machine. Not the empty string:
+// empty would mean "count every source", which is the session limit wearing
+// the pair limit's name, and a local send would then be charged against every
+// peer that shares its destination. One bucket for local traffic is a real
+// bound on two sessions here answering each other, which is otherwise
+// unlimited.
+func (e WakeEvent) PairKey() string {
+	if e.PairKey_ != "" {
+		return e.PairKey_
+	}
+	if e.SourceNodeID != "" {
+		return "node:" + e.SourceNodeID
+	}
+	return "local"
 }
 
 // The three windows, narrowest first.
@@ -78,14 +114,16 @@ CREATE TABLE IF NOT EXISTS wake_events (
     message_id TEXT NOT NULL,
     source_node_id TEXT NOT NULL DEFAULT '',
     source_session TEXT NOT NULL DEFAULT '',
+    pair_key TEXT NOT NULL DEFAULT 'local',
     destination_session TEXT NOT NULL,
     hops INTEGER NOT NULL DEFAULT 0 CHECK (hops >= 0),
     outcome TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT '',
-    at_ms INTEGER NOT NULL
+    at_ms INTEGER NOT NULL,
+    chain_used INTEGER NOT NULL DEFAULT 0 CHECK (chain_used IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_wake_events_pair
-    ON wake_events(source_session, destination_session, at_ms DESC);
+    ON wake_events(pair_key, destination_session, at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_wake_events_destination
     ON wake_events(destination_session, at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_wake_events_at
@@ -160,25 +198,18 @@ func (r *Registry) ReserveWake(ctx context.Context, event WakeEvent, limits Wake
 	// that applies. "This pair has been talking too fast" points at something
 	// they can act on; "this node is busy" does not.
 	checks := []struct {
-		source, destination string
-		window              time.Duration
-		limit               int
-		outcome             WakeOutcome
+		pairKey, destination string
+		window               time.Duration
+		limit                int
+		outcome              WakeOutcome
 	}{
-		{event.SourceSession, event.DestinationSession, limits.PairWindow, limits.Pair, WakeRefusedPair},
+		{event.PairKey(), event.DestinationSession, limits.PairWindow, limits.Pair, WakeRefusedPair},
 		{"", event.DestinationSession, limits.SessionWindow, limits.Session, WakeRefusedSession},
 		{"", "", limits.NodeWindow, limits.Node, WakeRefusedNode},
 	}
 	event.Outcome = WakeWoken
 	for _, check := range checks {
-		// A pair check with no source session would count every source, which
-		// is the session limit, not the pair one. Skipped rather than widened:
-		// a local send with no named sender must not be counted against every
-		// peer that shares its destination.
-		if check.outcome == WakeRefusedPair && check.source == "" {
-			continue
-		}
-		count, err := countWakesTx(ctx, transaction, check.source, check.destination,
+		count, err := countWakesTx(ctx, transaction, check.pairKey, check.destination,
 			event.At.Add(-check.window))
 		if err != nil {
 			return WakeEvent{}, err
@@ -232,13 +263,13 @@ func (r *Registry) SettleWake(ctx context.Context, wakeID string, outcome WakeOu
 // sourceSession is optional: empty counts every source, which is how the
 // per-session and node-wide limits are asked for. destinationSession empty
 // counts every destination, which is the node-wide one.
-func (r *Registry) CountWakes(ctx context.Context, sourceSession, destinationSession string,
+func (r *Registry) CountWakes(ctx context.Context, pairKey, destinationSession string,
 	since time.Time) (int, error) {
 	query := `SELECT count(*) FROM wake_events WHERE outcome = ? AND at_ms >= ?`
 	arguments := []any{string(WakeWoken), since.UTC().UnixMilli()}
-	if sourceSession != "" {
-		query += ` AND source_session = ?`
-		arguments = append(arguments, sourceSession)
+	if pairKey != "" {
+		query += ` AND pair_key = ?`
+		arguments = append(arguments, pairKey)
 	}
 	if destinationSession != "" {
 		query += ` AND destination_session = ?`
@@ -257,13 +288,13 @@ type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func countWakesTx(ctx context.Context, q queryRower, sourceSession, destinationSession string,
+func countWakesTx(ctx context.Context, q queryRower, pairKey, destinationSession string,
 	since time.Time) (int, error) {
 	query := `SELECT count(*) FROM wake_events WHERE outcome = ? AND at_ms >= ?`
 	arguments := []any{string(WakeWoken), since.UTC().UnixMilli()}
-	if sourceSession != "" {
-		query += ` AND source_session = ?`
-		arguments = append(arguments, sourceSession)
+	if pairKey != "" {
+		query += ` AND pair_key = ?`
+		arguments = append(arguments, pairKey)
 	}
 	if destinationSession != "" {
 		query += ` AND destination_session = ?`
@@ -299,9 +330,10 @@ func insertWakeTx(ctx context.Context, e execer, event WakeEvent) (WakeEvent, er
 	}
 	if _, err := e.ExecContext(ctx, `
 INSERT INTO wake_events
-    (id, message_id, source_node_id, source_session, destination_session, hops, outcome, detail, at_ms)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.ID, event.MessageID, event.SourceNodeID, event.SourceSession,
+    (id, message_id, source_node_id, source_session, pair_key, destination_session,
+     hops, outcome, detail, at_ms)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.MessageID, event.SourceNodeID, event.SourceSession, event.PairKey(),
 		event.DestinationSession, event.Hops, string(event.Outcome), event.Detail,
 		event.At.UTC().UnixMilli()); err != nil {
 		return WakeEvent{}, fmt.Errorf("record wake event: %w", err)
@@ -309,44 +341,62 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return event, nil
 }
 
-// WakeAttributionWindow is how long after being woken a session's outbound
-// message is treated as caused by that wake.
+// WakeAttributionWindow bounds how long after a wake an outbound message may
+// still be treated as caused by it.
 //
 // A heuristic, and named as one. Nothing links an agent's decision to send to
 // the message that woke it: the agent calls agent_send like any other caller,
-// and no provider tells this node why. So the chain is reconstructed by
-// proximity, which over-counts a person who happens to send during the window
-// and under-counts an agent that thinks for longer than it.
+// and no provider says why. So the chain is reconstructed by proximity.
 //
-// Over-counting is the safe direction — it stops an exchange early — and the
-// per-pair limit is what actually ends a two-machine loop. Hops exist for the
-// cycle a pair limit cannot see, A to B to C to A, and being approximate there
-// is worth more than not counting at all.
+// The window is an upper bound, not the whole rule — a wake is claimed by at
+// most one message, so a slow agent is still attributed while a person typing
+// afterwards is not. Without that, one wake tainted every send from that
+// session for the whole window, and a human's own message could be refused at
+// the far end with a hop-limit refusal they had no way to see.
 const WakeAttributionWindow = 15 * time.Minute
 
-// LastWakeHops reports the hop count a message from this session should carry.
+// LastWakeHops reports the hop count a message from this session should carry,
+// and claims the wake it came from so nothing else can inherit it.
 //
-// Zero when the session has not been woken recently, which is the answer for a
-// person typing into their own agent, and the answer this returns whenever it
-// cannot tell.
+// Zero when there is no unclaimed wake in the window: the answer for a person
+// typing into their own agent, for a second message after a reply has already
+// been attributed, and whenever this cannot tell.
 func (r *Registry) LastWakeHops(ctx context.Context, sessionID string, now time.Time) (int, error) {
 	if sessionID == "" {
 		return 0, nil
 	}
+	transaction, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin hop attribution: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+
+	var rowID int64
 	var hops int
-	err := r.db.QueryRowContext(ctx, `
-SELECT hops FROM wake_events
-WHERE destination_session = ? AND outcome = ? AND at_ms >= ?
-ORDER BY at_ms DESC, id DESC LIMIT 1`,
-		sessionID, string(WakeWoken), now.Add(-WakeAttributionWindow).UTC().UnixMilli()).Scan(&hops)
+	// rowid, not id, for the tie-break. Ids are random hex, so ordering by
+	// them picks arbitrarily between two wakes in the same millisecond —
+	// measured returning 4 from a pair recorded at 0 and 3. rowid is issued in
+	// insert order, which is the order that actually happened.
+	err = transaction.QueryRowContext(ctx, `
+SELECT rowid, hops FROM wake_events
+WHERE destination_session = ? AND outcome = ? AND chain_used = 0 AND at_ms >= ?
+ORDER BY at_ms DESC, rowid DESC LIMIT 1`,
+		sessionID, string(WakeWoken),
+		now.Add(-WakeAttributionWindow).UTC().UnixMilli()).Scan(&rowID, &hops)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("read the last wake of %q: %w", sessionID, err)
 	}
-	// One more than the wake that caused it. A message this node sends because
-	// it was woken is one hop further along than the message that woke it.
+	if _, err := transaction.ExecContext(ctx,
+		`UPDATE wake_events SET chain_used = 1 WHERE rowid = ?`, rowID); err != nil {
+		return 0, fmt.Errorf("claim the wake of %q: %w", sessionID, err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit hop attribution: %w", err)
+	}
+	// One more than the wake that caused it.
 	return hops + 1, nil
 }
 
@@ -359,7 +409,7 @@ func (r *Registry) ListWakes(ctx context.Context, sessionID string, limit int) (
 		limit = 50
 	}
 	query := `
-SELECT id, message_id, source_node_id, source_session, destination_session,
+SELECT id, message_id, source_node_id, source_session, pair_key, destination_session,
        hops, outcome, detail, at_ms
 FROM wake_events`
 	arguments := []any{}
@@ -381,7 +431,8 @@ FROM wake_events`
 		var outcome string
 		var atMS int64
 		if err := rows.Scan(&event.ID, &event.MessageID, &event.SourceNodeID, &event.SourceSession,
-			&event.DestinationSession, &event.Hops, &outcome, &event.Detail, &atMS); err != nil {
+			&event.PairKey_, &event.DestinationSession, &event.Hops, &outcome, &event.Detail,
+			&atMS); err != nil {
 			return nil, fmt.Errorf("scan wake event: %w", err)
 		}
 		event.Outcome = WakeOutcome(outcome)

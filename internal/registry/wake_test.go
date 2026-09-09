@@ -243,72 +243,176 @@ func TestAnOldWakeFallsOutOfItsWindow(t *testing.T) {
 	}
 }
 
-// A local send names no source session. That must not be read as "every
-// source", which would charge one anonymous send against the pair limit of
-// every peer sharing the destination.
-func TestASendWithNoNamedSourceSkipsThePairLimit(t *testing.T) {
+// A message that never left this machine still has a bucket.
+//
+// It used to have none: the pair check was skipped whenever the sender label
+// was empty, and hops are zero for an unattributed send, so two sessions here
+// could answer each other with neither loop mechanism applying. One shared
+// "local" bucket is a real bound on that, and it is not the empty key, which
+// would mean "count every source" — the session limit wearing the pair
+// limit's name.
+func TestLocalTrafficSharesOneBucketRatherThanNone(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
 	limits := DefaultWakeLimits()
-	limits.Pair = 1
+	limits.Pair = 2
 
-	for i := range 3 {
+	for i := range limits.Pair {
 		event := wakeEvent("", "claude:mine")
+		event.SourceNodeID = ""
 		event.MessageID = fmt.Sprintf("msg_%d", i)
 		stored, err := store.ReserveWake(ctx, event, limits)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if stored.Outcome != WakeWoken {
-			t.Fatalf("an unattributed send %d was refused as %q; the pair limit was applied to it",
-				i, stored.Outcome)
+			t.Fatalf("local wake %d was refused as %q", i, stored.Outcome)
+		}
+		if stored.PairKey() != "local" {
+			t.Fatalf("local traffic was bucketed as %q", stored.PairKey())
 		}
 	}
-}
-
-// When more than one limit applies, the owner is told the narrowest.
-//
-// "This pair has been talking too fast" names something they can act on: they
-// know which two sessions, and they can turn one off. "This machine is busy"
-// names a symptom of it and points nowhere. Both are true when both limits are
-// exceeded, so which one is reported is a choice, and it is this one.
-func TestTheReasonGivenIsTheNarrowestThatApplies(t *testing.T) {
-	ctx := context.Background()
-	store := openTestRegistry(t)
-	limits := DefaultWakeLimits()
-	limits.Pair, limits.Session, limits.Node = 1, 1, 1
-
-	first, err := store.ReserveWake(ctx, wakeEvent("claude:theirs", "claude:mine"), limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Outcome != WakeWoken {
-		t.Fatalf("the first wake was refused as %q", first.Outcome)
-	}
-
-	// This one is over all three at once: same pair, same destination, same
-	// node, and every limit is 1.
-	over := wakeEvent("claude:theirs", "claude:mine")
+	over := wakeEvent("", "claude:mine")
+	over.SourceNodeID = ""
 	over.MessageID = "msg_over"
 	stopped, err := store.ReserveWake(ctx, over, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stopped.Outcome != WakeRefusedPair {
-		t.Errorf("outcome = %q; with every limit exceeded the owner should be told the pair one, "+
-			"which is the only one that names what to change", stopped.Outcome)
+		t.Errorf("local sends are unlimited: %q", stopped.Outcome)
+	}
+}
+
+// The pair limit counts by the node the signature proves, not the label the
+// sender writes.
+//
+// Keying on the label made the limit decorative. A measured run took one
+// peer from 3 wakes to 12 against the same agent by varying `from` and
+// nothing else — every message minted a fresh bucket. The node id is the only
+// part of a sender's claim this node can check.
+func TestThePairLimitCountsByTheVerifiedNodeNotTheChosenLabel(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	limits := DefaultWakeLimits()
+
+	for i := range limits.Pair {
+		event := wakeEvent(fmt.Sprintf("node_peer0000000000000/codex:alias-%d", i), "claude:mine")
+		event.SourceNodeID = "node_peer0000000000000"
+		event.MessageID = fmt.Sprintf("msg_%d", i)
+		stored, err := store.ReserveWake(ctx, event, limits)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Outcome != WakeWoken {
+			t.Fatalf("wake %d refused as %q before the limit", i, stored.Outcome)
+		}
 	}
 
-	// And a message over only the wider limits still reports the widest one
-	// that applies, rather than blaming a pair that has said nothing.
-	fresh := wakeEvent("claude:someone-else", "claude:elsewhere")
-	fresh.MessageID = "msg_fresh"
-	nodeStopped, err := store.ReserveWake(ctx, fresh, limits)
+	// A label it has never used before, from the same machine.
+	fresh := wakeEvent("node_peer0000000000000/codex:brand-new-alias", "claude:mine")
+	fresh.SourceNodeID = "node_peer0000000000000"
+	fresh.MessageID = "msg_alias"
+	stopped, err := store.ReserveWake(ctx, fresh, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStopped.Outcome != WakeRefusedNode {
-		t.Errorf("outcome = %q, want %q: this pair and this session are both untouched",
-			nodeStopped.Outcome, WakeRefusedNode)
+	if stopped.Outcome != WakeRefusedPair {
+		t.Errorf("a new sender label bought another wake: %q — the limit is keyed on "+
+			"something the sender chooses", stopped.Outcome)
+	}
+
+	// A genuinely different machine is a different bucket.
+	other := wakeEvent("node_other0000000000000/codex:theirs", "claude:mine")
+	other.SourceNodeID = "node_other0000000000000"
+	other.MessageID = "msg_other"
+	permitted, err := store.ReserveWake(ctx, other, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permitted.Outcome != WakeWoken {
+		t.Errorf("a different node was charged against another node's bucket: %q", permitted.Outcome)
+	}
+}
+
+// A wake is claimed by at most one message.
+//
+// Without that, one wake tainted every send from that session for fifteen
+// minutes: a person typing five minutes later had their own message carried at
+// the agent's hop count, and it could be refused at the far end with a
+// hop-limit refusal they had no way to see — the refusal lands on the
+// receiver's trail, which the sender cannot read.
+func TestOneWakeIsInheritedByOneMessageOnly(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	now := time.Now().UTC()
+
+	event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	event.SourceNodeID = "node_peer0000000000000"
+	event.Hops = 2
+	if _, err := store.ReserveWake(ctx, event, DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.LastWakeHops(ctx, "claude:mine", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != 3 {
+		t.Errorf("the reply carries %d hops, want one more than the wake's 2", first)
+	}
+	// Anything the session sends afterwards is its own doing until it is woken
+	// again.
+	second, err := store.LastWakeHops(ctx, "claude:mine", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != 0 {
+		t.Errorf("a second message inherited the same wake and carries %d hops", second)
+	}
+
+	// Being woken again arms it again.
+	next := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	next.SourceNodeID = "node_peer0000000000000"
+	next.MessageID, next.Hops = "msg_again", 1
+	if _, err := store.ReserveWake(ctx, next, DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.LastWakeHops(ctx, "claude:mine", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 2 {
+		t.Errorf("after a second wake the reply carries %d hops, want 2", again)
+	}
+}
+
+// Two wakes in the same millisecond are told apart by insert order.
+//
+// Ids are random hex, so ordering by them picks arbitrarily between them —
+// measured returning 4 from a pair recorded at 0 and 3, which is a message
+// stopped at the far end for a chain that never happened.
+func TestWakesInTheSameMillisecondAreOrderedByWhatHappened(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	sameMoment := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i, hops := range []int{0, 3} {
+		event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+		event.SourceNodeID = "node_peer0000000000000"
+		event.MessageID = fmt.Sprintf("msg_%d", i)
+		event.Hops, event.At = hops, sameMoment
+		event.Outcome = WakeWoken
+		if _, err := store.RecordWake(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The second insert is the later wake, so its 3 is the one to inherit.
+	got, err := store.LastWakeHops(ctx, "claude:mine", sameMoment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 4 {
+		t.Errorf("hops = %d, want 4 from the wake that was recorded second", got)
 	}
 }

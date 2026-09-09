@@ -127,7 +127,7 @@ func (s *Server) storeIncoming(w http.ResponseWriter, r *http.Request, senderNod
 		// of something already held must not start a second turn, which is the
 		// one way a sender could wake an agent as often as it liked without
 		// passing any limit — every retry would be a new wake.
-		s.considerWake(r.Context(), model.Message{
+		s.considerWake(model.Message{
 			ID: payload.MessageID, To: payload.To,
 			From:              qualifiedSender(senderNodeID, payload.From),
 			DestinationNodeID: s.node.ID, Body: payload.Body, WakeHops: payload.WakeHops,
