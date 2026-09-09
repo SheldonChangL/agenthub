@@ -24,15 +24,34 @@ import (
 // fails, which leaves the message in the inbox for whenever one starts.
 type ChannelDriver struct {
 	mu      sync.Mutex
-	waiting map[string]chan Envelope
+	waiting map[string]*subscriber
 	// handoff bounds how long a driver waits for a subscriber to take the
 	// envelope it is holding out.
 	handoff time.Duration
 }
 
+// subscriber is one poll waiting for its session's next message.
+//
+// Two channels rather than one, and the envelope channel is never closed.
+//
+// A buffered channel that ended a subscription by closing it had two faults
+// that a review found and a test would not have: a Drive already committed to
+// sending panicked on the closed channel and took the whole node with it, and
+// a message sitting in the buffer when the subscription ended was recorded as
+// a wake nobody could ever read. Unbuffered means Drive returning nil is a
+// reader having taken it, which is what the audit trail claims; done is what
+// ends the wait, and closing it cannot race a send.
+type subscriber struct {
+	envelopes chan Envelope
+	done      chan struct{}
+	once      sync.Once
+}
+
+func (s *subscriber) end() { s.once.Do(func() { close(s.done) }) }
+
 // NewChannelDriver returns a driver with no subscribers.
 func NewChannelDriver() *ChannelDriver {
-	return &ChannelDriver{waiting: map[string]chan Envelope{}, handoff: 5 * time.Second}
+	return &ChannelDriver{waiting: map[string]*subscriber{}, handoff: 5 * time.Second}
 }
 
 // Provider says which sessions this driver serves.
@@ -41,32 +60,64 @@ func (d *ChannelDriver) Provider() model.Provider { return model.ProviderClaude 
 // ErrNoSubscriber means no agent is listening for this session.
 var ErrNoSubscriber = errors.New("no agent is subscribed for this session")
 
-// Subscribe registers a waiter and returns it with the function that removes
-// it.
+// ErrSubscriptionEnded means the subscriber went away mid-handoff.
+var ErrSubscriptionEnded = errors.New("the subscriber went away before taking the message")
+
+// Subscription is one registered poll.
+type Subscription struct {
+	// Messages yields at most one envelope, when a Drive hands one over.
+	Messages <-chan Envelope
+	// Done closes when this subscription ends, whether because the poll
+	// finished or because a later one displaced it.
+	Done <-chan struct{}
+	// Displaced reports whether a later subscriber took this session over,
+	// which is the one ending the poll must tell its client about.
+	Displaced func() bool
+	// Close ends the subscription. Safe to call more than once.
+	Close func()
+}
+
+// Subscribe registers a waiter for a session.
 //
 // One waiter per session, and a second replaces the first: two MCP servers
 // started for one session is a mistake, and the newer is the likelier to be
-// the live one. The displaced waiter is closed so its own poll ends rather
-// than hanging until its deadline.
-func (d *ChannelDriver) Subscribe(sessionID string) (<-chan Envelope, func()) {
-	waiter := make(chan Envelope, 1)
+// the live one. The displaced one is ended so its poll returns at once rather
+// than waiting out its deadline.
+func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
+	fresh := &subscriber{envelopes: make(chan Envelope), done: make(chan struct{})}
+	displaced := false
+
 	d.mu.Lock()
 	if existing, ok := d.waiting[sessionID]; ok {
-		close(existing)
+		existing.end()
 	}
-	d.waiting[sessionID] = waiter
+	d.waiting[sessionID] = fresh
 	d.mu.Unlock()
 
-	return waiter, func() {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		// Only if it is still ours: a later Subscribe may already have
-		// replaced it, and removing that one would silently unsubscribe a
-		// live agent.
-		if current, ok := d.waiting[sessionID]; ok && current == waiter {
-			delete(d.waiting, sessionID)
-			close(waiter)
-		}
+	return Subscription{
+		Messages: fresh.envelopes,
+		Done:     fresh.done,
+		Displaced: func() bool {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			// Displaced means somebody else holds the slot now. A poll that
+			// simply ended still holds it until it removes itself.
+			current, ok := d.waiting[sessionID]
+			return displaced || (ok && current != fresh)
+		},
+		Close: func() {
+			d.mu.Lock()
+			// Only if it is still ours: a later Subscribe may already have
+			// replaced it, and removing that one would silently unsubscribe a
+			// live agent.
+			if current, ok := d.waiting[sessionID]; ok && current == fresh {
+				delete(d.waiting, sessionID)
+			} else {
+				displaced = true
+			}
+			d.mu.Unlock()
+			fresh.end()
+		},
 	}
 }
 
@@ -78,14 +129,21 @@ func (d *ChannelDriver) Subscribed(sessionID string) bool {
 	return ok
 }
 
+// Waiting reports how many subscriptions are live, for a bound on them.
+func (d *ChannelDriver) Waiting() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.waiting)
+}
+
 // Drive hands the envelope to this session's subscriber.
 //
-// What it reports is that a subscriber took the message, and no more than
-// that. A channel notification is not acknowledged: Claude Code drops one it
-// cannot deliver — an unregistered channel, an organisation that has not
-// enabled the feature — without telling the server anything. So a wake
-// recorded here means "handed to a live agent's MCP server", which is the
-// furthest this node can see, and the audit trail says so.
+// What it reports is that a poll took the message, and no more than that. A
+// channel notification is not acknowledged: Claude Code drops one it cannot
+// deliver — an unregistered channel, an organisation that has not enabled the
+// feature — without telling the server anything. So a wake recorded here means
+// "taken by a live agent's MCP server", which is the furthest this node can
+// see, and the audit trail says so.
 func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelope Envelope) error {
 	d.mu.Lock()
 	waiter, ok := d.waiting[session.ID]
@@ -97,12 +155,15 @@ func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelo
 	handoff, cancel := context.WithTimeout(ctx, d.handoff)
 	defer cancel()
 	select {
-	case waiter <- envelope:
+	case waiter.envelopes <- envelope:
 		return nil
+	case <-waiter.done:
+		// The poll ended between the lookup and now. The message stays in the
+		// inbox for the next one.
+		return fmt.Errorf("%w: %s", ErrSubscriptionEnded, session.ID)
 	case <-handoff.Done():
-		// The subscriber is registered but not collecting. Its poll may have
-		// ended between the lookup and now, or the agent may be wedged. Either
-		// way the message stays in the inbox.
+		// Registered but not collecting: the agent may be wedged, or its poll
+		// may be between reading and writing. Either way the message stays.
 		return fmt.Errorf("the subscriber for %s did not take the message within %s",
 			session.ID, d.handoff)
 	}

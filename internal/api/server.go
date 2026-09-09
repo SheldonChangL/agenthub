@@ -60,6 +60,22 @@ type Server struct {
 	waker Waker
 	// channels is where an agent this node cannot reach waits to be told.
 	channels ChannelSubscriber
+	// writeTimeout is the deadline of the server carrying this handler, so a
+	// held request can end before the connection is cut under it.
+	writeTimeout time.Duration
+	// draining closes when the node begins shutting down, so held requests
+	// answer instead of running out their own deadlines while Shutdown waits.
+	draining  chan struct{}
+	drainOnce sync.Once
+}
+
+// Drain ends every held request, so Shutdown can finish inside its budget.
+//
+// http.Server.Shutdown waits for handlers to return and does not cancel their
+// contexts, so one held poll kept the node alive to its own deadline — the
+// shutdown then reported a timeout and the peer listener was never closed.
+func (s *Server) Drain() {
+	s.drainOnce.Do(func() { close(s.draining) })
 }
 
 // Waker is the wake gate, as this package needs it.
@@ -108,6 +124,7 @@ func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.
 		store: store, hub: service, heartbeats: heartbeats, node: node,
 		deliveryPolicy: transport.LoopbackOnly,
 		peerLimiter:    newRateLimiter(),
+		draining:       make(chan struct{}),
 	}
 	for _, option := range options {
 		option(server)
@@ -922,7 +939,10 @@ func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
 // An interface so the API does not depend on the wake package, and so a test
 // can drive the endpoint without a gate behind it.
 type ChannelSubscriber interface {
-	Subscribe(sessionID string) (<-chan wake.Envelope, func())
+	Subscribe(sessionID string) wake.Subscription
+	// Waiting is how many polls are held right now, so the endpoint can
+	// refuse to hold an unbounded number.
+	Waiting() int
 }
 
 // WithChannelSubscriber gives the API somewhere for an agent to wait.
@@ -930,12 +950,27 @@ func WithChannelSubscriber(subscriber ChannelSubscriber) Option {
 	return func(s *Server) { s.channels = subscriber }
 }
 
+// WithWriteTimeout tells the API the deadline of the server carrying it.
+//
+// A held request has to end before that, or the connection is cut with nothing
+// written. The handler cannot read it off the http.Server, so it is passed.
+func WithWriteTimeout(timeout time.Duration) Option {
+	return func(s *Server) { s.writeTimeout = timeout }
+}
+
+// MaxWakeSubscribers bounds how many polls this node will hold at once.
+//
+// Each is a goroutine, a connection and a map entry, and the endpoint is
+// reachable by any process on this machine. One per session an owner is
+// actually running is a handful; a thousand is somebody's mistake or
+// somebody's probe.
+const MaxWakeSubscribers = 64
+
 // wakeStream holds a request open until this session has a message to act on.
 //
 // A long poll rather than a stream of many: one message per response keeps the
 // contract the same shape as everything else here, and the subscriber comes
-// straight back for the next one. It also means a client that dies mid-handoff
-// loses at most the message it was handed, which is still in the inbox.
+// straight back for the next one.
 //
 // Why the direction is inverted at all: an agent's MCP server is a stdio child
 // of that agent and reaches this node over loopback, outbound only. Nothing
@@ -950,7 +985,20 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	wait := 30 * time.Second
+	// A session this node does not hold cannot be woken, so holding a request
+	// open for it is a goroutine spent on nothing. localSession only parses
+	// the address; this is the check that it names something real.
+	if _, err := s.store.GetSession(r.Context(), sessionID); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	if s.channels.Waiting() >= MaxWakeSubscribers {
+		writeError(w, http.StatusServiceUnavailable, "TOO_MANY_SUBSCRIBERS",
+			fmt.Sprintf("this node is already holding %d wake streams", MaxWakeSubscribers))
+		return
+	}
+
+	wait := s.wakeStreamWait(0)
 	if value := r.URL.Query().Get("wait"); value != "" {
 		parsed, err := time.ParseDuration(value)
 		if err != nil || parsed < time.Second || parsed > 5*time.Minute {
@@ -958,40 +1006,77 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 				"wait must be a duration between 1s and 5m")
 			return
 		}
-		wait = parsed
+		wait = s.wakeStreamWait(parsed)
 	}
 
 	// Registered before the reply is written, so a message arriving in the gap
 	// between the subscriber's last poll and this one is not driven at a
 	// session that looks absent.
-	messages, unsubscribe := s.channels.Subscribe(sessionID)
-	defer unsubscribe()
+	subscription := s.channels.Subscribe(sessionID)
+	defer subscription.Close()
 
 	deadline := time.NewTimer(wait)
 	defer deadline.Stop()
 	select {
-	case envelope, open := <-messages:
-		if !open {
-			// Displaced by a later subscriber for the same session. Answering
-			// 409 rather than an empty 204 tells the loser to stop rather than
-			// poll again and displace the winner in turn.
-			writeError(w, http.StatusConflict, "WAKE_STREAM_REPLACED",
-				"another subscriber took over this session")
-			return
-		}
+	case envelope := <-subscription.Messages:
 		writeJSON(w, http.StatusOK, channelView{
 			MessageID: envelope.MessageID, Body: envelope.Body,
 			SenderNodeID: envelope.SenderNodeID, SenderLabel: envelope.SenderLabel,
 			Fingerprint: envelope.Fingerprint, Hops: envelope.Hops,
 			Notice: wake.Notice,
 		})
+	case <-subscription.Done:
+		// Displaced by a later subscriber for the same session. Answering 409
+		// rather than an empty 204 tells the loser to stop rather than poll
+		// again and displace the winner in turn.
+		writeError(w, http.StatusConflict, "WAKE_STREAM_REPLACED",
+			"another subscriber took over this session")
 	case <-deadline.C:
 		// Nothing arrived. Not an error: it is the normal end of a poll, and
 		// the subscriber comes straight back.
+		//
+		// The wait this node actually used goes back with it, because the
+		// client cannot see the deadline it has to stay under: the write
+		// timeout belongs to the http.Server, not to the request. Without it
+		// the client picked a number, and the number it picked was one that
+		// could never answer.
+		w.Header().Set("Agenthub-Wake-Wait", wait.String())
 		w.WriteHeader(http.StatusNoContent)
 	case <-r.Context().Done():
 		// The subscriber gave up. Nothing to write to.
+	case <-s.draining:
+		// The node is shutting down. Answering now lets Shutdown finish inside
+		// its budget instead of waiting out every held poll — which it did,
+		// and the peer listener was never closed as a result.
+		writeError(w, http.StatusServiceUnavailable, "NODE_SHUTTING_DOWN",
+			"this node is shutting down")
 	}
+}
+
+// wakeStreamWait keeps a poll strictly shorter than the write deadline of the
+// server carrying it.
+//
+// A poll as long as the deadline can never answer: Go arms the write deadline
+// when the request header is read, so it fires first and the connection is cut
+// with nothing written. Measured against the shipped binaries, whose
+// WriteTimeout is 30s: wait=29s answered 204, wait=30s produced an empty
+// reply, every time. The default poll was 30s, so in steady state every poll
+// failed and the subscriber spent most of its life unregistered.
+func (s *Server) wakeStreamWait(requested time.Duration) time.Duration {
+	limit := s.writeTimeout
+	if limit <= 0 {
+		limit = 30 * time.Second
+	}
+	// A margin for the response itself and for the clock the two timers do not
+	// share.
+	longest := limit - 3*time.Second
+	if longest < time.Second {
+		longest = time.Second
+	}
+	if requested <= 0 || requested > longest {
+		return longest
+	}
+	return requested
 }
 
 // channelView is one message on its way to an agent this node cannot reach.

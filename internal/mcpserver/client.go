@@ -37,6 +37,9 @@ type Client struct {
 	// longPoll is a second client for the wake stream, whose requests are meant
 	// to hang. Built on first use so nothing pays for it that never waits.
 	longPoll *http.Client
+	// wakeWait is what the node last said it would hold a poll for. Owned by
+	// the single goroutine that polls.
+	wakeWait time.Duration
 }
 
 // NewClient targets a node's loopback API.
@@ -552,12 +555,14 @@ func providerOf(sessionID string) string {
 	return provider
 }
 
-// WakeWait is how long one poll of the wake stream holds open.
+// WakeWait is how long the first poll asks to be held.
 //
-// Long enough that an idle agent is not making a request every few seconds,
-// short enough that a node restart is noticed without waiting out a TCP
-// timeout.
-const WakeWait = 30 * time.Second
+// A request, not a decision: the node answers with the wait it actually used,
+// and later polls use that. The number has to stay under the node's own write
+// deadline, which belongs to its http.Server and is not visible from here — a
+// poll as long as the deadline is cut with nothing written, which is what a
+// 30-second default did against a 30-second deadline, on every quiet poll.
+const WakeWait = 25 * time.Second
 
 // ErrWakeUnavailable means the node was started without wake support.
 var ErrWakeUnavailable = errors.New("this node does not serve the wake stream")
@@ -573,13 +578,22 @@ var ErrWakeReplaced = errors.New("another subscriber took over this session")
 // cut every long poll short.
 func (c *Client) WaitForWake(ctx context.Context, sessionID string) (*ChannelPush, error) {
 	if c.longPoll == nil {
-		// A little beyond the node's own wait, so the node's timer is what
-		// ends a quiet poll and this one only fires if the node has stopped
-		// answering at all.
-		c.longPoll = &http.Client{Timeout: WakeWait + 15*time.Second}
+		// No Timeout on the client: the deadline belongs on the request,
+		// because how long a poll may take changes with what the node says it
+		// will hold one for, and a fixed client timeout built on the first
+		// call would be wrong for every later one.
+		c.longPoll = &http.Client{}
 	}
-	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/wake-stream?wait=" + WakeWait.String()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	wait := c.wakeWait
+	if wait <= 0 {
+		wait = WakeWait
+	}
+	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/wake-stream?wait=" + wait.String()
+	// A little beyond the node's own wait, so the node's timer is what ends a
+	// quiet poll and this one fires only if the node has stopped answering.
+	polling, cancel := context.WithTimeout(ctx, wait+15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(polling, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -595,7 +609,14 @@ func (c *Client) WaitForWake(ctx context.Context, sessionID string) (*ChannelPus
 
 	switch response.StatusCode {
 	case http.StatusNoContent:
-		// The poll ended quietly. Not an error, and the caller comes back.
+		// The poll ended quietly. Not an error, and the caller comes back —
+		// with whatever wait the node says it used, so this client stops
+		// asking for one the node has to shorten.
+		if used := response.Header.Get("Agenthub-Wake-Wait"); used != "" {
+			if parsed, err := time.ParseDuration(used); err == nil && parsed > 0 {
+				c.wakeWait = parsed
+			}
+		}
 		return nil, nil
 	case http.StatusOK:
 		var push ChannelPush

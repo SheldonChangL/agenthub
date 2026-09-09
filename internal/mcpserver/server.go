@@ -223,6 +223,9 @@ func (s *server) pushWakes(ctx context.Context, transport *injectingTransport) {
 	// A failing node must not become a tight loop against it. Every error
 	// waits; only a clean poll comes straight back.
 	const retry = 5 * time.Second
+	// Longer, because a node that says it has no wake stream is more likely to
+	// be configured that way than briefly restarting.
+	const unavailableRetry = 30 * time.Second
 	for {
 		if ctx.Err() != nil {
 			return
@@ -231,11 +234,25 @@ func (s *server) pushWakes(ctx context.Context, transport *injectingTransport) {
 		switch {
 		case ctx.Err() != nil:
 			return
-		case errors.Is(err, ErrWakeUnavailable), errors.Is(err, ErrWakeReplaced):
-			// Both mean stop: the node will not serve this, or somebody else
-			// is serving it. Polling on would displace them in turn.
+		case errors.Is(err, ErrWakeReplaced):
+			// Somebody else is serving this session. Polling on would displace
+			// them in turn, and the two would take it from each other for as
+			// long as both ran.
 			log.Printf("agenthub: not waiting for messages: %v", err)
 			return
+		case errors.Is(err, ErrWakeUnavailable):
+			// The node has no wake support, or does not know this session.
+			// Both can change under a node that is restarting, so this waits
+			// longer rather than giving up for the life of the process — a
+			// node brought back with -auto-wake would otherwise leave this
+			// server silent until the agent itself restarted.
+			log.Printf("agenthub: waiting for messages: %v", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(unavailableRetry):
+			}
+			continue
 		case err != nil:
 			log.Printf("agenthub: waiting for messages: %v", err)
 			select {

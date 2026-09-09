@@ -208,6 +208,12 @@ func run() error {
 	// ago, before this existed, finds turns starting after an upgrade; a node
 	// switch alone would wake every session at once. Two switches, and the
 	// narrow one is not enough on its own.
+	// One number, shared with the API, because the wake stream holds a request
+	// open and has to end before this cuts it. Go arms the write deadline when
+	// the request header is read, so a poll as long as the deadline is a poll
+	// that can never answer — measured: at 30s against a 30s deadline, every
+	// quiet poll produced an empty reply instead of its 204.
+	const ownerWriteTimeout = 60 * time.Second
 	if *autoWake {
 		supervisor := codexapp.NewSupervisor(codexapp.SupervisorOptions{})
 		defer func() { _ = supervisor.Close() }()
@@ -222,6 +228,7 @@ func run() error {
 				codexdriver.New(supervisor), channels,
 			)),
 			api.WithChannelSubscriber(channels),
+			api.WithWriteTimeout(ownerWriteTimeout),
 		)
 		log.Printf("auto-wake is on for this node; a session is woken only if its own " +
 			"autoWake is also open (ah audience <id> ... --auto-wake)")
@@ -232,7 +239,7 @@ func run() error {
 		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      ownerWriteTimeout,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
@@ -334,13 +341,23 @@ func run() error {
 			return err
 		}
 	case <-stop:
+		// Held requests first. Shutdown waits for handlers to return and does
+		// not cancel their contexts, so one wake stream held the node open to
+		// its own deadline — the shutdown then reported a timeout and the peer
+		// listener below was never closed at all.
+		apiServer.Drain()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown server: %w", err)
+		serverErr := server.Shutdown(shutdownCtx)
+		// Attempted whatever the first one did: a peer listener left open is a
+		// socket still accepting deliveries from the network after this
+		// process has decided to stop.
+		peerErr := peerServer.Shutdown(shutdownCtx)
+		if serverErr != nil {
+			return fmt.Errorf("shutdown server: %w", serverErr)
 		}
-		if err := peerServer.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown peer listener: %w", err)
+		if peerErr != nil {
+			return fmt.Errorf("shutdown peer listener: %w", peerErr)
 		}
 	}
 	return nil
