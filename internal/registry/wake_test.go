@@ -265,3 +265,50 @@ func TestASendWithNoNamedSourceSkipsThePairLimit(t *testing.T) {
 		}
 	}
 }
+
+// When more than one limit applies, the owner is told the narrowest.
+//
+// "This pair has been talking too fast" names something they can act on: they
+// know which two sessions, and they can turn one off. "This machine is busy"
+// names a symptom of it and points nowhere. Both are true when both limits are
+// exceeded, so which one is reported is a choice, and it is this one.
+func TestTheReasonGivenIsTheNarrowestThatApplies(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	limits := DefaultWakeLimits()
+	limits.Pair, limits.Session, limits.Node = 1, 1, 1
+
+	first, err := store.ReserveWake(ctx, wakeEvent("claude:theirs", "claude:mine"), limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Outcome != WakeWoken {
+		t.Fatalf("the first wake was refused as %q", first.Outcome)
+	}
+
+	// This one is over all three at once: same pair, same destination, same
+	// node, and every limit is 1.
+	over := wakeEvent("claude:theirs", "claude:mine")
+	over.MessageID = "msg_over"
+	stopped, err := store.ReserveWake(ctx, over, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Outcome != WakeRefusedPair {
+		t.Errorf("outcome = %q; with every limit exceeded the owner should be told the pair one, "+
+			"which is the only one that names what to change", stopped.Outcome)
+	}
+
+	// And a message over only the wider limits still reports the widest one
+	// that applies, rather than blaming a pair that has said nothing.
+	fresh := wakeEvent("claude:someone-else", "claude:elsewhere")
+	fresh.MessageID = "msg_fresh"
+	nodeStopped, err := store.ReserveWake(ctx, fresh, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStopped.Outcome != WakeRefusedNode {
+		t.Errorf("outcome = %q, want %q: this pair and this session are both untouched",
+			nodeStopped.Outcome, WakeRefusedNode)
+	}
+}
