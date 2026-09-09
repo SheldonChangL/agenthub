@@ -319,3 +319,26 @@ func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
 		t.Fatalf("inbox render check failed: %v\n%s", err, output)
 	}
 }
+
+// TestFrontendAudienceDialogStartsEveryFlagOff drives the dialog itself.
+//
+// It applies to whatever is selected and reads its values straight from the
+// boxes, so a box left ticked from the last time it was opened is a setting
+// about to be applied to a different set of sessions. That was survivable
+// while the flags governed only what could be read; one of them now starts a
+// turn in an agent with nobody watching, and inheriting that from a previous
+// dialog is not a thing anyone would choose on purpose.
+func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the audience dialog check")
+	}
+	script := filepath.Join("frontend", "test", "audience-dialog.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("audience dialog check failed: %v\n%s", err, output)
+	}
+}

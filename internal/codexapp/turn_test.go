@@ -3,7 +3,9 @@ package codexapp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -121,8 +123,6 @@ func TestAWokenTurnApprovesNothing(t *testing.T) {
 	}{
 		{"item/commandExecution/requestApproval", "decline"},
 		{"item/fileChange/requestApproval", "decline"},
-		{"execCommandApproval", "abort"},
-		{"applyPatchApproval", "abort"},
 	} {
 		server.send(t, map[string]any{
 			"id": 900, "method": request.method,
@@ -139,12 +139,43 @@ func TestAWokenTurnApprovesNothing(t *testing.T) {
 		}
 	}
 
+	// The older pair take ReviewDecision, whose refusal is a `denied` object
+	// rather than a string. `abort` would also be refused, but it halts the
+	// turn until the user's next command — and there is no user.
+	for _, method := range []string{"execCommandApproval", "applyPatchApproval"} {
+		server.send(t, map[string]any{"id": 902, "method": method, "params": map[string]any{}})
+		frame := server.next(t)
+		result, ok := frame["result"].(map[string]any)
+		if !ok {
+			t.Errorf("%s was answered with %v", method, frame)
+			continue
+		}
+		decision, ok := result["decision"].(map[string]any)
+		if !ok {
+			t.Errorf("%s decision = %v, want a denied object", method, result["decision"])
+			continue
+		}
+		if _, ok := decision["denied"]; !ok {
+			t.Errorf("%s decision = %v, want denied", method, decision)
+		}
+	}
+
+	// Elicitation has a typed decline as well.
+	server.send(t, map[string]any{
+		"id": 903, "method": "mcpServer/elicitation/request", "params": map[string]any{},
+	})
+	if frame := server.next(t); frame["result"].(map[string]any)["action"] != "decline" {
+		t.Errorf("elicitation was answered with %v", frame)
+	}
+
 	// The ones whose response shape has no refusal in it. Answering with a
-	// result would have to be a grant, so these are refused as errors.
+	// result would have to be a grant, so these are refused as errors — and so
+	// is anything added to the protocol after this was written.
 	for _, method := range []string{
 		"item/permissions/requestApproval",
 		"item/tool/requestUserInput",
-		"mcpServer/elicitation/request",
+		"item/tool/call",
+		"currentTime/read",
 		"something/inventedLater",
 	} {
 		server.send(t, map[string]any{"id": 901, "method": method, "params": map[string]any{}})
@@ -268,4 +299,137 @@ func TestAClosedConnectionFailsCallsInFlight(t *testing.T) {
 	if _, err := client.ResumeThread(context.Background(), "thread-1"); err == nil {
 		t.Error("a call on a closed client did not fail")
 	}
+}
+
+// The handshake declares experimentalApi.
+//
+// turn/start.additionalContext is behind it: without the capability the
+// app-server refuses the turn with -32600, so the untrusted marking — the one
+// barrier here that does not depend on prose — is unreachable and every wake
+// fails. That is not hypothetical; it is how the first real wake failed, and
+// deleting the line passed the whole suite.
+func TestInitializeDeclaresTheCapabilityAdditionalContextNeeds(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClient(server.transport)
+	t.Cleanup(func() { _ = client.Close() })
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Initialize(context.Background())
+		done <- err
+	}()
+	id, method := server.nextCall(t)
+	if method != "initialize" {
+		t.Fatalf("first call = %q", method)
+	}
+	server.reply(t, id, map[string]any{
+		"codexHome": "/tmp/codex", "platformFamily": "unix",
+		"platformOs": "macos", "userAgent": "codex",
+	})
+	// The `initialized` notification is drained before waiting: the pipe is
+	// unbuffered, so the client's write blocks until somebody reads it, and
+	// Initialize does not return until that write completes.
+	if frame := server.next(t); frame["method"] != "initialized" {
+		t.Fatalf("after the reply the client sent %v", frame)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+
+	params, ok := server.seen()[0]["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize sent %v", server.seen()[0])
+	}
+	capabilities, ok := params["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("initialize declared no capabilities: %v", params)
+	}
+	if capabilities["experimentalApi"] != true {
+		t.Errorf("experimentalApi = %v; additionalContext is refused without it",
+			capabilities["experimentalApi"])
+	}
+}
+
+// A request whose id is a string is answered, with that id.
+//
+// RequestId in the protocol schema is `string | int64`. Decoding it as a
+// number dropped the frame as unreadable and nothing was written back — an
+// approval left unanswered, which wedges the turn on a prompt nobody is
+// present to see.
+func TestARequestWithAStringIdIsStillAnswered(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClientWithOptions(server.transport, Options{
+		OnRequest: RefuseUnattendedApprovals(""),
+	})
+	t.Cleanup(func() { _ = client.Close() })
+
+	server.send(t, map[string]any{
+		"id": "req-abc", "method": "item/commandExecution/requestApproval",
+		"params": map[string]any{},
+	})
+	frame := server.next(t)
+	if frame["id"] != "req-abc" {
+		t.Errorf("the answer came back with id %v, want the string it was sent with", frame["id"])
+	}
+	result, ok := frame["result"].(map[string]any)
+	if !ok || result["decision"] != "decline" {
+		t.Errorf("a string-id approval was answered with %v", frame)
+	}
+}
+
+// Close stops the reader and closes the transport, whichever ended first.
+//
+// The two shared one sync.Once: a reader that ended on its own closed `done`
+// through it, and Close then did nothing — the transport stayed open and the
+// child process behind it stayed running. Closing the transport is also the
+// only thing that can unblock a reader still parked in Read.
+func TestCloseReleasesTheTransportEvenAfterTheReaderStopped(t *testing.T) {
+	server := newFakeServer(t)
+	transport := &countingCloser{ReadWriter: server.transport}
+	client := NewClient(transport)
+
+	// The reader ends on its own.
+	server.hangUp()
+	select {
+	case <-client.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader never noticed the connection ending")
+	}
+	if transport.closed() != 0 {
+		t.Fatalf("the transport was closed %d times before Close", transport.closed())
+	}
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if transport.closed() != 1 {
+		t.Errorf("Close() closed the transport %d times after the reader had stopped",
+			transport.closed())
+	}
+	// And it stays idempotent.
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if transport.closed() != 1 {
+		t.Errorf("a second Close() closed the transport again (%d)", transport.closed())
+	}
+}
+
+type countingCloser struct {
+	io.ReadWriter
+	mu    sync.Mutex
+	count int
+}
+
+func (c *countingCloser) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.count++
+	return nil
+}
+
+func (c *countingCloser) closed() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.count
 }
