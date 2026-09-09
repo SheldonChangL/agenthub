@@ -178,3 +178,64 @@ func TestANodeWithNoGateStillDelivers(t *testing.T) {
 		t.Errorf("the inbox holds %d messages on a node with no wake gate", held)
 	}
 }
+
+// A reply sent after a wake carries the chain forward.
+//
+// Without this the hop count is dead: it travels, it is stored, it is checked,
+// and nothing ever sets it above zero. That was true for four commits, and the
+// limit read as present while doing nothing at all.
+func TestAReplyAfterAWakeCarriesTheChainForward(t *testing.T) {
+	ctx := context.Background()
+	store, owner, peers, waker := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:woken")
+	other := acceptingLocalSession(t, store, owner, "codex:neighbour")
+
+	// A peer wakes the session, two hops into an exchange.
+	envelope, err := protocol.NewMessageEnvelope(peerNodeID, testNodeID, protocol.MessagePayload{
+		MessageID: "msg_in", To: session, From: "codex:theirs", Body: "your turn",
+		SentAt: time.Now().UTC(), WakeHops: 2,
+	}, peer.signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
+	}
+	if seen := waker.messages(); len(seen) != 1 || seen[0].WakeHops != 2 {
+		t.Fatalf("the gate saw %+v", seen)
+	}
+	// The gate is a stub here, so record the wake the way a real one would.
+	if _, err := store.ReserveWake(ctx, registry.WakeEvent{
+		MessageID: "msg_in", SourceSession: peerNodeID + "/codex:theirs",
+		DestinationSession: session, Hops: 2,
+	}, registry.DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The agent answers. Its reply is one hop further along.
+	reply := perform(t, owner, http.MethodPost, "/v1/messages",
+		map[string]string{"to": other, "from": session, "body": "answering"})
+	if reply.Code != http.StatusCreated {
+		t.Fatalf("reply = %d %s", reply.Code, reply.Body.String())
+	}
+	seen := waker.messages()
+	answered := seen[len(seen)-1]
+	if answered.WakeHops != 3 {
+		t.Errorf("the reply carries %d hops, want 3: the message that woke it was at 2",
+			answered.WakeHops)
+	}
+
+	// A session nobody woke sends at zero, so a person typing is not counted
+	// into somebody else's exchange.
+	fresh := perform(t, owner, http.MethodPost, "/v1/messages",
+		map[string]string{"to": session, "from": other, "body": "unprompted"})
+	if fresh.Code != http.StatusCreated {
+		t.Fatalf("fresh send = %d %s", fresh.Code, fresh.Body.String())
+	}
+	seen = waker.messages()
+	if last := seen[len(seen)-1]; last.WakeHops != 0 {
+		t.Errorf("a send from a session nobody woke carries %d hops", last.WakeHops)
+	}
+}

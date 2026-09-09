@@ -611,7 +611,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 					"deliberate: a message may have been suggested by content that arrived from another machine")
 			return
 		}
-		s.queueForPeer(w, r, destination, from, input.Body)
+		s.queueForPeer(w, r, destination, from, senderSessionID, input.Body)
 		return
 	}
 	to := destination.SessionID
@@ -621,6 +621,9 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	// not have to infer the destination from the absence of a prefix.
 	message, err := s.store.CreateMessage(r.Context(), model.Message{
 		To: to, From: from, DestinationNodeID: s.node.ID, Body: input.Body,
+		// Two sessions on one machine can answer each other as readily as two
+		// machines can, and nothing about the local path makes that cheaper.
+		WakeHops: s.hopsFor(r.Context(), senderSessionID),
 	})
 	if err != nil {
 		// CreateMessage resolves the destination session, so a store failure
