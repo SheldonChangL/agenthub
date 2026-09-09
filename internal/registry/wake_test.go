@@ -500,6 +500,19 @@ WHERE outcome = ? AND at_ms >= ? AND pair_key = ? AND destination_session = ?`,
 	if !strings.Contains(plan, "idx_wake_events_pair") {
 		t.Errorf("the pair count does not use the pair index after an upgrade: %s", plan)
 	}
+
+	// And the constraints match a fresh database. An upgraded schema whose
+	// CHECKs differ from a new one is two schemas wearing one version number,
+	// and the difference only shows up as a bad row somebody has to explain
+	// later.
+	if _, err := reopened.db.ExecContext(ctx,
+		`UPDATE wake_events SET chain_used = 7`); err == nil {
+		t.Error("chain_used accepted 7 after an upgrade; the fresh schema's CHECK is missing")
+	}
+	if _, err := reopened.db.ExecContext(ctx,
+		`UPDATE wake_events SET chain_used = 1`); err != nil {
+		t.Errorf("chain_used refused a legitimate value after an upgrade: %v", err)
+	}
 }
 
 // When more than one limit applies, the owner is told the narrowest.
