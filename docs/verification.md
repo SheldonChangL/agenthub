@@ -899,3 +899,30 @@ is what the shared-key first attempt would have shown either way.
   not "a turn ran". The Codex path can say more, because `turn/start` returns a
   turn id.
 - One host. No reconnect was exercised. The rate limits were not reached.
+
+### Re-run after the review, 2026-09-09
+
+The run above only ever delivered a message **inside the first poll**, which
+turned out to be the one case that worked. The node's write deadline and the
+default poll were both 30s, and Go arms the write deadline when the request
+header is read — so the deadline always won and no quiet poll ever answered.
+Measured against the shipped binaries before the fix: `wait=29s` → 204,
+`wait=30s` → empty reply.
+
+After the fix, against a node whose deadline is 60s:
+
+```
+wait=25s → 204   Agenthub-Wake-Wait: 25s
+wait=57s → 204   Agenthub-Wake-Wait: 57s
+wait=5m  → 204   Agenthub-Wake-Wait: 57s     (shortened, and said so)
+```
+
+And the case the first run never reached — a message arriving in a **later**
+poll cycle, with a real `agenthub-mcp -channel` subscribed throughout:
+
+```
+PUSH at +86.0s: arrived in the second poll window
+```
+
+The node recorded it `woken`. A second message, sent after that MCP server had
+exited, recorded `failed (no agent is subscribed…)` and stayed in the inbox.
