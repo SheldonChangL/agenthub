@@ -175,14 +175,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	return r.migrateWakeEvents(ctx)
 }
 
-// addMessageDestinationColumn brings a database created by an earlier build up
-// to recording where each message was addressed.
-//
-// Existing rows default to the empty string rather than to this node's id. A
-// message queued before the column existed was necessarily local — nothing
-// could route anywhere else — but writing this node's id into those rows would
-// be inventing a record that was never made. Empty reads as "not recorded",
-// which is what is true of them.
 // addMessageWakeHops brings a database created by an earlier build up to
 // recording how far an automatic exchange has travelled.
 //
@@ -222,6 +214,14 @@ func (r *Registry) addOutboundWakeHops(ctx context.Context) error {
 	return nil
 }
 
+// addMessageDestinationColumn brings a database created by an earlier build up
+// to recording where each message was addressed.
+//
+// Existing rows default to the empty string rather than to this node's id. A
+// message queued before the column existed was necessarily local — nothing
+// could route anywhere else — but writing this node's id into those rows would
+// be inventing a record that was never made. Empty reads as "not recorded",
+// which is what is true of them.
 func (r *Registry) addMessageDestinationColumn(ctx context.Context) error {
 	has, err := r.hasColumn(ctx, "messages", "destination_node_id")
 	if err != nil {
