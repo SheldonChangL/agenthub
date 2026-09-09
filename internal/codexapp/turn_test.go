@@ -92,9 +92,38 @@ func TestATurnCarriesTheMessageAsUntrustedContext(t *testing.T) {
 	if !ok {
 		t.Fatalf("additionalContext = %v", params["additionalContext"])
 	}
+	// Every field of the request, by the name that goes on the wire.
+	//
+	// Three siblings were pinned and the field carrying the prompt was not:
+	// renaming `input` to `inputs`, or `text` to `body`, makes the agent's
+	// instruction vanish from a request the fake server still accepts. These
+	// are checked against the generated schema of codex-cli 0.153.4 —
+	// TurnStartParams requires `input` and `threadId`, TextUserInput requires
+	// `text` and `type: "text"`, AdditionalContextEntry is `{kind, value}`.
+	if params["threadId"] != "thread-1" {
+		t.Errorf("threadId = %v", params["threadId"])
+	}
+	input, ok := params["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatalf("input = %v; the turn carries no instruction", params["input"])
+	}
+	first, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("the first input is %v", input[0])
+	}
+	if first["type"] != "text" {
+		t.Errorf("input type = %v, want \"text\"", first["type"])
+	}
+	if first["text"] != "a peer sent this" {
+		t.Errorf("input text = %v; the prompt did not reach the request", first["text"])
+	}
+
 	entry, ok := context["agenthub:message"].(map[string]any)
 	if !ok {
 		t.Fatalf("the message fragment is missing: %v", context)
+	}
+	if entry["value"] != "written by node_peer" {
+		t.Errorf("the fragment carries value %v", entry["value"])
 	}
 	// The one defence here that does not depend on prose holding: Codex has a
 	// first-class notion of untrusted context, and this uses it.

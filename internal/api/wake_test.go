@@ -198,6 +198,17 @@ func TestTheGateSeesTheHopCountAndTheFingerprint(t *testing.T) {
 	if seen[0].WakeHops != 2 {
 		t.Errorf("the gate saw %d hops, want the 2 the sender declared", seen[0].WakeHops)
 	}
+	// And the stored row too. The gate is fed from a struct built beside the
+	// one that is stored, so the two can disagree: the registry round-trip is
+	// pinned and the gate's copy is pinned, and the line between the payload
+	// and the row was not. It is what an owner reads back.
+	held, err := store.Inbox(context.Background(), session, 10, registry.InboxCursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 || held[0].WakeHops != 2 {
+		t.Errorf("the stored message holds %+v, want the 2 hops it arrived with", held)
+	}
 	waker.mu.Lock()
 	fingerprint := waker.from[0]
 	waker.mu.Unlock()
