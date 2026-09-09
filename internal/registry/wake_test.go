@@ -175,9 +175,11 @@ func TestTheWiderLimitsCatchWhatThePairLimitCannot(t *testing.T) {
 	limits := DefaultWakeLimits()
 	limits.Pair, limits.Session, limits.Node = 100, 2, 3
 
-	// Two different sources, so no pair is near its limit, all aimed at one
-	// agent. Without the session limit one peer could spread itself across
-	// sessions it has and drive the same agent all night.
+	// Two sources aimed at one agent, with the pair limit set far out of the
+	// way so this is the session limit being measured and not that one. They
+	// share a bucket now — the key is the node — which is exactly why the
+	// session limit has to exist separately: it is what stops one machine
+	// driving one agent all night.
 	for i := range 2 {
 		event := wakeEvent(fmt.Sprintf("claude:theirs-%d", i), "claude:mine")
 		event.MessageID = fmt.Sprintf("msg_a%d", i)
@@ -492,3 +494,97 @@ WHERE outcome = ? AND at_ms >= ? AND pair_key = ? AND destination_session = ?`,
 		t.Errorf("the pair count does not use the pair index after an upgrade: %s", plan)
 	}
 }
+
+// When more than one limit applies, the owner is told the narrowest.
+//
+// "This peer has been talking too fast" names something they can act on: they
+// know which machine, and they can revoke it. "This node is busy" names a
+// symptom and points nowhere. Both are true when both limits are exceeded, so
+// which is reported is a choice.
+//
+// An earlier version of this test was deleted when the pair key moved to the
+// node id, because half of it asserted something that keying made untrue. The
+// half that was still true went with it, and reversing the check order passed
+// everything for two commits.
+func TestTheReasonGivenIsTheNarrowestThatApplies(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	limits := DefaultWakeLimits()
+	limits.Pair, limits.Session, limits.Node = 1, 1, 1
+
+	first := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	first.SourceNodeID = "node_peer0000000000000"
+	stored, err := store.ReserveWake(ctx, first, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Outcome != WakeWoken {
+		t.Fatalf("the first wake was refused as %q", stored.Outcome)
+	}
+
+	// Over all three at once: same peer, same destination, same node.
+	over := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+	over.SourceNodeID = "node_peer0000000000000"
+	over.MessageID = "msg_over"
+	stopped, err := store.ReserveWake(ctx, over, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Outcome != WakeRefusedPair {
+		t.Errorf("outcome = %q; with every limit exceeded the owner should be told the pair "+
+			"one, the only one that names what to change", stopped.Outcome)
+	}
+
+	// A different machine, a different session: both narrow limits are
+	// untouched, so the widest one is the true answer.
+	elsewhere := wakeEvent("node_other0000000000000/codex:theirs", "claude:elsewhere")
+	elsewhere.SourceNodeID = "node_other0000000000000"
+	elsewhere.MessageID = "msg_elsewhere"
+	nodeStopped, err := store.ReserveWake(ctx, elsewhere, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStopped.Outcome != WakeRefusedNode {
+		t.Errorf("outcome = %q, want %q: this peer and this session are both untouched",
+			nodeStopped.Outcome, WakeRefusedNode)
+	}
+}
+
+// The trail reads newest first, including within one millisecond.
+//
+// "Newest first" is the whole contract of the listing — an owner arrives
+// asking what just happened — and ids are random hex, so ordering by them
+// answers arbitrarily for two rows recorded together.
+func TestTheTrailReadsNewestFirstWithinAMillisecond(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	sameMoment := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i := range 6 {
+		event := wakeEvent("node_peer0000000000000/codex:theirs", "claude:mine")
+		event.SourceNodeID = "node_peer0000000000000"
+		event.MessageID = fmt.Sprintf("msg_%d", i)
+		event.Hops, event.At, event.Outcome = i, sameMoment, WakeWoken
+		if _, err := store.RecordWake(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	listed, err := store.ListWakes(ctx, "claude:mine", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 6 {
+		t.Fatalf("the trail holds %d rows", len(listed))
+	}
+	for i, event := range listed {
+		want := 5 - i
+		if event.Hops != want {
+			t.Fatalf("row %d is the wake recorded %s, not the %s: the listing is ordered by "+
+				"a random id, so rows written in the same millisecond come back arbitrarily",
+				i, ordinal(event.Hops), ordinal(want))
+		}
+	}
+}
+
+func ordinal(n int) string { return fmt.Sprintf("#%d", n+1) }

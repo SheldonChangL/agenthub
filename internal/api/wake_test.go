@@ -481,6 +481,57 @@ func TestAFailedSendDoesNotSpendTheChain(t *testing.T) {
 	}
 }
 
+// And the same on the leg that crosses machines.
+//
+// The local path and the peer path claim the chain in two different files, and
+// moving the claim back above QueueOutbound passed everything: a woken agent
+// could still zero its own chain with one throwaway, on the only leg a hop
+// count exists for.
+func TestAFailedSendDoesNotSpendTheChainOnTheOutboundLeg(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _, _ := wakingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "codex:woken")
+	if err := store.SetAudience(ctx, session, model.Audience{
+		Mode: model.AudienceAllPaired, AcceptMessages: true, AllowOutbound: true, AutoWake: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReserveWake(ctx, registry.WakeEvent{
+		MessageID: "msg_in", SourceNodeID: peerNodeID, DestinationSession: session, Hops: 1,
+	}, registry.DefaultWakeLimits()); err != nil {
+		t.Fatal(err)
+	}
+
+	// One throwaway, at a node this machine has never paired with.
+	refused := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": "node_stranger00000000000/codex:nobody", "from": session, "body": "nowhere",
+	})
+	if refused.Code < 400 {
+		t.Fatalf("the throwaway was accepted: %d %s", refused.Code, refused.Body.String())
+	}
+
+	// The real reply, back to the peer that woke it.
+	reply := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": peerNodeID + "/codex:theirs", "from": session, "body": "answering",
+	})
+	if reply.Code != http.StatusAccepted {
+		t.Fatalf("reply = %d %s", reply.Code, reply.Body.String())
+	}
+	queued, err := store.PendingOutbound(ctx, peerNodeID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("the queue holds %d messages", len(queued))
+	}
+	if queued[0].WakeHops != 2 {
+		t.Errorf("the message crossing to the peer carries %d hops, want 2; a refused send "+
+			"spent the chain", queued[0].WakeHops)
+	}
+}
+
 // The wake does not run inline: a slow provider must not hold the ack.
 //
 // A peer waits on the ack under its own ten-second delivery timeout, and a

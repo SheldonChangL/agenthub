@@ -346,9 +346,14 @@ noticed, and that costs real money. Three limits stop it:
 
 | | limit |
 |---|---|
-| one pair of sessions | 3 wakes / 10 minutes |
+| one machine → one session | 3 wakes / 10 minutes |
 | one session, any source | 12 / hour |
 | this node, everything | 60 / hour |
+
+The first is keyed on the node id the signature proves, never on the session
+label a sender writes — so a peer's sessions share one bucket, and nothing a
+sender chooses about itself buys another. Messages that never leave this
+machine share a bucket of their own.
 
 plus a hop count that stops an exchange after 4 automatic wakes. A message
 stopped by any of them stays in the inbox and can be read by hand.

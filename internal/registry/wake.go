@@ -141,6 +141,9 @@ CREATE INDEX IF NOT EXISTS idx_wake_events_at
 	added := []string{}
 	for _, column := range []struct{ name, definition string }{
 		{"pair_key", "TEXT NOT NULL DEFAULT 'local'"},
+		// Without the CHECK the fresh schema carries: SQLite's ALTER TABLE
+		// cannot add one, and rebuilding the table to gain it would cost more
+		// than a constraint on a column only this file writes is worth.
 		{"chain_used", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		has, err := r.hasColumn(ctx, "wake_events", column.name)
@@ -431,13 +434,22 @@ ORDER BY at_ms DESC, rowid DESC LIMIT 1`,
 	return hops + 1, id, nil
 }
 
-// ClaimWakeChain marks a wake as inherited, so nothing else can inherit it.
+// ClaimWakeChain marks a wake as inherited, so a later message does not
+// inherit it again.
 //
-// Called after the message that inherited it is safely stored. Claiming an
-// already-claimed wake is not an error: two sends racing for one chain is the
-// same "at most one inherits it" outcome either way, and the loser carrying a
-// hop count that is one too high stops an exchange early, which is the safe
-// direction.
+// Called after the message that inherited it is safely stored. "Later", not
+// "another": peek and claim are two statements, so sends that overlap between
+// them all see the same unclaimed wake and all carry its count. Measured at
+// four of four concurrent sends from one session.
+//
+// Left that way rather than claimed at peek time, which is what the split
+// undid: an eager claim let a woken agent zero its own chain with one
+// throwaway message to a session that does not exist. Between over-counting
+// concurrent replies and letting an agent erase its own history, over-counting
+// is the one that stops an exchange early, and stopping early is the direction
+// this whole mechanism fails in.
+//
+// Claiming an already-claimed wake is not an error.
 func (r *Registry) ClaimWakeChain(ctx context.Context, wakeID string) error {
 	if wakeID == "" {
 		return nil
