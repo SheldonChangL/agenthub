@@ -24,7 +24,7 @@ func claudeSession() model.Session {
 // record a wake that could not have happened.
 func TestDrivingASessionNobodyIsListeningForFails(t *testing.T) {
 	driver := NewChannelDriver()
-	if driver.Subscribed("claude:target") {
+	if driver.Waiting() != 0 {
 		t.Error("a fresh driver reports a subscriber")
 	}
 	err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
@@ -42,7 +42,7 @@ func TestASubscriberReceivesTheEnvelope(t *testing.T) {
 	driver := NewChannelDriver()
 	subscription := driver.Subscribe("claude:target")
 	defer subscription.Close()
-	if !driver.Subscribed("claude:target") {
+	if driver.Waiting() != 1 {
 		t.Fatal("Subscribe did not register")
 	}
 
@@ -73,7 +73,7 @@ func TestClosingEndsTheSubscription(t *testing.T) {
 	subscription := driver.Subscribe("claude:target")
 	subscription.Close()
 
-	if driver.Subscribed("claude:target") {
+	if driver.Waiting() != 0 {
 		t.Error("the session still has a subscriber after closing")
 	}
 	if err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"}); !errors.Is(err, ErrNoSubscriber) {
@@ -116,7 +116,7 @@ func TestAStaleCloseLeavesTheLiveSubscriberAlone(t *testing.T) {
 
 	first.Close()
 
-	if !driver.Subscribed("claude:target") {
+	if driver.Waiting() != 1 {
 		t.Error("a stale close removed the live subscriber; the session became " +
 			"unreachable while an agent was still listening")
 	}
