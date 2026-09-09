@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +53,20 @@ type Server struct {
 	// One entry per node id the owner has paired, dropped on revoke.
 	refusedMu sync.Mutex
 	refused   map[string]uint64
+	// waker decides whether a message that has just landed may start a turn.
+	// Nil on a node with no wake drivers configured, which is the default:
+	// storing a message must not depend on a provider being reachable.
+	waker Waker
+}
+
+// Waker is the wake gate, as this package needs it.
+//
+// An interface rather than the concrete gate so the two delivery paths can be
+// tested for whether they consult it at all. That is the failure this shape
+// exists to catch: there are two independent writes into the inbox, and a wake
+// wired to one of them looks entirely correct from the other.
+type Waker interface {
+	Consider(ctx context.Context, message model.Message, senderFingerprint string)
 }
 
 // Option adjusts a Server at construction.
@@ -76,6 +91,13 @@ func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer
 // been told to serve peers on a network.
 func WithDeliveryPolicy(policy func(string) error) Option {
 	return func(s *Server) { s.deliveryPolicy = policy }
+}
+
+// WithWaker gives the API a wake gate. Without one, nothing is ever woken and
+// every message waits to be read, which is what a node does until its owner
+// turns waking on for at least one session.
+func WithWaker(waker Waker) Option {
+	return func(s *Server) { s.waker = waker }
 }
 
 func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.HeartbeatBuilder, node model.NodeIdentity, options ...Option) *Server {
@@ -605,7 +627,24 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	// The local half of the wake path. A message from an agent on this machine
+	// to a session on this machine never touches the peer handler, so a wake
+	// wired only there would work for every peer and silently do nothing for
+	// the case that is easiest to test with.
+	s.considerWake(r.Context(), message, "")
 	writeJSON(w, http.StatusCreated, message)
+}
+
+// considerWake hands a stored message to the wake gate, if there is one.
+//
+// Called from both places a message becomes durable, and from nowhere else.
+// The two are separate functions in separate files, so the single call this
+// wraps is the thing a test can hold down.
+func (s *Server) considerWake(ctx context.Context, message model.Message, senderFingerprint string) {
+	if s.waker == nil {
+		return
+	}
+	s.waker.Consider(ctx, message, senderFingerprint)
 }
 
 func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
