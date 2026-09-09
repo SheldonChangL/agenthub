@@ -88,14 +88,20 @@ func (t *injectingTransport) notify(ctx context.Context, method string, params a
 }
 
 // ChannelPush is a message on its way into a running agent's context.
+// The tags are explicit rather than left to Go's case-insensitive fallback.
+// That fallback happens to match every field here today, and it is not a
+// contract: the node writes `senderNodeId`, and a field renamed on either side
+// would stop matching with nothing to say so. What goes missing is the
+// provenance — a stranger's words arriving with no attribution, which is the
+// one failure that turns a marked message into an anonymous one.
 type ChannelPush struct {
-	MessageID    string
-	Body         string
-	SenderNodeID string
-	SenderLabel  string
-	Fingerprint  string
-	Hops         int
-	Notice       string
+	MessageID    string `json:"messageId"`
+	Body         string `json:"body"`
+	SenderNodeID string `json:"senderNodeId"`
+	SenderLabel  string `json:"senderLabel"`
+	Fingerprint  string `json:"fingerprint"`
+	Hops         int    `json:"hops"`
+	Notice       string `json:"notice"`
 }
 
 // channelContent is what the agent reads.
