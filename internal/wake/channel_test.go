@@ -177,9 +177,48 @@ func TestASubscriptionEndingMidHandoffFailsRatherThanPanics(t *testing.T) {
 	}
 }
 
+// A subscription displaced mid-handoff fails the drive rather than crashing.
+//
+// The Close path and the displacement path both end a subscription, and they
+// are different lines. A test covering one says nothing about the other:
+// reinstating the crash in Subscribe's displacement branch passed the whole
+// suite, including the stress test below, whose comment claimed to catch it.
+func TestADisplacementMidHandoffFailsRatherThanPanics(t *testing.T) {
+	driver := NewChannelDriver()
+	driver.handoff = 2 * time.Second
+	first := driver.Subscribe("claude:target")
+
+	failed := make(chan error, 1)
+	go func() {
+		failed <- driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
+	}()
+	// Let the drive commit to the send, then displace the subscriber it is
+	// sending to — which is what an agent's MCP server restarting does.
+	time.Sleep(100 * time.Millisecond)
+	second := driver.Subscribe("claude:target")
+	defer second.Close()
+	_ = first
+
+	select {
+	case err := <-failed:
+		if !errors.Is(err, ErrSubscriptionEnded) {
+			t.Errorf("Drive() error = %v, want ErrSubscriptionEnded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the drive never noticed the displacement")
+	}
+}
+
 // The same, driven hard: closing and displacing while sends are in flight.
 //
-// Run under -race, this is the test that would have caught the panic.
+// Displacement is what the loop below produces, and it did not before: it
+// closed each subscription before taking the next, so the map entry was always
+// gone and Subscribe never displaced anything. Instrumented, it reached the
+// branch zero times in five hundred. Now the close is deferred past the next
+// Subscribe, so most iterations displace.
+//
+// Run under -race, this is what catches a send racing either way of ending a
+// subscription.
 func TestTheHandoffSurvivesSubscribersComingAndGoing(t *testing.T) {
 	driver := NewChannelDriver()
 	driver.handoff = 20 * time.Millisecond
@@ -200,16 +239,33 @@ func TestTheHandoffSurvivesSubscribersComingAndGoing(t *testing.T) {
 			}
 		}()
 	}
+	var previous *Subscription
+	displacements := 0
 	for range 500 {
 		subscription := driver.Subscribe("claude:target")
+		if previous != nil {
+			// The old one is still registered when the new one arrives, so
+			// this Subscribe displaced it.
+			displacements++
+			previous.Close()
+		}
 		select {
 		case <-subscription.Messages:
 		default:
 		}
-		subscription.Close()
+		held := subscription
+		previous = &held
+	}
+	if previous != nil {
+		previous.Close()
 	}
 	close(stop)
 	wg.Wait()
+
+	if displacements < 400 {
+		t.Errorf("only %d of 500 iterations displaced a live subscriber; the loop is not "+
+			"exercising the branch it exists for", displacements)
+	}
 }
 
 // Waiting counts what is held, so the endpoint can refuse to hold an unbounded
