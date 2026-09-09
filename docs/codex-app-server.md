@@ -21,4 +21,61 @@ Decoded thread fields are restricted to `id`, `cwd`, `status.type`, and `updated
 | `notLoaded` | `inactive` |
 | `systemError` | `unknown` |
 
-This client is a foundation, not the daemon's default adapter. Before enabling it, add a supervised stdio/Unix-socket/WebSocket transport, read deadlines, reconnect/backoff, full cursor iteration, and a clear rule for whether a connected but externally launched App Server session counts as managed or unmanaged.
+## Driving a turn (wake, #58)
+
+Waking a Codex session goes through this API and nowhere else: `thread/resume`
+then `turn/start`. Nothing is written into Codex's files or its process, which
+is the boundary #16 set and this does not move.
+
+**Resume by thread id, and send no `path`.** `ThreadResumeParams` in
+codex-cli 0.153.4 says: "If thread_id identifies a running thread, app-server
+rejoins that thread and treats a non-empty path as a consistency check against
+the active rollout path." Rejoining is the whole point — a wake that forked a
+second thread would put the reply somewhere the owner is not looking. A `path`
+can only make that worse: for a running thread it is a check that can refuse
+the rejoin, and for a stopped one it overrides the id.
+
+**`experimentalApi` is required.** `turn/start.additionalContext` is behind it.
+Without `capabilities: {experimentalApi: true}` at `initialize`, the turn is
+refused with `-32600 turn/start.additionalContext requires experimentalApi
+capability`. Measured, not read: the first real wake failed on exactly this.
+
+**The message travels as untrusted context, not as input.**
+`AdditionalContextKind` is an enum of two values, `untrusted` and
+`application`. Codex has a first-class notion of untrusted content, so a peer's
+words are marked as such rather than being interpolated into the same string as
+this node's instruction. `turnTrigger` is set to `agenthub-wake`, which Codex
+records — an owner can see which turns this node started from their own Codex
+history, without taking AgentHub's audit trail on trust.
+
+**Nobody is present, so nothing is approved.** A woken turn runs unattended and
+Codex asks before it runs a command, changes a file, or widens its permissions.
+Every such request is refused: a typed `decline` for
+`item/commandExecution/requestApproval` and `item/fileChange/requestApproval`,
+`abort` for the older `execCommandApproval` and `applyPatchApproval`, and a
+JSON-RPC error for the rest. `PermissionsRequestApprovalResponse` has no denial
+variant at all — its only shape is a granted profile — so an error is the only
+answer to it that cannot be read as a grant. Refused rather than ignored: an
+unanswered request wedges the session on a prompt the owner never saw.
+
+## Managed or unmanaged
+
+A thread this node did not start is **unmanaged**, and stays unmanaged after
+AgentHub connects to it, resumes it, or starts a turn in it.
+
+The rule is about who owns the process's lifetime, not who last spoke to it.
+AgentHub's supervisor starts `codex app-server` and can stop it; it does not
+start or stop the threads inside, and it does not create them. A thread is the
+owner's conversation, begun in their terminal or their editor, and AgentHub
+appending a turn to it changes that no more than the owner typing into it from
+a second window would.
+
+Calling a resumed thread managed would be the more dangerous mistake: managed
+is what the rest of the system reads as "this node may take responsibility for
+its lifecycle", and nothing here can end a conversation a person is having.
+
+## Still missing
+
+Full cursor iteration for `thread/list`, and read deadlines per call rather
+than per context. The transport is supervised stdio; Unix-socket and WebSocket
+are not implemented and no caller needs them.
