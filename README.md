@@ -314,10 +314,35 @@ go run ./cmd/ah audience codex:<thread-id> none --messages --auto-wake
 Neither is enough alone. Without the node flag no session can be woken whatever
 its own setting says; without the session flag the node wakes nothing.
 
-Codex sessions are supported today: AgentHub resumes the thread through the
-app-server's own API and starts a turn in it — rejoining a running thread
+**Codex** sessions are woken by AgentHub resuming the thread through the
+app-server's own API and starting a turn in it — rejoining a running thread
 rather than opening a second one beside the conversation you are watching.
-Claude Code is not wired yet (#57).
+
+**Claude Code** works the other way round, because nothing here can reach a
+Claude Code session: its MCP server is a child of the agent and only ever dials
+out. So that server subscribes, and this node hands it messages:
+
+```bash
+agenthub-mcp -as claude:<id> -channel
+```
+
+A session with no subscriber has no agent running, so the wake fails and the
+message stays in the inbox — which is also how `ah wakes` can tell you the
+difference between "nobody was listening" and "nothing arrived".
+
+Claude Code additionally needs channels turned on for you, and during the
+research preview that is more than one step:
+
+- your organisation must enable them (`channelsEnabled`, a managed setting —
+  Team and Enterprise have it off by default), and
+- Claude Code must be started with `--channels server:agenthub`, plus
+  `--dangerously-load-development-channels server:agenthub` while the feature
+  is in preview, which shows a consent screen.
+
+**If any of that is missing the push is dropped silently.** Claude Code tells
+the server nothing, so `ah wakes` will say `woken` for a message no agent ever
+saw. That is the honest limit of what this node can observe: it knows the
+message reached a live MCP server, not that a turn ran.
 
 ### What a woken turn may do
 
