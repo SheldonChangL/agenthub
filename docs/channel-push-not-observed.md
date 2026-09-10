@@ -5,9 +5,12 @@ What this records: `agenthub-mcp -channel` writes a well-formed
 pipe, and nothing arrives in the session. Four attempts on a real two-machine
 setup, with every documented precondition met.
 
-It is here because the README calls `-channel` unverified and this is the
-evidence for that word, and because it is the reproduction case to hand to
-Claude Code if anyone reports it.
+The code it measures is not on `main`. `agenthub-mcp -channel`, the wake-stream
+endpoint and the channel driver are on the open PR #102, which is held back
+precisely because of what is written here. This document is on `main` anyway,
+so the evidence survives whatever happens to that branch: it is the
+reproduction case to hand to Claude Code if anyone reports it, and it is why
+the flag is not here yet.
 
 Measured 2026-09-10 by a second session driving a live mac ↔ Ubuntu pair, not
 by anything in the test suite — no test here can see past this node's own MCP
@@ -102,10 +105,10 @@ by reading code:
   `--dangerously-load-development-channels` were passed;
 - **when the server connects** — startup and reconnect behave identically;
 - **the capability declaration** — `experimental["claude/channel"]` is in the
-  `initialize` response on the wire, and a test here asserts it reaches a
-  client's `InitializeResult`;
-- **the frame shape** — a notification with no id, asserted on the bytes
-  `notify` writes;
+  `initialize` response on the wire, and a test on #102 asserts it reaches a
+  client's `InitializeResult` through a real handshake;
+- **the frame shape** — a notification with no id, asserted on #102 against the
+  bytes the transport actually writes;
 - **the params schema** — `content` + `meta`, matching the official reference;
 - **the meta character set** — every key `[A-Za-z0-9_]`;
 - **two servers claiming one session** (issue #104) — `--strict-mcp-config`
