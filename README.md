@@ -335,6 +335,12 @@ short of its own write deadline and says how long it held. There is a gap
 between one poll ending and the next beginning; a message landing in it is
 recorded as failed and waits in the inbox for the poll after.
 
+While setting this up, remember the wake limits apply to your own attempts:
+three per sender-and-session pair per ten minutes. A fourth test message inside
+that window is refused, and refused looks like nothing happening — which is
+what you are already debugging. `ah wakes` names the difference; check it
+before changing anything.
+
 Claude Code additionally needs channels turned on for you, and during the
 research preview that is more than one step:
 
@@ -348,6 +354,26 @@ research preview that is more than one step:
 the server nothing, so `ah wakes` will say `woken` for a message no agent ever
 saw. That is the honest limit of what this node can observe: it knows the
 message reached a live MCP server, not that a turn ran.
+
+**And those steps are not known to be sufficient.** On a real two-node setup —
+a mac and an Ubuntu box, paired, messages delivered both ways — the push has
+not been observed arriving. Three attempts, with the organisation's channels
+enabled and Claude Code started with both flags and showing "messages from
+server:agenthub inject directly in this session":
+
+- the node recorded `woken`, detail `handed to the session's driver`, and
+  logged `wake: handed message … to "claude:…"`;
+- the MCP server wrote nothing to stderr, which it only does when a push
+  fails, so as far as it knows the notification went out;
+- the receiving session's transcript did not grow, and Claude Code's own
+  `--debug` log recorded no notification at all — not a rejected one, none.
+
+Connecting the server at startup and connecting it later with `/mcp Reconnect`
+behaved identically. The frame this server writes is a valid JSON-RPC
+notification with no id, and the capability does reach a client's
+`InitializeResult`; both are asserted by tests here. Where it is lost after
+that is not yet known. Until it is, treat `-channel` as unverified: the Codex
+path is the one with a turn observed at the other end.
 
 **One server per session, and `.mcp.json` does not give you that.** `-as` names
 a session; an MCP config is per project. Two Claude Code sessions in one
