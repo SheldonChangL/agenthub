@@ -546,3 +546,69 @@ func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
 		t.Errorf("the inbox holds %d messages after a wake that was never delivered", held)
 	}
 }
+
+// The wait the node reports is the wait the node held.
+//
+// The header and the timer come off the same variable, and nothing spanned
+// them: the api tests asserted the header was present, and the client test
+// drove a stub that hardcoded its own value. Reporting half of what was held
+// passed both packages.
+//
+// It matters because an under-report ratchets. WakeStreamWait returns what was
+// asked for whenever it fits, so the client adopts the short value, asks for
+// it, is told half of that, and walks down to the one-second floor — a
+// connection and a held goroutine per second per session, for as long as the
+// agent runs. An over-report self-corrects against the clamp; this does not.
+func TestTheNodeReportsTheWaitItActuallyHeld(t *testing.T) {
+	const writeTimeout = 5 * time.Second
+	store, handler, _, _ := streamingSurfaces(t, WithWriteTimeout(writeTimeout))
+	session := acceptingLocalSession(t, store, handler, "claude:listening")
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      writeTimeout,
+	}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+
+	base := "http://" + listener.Addr().String() + "/v1/sessions/" + session + "/wake-stream"
+	client := &http.Client{Timeout: writeTimeout + 10*time.Second}
+
+	poll := func(asked string) (time.Duration, time.Duration) {
+		t.Helper()
+		started := time.Now()
+		response, err := client.Get(base + "?wait=" + asked)
+		if err != nil {
+			t.Fatalf("a quiet poll asking for %s: %v", asked, err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("a quiet poll answered %d", response.StatusCode)
+		}
+		reported, err := time.ParseDuration(response.Header.Get("Agenthub-Wake-Wait"))
+		if err != nil {
+			t.Fatalf("the node did not say how long it held: %v", err)
+		}
+		return reported, time.Since(started)
+	}
+
+	reported, held := poll("2s")
+	if drift := reported - held; drift > 700*time.Millisecond || drift < -700*time.Millisecond {
+		t.Errorf("the node held the poll for %s and reported %s; the client sets its next "+
+			"request from what it is told", held, reported)
+	}
+
+	// And what it reports is a fixed point: fed back, it comes out unchanged.
+	// A value the node shortens every round walks down to the floor.
+	again, _ := poll(reported.String())
+	if again != reported {
+		t.Errorf("reported %s, and asking for that was answered %s; the wait ratchets down "+
+			"to %s and the agent polls once a second for ever", reported, again,
+			MinWakeStreamWait)
+	}
+}

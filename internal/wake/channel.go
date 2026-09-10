@@ -28,6 +28,10 @@ type ChannelDriver struct {
 	// handoff bounds how long a driver waits for a subscriber to take the
 	// envelope it is holding out.
 	handoff time.Duration
+	// ackWait bounds how long it then waits to be told whether the taker got
+	// it out. Longer than handoff, and for a different reason: taking the
+	// envelope is instant, and writing it is not.
+	ackWait time.Duration
 }
 
 // subscriber is one poll waiting for its session's next message.
@@ -55,7 +59,14 @@ func (s *subscriber) end() { s.once.Do(func() { close(s.done) }) }
 
 // NewChannelDriver returns a driver with no subscribers.
 func NewChannelDriver() *ChannelDriver {
-	return &ChannelDriver{waiting: map[string]*subscriber{}, handoff: 5 * time.Second}
+	return &ChannelDriver{
+		waiting: map[string]*subscriber{},
+		handoff: 5 * time.Second,
+		// Past the owner listener's 60s write deadline, which is the longest
+		// a taker's write can legitimately take. Under it, a message still on
+		// its way would be settled as one the agent never got.
+		ackWait: 90 * time.Second,
+	}
 }
 
 // Provider says which sessions this driver serves.
@@ -177,11 +188,19 @@ func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelo
 	// buffered, and selecting on both would pick the close half the time on a
 	// delivery that worked. A taker that dies between the two is caught by the
 	// handoff.
+	//
+	// On its own timer, not the handoff's. The taker's write can block on a
+	// reader that has stopped reading until the server's own write deadline
+	// — 60s on the owner listener — and ending the wait at the handoff's five
+	// seconds would settle a message as failed while it was still on its way,
+	// writing the opposite falsehood into the same row.
+	acknowledged, stopWaiting := context.WithTimeout(ctx, d.ackWait)
+	defer stopWaiting()
 	select {
 	case err := <-waiter.acks:
 		return err
-	case <-handoff.Done():
+	case <-acknowledged.Done():
 		return fmt.Errorf("the subscriber for %s took the message but did not say "+
-			"whether it was sent within %s", session.ID, d.handoff)
+			"whether it was sent within %s", session.ID, d.ackWait)
 	}
 }

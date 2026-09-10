@@ -325,6 +325,7 @@ func TestDriveReportsWhatTheTakerSaysNotWhatItTook(t *testing.T) {
 func TestATakerThatNeverReportsFailsTheDrive(t *testing.T) {
 	driver := NewChannelDriver()
 	driver.handoff = 100 * time.Millisecond
+	driver.ackWait = 100 * time.Millisecond
 	subscription := driver.Subscribe("claude:target")
 	defer subscription.Close()
 
@@ -333,5 +334,33 @@ func TestATakerThatNeverReportsFailsTheDrive(t *testing.T) {
 	if err := driver.Drive(context.Background(), claudeSession(),
 		Envelope{MessageID: "msg_1"}); err == nil {
 		t.Error("Drive() returned nil for a message the taker never reported on")
+	}
+}
+
+// A taker whose write is slow is not recorded as one that failed.
+//
+// Taking the envelope is instant; writing it out is not — a write blocks on a
+// reader that has stopped reading until the server's own deadline, which is
+// sixty seconds on the owner listener. The ack wait used to share the
+// handoff's five, so a message still on its way was settled as one the agent
+// never got: the opposite of the falsehood the ack was added to stop, written
+// into the same row.
+func TestASlowWriteIsNotAFailedOne(t *testing.T) {
+	driver := NewChannelDriver()
+	driver.handoff = 100 * time.Millisecond
+	driver.ackWait = 3 * time.Second
+	subscription := driver.Subscribe("claude:target")
+	defer subscription.Close()
+
+	go func() {
+		<-subscription.Messages
+		// Longer than the handoff, well inside what a real write may take.
+		time.Sleep(500 * time.Millisecond)
+		subscription.Ack(nil)
+	}()
+
+	if err := driver.Drive(context.Background(), claudeSession(),
+		Envelope{MessageID: "msg_1"}); err != nil {
+		t.Errorf("Drive() error = %v; the taker was slow, not broken", err)
 	}
 }

@@ -881,9 +881,15 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	// Most handlers have nothing to do about a failed write: the client is
-	// gone and the work is already done.
-	_ = writeJSONResult(w, status, value)
+	// Not writeJSONResult: that one flushes, and routing every response
+	// through it moved all forty-odd endpoints on both listeners — the peer
+	// one included — from Content-Length to chunked encoding, to give one
+	// handler an error the rest have nothing to do with. Measured: with the
+	// flush, ContentLength = -1 and TransferEncoding = [chunked] on every
+	// response in the tree.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 // writeJSONResult is writeJSON for the one caller that has to know whether the
@@ -1029,9 +1035,18 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 		wait = s.WakeStreamWait(parsed)
 	}
 
-	// Registered before the reply is written, so a message arriving in the gap
-	// between the subscriber's last poll and this one is not driven at a
-	// session that looks absent.
+	// Registered before the wait begins. That closes nothing on its own — it
+	// is the first thing this handler does — and the comment here used to
+	// claim it covered the gap between one poll and the next. It does not.
+	//
+	// That gap is real and is not closed anywhere: between the previous
+	// handler's deferred Close and this Subscribe there is a loopback round
+	// trip, once every wait, in which Drive finds no subscriber and the
+	// message stays in the inbox until something else wakes the session. An
+	// overlapping subscription would not help, because a second Subscribe for
+	// one session displaces the first into a 409. The gap is the cost of one
+	// waiter per session, which is the thing that makes "nobody is
+	// subscribed" mean "nobody is home".
 	subscription := s.channels.Subscribe(sessionID)
 	defer subscription.Close()
 
