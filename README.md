@@ -349,6 +349,16 @@ the server nothing, so `ah wakes` will say `woken` for a message no agent ever
 saw. That is the honest limit of what this node can observe: it knows the
 message reached a live MCP server, not that a turn ran.
 
+**One server per session, and `.mcp.json` does not give you that.** `-as` names
+a session; an MCP config is per project. Two Claude Code sessions in one
+working directory load the same config, so both start an `agenthub-mcp` with
+the same `-as`, and with `-channel` both subscribe for that one session. The
+node keeps one: the later subscriber displaces the earlier, which is told to
+stop and does. So messages for that session go to whichever agent started last,
+and the session the id actually belongs to is left silent — with `ah wakes`
+still saying `woken`. Give each session its own config, or start the server
+with `--strict-mcp-config` and a config of its own.
+
 ### What a woken turn may do
 
 **It approves nothing.** Codex asks before it runs a command, changes a file,
