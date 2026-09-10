@@ -161,6 +161,12 @@ func (g *Gate) Consider(ctx context.Context, message model.Message, senderNodeID
 			message.To, err)
 		return
 	}
+	// Settled, not left at the reservation. ReserveWake inserts the row as
+	// woken before the driver runs, so until this the row says woken whether
+	// the drive succeeded, is still running, or died without settling — and a
+	// test reading it straight after the response reads the reservation. The
+	// detail is what says the handoff finished.
+	g.settle(ctx, reserved.ID, registry.WakeWoken, "handed to the session's driver")
 	// "Handed to", not "started a turn in". For Codex the two are the same —
 	// turn/start returns a turn id. For a Claude Code session all this node
 	// knows is that a live MCP server took the message: the channel push it

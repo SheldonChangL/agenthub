@@ -888,10 +888,21 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 // writeJSONResult is writeJSON for the one caller that has to know whether the
 // bytes reached the client, because something else recorded that they did.
+//
+// The flush is what makes the answer true. net/http puts a 2048-byte
+// bufio.Writer in front of the socket (bufferBeforeChunkingSize), so Encode on
+// anything smaller returns nil having written to memory — measured against a
+// real server with the connection already closed and the write deadline
+// already past, a 600-byte body reported success both times. An ordinary
+// message is 600 bytes: wake.Notice alone is most of it. So the failure this
+// exists to catch was exactly the one it could not see.
 func writeJSONResult(w http.ResponseWriter, status int, value any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	return json.NewEncoder(w).Encode(value)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		return err
+	}
+	return http.NewResponseController(w).Flush()
 }
 
 // wakes answers with what has woken agents on this node, newest first.

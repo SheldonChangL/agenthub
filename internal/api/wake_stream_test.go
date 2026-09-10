@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,13 +114,27 @@ func TestAWakeReachesTheWaitingSubscriber(t *testing.T) {
 		t.Fatal("the message never reached the subscriber")
 	}
 
-	// And it is recorded as a wake, not merely delivered.
-	events, err := store.ListWakes(ctx, session, 10)
-	if err != nil {
-		t.Fatal(err)
+	// And it is recorded as a wake that finished, not merely reserved.
+	//
+	// Waiting for the detail, not reading the row straight away: ReserveWake
+	// inserts it as woken before the driver runs, so an immediate read says
+	// woken whatever the drive did. Asserting on it passed with the handler's
+	// acknowledgement deleted — the drive then failed on its handoff, five
+	// seconds after this test had already finished looking.
+	var event registry.WakeEvent
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
+		events, err := store.ListWakes(ctx, session, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) == 1 && events[0].Detail != "" {
+			event = events[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if len(events) != 1 || events[0].Outcome != registry.WakeWoken {
-		t.Fatalf("wake events = %+v", events)
+	if event.Outcome != registry.WakeWoken {
+		t.Fatalf("outcome = %q (%s), want %q", event.Outcome, event.Detail, registry.WakeWoken)
 	}
 }
 
@@ -406,23 +421,48 @@ func TestTheWaitANodeSettlesOnIsOneItWouldAccept(t *testing.T) {
 	}
 }
 
-// deadConnection is a ResponseWriter whose body never reaches anyone, which is
-// what a client that has gone away looks like from inside a handler.
-type deadConnection struct {
+// deadSink is a socket nobody is reading and nobody will.
+type deadSink struct{}
+
+func (deadSink) Write([]byte) (int, error) { return 0, errors.New("write: broken pipe") }
+
+// bufferedDeadConnection is what production puts between a handler and a dead
+// socket, which a bare failing ResponseWriter is not.
+//
+// net/http wraps the connection in a 2048-byte bufio.Writer
+// (bufferBeforeChunkingSize, net/http/server.go), so a body under that size is
+// written to memory and Encode returns nil however dead the connection is. The
+// failure appears when the buffer is flushed.
+//
+// Measured against a real http.Server with WriteTimeout 1s, the client's
+// connection closed and the deadline already past: a 600-byte body gave
+// Encode err = <nil> and Flush err = "i/o timeout"; a 5000-byte body, over the
+// buffer, gave the error from Encode. An ordinary message is the first case —
+// wake.Notice alone is most of 600 bytes.
+//
+// A real socket cannot be used here: closing it cancels the request context
+// too, and the handler's select then answers that instead, so the write is
+// never attempted. What has to be isolated is a write that fails while the
+// request is still live.
+type bufferedDeadConnection struct {
 	header http.Header
 	code   int
+	buffer *bufio.Writer
 }
 
-func (d *deadConnection) Header() http.Header {
+func newBufferedDeadConnection() *bufferedDeadConnection {
+	return &bufferedDeadConnection{buffer: bufio.NewWriterSize(deadSink{}, 2048)}
+}
+
+func (d *bufferedDeadConnection) Header() http.Header {
 	if d.header == nil {
 		d.header = http.Header{}
 	}
 	return d.header
 }
-func (d *deadConnection) WriteHeader(code int) { d.code = code }
-func (d *deadConnection) Write([]byte) (int, error) {
-	return 0, errors.New("write: broken pipe")
-}
+func (d *bufferedDeadConnection) WriteHeader(code int)        { d.code = code }
+func (d *bufferedDeadConnection) Write(p []byte) (int, error) { return d.buffer.Write(p) }
+func (d *bufferedDeadConnection) FlushError() error           { return d.buffer.Flush() }
 
 // A wake whose response never reaches the subscriber is recorded as failed.
 //
@@ -435,8 +475,9 @@ func (d *deadConnection) Write([]byte) (int, error) {
 // limits, so one broken pipe spent one of three wakes per pair per ten minutes
 // permanently.
 //
-// Both halves were covered — Drive hands over, the handler writes — and this
-// is the seam between them.
+// The first version of this test used a ResponseWriter that failed on its
+// first Write, and certified a fix that did nothing at the size a message
+// actually is. See bufferedDeadConnection for why.
 func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
 	ctx := context.Background()
 	store, owner, peers, _ := streamingSurfaces(t)
@@ -454,7 +495,7 @@ func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
 		defer close(polled)
 		request := httptest.NewRequest(http.MethodGet,
 			"/v1/sessions/"+session+"/wake-stream?wait=20s", nil)
-		owner.ServeHTTP(&deadConnection{}, request)
+		owner.ServeHTTP(newBufferedDeadConnection(), request)
 	}()
 	waitFor(t, func() bool {
 		response := perform(t, owner, http.MethodGet, "/v1/wakes", nil)
@@ -479,18 +520,16 @@ func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
 	// so instead of reporting a timeout.
 	var outcome registry.WakeOutcome
 	var detail string
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); {
 		events, err := store.ListWakes(ctx, session, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 1 {
-			time.Sleep(20 * time.Millisecond)
-			continue
-		}
-		outcome, detail = events[0].Outcome, events[0].Detail
-		if outcome != registry.WakeWoken {
-			break
+		if len(events) == 1 {
+			outcome, detail = events[0].Outcome, events[0].Detail
+			if outcome != registry.WakeWoken {
+				break
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
