@@ -104,6 +104,20 @@ func TestAWakeReachesTheWaitingSubscriber(t *testing.T) {
 		if got.Fingerprint == "" {
 			t.Error("no fingerprint reached the subscriber, and nobody is present to ask for one")
 		}
+		// The label and the hop count travel too. Neither was asserted, and
+		// dropping SenderLabel from the view the handler builds passed every
+		// test here and the contract test both: the node id and the
+		// fingerprint survive, so the agent would learn which machine sent a
+		// stranger's words and not which session.
+		// Qualified with the node id the envelope proved, not the one the
+		// sender claimed: that substitution is what stops a peer naming
+		// another machine as the origin of its own words.
+		if want := peerNodeID + "/claude:theirs"; got.SenderLabel != want {
+			t.Errorf("sender label = %q, want %q", got.SenderLabel, want)
+		}
+		if got.Hops != 0 {
+			t.Errorf("hops = %d, want 0 for a message that has not been relayed", got.Hops)
+		}
 		// The words an agent is told about a message are the node's to choose.
 		// A subscriber composing its own would drift from the inbox's and the
 		// Codex path's.
@@ -610,5 +624,33 @@ func TestTheNodeReportsTheWaitItActuallyHeld(t *testing.T) {
 		t.Errorf("reported %s, and asking for that was answered %s; the wait ratchets down "+
 			"to %s and the agent polls once a second for ever", reported, again,
 			MinWakeStreamWait)
+	}
+}
+
+// An ordinary response is sent with a length, not chunked.
+//
+// The wake stream's 200 needs a flush, because something else has already
+// recorded that those bytes went out. Routing every response through the same
+// helper gave the flush to all forty-odd endpoints on both listeners, and
+// moved every one of them from Content-Length to chunked encoding — a change
+// nothing in this tree reads, which is exactly why nothing failed and why
+// putting it back passes without this.
+func TestAnOrdinaryResponseIsSentWithALength(t *testing.T) {
+	store, handler, _, _ := streamingSurfaces(t)
+	acceptingLocalSession(t, store, handler, "claude:listening")
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	response, err := server.Client().Get(server.URL + "/v1/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("listing sessions answered %d", response.StatusCode)
+	}
+	if response.ContentLength < 0 {
+		t.Errorf("the response has no length and arrived as %v; the flush belongs to the "+
+			"one handler that has to know its bytes went out", response.TransferEncoding)
 	}
 }
