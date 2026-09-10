@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -627,30 +628,72 @@ func TestTheNodeReportsTheWaitItActuallyHeld(t *testing.T) {
 	}
 }
 
-// An ordinary response is sent with a length, not chunked.
+// A small ordinary response is sent with a length, not chunked.
 //
 // The wake stream's 200 needs a flush, because something else has already
 // recorded that those bytes went out. Routing every response through the same
-// helper gave the flush to all forty-odd endpoints on both listeners, and
-// moved every one of them from Content-Length to chunked encoding — a change
-// nothing in this tree reads, which is exactly why nothing failed and why
-// putting it back passes without this.
-func TestAnOrdinaryResponseIsSentWithALength(t *testing.T) {
-	store, handler, _, _ := streamingSurfaces(t)
-	acceptingLocalSession(t, store, handler, "claude:listening")
+// helper gave the flush to all forty-odd endpoints on both listeners and moved
+// every one of them to chunked encoding — a change nothing in this tree reads,
+// which is why nothing failed and why putting it back passes without this.
+//
+// "Small" is load-bearing and was not, in the first version of this test. A
+// length only survives while the body fits net/http's 2048-byte buffer, so
+// this asks /v1/node — one identity, fixed size — rather than a listing.
+// Measured on /v1/sessions, which the first version used: 1 session 428 bytes
+// with a length, and 6 sessions 2152 bytes chunked, with no flush anywhere.
+// Its comment claimed a property of every ordinary response and had one of a
+// fixture, and the day it fired on a node with six sessions it would have
+// blamed the flush.
+func TestASmallOrdinaryResponseIsSentWithALength(t *testing.T) {
+	_, handler, _, _ := streamingSurfaces(t)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	response, err := server.Client().Get(server.URL + "/v1/sessions")
+	response, err := server.Client().Get(server.URL + "/v1/node")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("listing sessions answered %d", response.StatusCode)
+		t.Fatalf("asking for this node answered %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= 2048 {
+		t.Fatalf("this node's identity is %d bytes, past the buffer that makes the "+
+			"framing meaningful; this test needs a smaller endpoint", len(body))
 	}
 	if response.ContentLength < 0 {
-		t.Errorf("the response has no length and arrived as %v; the flush belongs to the "+
-			"one handler that has to know its bytes went out", response.TransferEncoding)
+		t.Errorf("a %d-byte response has no length and arrived as %v; the flush belongs "+
+			"to the one handler that has to know its bytes went out",
+			len(body), response.TransferEncoding)
+	}
+}
+
+// One wake fits inside the context it runs under, with room for the settle.
+//
+// considerWake gives the whole thing wakeTimeout, and the settle that writes
+// the outcome runs on that same context — so if the driver can still be
+// waiting when it expires, the settle is a no-op that only logs, and the row
+// stays at the reservation's "woken" for ever. That is the permanent
+// mis-attribution three rounds of this PR went into removing, arrived at from
+// the other end.
+//
+// The node's own test pins AckWait above the write deadline it waits on. That
+// inequality is one-sided, and on its own it points the wrong way: raising
+// ownerWriteTimeout to two minutes makes it fail and instruct you to raise
+// AckWait past two minutes, which is exactly this bound broken. Both are
+// needed, and this is the one with the sharp edge.
+func TestOneWakeFitsInsideTheContextItRunsUnder(t *testing.T) {
+	// The settle is one indexed UPDATE on a local file. Ten seconds is far
+	// more than it takes and small enough to leave the bound meaningful.
+	const settleRoom = 10 * time.Second
+	if longest := wake.Handoff + wake.AckWait; longest+settleRoom > wakeTimeout {
+		t.Errorf("a drive can take %s (%s handing over, %s waiting to be told it went "+
+			"out) inside a %s context; the settle that follows it would run on an "+
+			"expired one and the wake would stay recorded as woken",
+			longest, wake.Handoff, wake.AckWait, wakeTimeout)
 	}
 }

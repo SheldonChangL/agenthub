@@ -57,6 +57,13 @@ type subscriber struct {
 
 func (s *subscriber) end() { s.once.Do(func() { close(s.done) }) }
 
+// Handoff is how long Drive waits for a subscriber to take the envelope.
+//
+// Short on purpose: a registered poll that is not collecting is an agent that
+// has stopped reading, and the message is better left in the inbox than held
+// against a subscriber that will not answer.
+const Handoff = 5 * time.Second
+
 // AckWait is how long Drive waits to be told the taker got the message out.
 //
 // It has to exceed the write deadline of the listener the taker answers on,
@@ -75,7 +82,7 @@ const AckWait = 90 * time.Second
 func NewChannelDriver() *ChannelDriver {
 	return &ChannelDriver{
 		waiting: map[string]*subscriber{},
-		handoff: 5 * time.Second,
+		handoff: Handoff,
 		ackWait: AckWait,
 	}
 }
