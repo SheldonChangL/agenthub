@@ -166,4 +166,3 @@ Two things that measurement corrected in this repository:
   message — and the row said `woken`, exactly as it does for a Claude Code push
   that never arrived. The row means a driver took the message. Nothing more was
   ever claimed in the code, and now nothing more is claimed in the README.
-
