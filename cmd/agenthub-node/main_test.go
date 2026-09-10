@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/discovery"
+	"agenthub.local/agenthub/internal/wake"
 )
 
 // A full candidate list is a condition an attacker can hold this node in, by
@@ -121,6 +122,26 @@ func TestTheOwnerListenerAndTheAPIAgreeOnTheWriteDeadline(t *testing.T) {
 	if api.NewServer(nil, nil, nil, model.NodeIdentity{},
 		api.WithWriteTimeout(ownerWriteTimeout)).WakeStreamWait(0) >= server.WriteTimeout {
 		t.Error("a poll may run to the connection deadline, so it can never answer")
+	}
+}
+
+// The ack window outlasts the deadline on the write it is waiting for.
+//
+// A taker acknowledges after writing the response, and that write can block on
+// a reader that has stopped reading until this listener gives up on it. If the
+// driver stops waiting first, a message still on its way is settled as one the
+// agent never got — and the row it writes is the one the wake limits are
+// counted from.
+//
+// Two literals in two packages before this: 90s in internal/wake and 60s here,
+// with nothing between them. Putting the driver's window back to the handoff's
+// five seconds passed every test in both packages. This is the same pair of
+// drifting numbers as the write deadline above, one layer down.
+func TestTheAckWindowOutlastsTheWriteItWaitsFor(t *testing.T) {
+	if wake.AckWait <= ownerWriteTimeout {
+		t.Errorf("the driver waits %s to be told a message went out, on a listener that "+
+			"allows the write itself %s; a slow write is settled as a failed one",
+			wake.AckWait, ownerWriteTimeout)
 	}
 }
 

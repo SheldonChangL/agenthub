@@ -57,15 +57,26 @@ type subscriber struct {
 
 func (s *subscriber) end() { s.once.Do(func() { close(s.done) }) }
 
+// AckWait is how long Drive waits to be told the taker got the message out.
+//
+// It has to exceed the write deadline of the listener the taker answers on,
+// because that deadline is the longest a write can legitimately block: a
+// stalled reader holds the flush until the server gives up on it. Under that,
+// a message still on its way is settled as one the agent never got — the
+// opposite falsehood to the one the acknowledgement was added to stop, in the
+// same row.
+//
+// Exported so the relationship can be asserted where both numbers are
+// visible, which is the node's own package. As two literals in two packages
+// they drift, and the drift is silent in both directions.
+const AckWait = 90 * time.Second
+
 // NewChannelDriver returns a driver with no subscribers.
 func NewChannelDriver() *ChannelDriver {
 	return &ChannelDriver{
 		waiting: map[string]*subscriber{},
 		handoff: 5 * time.Second,
-		// Past the owner listener's 60s write deadline, which is the longest
-		// a taker's write can legitimately take. Under it, a message still on
-		// its way would be settled as one the agent never got.
-		ackWait: 90 * time.Second,
+		ackWait: AckWait,
 	}
 }
 
@@ -89,7 +100,7 @@ type Subscription struct {
 	Close func()
 	// Ack reports what became of the envelope taken from Messages: nil if it
 	// reached the agent's MCP server, an error if it did not. Drive does not
-	// return until this is called or its handoff runs out, so a taker that
+	// return until this is called or AckWait runs out, so a taker that
 	// received an envelope owes exactly one call. Later calls are ignored.
 	Ack func(error)
 }
@@ -186,8 +197,10 @@ func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelo
 	// So the outcome is what the taker reports, not what the receive implies.
 	// Not selected against done: the taker acks before it closes, the ack is
 	// buffered, and selecting on both would pick the close half the time on a
-	// delivery that worked. A taker that dies between the two is caught by the
-	// handoff.
+	// delivery that worked. What that costs: a taker that dies between the
+	// receive and the ack — a panic in the handler, which net/http recovers —
+	// holds this goroutine and leaves the row unsettled for the whole of
+	// AckWait, ninety seconds, rather than the five it used to be.
 	//
 	// On its own timer, not the handoff's. The taker's write can block on a
 	// reader that has stopped reading until the server's own write deadline
