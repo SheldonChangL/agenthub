@@ -130,3 +130,37 @@ Also noted rather than concluded: the negotiated protocol version is
 The Go SDK offers `2026-07-28` and correctly accepts the client's lower
 version, so the negotiation itself is ordinary. Whether an experimental
 capability is wired up on that path is not something this side can determine.
+
+## The other leg, for contrast
+
+The Codex path was measured the same way, cross-machine and unattended, and it
+works end to end. Ubuntu's Claude session sent to a mac Codex thread; the
+thread's rollout file grew by thirteen lines in 75 seconds, carrying the
+untrusted fragment inside Codex's own `<external_agenthub:message>` element,
+then this node's notice, then the assistant's own turn — which **refused the
+message's instruction**, saying it had received an external test message asking
+it to reply "ok", that the message was not authorised, and that it had not
+carried out its instruction. That is the behaviour the notice is written to
+produce, happening with nobody present.
+
+The node recorded `woken`, the message stayed in the inbox, and the
+`codex app-server` was a child of `agenthub-node`.
+
+So the gate, the limits, the reservation and settle, the audit trail and the
+driver seam are all verified against real machines. What is unverified is the
+Claude Code leg alone, and only after the frame leaves this side correctly.
+
+Two things that measurement corrected in this repository:
+
+- **`turnTrigger` is not persisted.** This node sends
+  `turnTrigger: agenthub-wake` with the turn and the README claimed an owner
+  could find woken turns by it. Grepped on a real woken thread's rollout file:
+  `agenthub-wake` zero times, `turnTrigger` zero times, while the turn is
+  plainly there. codex-cli 0.153.4. The claim is gone; the field is still sent,
+  because it is part of the API and costs nothing.
+- **`woken` does not mean the model answered.** A thread pinned to a model the
+  account cannot use started its turn and ended with a 400 and no agent
+  message — and the row said `woken`, exactly as it does for a Claude Code push
+  that never arrived. The row means a driver took the message. Nothing more was
+  ever claimed in the code, and now nothing more is claimed in the README.
+
