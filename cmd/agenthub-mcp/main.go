@@ -32,6 +32,10 @@ func run() error {
 	nodeURL := flag.String("url", defaultURL, "AgentHub node URL")
 	as := flag.String("as", "",
 		"the session this server acts for, as <provider>:<id> (required)")
+	channel := flag.Bool("channel", false,
+		"push messages for this session into the agent as they arrive, instead of waiting "+
+			"to be asked. Claude Code only, and it needs the session's autoWake open on the "+
+			"node and channels enabled for your organisation")
 	flag.Parse()
 
 	// Anything written to stdout would be read as a protocol frame.
@@ -62,7 +66,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	server, err := mcpserver.New(client, binding, nodeID)
+	options := []mcpserver.Option{}
+	if *channel {
+		options = append(options, mcpserver.WithChannel())
+	}
+	server, err := mcpserver.New(client, binding, nodeID, options...)
 	if err != nil {
 		return err
 	}

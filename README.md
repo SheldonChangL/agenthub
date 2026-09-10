@@ -314,10 +314,81 @@ go run ./cmd/ah audience codex:<thread-id> none --messages --auto-wake
 Neither is enough alone. Without the node flag no session can be woken whatever
 its own setting says; without the session flag the node wakes nothing.
 
-Codex sessions are supported today: AgentHub resumes the thread through the
-app-server's own API and starts a turn in it — rejoining a running thread
+**Codex** sessions are woken by AgentHub resuming the thread through the
+app-server's own API and starting a turn in it — rejoining a running thread
 rather than opening a second one beside the conversation you are watching.
-Claude Code is not wired yet (#57).
+
+**Claude Code** works the other way round, because nothing here can reach a
+Claude Code session: its MCP server is a child of the agent and only ever dials
+out. So that server subscribes, and this node hands it messages:
+
+```bash
+agenthub-mcp -as claude:<id> -channel
+```
+
+A session with no subscriber has no agent running, so the wake fails and the
+message stays in the inbox — which is also how `ah wakes` can tell you the
+difference between "nobody was listening" and "nothing arrived".
+
+The MCP server holds a long poll against the node, and the node answers it just
+short of its own write deadline and says how long it held. There is a gap
+between one poll ending and the next beginning; a message landing in it is
+recorded as failed and waits in the inbox for the poll after.
+
+While setting this up, remember the wake limits apply to your own attempts:
+three per sender-and-session pair per ten minutes. A fourth test message inside
+that window is refused, and refused looks like nothing happening — which is
+what you are already debugging. `ah wakes` names the difference; check it
+before changing anything.
+
+Claude Code additionally needs channels turned on for you, and during the
+research preview that is more than one step:
+
+- your organisation must enable them (`channelsEnabled`, a managed setting —
+  Team and Enterprise have it off by default), and
+- Claude Code must be started with `--channels server:agenthub`, plus
+  `--dangerously-load-development-channels server:agenthub` while the feature
+  is in preview, which shows a consent screen.
+
+**If any of that is missing the push is dropped silently.** Claude Code tells
+the server nothing, so `ah wakes` will say `woken` for a message no agent ever
+saw. That is the honest limit of what this node can observe: it knows the
+message reached a live MCP server, not that a turn ran.
+
+**And those steps are not known to be sufficient.** On a real two-node setup —
+a mac and an Ubuntu box, paired, messages delivered both ways — the push has
+not been observed arriving. Three attempts, with the organisation's channels
+enabled and Claude Code started with both flags and showing "messages from
+server:agenthub inject directly in this session":
+
+- the node recorded `woken`, detail `handed to the session's driver`, and
+  logged `wake: handed message … to "claude:…"`;
+- the MCP server wrote nothing to stderr, which it only does when a push
+  fails, so as far as it knows the notification went out;
+- the receiving session's transcript did not grow, and Claude Code's own
+  `--debug` log recorded no notification at all — not a rejected one, none.
+
+Connecting the server at startup and connecting it later with `/mcp Reconnect`
+behaved identically. The frame this server writes is a valid JSON-RPC
+notification with no id, and the capability does reach a client's
+`InitializeResult`; both are asserted by tests here.
+
+A fourth attempt captured the server's stdout, and the frame is correct on the
+wire — so it is lost after Claude Code reads it, past the last point anything
+here can observe. Until that is understood, treat `-channel` as unverified: the
+Codex path is the one with a turn observed at the other end. The full
+reproduction, with what is eliminated and what is only suspected, is in
+[docs/channel-push-not-observed.md](docs/channel-push-not-observed.md).
+
+**One server per session, and `.mcp.json` does not give you that.** `-as` names
+a session; an MCP config is per project. Two Claude Code sessions in one
+working directory load the same config, so both start an `agenthub-mcp` with
+the same `-as`, and with `-channel` both subscribe for that one session. The
+node keeps one: the later subscriber displaces the earlier, which is told to
+stop and does. So messages for that session go to whichever agent started last,
+and the session the id actually belongs to is left silent — with `ah wakes`
+still saying `woken`. Give each session its own config, or start the server
+with `--strict-mcp-config` and a config of its own.
 
 ### What a woken turn may do
 
@@ -376,10 +447,11 @@ on a real woken thread's rollout file it appears zero times, as does
 `turnTrigger`, while the turn itself is plainly there. codex-cli 0.153.4 does
 not persist it.
 
-**A `woken` row means a turn was handed over, not that the model answered.** A
-thread pinned to a model the account cannot use started its turn and ended with
-a 400 and no agent message — and the row still said `woken`. The row is the
-furthest this node can see, that a driver took the message; the place to
+**A `woken` row means a turn was handed over, not that the model answered.**
+Both are real: a thread on a model the account cannot use started its turn and
+ended with a 400 and no agent message, and the row still said `woken`. So did
+every Claude Code attempt, none of which arrived at all. The row is the
+furthest this node can see — that a driver took the message — and the place to
 confirm a turn ran is the agent's own history.
 
 The reasoning behind all of it, including what it deliberately does not solve,

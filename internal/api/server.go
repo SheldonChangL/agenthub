@@ -25,6 +25,7 @@ import (
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 	"agenthub.local/agenthub/internal/transport"
+	"agenthub.local/agenthub/internal/wake"
 )
 
 // maxBatchSessions bounds one batch so a single request cannot hold a write
@@ -57,6 +58,24 @@ type Server struct {
 	// Nil on a node with no wake drivers configured, which is the default:
 	// storing a message must not depend on a provider being reachable.
 	waker Waker
+	// channels is where an agent this node cannot reach waits to be told.
+	channels ChannelSubscriber
+	// writeTimeout is the deadline of the server carrying this handler, so a
+	// held request can end before the connection is cut under it.
+	writeTimeout time.Duration
+	// draining closes when the node begins shutting down, so held requests
+	// answer instead of running out their own deadlines while Shutdown waits.
+	draining  chan struct{}
+	drainOnce sync.Once
+}
+
+// Drain ends every held request, so Shutdown can finish inside its budget.
+//
+// http.Server.Shutdown waits for handlers to return and does not cancel their
+// contexts, so one held poll kept the node alive to its own deadline — the
+// shutdown then reported a timeout and the peer listener was never closed.
+func (s *Server) Drain() {
+	s.drainOnce.Do(func() { close(s.draining) })
 }
 
 // Waker is the wake gate, as this package needs it.
@@ -105,6 +124,7 @@ func NewServer(store *registry.Registry, service *hub.Hub, heartbeats *protocol.
 		store: store, hub: service, heartbeats: heartbeats, node: node,
 		deliveryPolicy: transport.LoopbackOnly,
 		peerLimiter:    newRateLimiter(),
+		draining:       make(chan struct{}),
 	}
 	for _, option := range options {
 		option(server)
@@ -141,6 +161,10 @@ func (s *Server) Handler() http.Handler {
 	// The wake trail. Owner surface only: it names which peers made this
 	// machine move, which is exactly what a peer must not be able to read.
 	mux.HandleFunc("GET /v1/wakes", s.wakes)
+	// Where an agent's MCP server waits to be told its session has a message.
+	// Owner surface, like everything else here — it is reached over loopback
+	// by a process the owner started.
+	mux.HandleFunc("GET /v1/sessions/{id}/wake-stream", s.wakeStream)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
@@ -857,9 +881,34 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	// Not writeJSONResult: that one flushes, and routing every response
+	// through it moved all forty-odd endpoints on both listeners — the peer
+	// one included — from Content-Length to chunked encoding, to give one
+	// handler an error the rest have nothing to do with. Measured: with the
+	// flush, ContentLength = -1 and TransferEncoding = [chunked] on every
+	// response in the tree.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// writeJSONResult is writeJSON for the one caller that has to know whether the
+// bytes reached the client, because something else recorded that they did.
+//
+// The flush is what makes the answer true. net/http puts a 2048-byte
+// bufio.Writer in front of the socket (bufferBeforeChunkingSize), so Encode on
+// anything smaller returns nil having written to memory — measured against a
+// real server with the connection already closed and the write deadline
+// already past, a 600-byte body reported success both times. An ordinary
+// message is 600 bytes: wake.Notice alone is most of it. So the failure this
+// exists to catch was exactly the one it could not see.
+func writeJSONResult(w http.ResponseWriter, status int, value any) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		return err
+	}
+	return http.NewResponseController(w).Flush()
 }
 
 // wakes answers with what has woken agents on this node, newest first.
@@ -908,4 +957,196 @@ func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
 			"nodeWindow":    registry.WakeNodeWindow.String(),
 		},
 	})
+}
+
+// ChannelSubscriber is the wake path for agents this node cannot reach.
+//
+// An interface so the API does not depend on the wake package, and so a test
+// can drive the endpoint without a gate behind it.
+type ChannelSubscriber interface {
+	Subscribe(sessionID string) wake.Subscription
+	// Waiting is how many polls are held right now, so the endpoint can
+	// refuse to hold an unbounded number.
+	Waiting() int
+}
+
+// WithChannelSubscriber gives the API somewhere for an agent to wait.
+func WithChannelSubscriber(subscriber ChannelSubscriber) Option {
+	return func(s *Server) { s.channels = subscriber }
+}
+
+// WithWriteTimeout tells the API the deadline of the server carrying it.
+//
+// A held request has to end before that, or the connection is cut with nothing
+// written. The handler cannot read it off the http.Server, so it is passed.
+func WithWriteTimeout(timeout time.Duration) Option {
+	return func(s *Server) { s.writeTimeout = timeout }
+}
+
+// MaxWakeSubscribers bounds how many polls this node will hold at once.
+//
+// Each is a goroutine, a connection and a map entry, and the endpoint is
+// reachable by any process on this machine. One per session an owner is
+// actually running is a handful; a thousand is somebody's mistake or
+// somebody's probe.
+const MaxWakeSubscribers = 64
+
+// wakeStream holds a request open until this session has a message to act on.
+//
+// A long poll rather than a stream of many: one message per response keeps the
+// contract the same shape as everything else here, and the subscriber comes
+// straight back for the next one.
+//
+// Why the direction is inverted at all: an agent's MCP server is a stdio child
+// of that agent and reaches this node over loopback, outbound only. Nothing
+// here can open a connection to it, so it has to ask.
+func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
+	if s.channels == nil {
+		writeError(w, http.StatusNotFound, "WAKE_UNAVAILABLE",
+			"this node was started without wake support; restart it with -auto-wake")
+		return
+	}
+	sessionID, ok := s.localSession(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	// A session this node does not hold cannot be woken, so holding a request
+	// open for it is a goroutine spent on nothing. localSession only parses
+	// the address; this is the check that it names something real.
+	if _, err := s.store.GetSession(r.Context(), sessionID); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	if s.channels.Waiting() >= MaxWakeSubscribers {
+		writeError(w, http.StatusServiceUnavailable, "TOO_MANY_SUBSCRIBERS",
+			fmt.Sprintf("this node is already holding %d wake streams", MaxWakeSubscribers))
+		return
+	}
+
+	wait := s.WakeStreamWait(0)
+	if value := r.URL.Query().Get("wait"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed < MinWakeStreamWait || parsed > MaxWakeStreamWait {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				fmt.Sprintf("wait must be a duration between %s and %s",
+					MinWakeStreamWait, MaxWakeStreamWait))
+			return
+		}
+		wait = s.WakeStreamWait(parsed)
+	}
+
+	// Registered before the wait begins. That closes nothing on its own — it
+	// is the first thing this handler does — and the comment here used to
+	// claim it covered the gap between one poll and the next. It does not.
+	//
+	// That gap is real and is not closed anywhere: between the previous
+	// handler's deferred Close and this Subscribe there is a loopback round
+	// trip, once every wait, in which Drive finds no subscriber and the
+	// message stays in the inbox until something else wakes the session. An
+	// overlapping subscription would not help, because a second Subscribe for
+	// one session displaces the first into a 409. The gap is the cost of one
+	// waiter per session, which is the thing that makes "nobody is
+	// subscribed" mean "nobody is home".
+	subscription := s.channels.Subscribe(sessionID)
+	defer subscription.Close()
+
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	select {
+	case envelope := <-subscription.Messages:
+		// The receive above is what makes the driver's Drive return, so what
+		// it returns has to be whether these bytes went out — not whether this
+		// handler got as far as trying. A write that fails here leaves the
+		// message in the inbox and the wake settled as failed; without the
+		// report it stayed recorded as woken, against a limit of three per
+		// pair per ten minutes, for a message no agent ever saw.
+		subscription.Ack(writeJSONResult(w, http.StatusOK, channelView{
+			MessageID: envelope.MessageID, Body: envelope.Body,
+			SenderNodeID: envelope.SenderNodeID, SenderLabel: envelope.SenderLabel,
+			Fingerprint: envelope.Fingerprint, Hops: envelope.Hops,
+			Notice: wake.Notice,
+		}))
+	case <-subscription.Done:
+		// Displaced by a later subscriber for the same session. Answering 409
+		// rather than an empty 204 tells the loser to stop rather than poll
+		// again and displace the winner in turn.
+		writeError(w, http.StatusConflict, "WAKE_STREAM_REPLACED",
+			"another subscriber took over this session")
+	case <-deadline.C:
+		// Nothing arrived. Not an error: it is the normal end of a poll, and
+		// the subscriber comes straight back.
+		//
+		// The wait this node actually used goes back with it, because the
+		// client cannot see the deadline it has to stay under: the write
+		// timeout belongs to the http.Server, not to the request. Without it
+		// the client picked a number, and the number it picked was one that
+		// could never answer.
+		w.Header().Set("Agenthub-Wake-Wait", wait.String())
+		w.WriteHeader(http.StatusNoContent)
+	case <-r.Context().Done():
+		// The subscriber gave up. Nothing to write to.
+	case <-s.draining:
+		// The node is shutting down. Answering now lets Shutdown finish inside
+		// its budget instead of waiting out every held poll — which it did,
+		// and the peer listener was never closed as a result.
+		writeError(w, http.StatusServiceUnavailable, "NODE_SHUTTING_DOWN",
+			"this node is shutting down")
+	}
+}
+
+// WakeStreamWait keeps a poll strictly shorter than the write deadline of the
+// server carrying it.
+//
+// A poll as long as the deadline can never answer: Go arms the write deadline
+// when the request header is read, so it fires first and the connection is cut
+// with nothing written. Measured against the shipped binaries, whose
+// WriteTimeout is 30s: wait=29s answered 204, wait=30s produced an empty
+// reply, every time. The default poll was 30s, so in steady state every poll
+// failed and the subscriber spent most of its life unregistered.
+func (s *Server) WakeStreamWait(requested time.Duration) time.Duration {
+	limit := s.writeTimeout
+	if limit <= 0 {
+		limit = 30 * time.Second
+	}
+	// A margin for the response itself and for the clock the two timers do not
+	// share.
+	longest := limit - 3*time.Second
+	// Clamped to the same range the handler accepts, because the wait it
+	// settles on is reported to the client and comes back as the next
+	// request's. Outside that range the client would be answered 400 for a
+	// number this node chose, every poll, with nothing to recover from it.
+	if longest > MaxWakeStreamWait {
+		longest = MaxWakeStreamWait
+	}
+	if longest < MinWakeStreamWait {
+		longest = MinWakeStreamWait
+	}
+	if requested <= 0 || requested > longest {
+		return longest
+	}
+	return requested
+}
+
+// The range a poll may ask to be held for. The lower bound keeps a client from
+// making a request per second; the upper keeps one connection from being held
+// for an afternoon.
+const (
+	MinWakeStreamWait = time.Second
+	MaxWakeStreamWait = 5 * time.Minute
+)
+
+// channelView is one message on its way to an agent this node cannot reach.
+//
+// The notice travels with it rather than being written by the subscriber: the
+// words an agent is given about what a message is worth are this node's to
+// choose, and a subscriber that composed its own could drift from the one the
+// inbox and the Codex path use.
+type channelView struct {
+	MessageID    string `json:"messageId"`
+	Body         string `json:"body"`
+	SenderNodeID string `json:"senderNodeId,omitempty"`
+	SenderLabel  string `json:"senderLabel,omitempty"`
+	Fingerprint  string `json:"fingerprint,omitempty"`
+	Hops         int    `json:"hops"`
+	Notice       string `json:"notice"`
 }
