@@ -210,13 +210,27 @@ func channelMeta(push ChannelPush) map[string]string {
 // Spaces and "=" are left alone: display names and fingerprints contain
 // spaces, so a renderer that does not quote its attributes is already broken
 // by ordinary values and cannot be defended here.
+//
+// Printable ASCII and no wider, which is the policy every other identifier in
+// this repo already has. Stopping at the ASCII attribute-breaking set left the
+// one value with no character class at all — agenthub_sender_label, whose
+// validator checks length and the absence of a slash and nothing else —
+// carrying anything above U+007F. Checked, not assumed: U+202E (right-to-left
+// override), U+200B, U+2028, U+2029, U+0085 and U+009B all reached the
+// attribute unaltered. The message-id validator rejects a right-to-left
+// override for exactly this reason and says so; the session-id path never got
+// the same treatment, and this is where that shows.
+//
+// Nothing real is lost. Every value here is an id, a fingerprint or a
+// node-qualified session name — no display name reaches this map — so the
+// characters removed are ones no honest sender sends.
 func safeMetaValue(value string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '"', '\'', '<', '>', '&':
 			return '_'
 		}
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r > 0x7e {
 			return '_'
 		}
 		return r
