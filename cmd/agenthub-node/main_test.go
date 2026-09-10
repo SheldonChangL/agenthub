@@ -140,7 +140,10 @@ func TestTheOwnerListenerAndTheAPIAgreeOnTheWriteDeadline(t *testing.T) {
 func TestTheAckWindowOutlastsTheWriteItWaitsFor(t *testing.T) {
 	if wake.AckWait <= ownerWriteTimeout {
 		t.Errorf("the driver waits %s to be told a message went out, on a listener that "+
-			"allows the write itself %s; a slow write is settled as a failed one",
+			"allows the write itself %s; a slow write is settled as a failed one. "+
+			"Raising AckWait is not the only way out of this: it is bounded above too, "+
+			"by the context one wake runs under — see "+
+			"TestOneWakeFitsInsideTheContextItRunsUnder in internal/api",
 			wake.AckWait, ownerWriteTimeout)
 	}
 }
