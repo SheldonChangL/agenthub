@@ -371,9 +371,14 @@ server:agenthub inject directly in this session":
 Connecting the server at startup and connecting it later with `/mcp Reconnect`
 behaved identically. The frame this server writes is a valid JSON-RPC
 notification with no id, and the capability does reach a client's
-`InitializeResult`; both are asserted by tests here. Where it is lost after
-that is not yet known. Until it is, treat `-channel` as unverified: the Codex
-path is the one with a turn observed at the other end.
+`InitializeResult`; both are asserted by tests here.
+
+A fourth attempt captured the server's stdout, and the frame is correct on the
+wire — so it is lost after Claude Code reads it, past the last point anything
+here can observe. Until that is understood, treat `-channel` as unverified: the
+Codex path is the one with a turn observed at the other end. The full
+reproduction, with what is eliminated and what is only suspected, is in
+[docs/channel-push-not-observed.md](docs/channel-push-not-observed.md).
 
 **One server per session, and `.mcp.json` does not give you that.** `-as` names
 a session; an MCP config is per project. Two Claude Code sessions in one
