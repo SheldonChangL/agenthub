@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -314,5 +316,56 @@ func TestALabelCannotCarryCharactersThatChangeHowItReads(t *testing.T) {
 		if !strings.HasPrefix(got, "claude:") {
 			t.Errorf("%s: %q lost the part that identifies the session", name, got)
 		}
+	}
+}
+
+// A push goes out as a notification, not a call.
+//
+// A JSON-RPC message with an id is a request, and a request is answered rather
+// than delivered. notify leaves the ID zero and relies on the SDK omitting an
+// invalid one — behaviour of a dependency, so it is asserted on the bytes.
+//
+// On what notify actually wrote, not on a Request this test built: the two
+// differ exactly where a bug would live, and the first version of this test
+// assembled its own and proved nothing about the production call.
+func TestAPushGoesOutAsANotification(t *testing.T) {
+	connection := &recordingConnection{got: make(chan struct{})}
+	transport := &injectingTransport{inner: &recordingTransport{conn: connection}}
+	if _, err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := transport.notify(context.Background(), ChannelMethod, &channelParams{
+		Content: channelContent(samplePush()),
+		Meta:    channelMeta(samplePush()),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	connection.mu.Lock()
+	written := append([]*jsonrpc.Request(nil), connection.written...)
+	connection.mu.Unlock()
+	if len(written) != 1 {
+		t.Fatalf("wrote %d frames, want 1", len(written))
+	}
+	frame, err := jsonrpc.EncodeMessage(written[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shape map[string]json.RawMessage
+	if err := json.Unmarshal(frame, &shape); err != nil {
+		t.Fatal(err)
+	}
+	if raw, present := shape["id"]; present {
+		t.Errorf("the frame carries id %s; with one it is a call the client answers "+
+			"rather than a notification it delivers", raw)
+	}
+	if string(shape["jsonrpc"]) != `"2.0"` {
+		t.Errorf("jsonrpc = %s", shape["jsonrpc"])
+	}
+	if string(shape["method"]) != `"`+ChannelMethod+`"` {
+		t.Errorf("method = %s, want %q", shape["method"], ChannelMethod)
+	}
+	if len(shape["params"]) == 0 {
+		t.Error("the frame carries no params")
 	}
 }
