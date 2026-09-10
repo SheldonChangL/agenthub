@@ -335,3 +335,39 @@ func TestTheNoticeSaysWhatItExistsToSay(t *testing.T) {
 		}
 	}
 }
+
+// A wake that succeeded is settled, not left at its reservation.
+//
+// ReserveWake inserts the row as woken before the driver runs, so until the
+// gate settles it the row reads woken whether the drive succeeded, is still
+// running, or died on the way. Nothing distinguished those, and a test reading
+// the row straight after a delivery was reading the reservation — which is how
+// a broken handoff passed as a successful one.
+//
+// The detail is what says the handoff finished. It also gives an owner reading
+// `ah wakes` the difference between a row the gate completed and one it never
+// came back to.
+func TestASuccessfulWakeIsSettledWithWhatHappened(t *testing.T) {
+	ctx := context.Background()
+	store, driver, gate, session := gateFixture(t, true)
+
+	gate.Consider(ctx, arrived(session.ID, 0), peerNode, "2DCF 9604 DBA9 778A")
+
+	if driver.count() != 1 {
+		t.Fatalf("the driver was called %d times", driver.count())
+	}
+	events, err := store.ListWakes(ctx, session.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %+v", events)
+	}
+	if events[0].Outcome != registry.WakeWoken {
+		t.Errorf("outcome = %q, want %q", events[0].Outcome, registry.WakeWoken)
+	}
+	if events[0].Detail == "" {
+		t.Error("the row carries no detail, so it is indistinguishable from a reservation " +
+			"the gate never settled — which is what a failed handoff looks like")
+	}
+}
