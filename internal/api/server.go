@@ -881,9 +881,17 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
+	// Most handlers have nothing to do about a failed write: the client is
+	// gone and the work is already done.
+	_ = writeJSONResult(w, status, value)
+}
+
+// writeJSONResult is writeJSON for the one caller that has to know whether the
+// bytes reached the client, because something else recorded that they did.
+func writeJSONResult(w http.ResponseWriter, status int, value any) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	return json.NewEncoder(w).Encode(value)
 }
 
 // wakes answers with what has woken agents on this node, newest first.
@@ -1020,12 +1028,18 @@ func (s *Server) wakeStream(w http.ResponseWriter, r *http.Request) {
 	defer deadline.Stop()
 	select {
 	case envelope := <-subscription.Messages:
-		writeJSON(w, http.StatusOK, channelView{
+		// The receive above is what makes the driver's Drive return, so what
+		// it returns has to be whether these bytes went out — not whether this
+		// handler got as far as trying. A write that fails here leaves the
+		// message in the inbox and the wake settled as failed; without the
+		// report it stayed recorded as woken, against a limit of three per
+		// pair per ten minutes, for a message no agent ever saw.
+		subscription.Ack(writeJSONResult(w, http.StatusOK, channelView{
 			MessageID: envelope.MessageID, Body: envelope.Body,
 			SenderNodeID: envelope.SenderNodeID, SenderLabel: envelope.SenderLabel,
 			Fingerprint: envelope.Fingerprint, Hops: envelope.Hops,
 			Notice: wake.Notice,
-		})
+		}))
 	case <-subscription.Done:
 		// Displaced by a later subscriber for the same session. Answering 409
 		// rather than an empty 204 tells the loser to stop rather than poll

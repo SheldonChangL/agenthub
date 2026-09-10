@@ -59,6 +59,7 @@ func TestASubscriberReceivesTheEnvelope(t *testing.T) {
 		if got != sent {
 			t.Errorf("the subscriber received %+v", got)
 		}
+		subscription.Ack(nil)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the subscriber never received the envelope")
 	}
@@ -101,6 +102,7 @@ func TestASecondSubscriberReplacesTheFirst(t *testing.T) {
 		if got.MessageID != "msg_1" {
 			t.Errorf("the live subscriber received %+v", got)
 		}
+		second.Ack(nil)
 	case <-time.After(5 * time.Second):
 		t.Fatal("the live subscriber received nothing")
 	}
@@ -252,6 +254,7 @@ func TestTheHandoffSurvivesSubscribersComingAndGoing(t *testing.T) {
 		}
 		select {
 		case <-subscription.Messages:
+			subscription.Ack(nil)
 		default:
 		}
 		held := subscription
@@ -291,5 +294,44 @@ func TestWaitingCountsLiveSubscriptions(t *testing.T) {
 	third.Close()
 	if driver.Waiting() != 0 {
 		t.Errorf("Waiting() = %d after everything closed", driver.Waiting())
+	}
+}
+
+// What the taker reports is what Drive returns.
+//
+// Taking the envelope off the channel is not sending it: the taker is the
+// node's own HTTP handler and its write can fail after the receive. Drive used
+// to return nil on the receive, so a wake nobody received was recorded as
+// woken — and stayed woken, which costs one of three per pair per ten minutes
+// for good.
+func TestDriveReportsWhatTheTakerSaysNotWhatItTook(t *testing.T) {
+	driver := NewChannelDriver()
+	subscription := driver.Subscribe("claude:target")
+	defer subscription.Close()
+
+	failed := errors.New("write: broken pipe")
+	go func() {
+		<-subscription.Messages
+		subscription.Ack(failed)
+	}()
+
+	err := driver.Drive(context.Background(), claudeSession(), Envelope{MessageID: "msg_1"})
+	if !errors.Is(err, failed) {
+		t.Errorf("Drive() error = %v, want the taker's %v", err, failed)
+	}
+}
+
+// A taker that takes and says nothing is a failure, not a success.
+func TestATakerThatNeverReportsFailsTheDrive(t *testing.T) {
+	driver := NewChannelDriver()
+	driver.handoff = 100 * time.Millisecond
+	subscription := driver.Subscribe("claude:target")
+	defer subscription.Close()
+
+	go func() { <-subscription.Messages }()
+
+	if err := driver.Drive(context.Background(), claudeSession(),
+		Envelope{MessageID: "msg_1"}); err == nil {
+		t.Error("Drive() returned nil for a message the taker never reported on")
 	}
 }
