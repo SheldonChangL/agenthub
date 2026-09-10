@@ -437,9 +437,22 @@ go run ./cmd/ah wakes codex:<thread-id>  # one session
 ```
 
 Refusals are in there too: an empty answer means the node was quiet, and a
-refused row means something arrived and was held back. Codex also records
-`turnTrigger: agenthub-wake` on turns this node started, so you can find them
-in your own Codex history without taking this trail on trust.
+refused row means something arrived and was held back.
+
+To find a woken turn in your own Codex history without taking this trail on
+trust, look for the `<external_agenthub:message>` element Codex wraps the
+message in, or the notice text inside it. This node also sends
+`turnTrigger: agenthub-wake` with the turn, but do not look for that: grepped
+on a real woken thread's rollout file it appears zero times, as does
+`turnTrigger`, while the turn itself is plainly there. codex-cli 0.153.4 does
+not persist it.
+
+**A `woken` row means a turn was handed over, not that the model answered.**
+Both are real: a thread on a model the account cannot use started its turn and
+ended with a 400 and no agent message, and the row still said `woken`. So did
+every Claude Code attempt, none of which arrived at all. The row is the
+furthest this node can see — that a driver took the message — and the place to
+confirm a turn ran is the agent's own history.
 
 The reasoning behind all of it, including what it deliberately does not solve,
 is [ADR-003](docs/decisions/003-waking-with-nobody-present.md).
