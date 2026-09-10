@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -402,5 +403,107 @@ func TestTheWaitANodeSettlesOnIsOneItWouldAccept(t *testing.T) {
 		if asked := server.WakeStreamWait(2 * time.Second); asked > settled || asked <= 0 {
 			t.Errorf("with a %s deadline, asking for 2s gave %s", name, asked)
 		}
+	}
+}
+
+// deadConnection is a ResponseWriter whose body never reaches anyone, which is
+// what a client that has gone away looks like from inside a handler.
+type deadConnection struct {
+	header http.Header
+	code   int
+}
+
+func (d *deadConnection) Header() http.Header {
+	if d.header == nil {
+		d.header = http.Header{}
+	}
+	return d.header
+}
+func (d *deadConnection) WriteHeader(code int) { d.code = code }
+func (d *deadConnection) Write([]byte) (int, error) {
+	return 0, errors.New("write: broken pipe")
+}
+
+// A wake whose response never reaches the subscriber is recorded as failed.
+//
+// The handler receiving the envelope is what makes Drive return, and Drive
+// returning nil is what leaves the wake settled as woken. But the receive
+// happens before the write, and the write can fail — the agent's MCP server
+// exits while a message is being handed to it, which is every time its session
+// ends. The message was then recorded as delivered to an agent that never saw
+// it, and stayed that way: only a settled failure stops counting against the
+// limits, so one broken pipe spent one of three wakes per pair per ten minutes
+// permanently.
+//
+// Both halves were covered — Drive hands over, the handler writes — and this
+// is the seam between them.
+func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
+	ctx := context.Background()
+	store, owner, peers, _ := streamingSurfaces(t)
+	peer := newSender(t, peerNodeID)
+	peer.pairWith(t, owner)
+	session := acceptingLocalSession(t, store, owner, "claude:goingaway")
+	if err := store.SetAudience(ctx, session, model.Audience{
+		Mode: model.AudienceAllPaired, AcceptMessages: true, AutoWake: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		request := httptest.NewRequest(http.MethodGet,
+			"/v1/sessions/"+session+"/wake-stream?wait=20s", nil)
+		owner.ServeHTTP(&deadConnection{}, request)
+	}()
+	waitFor(t, func() bool {
+		response := perform(t, owner, http.MethodGet, "/v1/wakes", nil)
+		return response.Code == http.StatusOK
+	})
+	time.Sleep(100 * time.Millisecond)
+
+	envelope := peer.messageEnvelope(t, testNodeID, "msg_lost", session, "claude:theirs",
+		"look at the build")
+	if response := perform(t, peers, http.MethodPost, "/v1/messages", envelope); response.Code != http.StatusOK {
+		t.Fatalf("delivery = %d %s", response.Code, response.Body.String())
+	}
+	select {
+	case <-polled:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the poll never returned")
+	}
+
+	// The row is inserted when the wake is reserved and settled after the
+	// drive returns, so this waits for it to settle rather than reading it
+	// mid-flight — and keeps what it last saw, so a wake that stays woken says
+	// so instead of reporting a timeout.
+	var outcome registry.WakeOutcome
+	var detail string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		events, err := store.ListWakes(ctx, session, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		outcome, detail = events[0].Outcome, events[0].Detail
+		if outcome != registry.WakeWoken {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if outcome != registry.WakeFailed {
+		t.Errorf("outcome = %q (%s), want %q: the response never reached the subscriber",
+			outcome, detail, registry.WakeFailed)
+	}
+	// And the message is still there, so the next poll gets it.
+	held, err := store.CountInbox(ctx, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if held != 1 {
+		t.Errorf("the inbox holds %d messages after a wake that was never delivered", held)
 	}
 }

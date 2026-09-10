@@ -43,8 +43,12 @@ type ChannelDriver struct {
 // ends the wait, and closing it cannot race a send.
 type subscriber struct {
 	envelopes chan Envelope
-	done      chan struct{}
-	once      sync.Once
+	// acks carries what the taker made of the envelope. Buffered by one so a
+	// taker reporting an outcome never blocks on a Drive that has already
+	// given up, and so the report cannot be lost to the close that follows it.
+	acks chan error
+	done chan struct{}
+	once sync.Once
 }
 
 func (s *subscriber) end() { s.once.Do(func() { close(s.done) }) }
@@ -72,6 +76,11 @@ type Subscription struct {
 	Done <-chan struct{}
 	// Close ends the subscription. Safe to call more than once.
 	Close func()
+	// Ack reports what became of the envelope taken from Messages: nil if it
+	// reached the agent's MCP server, an error if it did not. Drive does not
+	// return until this is called or its handoff runs out, so a taker that
+	// received an envelope owes exactly one call. Later calls are ignored.
+	Ack func(error)
 }
 
 // Subscribe registers a waiter for a session.
@@ -81,7 +90,11 @@ type Subscription struct {
 // the live one. The displaced one is ended so its poll returns at once rather
 // than waiting out its deadline.
 func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
-	fresh := &subscriber{envelopes: make(chan Envelope), done: make(chan struct{})}
+	fresh := &subscriber{
+		envelopes: make(chan Envelope),
+		acks:      make(chan error, 1),
+		done:      make(chan struct{}),
+	}
 	d.mu.Lock()
 	if existing, ok := d.waiting[sessionID]; ok {
 		existing.end()
@@ -102,6 +115,14 @@ func (d *ChannelDriver) Subscribe(sessionID string) Subscription {
 			}
 			d.mu.Unlock()
 			fresh.end()
+		},
+		Ack: func(err error) {
+			// Non-blocking: the buffer holds the first report and a taker
+			// that calls twice, or calls after Drive gave up, is not stuck.
+			select {
+			case fresh.acks <- err:
+			default:
+			}
 		},
 	}
 }
@@ -133,7 +154,6 @@ func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelo
 	defer cancel()
 	select {
 	case waiter.envelopes <- envelope:
-		return nil
 	case <-waiter.done:
 		// The poll ended between the lookup and now. The message stays in the
 		// inbox for the next one.
@@ -143,5 +163,25 @@ func (d *ChannelDriver) Drive(ctx context.Context, session model.Session, envelo
 		// may be between reading and writing. Either way the message stays.
 		return fmt.Errorf("the subscriber for %s did not take the message within %s",
 			session.ID, d.handoff)
+	}
+
+	// Taken off the channel is not the same as sent. The taker is this node's
+	// own HTTP handler, and its write can fail after the receive: the client
+	// disconnects, or the connection deadline fires. Returning nil there
+	// recorded a wake as woken that no MCP server ever received — permanently,
+	// because only a settled failure stops counting against the limits, and a
+	// wake nobody settles counts against all three windows for its whole life.
+	//
+	// So the outcome is what the taker reports, not what the receive implies.
+	// Not selected against done: the taker acks before it closes, the ack is
+	// buffered, and selecting on both would pick the close half the time on a
+	// delivery that worked. A taker that dies between the two is caught by the
+	// handoff.
+	select {
+	case err := <-waiter.acks:
+		return err
+	case <-handoff.Done():
+		return fmt.Errorf("the subscriber for %s took the message but did not say "+
+			"whether it was sent within %s", session.ID, d.handoff)
 	}
 }
