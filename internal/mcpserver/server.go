@@ -9,6 +9,8 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"log"
+	"time"
 
 	"agenthub.local/agenthub/internal/buildinfo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -31,6 +33,10 @@ type server struct {
 	client  *Client
 	binding Binding
 	nodeID  string
+	// channels turns on the wake push. Off unless the owner asked for it:
+	// declaring the capability registers a listener in Claude Code, and a
+	// server that declares one and never pushes is a listener for nothing.
+	channels bool
 }
 
 // ErrUnboundServer marks a server built without a validated binding.
@@ -41,15 +47,26 @@ var ErrUnboundServer = errors.New("this server was not given a validated session
 // It refuses a zero Binding rather than serving a session named "": a forgotten
 // Bind would otherwise produce a running server bound to nothing, which is the
 // failure -as exists to prevent.
-func New(client *Client, binding Binding, nodeID string) (*server, error) {
+func New(client *Client, binding Binding, nodeID string, options ...Option) (*server, error) {
 	if !binding.valid() {
 		return nil, ErrUnboundServer
 	}
 	if client == nil {
 		return nil, errors.New("a server needs a node client")
 	}
-	return &server{client: client, binding: binding, nodeID: nodeID}, nil
+	built := &server{client: client, binding: binding, nodeID: nodeID}
+	for _, option := range options {
+		option(built)
+	}
+	return built, nil
 }
+
+// Option adjusts a server at construction.
+type Option func(*server)
+
+// WithChannel turns on the wake push: this server declares the channel
+// capability and subscribes to the node for its session.
+func WithChannel() Option { return func(s *server) { s.channels = true } }
 
 type listArgs struct {
 	Provider string `json:"provider,omitempty" jsonschema:"restrict to claude or codex"`
@@ -84,6 +101,7 @@ type listResult struct {
 // MCPServer builds the SDK server with this surface registered.
 func (s *server) MCPServer() *mcp.Server {
 	capabilities := &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}}
+	capabilities.Experimental = s.capabilities()
 	sdk := mcp.NewServer(
 		&mcp.Implementation{Name: "agenthub", Version: Version()},
 		&mcp.ServerOptions{
@@ -171,6 +189,103 @@ func (s *server) MCPServer() *mcp.Server {
 }
 
 // Run serves the surface over stdio until the agent closes it.
+//
+// With channels on it also subscribes to the node for this session, and pushes
+// what arrives into the agent's context. The subscription is what tells the
+// node an agent is running at all: nothing here can be reached from outside,
+// so a session with no subscriber is a session with nobody home, and the node
+// leaves its messages in the inbox.
 func (s *server) Run(ctx context.Context) error {
-	return s.MCPServer().Run(ctx, &mcp.StdioTransport{})
+	transport := &injectingTransport{inner: &mcp.StdioTransport{}}
+	if !s.channels {
+		return s.MCPServer().Run(ctx, transport)
+	}
+
+	serving, stop := context.WithCancel(ctx)
+	defer stop()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.pushWakes(serving, transport)
+	}()
+
+	err := s.MCPServer().Run(ctx, transport)
+	// The agent has gone. End the poll and wait for it, so the process does
+	// not exit with a request still open against the node.
+	stop()
+	<-done
+	return err
+}
+
+// pushWakes waits for this session's messages and puts each into the agent's
+// context.
+func (s *server) pushWakes(ctx context.Context, transport *injectingTransport) {
+	// A failing node must not become a tight loop against it. Every error
+	// waits; only a clean poll comes straight back.
+	const retry = 5 * time.Second
+	// Longer, because a node that says it has no wake stream is more likely to
+	// be configured that way than briefly restarting.
+	const unavailableRetry = 30 * time.Second
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		push, err := s.client.WaitForWake(ctx, s.binding.SessionID())
+		switch {
+		case ctx.Err() != nil:
+			return
+		case errors.Is(err, ErrWakeReplaced):
+			// Somebody else is serving this session. Polling on would displace
+			// them in turn, and the two would take it from each other for as
+			// long as both ran.
+			log.Printf("agenthub: not waiting for messages: %v", err)
+			return
+		case errors.Is(err, ErrWakeUnavailable):
+			// The node has no wake support, or does not know this session.
+			// Both can change under a node that is restarting, so this waits
+			// longer rather than giving up for the life of the process — a
+			// node brought back with -auto-wake would otherwise leave this
+			// server silent until the agent itself restarted.
+			log.Printf("agenthub: waiting for messages: %v", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(unavailableRetry):
+			}
+			continue
+		case err != nil:
+			log.Printf("agenthub: waiting for messages: %v", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retry):
+			}
+			continue
+		case push == nil:
+			// A quiet poll. Straight back.
+			continue
+		}
+		if err := transport.notify(ctx, ChannelMethod, &channelParams{
+			Content: channelContent(*push),
+			Meta:    channelMeta(*push),
+		}); err != nil {
+			// The message stays in the node's inbox: nothing here deletes it,
+			// and the node recorded the handoff, not the delivery.
+			log.Printf("agenthub: could not push message %s: %v", push.MessageID, err)
+		}
+	}
+}
+
+// capabilities is the experimental map this server declares.
+//
+// Presence of the channel key registers the listener in Claude Code; the value
+// is always an empty object. Declared only when the owner asked for it — a
+// server that declares one and never pushes has registered a listener for
+// nothing, and the owner reading their own configuration would see a channel
+// where none is served.
+func (s *server) capabilities() map[string]any {
+	if !s.channels {
+		return nil
+	}
+	return map[string]any{ChannelCapability: map[string]any{}}
 }

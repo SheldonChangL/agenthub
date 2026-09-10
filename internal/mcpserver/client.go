@@ -34,6 +34,12 @@ var ErrSessionNotFound = errors.New("no such session on this node")
 type Client struct {
 	baseURL string
 	http    *http.Client
+	// longPoll is a second client for the wake stream, whose requests are meant
+	// to hang. Built on first use so nothing pays for it that never waits.
+	longPoll *http.Client
+	// wakeWait is what the node last said it would hold a poll for. Owned by
+	// the single goroutine that polls.
+	wakeWait time.Duration
 }
 
 // NewClient targets a node's loopback API.
@@ -547,4 +553,97 @@ func (c *Client) post(ctx context.Context, path string, body []byte) (int, []byt
 func providerOf(sessionID string) string {
 	provider, _, _ := strings.Cut(sessionID, ":")
 	return provider
+}
+
+// WakeWait is how long the first poll asks to be held.
+//
+// A request, not a decision: the node answers with the wait it actually used,
+// and later polls use that. The number has to stay under the node's own write
+// deadline, which belongs to its http.Server and is not visible from here — a
+// poll as long as the deadline is cut with nothing written, which is what a
+// 30-second default did against a 30-second deadline, on every quiet poll.
+const WakeWait = 25 * time.Second
+
+// WakeGrace is how far past the node's own wait this request's deadline sits.
+//
+// The node's timer is what should end a quiet poll; this one fires only if the
+// node has stopped answering altogether. It is named so the test that bounds a
+// dead-node poll is derived from it: as a literal here against a literal there
+// the two drifted, and the test's bound was wide enough to accept a grace four
+// times this one.
+const WakeGrace = 15 * time.Second
+
+// ErrWakeUnavailable means the node was started without wake support.
+var ErrWakeUnavailable = errors.New("this node does not serve the wake stream")
+
+// ErrWakeReplaced means another subscriber took over this session.
+var ErrWakeReplaced = errors.New("another subscriber took over this session")
+
+// WaitForWake holds a request open until this session has a message to act
+// on, and returns nil when the poll ended with nothing.
+//
+// A separate HTTP client from the rest: the shared one has a fifteen-second
+// timeout, which is right for a request that should answer at once and would
+// cut every long poll short.
+func (c *Client) WaitForWake(ctx context.Context, sessionID string) (*ChannelPush, error) {
+	if c.longPoll == nil {
+		// No Timeout on the client: the deadline belongs on the request,
+		// because how long a poll may take changes with what the node says it
+		// will hold one for, and a fixed client timeout built on the first
+		// call would be wrong for every later one.
+		c.longPoll = &http.Client{}
+	}
+	wait := c.wakeWait
+	if wait <= 0 {
+		wait = WakeWait
+	}
+	path := "/v1/sessions/" + url.PathEscape(sessionID) + "/wake-stream?wait=" + wait.String()
+	polling, cancel := context.WithTimeout(ctx, wait+WakeGrace)
+	defer cancel()
+	request, err := http.NewRequestWithContext(polling, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.longPoll.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("wait for a wake: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxNodeResponse))
+	if err != nil {
+		return nil, err
+	}
+
+	switch response.StatusCode {
+	case http.StatusNoContent:
+		// The poll ended quietly. Not an error, and the caller comes back —
+		// with whatever wait the node says it used, so this client stops
+		// asking for one the node has to shorten.
+		if used := response.Header.Get("Agenthub-Wake-Wait"); used != "" {
+			if parsed, err := time.ParseDuration(used); err == nil && parsed > 0 {
+				c.wakeWait = parsed
+			}
+		}
+		return nil, nil
+	case http.StatusOK:
+		var push ChannelPush
+		if err := json.Unmarshal(body, &push); err != nil {
+			return nil, fmt.Errorf("decode a wake: %w", err)
+		}
+		if push.MessageID == "" {
+			return nil, errors.New("the node sent a wake with no message id")
+		}
+		return &push, nil
+	case http.StatusNotFound:
+		// Either the node has no wake support or it does not have this
+		// session. Both can change under a node that is restarting, so the
+		// caller waits and tries again rather than stopping; the message says
+		// which it was.
+		return nil, fmt.Errorf("%w: %s", ErrWakeUnavailable, strings.TrimSpace(string(body)))
+	case http.StatusConflict:
+		return nil, ErrWakeReplaced
+	default:
+		return nil, fmt.Errorf("wait for a wake: node answered %d: %s",
+			response.StatusCode, strings.TrimSpace(string(body)))
+	}
 }
