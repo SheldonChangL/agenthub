@@ -66,9 +66,16 @@ type StartTurnParams struct {
 	ThreadID          string                  `json:"threadId"`
 	Input             []TurnInput             `json:"input"`
 	AdditionalContext map[string]ContextEntry `json:"additionalContext,omitempty"`
-	// TurnTrigger classifies the caller. Codex records it, so an owner reading
-	// their own Codex history can see which turns this node started, without
-	// having to trust AgentHub's audit trail to be complete.
+	// TurnTrigger classifies the caller. Sent, and not visible afterwards:
+	// grepped for on a real woken thread's rollout file, "agenthub-wake"
+	// appears zero times and so does "turnTrigger", while the turn itself is
+	// plainly there. codex-cli 0.153.4 does not persist it, whatever it does
+	// with it in flight.
+	//
+	// Kept because the field is part of the API and costs nothing to send.
+	// What an owner can actually find a woken turn by is the
+	// <external_agenthub:message> element Codex wraps the untrusted fragment
+	// in, and the notice text inside it.
 	TurnTrigger string `json:"turnTrigger,omitempty"`
 }
 
