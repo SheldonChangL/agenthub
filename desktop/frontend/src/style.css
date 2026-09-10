@@ -479,6 +479,12 @@ table.peer-sessions td.mono {
    whoever is on the segment, not by this owner. */
 #node-rows {
   overflow-y: auto;
+  /* flex: none, because a scroll container's min-height resolves to 0 and the
+     default flex: 0 1 auto then lets the column shrink this list to nothing
+     when the pairing panel below it (637px on its own) does not fit. Measured
+     in a 640px-high window: one paired node, zero pixels. The sidebar has its
+     own scroll for what does not fit; the paired-node list is never it. */
+  flex: none;
 }
 
 #candidate-rows {

@@ -44,6 +44,7 @@ export namespace main {
 	    exportCwd: boolean;
 	    acceptMessages: boolean;
 	    allowOutbound: boolean;
+	    autoWake: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Audience(source);
@@ -56,6 +57,7 @@ export namespace main {
 	        this.exportCwd = source["exportCwd"];
 	        this.acceptMessages = source["acceptMessages"];
 	        this.allowOutbound = source["allowOutbound"];
+	        this.autoWake = source["autoWake"];
 	    }
 	}
 	export class Candidate {
@@ -442,6 +444,8 @@ export namespace main {
 	    expiresAt: any;
 	    remainingSeconds: number;
 	    announcing: AnnounceStatus;
+	    displayName: string;
+	    nameIsChosen: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new PairingState(source);
@@ -454,6 +458,8 @@ export namespace main {
 	        this.expiresAt = this.convertValues(source["expiresAt"], null);
 	        this.remainingSeconds = source["remainingSeconds"];
 	        this.announcing = this.convertValues(source["announcing"], AnnounceStatus);
+	        this.displayName = source["displayName"];
+	        this.nameIsChosen = source["nameIsChosen"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
