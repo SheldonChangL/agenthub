@@ -5,6 +5,7 @@
 // tests provide from ./test/dom-shim.mjs. boot() runs once: it wires the
 // handlers, starts the intervals and does the first load.
 import { api } from "./api.js";
+import * as F from "./sessions/filter.js";
 export { configure } from "./api.js";
 
 export function boot({ start = true } = {}) {
@@ -51,6 +52,27 @@ export function boot({ start = true } = {}) {
     // Whether a read ever reached the node. It decides what an unreachable read
     // says: "this is the last data we had" only means something if there is any.
     loadedOnce: false,
+    // ---- redesign state ----
+    // Grouped filters: a Set of chosen values per group (docs/ui-contract.md
+    // §5.1). Empty means "no restriction". Search, filters and sort are kept in
+    // localStorage so the table opens the way it was left.
+    filters: F.emptyFilters(),
+    sort: { ...F.DEFAULT_SORT },
+    // Which drawer tab the inbox drawer shows: inbox | outbound | wakes.
+    inboxTab: "inbox",
+    // Outbound and wake logs, each with its own sequence guard below.
+    outbound: { messages: [], next: "", loading: false, error: "", session: null },
+    wakes: { wakes: [], limits: null, loading: false, error: "", session: null },
+    // Background photo + rain: the owner's switches, and the OS's reduce-motion.
+    ui: { backdrop: true, motion: true },
+    // Which settings section is scrolled to.
+    settingsSection: "settings-service",
+    service: null,
+    nodeReachable: false,
+    serviceFormTouched: false,
+    // The session the inbox drawer was opened for, set before the read; the
+    // clear button's target (inboxSession) is armed only once an answer lands.
+    inboxSessionAsked: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -58,19 +80,46 @@ export function boot({ start = true } = {}) {
   /* ---------------- filtering ---------------- */
 
   function visible() {
-    const term = state.search.trim().toLowerCase();
-    const { provider, status, audience } = state.filters;
-    return state.sessions.filter((s) => {
-      if (provider && s.provider !== provider) return false;
-      if (status && s.status !== status) return false;
-      if (audience && (s.audience?.mode ?? "none") !== audience) return false;
-      if (term) {
-        const haystack = `${s.id} ${s.cwd || ""}`.toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
-      return true;
-    });
+    return F.sorted(F.visible(state.sessions, { search: state.search, filters: state.filters }), state.sort);
   }
+
+  /* ---------------- preferences ---------------- */
+
+  // localStorage can be absent or throw (a WebView with storage disabled); a
+  // failure to remember the filters is not worth a banner.
+  function loadPrefs() {
+    let raw = null;
+    try {
+      raw = globalThis.localStorage?.getItem(F.PREFS_KEY) ?? null;
+    } catch {
+      raw = null;
+    }
+    const prefs = F.parsePrefs(raw);
+    state.filters = prefs.filters;
+    state.sort = prefs.sort;
+    state.search = prefs.search;
+    let ui = null;
+    try {
+      ui = JSON.parse(globalThis.localStorage?.getItem(UI_PREFS_KEY) ?? "null");
+    } catch {
+      ui = null;
+    }
+    if (ui && typeof ui === "object") {
+      state.ui.backdrop = ui.backdrop !== false;
+      state.ui.motion = ui.motion !== false;
+    }
+  }
+
+  function savePrefs() {
+    try {
+      globalThis.localStorage?.setItem(F.PREFS_KEY, F.serializePrefs(state));
+      globalThis.localStorage?.setItem(UI_PREFS_KEY, JSON.stringify(state.ui));
+    } catch {
+      // Nothing to do: the table still works, it just forgets on restart.
+    }
+  }
+  const UI_PREFS_KEY = "agenthub.desktop.ui.v1";
+
 
   /* ---------------- rendering ---------------- */
 
@@ -101,32 +150,32 @@ export function boot({ start = true } = {}) {
     return element("span", extraClass ? `pill ${extraClass}` : "pill", text);
   }
 
-  const CHIPS = [
-    { key: "provider", value: "claude", label: "Claude" },
-    { key: "provider", value: "codex", label: "Codex" },
-    { key: "status", value: "active", label: "active" },
-    { key: "status", value: "idle", label: "idle" },
-    { key: "status", value: "inactive", label: "inactive" },
-    { key: "audience", value: "all_paired", label: "所有已配對" },
-    { key: "audience", value: "selected", label: "指定節點" },
-    { key: "audience", value: "none", label: "不公開" },
-  ];
 
+  // renderChips draws the three filter groups. Each chip carries a facet count:
+  // what it would match with the other groups and the search still applied —
+  // so the number beside "active" agrees with the table when "Codex" is on.
   function renderChips() {
-    const container = el("chips");
-    container.replaceChildren();
-    for (const chip of CHIPS) {
-      const button = document.createElement("button");
-      const on = state.filters[chip.key] === chip.value;
-      button.className = on ? "chip on" : "chip";
-      button.append(chip.label, element("span", "n", String(state.counts[chip.value] ?? 0)));
-      button.onclick = () => {
-        state.filters[chip.key] = on ? null : chip.value;
-        render();
-      };
-      container.append(button);
+    const counts = F.facetCounts(state.sessions, { search: state.search, filters: state.filters });
+    for (const group of F.GROUPS) {
+      const container = el(`chips-${group}`);
+      container.replaceChildren();
+      for (const chip of F.CHIPS.filter((c) => c.group === group)) {
+        const button = document.createElement("button");
+        const on = state.filters[group].has(chip.value);
+        const n = counts[`${group}:${chip.value}`] ?? 0;
+        button.className = `chip${on ? " on" : ""}${n === 0 && !on ? " zero" : ""}`;
+        button.append(chip.label, element("span", "n", String(n)));
+        button.onclick = () => {
+          state.filters = F.toggleChip(state.filters, group, chip.value);
+          savePrefs();
+          render();
+        };
+        container.append(button);
+      }
     }
+    el("btn-clear-filters").classList.toggle("hidden", !F.hasAnyFilter(state.filters) && !state.search.trim());
   }
+
 
   // describeAudience answers "published to whom" in one cell.
   function describeAudience(audience) {
@@ -154,6 +203,47 @@ export function boot({ start = true } = {}) {
     return `${Math.floor(seconds / 86400)} 天前`;
   }
 
+  // Icons for the row actions are text, not glyphs: the buttons are small but
+  // their labels are what the tests, and screen readers, look for.
+  function rowActionButton(className, label, title, onclick) {
+    const button = element("button", `ghost ${className}`, label);
+    button.title = title;
+    button.onclick = onclick;
+    return button;
+  }
+
+  // resumeCommand is what to paste in a terminal to pick this session up again.
+  // For Claude the provider id is the jsonl's sessionId, which is what
+  // `claude --resume` takes (adapter/claude.go); for Codex it is the thread id.
+  function resumeCommand(session) {
+    const { rest } = shortId(session.id);
+    const id = session.providerSessionId || rest;
+    if (session.provider === "codex") return `codex resume ${id}`;
+    return `claude --resume ${id}`;
+  }
+
+  // Numbered like the MCP copy: a reply that lands after the owner clicked a
+  // different row must not put another session's command on the clipboard.
+  let resumeRequest = 0;
+  async function copyResumeCommand(session) {
+    const sequence = ++resumeRequest;
+    const command = resumeCommand(session);
+    try {
+      await api.CopyText(command);
+    } catch (error) {
+      if (sequence !== resumeRequest) return;
+      banner(`無法寫入剪貼簿（${error}），請手動輸入：${command}`);
+      return;
+    }
+    if (sequence !== resumeRequest) return;
+    const where = session.cwd ? `，在 ${session.cwd} 執行` : "";
+    banner(`已複製 ${command}${where}。`, true);
+  }
+
+  function flagChip(label, on, warn = false) {
+    return element("span", `flag${on ? " on" : ""}${warn ? " warn" : ""}`, label);
+  }
+
   function renderRows(rows) {
     const body = el("rows");
     const fragment = document.createDocumentFragment();
@@ -177,39 +267,57 @@ export function boot({ start = true } = {}) {
       };
       checkCell.append(checkbox);
 
-      const idCell = element("td", "mono sid");
-      idCell.append(element("b", "", rest));
-      // Opening an inbox is a read, and a per-row button is where an owner looks
-      // for "what has this session been sent". It does not mark anything read and
-      // does not hand anything to an agent.
-      const openInboxButton = element("button", "ghost inbox", "收件匣");
-      openInboxButton.onclick = () => {
-        openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
-      };
-      idCell.append(openInboxButton);
-      // The `.mcp.json` for this row, on the clipboard. Assembling it by hand
-      // means finding one id among a thousand and an absolute path the owner has
-      // no reason to know; getting either wrong binds an agent to somebody else's
-      // session, which nothing downstream can detect (issue #112).
-      const mcpButton = element("button", "ghost mcp", "MCP 設定");
-      // The promise is returned, not swallowed: the browser ignores it, and the
-      // test can wait for the dialog to be filled in rather than for the click.
-      mcpButton.onclick = () =>
-        openMCPConfig(session.id).catch((error) => banner(`產生 MCP 設定失敗：${error}`));
-      idCell.append(mcpButton);
+      const idCell = element("td", "sid");
+      idCell.append(element("span", "providertag", session.provider), element("b", "", rest));
+      idCell.title = session.id;
 
       const cwdCell = element("td", "mono muted", session.cwd || "—");
       if (session.cwd) cwdCell.title = session.cwd;
 
+      // The four audience flags, readable without opening the dialog. Only
+      // meaningful when something is published; a private row shows them dim.
+      const flags = element("td");
+      const a = session.audience ?? {};
+      const chips = element("span", "flagchips");
+      chips.append(
+        flagChip("CWD", Boolean(a.exportCwd)),
+        flagChip("收", Boolean(a.acceptMessages)),
+        flagChip("送", Boolean(a.allowOutbound)),
+        flagChip("醒", Boolean(a.autoWake), true),
+      );
+      flags.append(chips);
+
+      // Row actions. Opening an inbox is a read; the other two write the
+      // clipboard and say so. Class tokens `inbox` / `mcp` and the label
+      // 「MCP 設定」 are what test/mcp-config.mjs looks for.
+      const actions = element("td", "col-actions");
+      const group = element("span", "rowactions");
+      group.append(
+        rowActionButton("inbox", "收件匣", "這個 session 收到的訊息、送出紀錄與喚醒紀錄", () => {
+          openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
+        }),
+        // The `.mcp.json` for this row, on the clipboard. Assembling it by hand
+        // means finding one id among a thousand and an absolute path the owner
+        // has no reason to know; getting either wrong binds an agent to
+        // somebody else's session, which nothing downstream can detect (#112).
+        // The promise is returned, not swallowed, so a test can await it.
+        rowActionButton("mcp", "MCP 設定", "複製這個 session 的 .mcp.json", () =>
+          openMCPConfig(session.id).catch((error) => banner(`產生 MCP 設定失敗：${error}`))),
+        rowActionButton("resume", "resume", `複製 ${resumeCommand(session)}`, () =>
+          copyResumeCommand(session)),
+      );
+      actions.append(group);
+
       tr.append(
         checkCell,
         idCell,
-        element("td", "", session.provider),
         cell(element("td"), pill(session.status, statusPillClass(session.status))),
         element("td", "muted", session.management),
         cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
+        flags,
         cwdCell,
-        element("td", "muted", relative(session.lastSeenAt))
+        element("td", "muted", relative(session.lastSeenAt)),
+        actions
       );
       fragment.append(tr);
     }
@@ -218,31 +326,68 @@ export function boot({ start = true } = {}) {
     el("empty").classList.toggle("hidden", rows.length > 0);
   }
 
-  function render() {
-    const network = state.view === "network";
-    el("network-view").classList.toggle("hidden", !network);
-    el("local-view").classList.toggle("hidden", network);
-    for (const segment of document.querySelectorAll("#view-switch span")) {
-      segment.className = segment.dataset.view === state.view ? "on" : "";
+  // renderSortHeaders marks the sorted column and wires the click once.
+  function renderSortHeaders() {
+    for (const th of document.querySelectorAll("thead th.sortable")) {
+      const key = th.dataset.sort;
+      const on = state.sort.key === key;
+      th.classList.toggle("sorted", on);
+      let mark = th.querySelector(".sortmark");
+      if (!mark) {
+        mark = element("span", "sortmark");
+        th.append(mark);
+      }
+      mark.textContent = on ? (state.sort.dir === "desc" ? "▼" : "▲") : "▼";
+      mark.className = on ? "sortmark" : "sortmark hint";
+      if (!th.onclick) {
+        th.onclick = () => {
+          state.sort = F.nextSort(state.sort, key);
+          savePrefs();
+          render();
+        };
+      }
     }
-    if (network) {
+  }
+
+
+  const VIEWS = ["local", "network", "settings"];
+
+  function render() {
+    for (const view of VIEWS) el(`${view}-view`).classList.toggle("hidden", state.view !== view);
+    for (const segment of document.querySelectorAll("#view-switch span[data-view]")) {
+      segment.className = segment.dataset.view === state.view ? "tab on" : "tab";
+    }
+    if (state.view === "network") {
       renderNodes();
       renderPairing();
     }
+    if (state.view === "settings") renderSettings();
 
     const rows = visible();
     renderChips();
+    renderSortHeaders();
     renderRows(rows);
+    el("tab-local-n").textContent = String(state.counts.total ?? state.sessions.length);
+    el("tab-network-n").textContent = String(state.nodes.length);
+    el("match-count").textContent = rows.length === state.sessions.length
+      ? `${rows.length} 個 session`
+      : `符合 ${rows.length} / ${state.sessions.length}`;
 
+    // The selection bar floats over the table only while something is picked;
+    // #select-all in the header is the way in, the bar is the way to act.
     const count = state.selected.size;
-    el("selection-count").textContent = count ? `已選取 ${count} 個` : "未選取";
+    el("selectionbar").classList.toggle("hidden", count === 0);
+    el("selection-count").textContent = count ? `已選取 ${count} 個 session` : "未選取";
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
 
     const allPicked = rows.length > 0 && rows.every((s) => state.selected.has(s.id));
-    const box = el("select-all");
-    box.checked = allPicked;
-    box.indeterminate = !allPicked && rows.some((s) => state.selected.has(s.id));
+    const some = !allPicked && rows.some((s) => state.selected.has(s.id));
+    for (const id of ["select-all", "select-all-visible"]) {
+      const box = el(id);
+      box.checked = allPicked;
+      box.indeterminate = some;
+    }
     el("select-label").textContent = `全選目前篩選結果（${rows.length}）`;
 
     el("footer-left").textContent =
@@ -251,6 +396,101 @@ export function boot({ start = true } = {}) {
       ` · 指定節點 ${state.counts.selected ?? 0}` +
       ` · 不公開 ${state.counts.none ?? 0}`;
   }
+
+  /* ---------------- settings view ---------------- */
+
+  function renderSettings() {
+    el("identity-node-id").textContent = state.localNodeId || "—";
+    el("identity-fingerprint").textContent = state.localFingerprint || "—";
+    el("identity-public-key").textContent = state.localPublicKey || "—";
+    el("service-panel").classList.remove("hidden");
+    el("toggle-backdrop").checked = state.ui.backdrop;
+    el("toggle-motion").checked = state.ui.motion;
+    el("toggle-motion").disabled = !state.ui.backdrop;
+    for (const link of document.querySelectorAll("#settings-nav a")) {
+      link.className = link.dataset.target === state.settingsSection ? "on" : "";
+    }
+  }
+
+  // applyBackdrop paints the owner's switches onto <body>; the stylesheet does
+  // the rest, and prefers-reduced-motion wins over the motion switch there.
+  function applyBackdrop() {
+    const body = document.body;
+    if (!body?.classList) return;
+    body.classList.toggle("no-backdrop", !state.ui.backdrop);
+    body.classList.toggle("no-motion", !state.ui.motion);
+  }
+
+  // buildRain makes the falling 0/1 columns once. Pure CSS animation after
+  // that: nothing ticks in JS, and a hidden .rain costs nothing.
+  function buildRain() {
+    const rain = el("rain");
+    if (!rain || rain.children.length > 0) return;
+    // A DOM without element.style (the test shim) gets no rain and no error.
+    if (!document.createElement("div").style) return;
+    const columns = 56;
+    const fragment = document.createDocumentFragment();
+    for (let i = 0; i < columns; i++) {
+      const length = 28 + Math.floor(Math.random() * 20);
+      let text = "";
+      for (let j = 0; j < length; j++) text += (Math.random() < 0.5 ? "0" : "1") + "\n";
+      const col = element("div", "col", text);
+      col.style.left = `${((i + Math.random() * 0.6) * (100 / columns)).toFixed(2)}%`;
+      col.style.animationDuration = `${(7 + Math.random() * 9).toFixed(1)}s`;
+      col.style.animationDelay = `${(-Math.random() * 16).toFixed(1)}s`;
+      col.style.opacity = (0.25 + Math.random() * 0.45).toFixed(2);
+      col.style.fontSize = Math.random() < 0.2 ? "15px" : "12px";
+      col.style.whiteSpace = "pre";
+      fragment.append(col);
+    }
+    rain.append(fragment);
+  }
+
+  /* ---------------- pairing drawer ---------------- */
+
+  function openPairingDrawer() {
+    el("pairing-modal").classList.remove("hidden");
+    loadPairing().catch(() => {});
+  }
+  function closePairingDrawer() {
+    el("pairing-modal").classList.add("hidden");
+  }
+
+  // renderPairingSummary is the one-line state in the node list's foot: it
+  // says whether a window is open and how many machines are advertising, so
+  // the owner knows whether opening the drawer is worth it.
+  function renderPairingSummary() {
+    const pill_ = el("pairing-summary");
+    const line = el("pairing-summary-line");
+    const pairing = state.pairing;
+    if (!pairing) {
+      pill_.className = "pill";
+      pill_.textContent = "讀取中…";
+      line.textContent = "";
+      return;
+    }
+    if (pairing.availability === "off") {
+      pill_.className = "pill";
+      pill_.textContent = "未啟用";
+      line.textContent = "節點啟動時沒有 -discover，這台機器不廣播也不看。";
+      return;
+    }
+    if (pairing.availability !== "on") {
+      pill_.className = "pill bad";
+      pill_.textContent = "讀不到";
+      line.textContent = "配對狀態讀不到；這是本機的讀取問題。";
+      return;
+    }
+    const open = Boolean(pairing.state?.open);
+    const candidates = pairing.candidates?.length ?? 0;
+    const flagged = (pairing.candidates ?? []).filter((c) => c.contested || c.duplicate).length;
+    pill_.className = open ? "pill idle" : "pill";
+    pill_.textContent = open ? `廣播中 · 剩 ${clock(pairingRemaining())}` : "未開啟";
+    line.textContent = candidates === 0
+      ? "目前沒有看到還沒配對的機器在廣播。"
+      : `正在廣播的機器 ${candidates} 台` + (flagged ? `，其中 ${flagged} 台身分有爭用或重複。` : "。");
+  }
+
 
   /* ---------------- banner ---------------- */
 
@@ -286,7 +526,7 @@ export function boot({ start = true } = {}) {
   // or a dialog standing on top of the list. The periodic tick and the moment a
   // background read lands both ask this — one list of conditions, checked twice,
   // because the state can change while the read is in the air.
-  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "mcp-modal", "modal"];
+  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "pairing-modal", "mcp-modal", "modal"];
   function anyModalOpen() {
     return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
   }
@@ -478,6 +718,7 @@ export function boot({ start = true } = {}) {
   function renderPairing() {
     renderPairingWindow();
     renderCandidates();
+    renderPairingSummary();
   }
 
   // broadcastWarning says what actually goes on the wire, with the name spelled
@@ -787,8 +1028,11 @@ export function boot({ start = true } = {}) {
       const line = element("div", "line");
       line.append(element("span", `dot ${label.className}`), element("span", "name", node.displayName));
       line.append(element("span", `presence ${label.className}`, label.text));
-      const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)}`);
+      const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)} · 公開給它 ${grantedCount(node.nodeId)} 個`);
       row.append(line, meta);
+      // A peer with no address is skipped in silence at delivery time; the
+      // list is where that is visible before it happens.
+      if (!node.address) row.append(element("div", "noaddr", "沒有位址：送給它的訊息會被靜默跳過"));
       row.onclick = () => {
         state.selectedNode = node.nodeId;
         render();
@@ -969,8 +1213,10 @@ export function boot({ start = true } = {}) {
       "撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。"
     );
 
+    const grid = element("div", "detailgrid");
+    grid.append(...rows);
     return [
-      heading, fingerprint, note, mutualNote, ...rows,
+      heading, fingerprint, note, mutualNote, grid,
       ...addressSection(node),
       element("div", "", ""), revoke, revokeNote,
     ];
@@ -1120,8 +1366,32 @@ export function boot({ start = true } = {}) {
     el("audience-nodes").classList.toggle("hidden", selectedMode() !== "selected");
   }
 
+  // renderAudienceNodeList offers every paired node as a checkbox, so the
+  // owner picks a name rather than typing an id; the text field stays for an
+  // id the list does not show. Unchecked every time, like the flags.
+  function renderAudienceNodeList() {
+    const list = el("audience-node-list");
+    list.replaceChildren();
+    for (const node of state.nodes) {
+      const label = element("label", "nodepick");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = node.nodeId;
+      box.className = "audience-node-box";
+      box.onchange = () => label.classList.toggle("on", box.checked);
+      const presence = presenceLabel(presenceFor(node.nodeId));
+      label.append(box, element("span", `dot ${presence.className}`), element("span", "", node.displayName), element("span", "mono", node.nodeId));
+      list.append(label);
+    }
+    if (state.nodes.length === 0) list.append(element("p", "muted", "還沒有配對任何節點。"));
+    el("audience-node-input").value = "";
+  }
+
   function openAudienceModal() {
     el("audience-count").textContent = String(state.selected.size);
+    const picked = state.sessions.filter((session) => state.selected.has(session.id));
+    el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
+    renderAudienceNodeList();
     // Every flag starts off, every time.
     //
     // The dialog applies to whatever is selected and reads its values from the
@@ -1185,13 +1455,14 @@ export function boot({ start = true } = {}) {
 
   function readAudienceForm() {
     const mode = selectedMode();
-    const nodes =
-      mode === "selected"
-        ? el("audience-node-input")
-            .value.split(/[\s,]+/)
-            .map((value) => value.trim())
-            .filter(Boolean)
-        : [];
+    const typed = el("audience-node-input")
+      .value.split(/[\s,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const checked = [...document.querySelectorAll("#audience-node-list input.audience-node-box")]
+      .filter((box) => box.checked)
+      .map((box) => box.value);
+    const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];
     return {
       mode,
       nodes,
@@ -1360,7 +1631,10 @@ export function boot({ start = true } = {}) {
     // whose content has not arrived, while the dialog still shows another's.
     // While it is null the button is a no-op.
     state.inboxSession = null;
+    state.inboxSessionAsked = sessionId;
+    el("inbox-title").textContent = sessionId;
     el("inbox-modal").classList.remove("hidden");
+    showInboxTab("inbox");
     // Loading is its own state. Rendering an empty list here is byte-identical to
     // an inbox with nothing in it, and the client waits up to fifteen seconds.
     renderInbox({ sessionId, loading: true, messages: [] });
@@ -1396,8 +1670,15 @@ export function boot({ start = true } = {}) {
     // guard that leans on a CSS rule is not one.
     inboxApplied = inboxRequest;
     state.inboxSession = null;
+    state.inboxSessionAsked = null;
+    outboundApplied = outboundRequest;
+    wakesApplied = wakesRequest;
+    state.outbound = { messages: [], next: "", loading: false, error: "", session: null };
+    state.wakes = { wakes: [], limits: null, loading: false, error: "", session: null };
     el("inbox-modal").classList.add("hidden");
     el("inbox-body").replaceChildren();
+    el("outbound-body").replaceChildren();
+    el("wakes-body").replaceChildren();
     el("inbox-meta").textContent = "";
     state.inboxSession = null;
   }
@@ -1483,10 +1764,222 @@ export function boot({ start = true } = {}) {
     el("mcp-status").textContent = "";
   }
 
+  /* ---------------- inbox drawer: tabs, outbound, wakes ---------------- */
+
+  const INBOX_TABS = ["inbox", "outbound", "wakes"];
+
+  function showInboxTab(tab) {
+    state.inboxTab = INBOX_TABS.includes(tab) ? tab : "inbox";
+    for (const name of INBOX_TABS) {
+      el(`inbox-tab-${name}`).className = `dtab${name === state.inboxTab ? " on" : ""}`;
+      el(`inbox-pane-${name}`).classList.toggle("hidden", name !== state.inboxTab);
+    }
+    // Clearing empties the inbox and nothing else, so the button belongs to
+    // that tab alone.
+    el("inbox-clear").classList.toggle("hidden", state.inboxTab !== "inbox");
+    el("inbox-foot-note").textContent = state.inboxTab === "inbox"
+      ? "在這裡讀不會把訊息交給 agent，也不會標示已讀。"
+      : state.inboxTab === "outbound"
+        ? "對應 CLI：ah outbound。沒有位址的節點會被靜默跳過，不會出現在這裡。"
+        : "對應 CLI：ah wakes <session>。被拒絕的喚醒也列出，旁邊是產生它的限制。";
+    if (state.inboxTab === "outbound" && state.outbound.session !== state.inboxSessionAsked) {
+      loadOutbound({ reset: true }).catch(() => {});
+    }
+    if (state.inboxTab === "wakes" && state.wakes.session !== state.inboxSessionAsked) {
+      loadWakes().catch(() => {});
+    }
+  }
+
+  // Both logs are numbered like every other read here: a slow page must not
+  // land under a different session's title.
+  let outboundRequest = 0;
+  let outboundApplied = 0;
+
+  async function loadOutbound({ reset = false } = {}) {
+    const session = state.inboxSessionAsked;
+    const sequence = ++outboundRequest;
+    if (reset) state.outbound = { messages: [], next: "", loading: true, error: "", session };
+    else state.outbound.loading = true;
+    renderOutbound();
+    let page;
+    try {
+      page = await api.Outbound(50, reset ? "" : state.outbound.next);
+    } catch (error) {
+      page = { messages: [], error: String(error) };
+    }
+    if (sequence <= outboundApplied) return;
+    outboundApplied = sequence;
+    const mine = (page.messages ?? []).filter((m) => !session || m.from === session || m.to === session || !m.from);
+    state.outbound = {
+      session,
+      messages: reset ? mine : [...state.outbound.messages, ...mine],
+      next: page.next ?? "",
+      loading: false,
+      error: page.error ?? "",
+    };
+    renderOutbound();
+  }
+
+  // lastError is text the peer chose, with no length limit on the node yet
+  // (#127); it is clipped here and never decides a class.
+  const ERROR_CLIP = 200;
+
+  function renderOutbound() {
+    const body = el("outbound-body");
+    const more = el("outbound-more");
+    const o = state.outbound;
+    body.replaceChildren();
+    if (o.error) {
+      body.append(element("div", "stale", "讀不到送出紀錄，所以這裡不顯示任何內容。"), element("div", "muted", o.error));
+      more.classList.add("hidden");
+      return;
+    }
+    if (o.loading && o.messages.length === 0) {
+      body.append(element("div", "muted", "正在讀取…"));
+      more.classList.add("hidden");
+      return;
+    }
+    if (o.messages.length === 0) {
+      body.append(element("div", "empty", "這個 session 還沒有送出過訊息。"));
+      more.classList.add("hidden");
+      return;
+    }
+    for (const m of o.messages) {
+      const row = element("div", "logrow");
+      const head = element("div", "head");
+      head.append(pill(m.state ?? "unknown", outboundStateClass(m.state)));
+      head.append(element("span", "mono", `→ ${nodeName(m.destinationNodeId)} · ${m.to ?? ""}`));
+      row.append(head, element("span", "when", relative(m.updatedAt ?? m.createdAt)));
+      const meta = element("div", "meta");
+      meta.append(element("span", "", `嘗試 ${m.attempts ?? 0} 次`));
+      if (m.from) meta.append(element("span", "", `來自 ${m.from}`));
+      if (m.wakeHops) meta.append(element("span", "", `wake hops ${m.wakeHops}`));
+      meta.append(element("span", "", `建立 ${relative(m.createdAt)}`));
+      row.append(meta);
+      if (m.lastError) {
+        const text = String(m.lastError);
+        const err = element("div", "err clipped", text.length > ERROR_CLIP ? text.slice(0, ERROR_CLIP) + "…" : text);
+        if (text.length > ERROR_CLIP) {
+          const expand = element("button", "link", "展開");
+          expand.onclick = () => {
+            err.textContent = text;
+            err.className = "err";
+            expand.remove();
+          };
+          row.append(err, expand);
+        } else {
+          row.append(err);
+        }
+      }
+      body.append(row);
+    }
+    more.classList.toggle("hidden", !o.next);
+    more.disabled = o.loading;
+    more.textContent = o.loading ? "讀取中…" : "載入更多";
+  }
+
+  function outboundStateClass(s) {
+    if (s === "pending" || s === "delivered" || s === "refused") return s;
+    return "";
+  }
+
+  function nodeName(nodeId) {
+    const node = state.nodes.find((n) => n.nodeId === nodeId);
+    return node ? node.displayName : (nodeId || "（未知節點）");
+  }
+
+  let wakesRequest = 0;
+  let wakesApplied = 0;
+
+  async function loadWakes() {
+    const session = state.inboxSessionAsked;
+    const sequence = ++wakesRequest;
+    state.wakes = { wakes: [], limits: null, loading: true, error: "", session };
+    renderWakes();
+    let page;
+    try {
+      page = await api.Wakes(session ?? "", 50);
+    } catch (error) {
+      page = { wakes: [], error: String(error) };
+    }
+    if (sequence <= wakesApplied) return;
+    wakesApplied = sequence;
+    state.wakes = { session, wakes: page.wakes ?? [], limits: page.limits ?? null, loading: false, error: page.error ?? "" };
+    renderWakes();
+  }
+
+  const WAKE_OUTCOMES = new Set(["woken", "refused_hops", "refused_pair_rate", "refused_session_rate", "refused_node_rate", "failed"]);
+
+  function wakeOutcomeClass(outcome) {
+    if (outcome === "woken") return "woken";
+    if (outcome === "failed") return "failed";
+    if (typeof outcome === "string" && outcome.startsWith("refused_") && WAKE_OUTCOMES.has(outcome)) return "refused";
+    return "";
+  }
+
+  // The rule that produced a refusal, beside it: a refusal is only legible
+  // next to the limit.
+  function wakeLimitText(outcome, limits) {
+    if (!limits) return "";
+    switch (outcome) {
+      case "refused_hops": return `上限 ${limits.hops} hops`;
+      case "refused_pair_rate": return `每對節點 ${limits.pair} 次 / ${limits.pairWindow}`;
+      case "refused_session_rate": return `每個 session ${limits.session} 次 / ${limits.sessionWindow}`;
+      case "refused_node_rate": return `每個節點 ${limits.node} 次 / ${limits.nodeWindow}`;
+      default: return "";
+    }
+  }
+
+  function renderWakes() {
+    const body = el("wakes-body");
+    const limitsBox = el("wakes-limits");
+    const w = state.wakes;
+    body.replaceChildren();
+    limitsBox.textContent = "";
+    if (w.error) {
+      body.append(element("div", "stale", "讀不到喚醒紀錄，所以這裡不顯示任何內容。"), element("div", "muted", w.error));
+      return;
+    }
+    if (w.loading) {
+      body.append(element("div", "muted", "正在讀取…"));
+      return;
+    }
+    if (w.limits) {
+      limitsBox.textContent =
+        `限制：${w.limits.hops} hops · 每對節點 ${w.limits.pair} 次 / ${w.limits.pairWindow}` +
+        ` · 每個 session ${w.limits.session} 次 / ${w.limits.sessionWindow}` +
+        ` · 每個節點 ${w.limits.node} 次 / ${w.limits.nodeWindow}`;
+    }
+    if (w.wakes.length === 0) {
+      body.append(element("div", "empty", "沒有任何喚醒紀錄——沒人叫過這個 agent，或喚醒沒有開。"));
+      return;
+    }
+    for (const e of w.wakes) {
+      const row = element("div", "logrow");
+      const head = element("div", "head");
+      head.append(pill(e.outcome ?? "unknown", wakeOutcomeClass(e.outcome)));
+      // sourceSession is the sender's own label; sourceNodeId was proven.
+      const who = element("span", "");
+      if (e.sourceNodeId) who.append(element("span", "fingerprint", nodeName(e.sourceNodeId)), element("span", "muted", " 自稱 "));
+      else who.append(element("span", "muted", "本機 "));
+      who.append(element("span", "claimed", e.sourceSession || "（未指明 session）"));
+      head.append(who);
+      row.append(head, element("span", "when", relative(e.at)));
+      const meta = element("div", "meta");
+      meta.append(element("span", "", `→ ${e.destinationSession ?? ""}`), element("span", "", `${e.hops ?? 0} hops`));
+      const limit = wakeLimitText(e.outcome, w.limits);
+      if (limit) meta.append(element("span", "", limit));
+      row.append(meta);
+      if (e.detail) row.append(element("div", "err", String(e.detail)));
+      body.append(row);
+    }
+  }
+
   /* ---------------- wiring ---------------- */
 
   el("search").oninput = (event) => {
     state.search = event.target.value;
+    savePrefs();
     render();
   };
 
@@ -1514,10 +2007,23 @@ export function boot({ start = true } = {}) {
     renderService();
   }
 
+  // renderServicePill is the title bar's one-line version of the panel below.
+  function renderServicePill(status) {
+    const pill_ = el("service-pill");
+    const text = el("service-pill-text");
+    if (status.toolError) { pill_.className = "servicepill warn"; text.textContent = "找不到 ah"; return; }
+    if (!status.supported) { pill_.className = "servicepill"; text.textContent = "此平台無背景服務"; return; }
+    if (status.installed && status.running) { pill_.className = "servicepill ok"; text.textContent = "背景服務執行中"; return; }
+    if (status.installed) { pill_.className = "servicepill warn"; text.textContent = "服務已裝但沒在跑"; return; }
+    pill_.className = "servicepill warn";
+    text.textContent = state.nodeReachable ? "節點非背景服務" : "節點未執行";
+  }
+
   function renderService() {
     const panel = el("service-panel");
     const status = state.service;
     if (!status) return;
+    renderServicePill(status);
     panel.classList.remove("hidden");
     const line = el("service-line");
     const open = el("service-open");
@@ -1667,7 +2173,7 @@ export function boot({ start = true } = {}) {
     });
   }
 
-  for (const segment of document.querySelectorAll("#view-switch span")) {
+  for (const segment of document.querySelectorAll("#view-switch span[data-view]")) {
     segment.onclick = () => {
       state.view = segment.dataset.view;
       render();
@@ -1837,13 +2343,87 @@ export function boot({ start = true } = {}) {
     });
 
 
+  /* ---------------- redesign wiring ---------------- */
+
+  el("select-all-visible").onchange = el("select-all").onchange;
+  el("btn-deselect").onclick = () => {
+    state.selected.clear();
+    render();
+  };
+  el("btn-clear-filters").onclick = () => {
+    state.filters = F.emptyFilters();
+    state.search = "";
+    el("search").value = "";
+    savePrefs();
+    render();
+  };
+
+  el("btn-open-pairing").onclick = openPairingDrawer;
+  el("pairing-close").onclick = closePairingDrawer;
+  el("pairing-modal").onclick = (event) => {
+    if (event.target === el("pairing-modal")) closePairingDrawer();
+  };
+  el("btn-pair-manual").onclick = () => {
+    closePairingDrawer();
+    openPairModal();
+  };
+
+  for (const name of INBOX_TABS) {
+    el(`inbox-tab-${name}`).onclick = () => showInboxTab(name);
+  }
+  el("outbound-more").onclick = () => loadOutbound().catch(() => {});
+
+  for (const link of document.querySelectorAll("#settings-nav a")) {
+    link.onclick = () => {
+      state.settingsSection = link.dataset.target;
+      render();
+      el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    };
+  }
+  el("service-pill").onclick = () => {
+    state.view = "settings";
+    state.settingsSection = "settings-service";
+    render();
+  };
+  el("copy-identity-key").onclick = async () => {
+    const status = el("identity-copy-status");
+    if (!state.localPublicKey) {
+      status.textContent = "還沒有從節點讀到本機公鑰。";
+      return;
+    }
+    try {
+      await api.CopyText(state.localPublicKey);
+      status.textContent = "已複製";
+    } catch (error) {
+      status.textContent = `無法寫入剪貼簿（${error}），請手動複製，注意結尾的 = 也要一起。`;
+    }
+  };
+  el("toggle-backdrop").onchange = (event) => {
+    state.ui.backdrop = Boolean(event.target.checked);
+    savePrefs();
+    applyBackdrop();
+    render();
+  };
+  el("toggle-motion").onchange = (event) => {
+    state.ui.motion = Boolean(event.target.checked);
+    savePrefs();
+    applyBackdrop();
+  };
+
+  loadPrefs();
+  el("search").value = state.search;
+  applyBackdrop();
+  buildRain();
+  if (typeof globalThis.AGENTHUB_BACKDROP === "string") el("backdrop-photo").src = globalThis.AGENTHUB_BACKDROP;
+
   // What the tests reach for. Nothing here is for main.js: the app is driven
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
     openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
-    pairingRemaining, tickCountdown,
+    pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
