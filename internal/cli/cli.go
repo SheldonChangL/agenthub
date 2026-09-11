@@ -279,7 +279,14 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		path := "/v1/wakes"
 		if len(args) == 2 {
-			path += "?session=" + url.QueryEscape(args[1])
+			// Blank is caught here rather than sent: the server refuses a
+			// present-but-empty `session` by telling the caller to omit the
+			// parameter, and a CLI user has no parameter to omit.
+			session := strings.TrimSpace(args[1])
+			if session == "" {
+				return errors.New("usage: ah wakes [session-id]")
+			}
+			path += "?session=" + url.QueryEscape(session)
 		}
 		return r.wakes(ctx, path)
 	case "inbox-clear":

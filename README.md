@@ -697,8 +697,9 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message; `ah inbox delete <session-id> <message-id>` is this route |
-| `GET` | `/v1/outbound?limit=50` | What this node has queued for peers, newest first: `limit` (1–200), `after` (the `next` value a full page carries) and `session` (a local session id, narrowing the list to what that session sent). No bodies — state, attempts and the last error |
+| `GET` | `/v1/outbound?limit=50` | What this node has queued for peers, newest first: `limit` (1–200), `after` (the `next` value a full page carries) and `session` (a local session id, narrowing the list to what that session sent — a present but blank `session` is refused (400); giving it twice is too). No bodies — state, attempts and the last error |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
+| `GET` | `/v1/wakes?limit=50` | What has woken agents on this node, newest first, with the refusals and the limits that produced them: `limit` (1–200) and `session` (a local session id, narrowing the trail to that session — a present but blank `session` is refused (400); giving it twice is too). `ah wakes` renders it |
 | `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
 | `DELETE` | `/v1/pairing` | Stop advertising now |
