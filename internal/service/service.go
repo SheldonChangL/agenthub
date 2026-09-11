@@ -325,6 +325,13 @@ func writeUnit(path string, content []byte) error {
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
+	// WriteFile applies the mode only when it creates the file. A reinstall
+	// over a unit written by an earlier build keeps that build's mode, so it
+	// is set explicitly — measured: two machines reinstalled and both units
+	// stayed 0644.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
 	return nil
 }
 

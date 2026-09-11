@@ -466,3 +466,23 @@ func TestInstallWritesPrivateFiles(t *testing.T) {
 		t.Errorf("log dir mode = %o, want 700", info.Mode().Perm())
 	}
 }
+
+// A unit left behind by an earlier build at 0644 is tightened by the next
+// install, not inherited.
+func TestInstallTightensAnExistingUnitsMode(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: &fakeRunner{}, Sleep: noSleep}
+	if _, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(unitPath); info.Mode().Perm() != 0o600 {
+		t.Errorf("unit mode after reinstall = %o, want 600", info.Mode().Perm())
+	}
+}
