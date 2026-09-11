@@ -265,3 +265,20 @@ func WithdrawPeerListen(allowLAN, peerListenNamed bool, peerListen string) (stri
 	}
 	return DefaultPeerListen, true
 }
+
+// WithdrawalReason says why a remembered peer listener was not kept, spelled
+// once so the node's start-up log and the owner's API cannot drift apart.
+//
+// It says only what is true of every address WithdrawPeerListen takes away.
+// Not "a LAN address": the same rule withdraws one that does not parse at all,
+// which is the right call — an unusable listener must not be bound and must
+// not refuse every start forever — and a sentence that called it LAN would be
+// false on exactly the node whose database was hand-edited.
+//
+// allowLANName is how the switch is spelled to this reader: the flag
+// (allow-lan) in a log read beside a command line, the JSON field (allowLan)
+// in an API answer. The rest is one string, in one place.
+func WithdrawalReason(allowLANName, peerListen string) string {
+	return fmt.Sprintf("%s is off, so the remembered peer listener %q is not one this node can serve",
+		allowLANName, peerListen)
+}

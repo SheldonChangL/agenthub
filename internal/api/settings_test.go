@@ -16,7 +16,8 @@ import (
 
 // settingsServer builds a node whose running configuration is known, so the
 // difference between "in effect" and "saved" can be asserted.
-func settingsServer(t *testing.T, running nodeconfig.Settings, sources map[string]string) (*registry.Registry, http.Handler) {
+func settingsServer(t *testing.T, running nodeconfig.Settings, sources map[string]string,
+	extra ...Option) (*registry.Registry, http.Handler) {
 	t.Helper()
 	ctx := context.Background()
 	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
@@ -26,9 +27,21 @@ func settingsServer(t *testing.T, running nodeconfig.Settings, sources map[strin
 	t.Cleanup(func() { _ = store.Close() })
 	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
-	return store, NewServer(store, nil, heartbeats, model.NodeIdentity{ID: testNodeID},
-		WithNodeSettings(running, sources)).Handler()
+	options := append([]Option{WithNodeSettings(running, sources)}, extra...)
+	return store, NewServer(store, nil, heartbeats, model.NodeIdentity{ID: testNodeID}, options...).Handler()
 }
+
+// storeSettings puts a configuration in the database without going through the
+// endpoint, which is the only way to reach the states an earlier build or a
+// hand-edited database can leave behind.
+func storeSettings(t *testing.T, store *registry.Registry, stored nodeconfig.Partial) {
+	t.Helper()
+	if err := store.SaveNodeSettings(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stringSetting(value string) *string { return &value }
 
 // boolSetting is the pointer a Partial needs: absent and false are different
 // answers here, so every stored switch is addressed.
@@ -134,10 +147,16 @@ func TestPutNodeSettingsRefusesWhatTheNodeWouldRefuseAtStartup(t *testing.T) {
 	if failure.Error.Code != "INVALID_REQUEST" {
 		t.Fatalf("code = %q", failure.Error.Code)
 	}
-	// The node's message names the flag that would permit it. A generic
-	// "invalid settings" would leave the owner with nothing to do next.
-	if !strings.Contains(failure.Error.Message, "allow-lan") {
-		t.Fatalf("message = %q", failure.Error.Message)
+	// The message names the address and the field that would permit it. A
+	// generic "invalid settings" would leave the owner with nothing to do next,
+	// and the node's own "pass -allow-lan" is a flag this caller cannot pass.
+	for _, want := range []string{"192.168.1.10:7463", "allowLan true in the same write"} {
+		if !strings.Contains(failure.Error.Message, want) {
+			t.Fatalf("message = %q; it never says %q", failure.Error.Message, want)
+		}
+	}
+	if strings.Contains(failure.Error.Message, "-allow-lan") {
+		t.Errorf("the refusal tells an API caller to pass a flag: %q", failure.Error.Message)
 	}
 	stored, err := store.GetNodeSettings(context.Background())
 	if err != nil {
@@ -224,9 +243,12 @@ func TestTurningAllowLANOffTakesTheListenerOffTheNetwork(t *testing.T) {
 	}
 	// Said out loud: the owner asked about one field and two moved, and the
 	// one that moved on its own is where this node listens.
-	if !strings.Contains(view.Message, nodeconfig.DefaultPeerListen) ||
-		!strings.Contains(view.Message, "peerListen") {
-		t.Errorf("the response does not say the listener moved: %q", view.Message)
+	// Both addresses: the one given up and the one now in its place. Told only
+	// the new one, the owner cannot tell what this node had been serving.
+	for _, want := range []string{"peerListen", "192.168.1.10:7463", nodeconfig.DefaultPeerListen} {
+		if !strings.Contains(view.Message, want) {
+			t.Errorf("the response does not say the listener moved from %q: %q", want, view.Message)
+		}
 	}
 	stored, err := store.GetNodeSettings(context.Background())
 	if err != nil {
@@ -388,5 +410,265 @@ func TestAStartThatWithdrewNothingSaysNothingAboutWithdrawal(t *testing.T) {
 	}
 	if readSettings(t, response.Body.Bytes()).Message != "" {
 		t.Fatalf("an ordinary read carried a message: %s", response.Body.String())
+	}
+}
+
+// A write that says nothing about either field can still move the listener,
+// and then the message is the only thing that says so.
+//
+// A stored {LAN listener, allowLan: false} is a configuration the next start
+// cannot run, so a PUT of an unrelated field — discover — lands on it and
+// withdraws the listener in the same transaction. The two stored values are
+// asserted elsewhere; what is pinned here is the sentence, because a caller who
+// asked about discovery and got a 200 has nothing else to tell them that where
+// this node listens has changed.
+func TestAWriteThatWithdrawsAListenerSaysWhichAddressItGaveUp(t *testing.T) {
+	const held = "192.168.1.10:7463"
+	store, handler := settingsServer(t, nodeconfig.DefaultSettings(), map[string]string{})
+	// The state an older build could leave stored: a LAN listener beside a
+	// switch that will not serve it.
+	storeSettings(t, store, nodeconfig.Partial{
+		PeerListen: stringSetting(held), AllowLAN: boolSetting(false),
+	})
+
+	response := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"discover": true})
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	view := readSettings(t, response.Body.Bytes())
+	for _, want := range []string{"peerListen", held, nodeconfig.DefaultPeerListen} {
+		if !strings.Contains(view.Message, want) {
+			t.Errorf("a withdrawal the caller never asked for never mentions %q: %q", want, view.Message)
+		}
+	}
+	// And it is the node's own reason, not a second one written here: the
+	// start-up log says this about the same withdrawal.
+	if !strings.Contains(view.Message, nodeconfig.WithdrawalReason(nodeconfig.SettingAllowLAN, held)) {
+		t.Errorf("the message does not give the node's own reason: %q", view.Message)
+	}
+	// The claim it must not make: this address may be unservable for reasons
+	// allowLan cannot fix, so the sentence never promises the switch would.
+	if strings.Contains(view.Message, "can only be served with allowLan on") {
+		t.Errorf("the message promises the switch would serve the address: %q", view.Message)
+	}
+	if view.Saved.PeerListen != nodeconfig.DefaultPeerListen || !view.Saved.Discover {
+		t.Fatalf("saved = %+v", view.Saved)
+	}
+}
+
+// The withdrawal sentence is about what is stored, and stops being true the
+// moment the owner stores something else.
+//
+// Same process, same endpoint: a start withdraws a listener, the owner turns
+// allowLan back on and saves a LAN address, and a read afterwards must not
+// still say the default "was stored in its place" while the `saved` block of
+// that same response shows the LAN address.
+func TestAWithdrawalStopsBeingReportedOnceItHasBeenUndone(t *testing.T) {
+	const restored = "192.168.1.10:7463"
+	running := nodeconfig.Settings{PeerListen: nodeconfig.DefaultPeerListen}
+	sources := map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceDefault}
+	store, handler := settingsServer(t, running, sources, WithPeerListenWithdrawn())
+	// What the start-up withdrawal left behind.
+	storeSettings(t, store, nodeconfig.Partial{
+		PeerListen: stringSetting(nodeconfig.DefaultPeerListen), AllowLAN: boolSetting(false),
+	})
+
+	before := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	if !readSettings(t, before.Body.Bytes()).PeerListenWithdrawn {
+		t.Fatalf("the withdrawal was not reported to begin with: %s", before.Body.String())
+	}
+
+	written := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": restored, "allowLan": true})
+	if written.Code != http.StatusOK {
+		t.Fatalf("restoring the listener = %d %s", written.Code, written.Body.String())
+	}
+
+	after := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	if after.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", after.Code, after.Body.String())
+	}
+	view := readSettings(t, after.Body.Bytes())
+	if view.Saved.PeerListen != restored {
+		t.Fatalf("saved = %+v; the write did not land", view.Saved)
+	}
+	if view.PeerListenWithdrawn {
+		t.Errorf("a withdrawal the owner has undone is still reported: %s", after.Body.String())
+	}
+	// Absent from the JSON, not false: a desktop that renders its own wording
+	// from the flag would print the same stale claim.
+	if strings.Contains(after.Body.String(), "peerListenWithdrawn") {
+		t.Errorf("the flag outlived the state it describes: %s", after.Body.String())
+	}
+	if view.Message != "" {
+		t.Errorf("a read still explains a withdrawal that no longer holds: %q", view.Message)
+	}
+}
+
+// A refusal is explained in terms of the configuration the write would leave,
+// not the fields it happened to name.
+//
+// Stored {allowLan: false}, and a request that names only a LAN peerListen: the
+// switch that refuses it is one the caller never mentioned. Explained from the
+// request, this fell through to the validator's own command-line wording —
+// "pass -allow-lan" — which is a flag on a service the owner is configuring
+// through an API.
+func TestARefusalNamesTheAllowLANInEffectNotTheOneThatWasSent(t *testing.T) {
+	const named = "192.168.1.10:7463"
+	store, handler := settingsServer(t, nodeconfig.DefaultSettings(), map[string]string{})
+	storeSettings(t, store, nodeconfig.Partial{AllowLAN: boolSetting(false)})
+
+	response := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": named})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	var failure struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &failure); err != nil {
+		t.Fatal(err)
+	}
+	message := failure.Error.Message
+	// The state, the address, and the one thing the caller can do about it.
+	for _, want := range []string{"allowLan is off", named, "allowLan true in the same write"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the refusal never says %q: %q", want, message)
+		}
+	}
+	// Not described as something this write did: it did not touch the switch.
+	if strings.Contains(message, "this write turns allowLan off") {
+		t.Errorf("the refusal blames the request for a stored value: %q", message)
+	}
+	// Said once. Appending the node's own refusal to this prefix named the
+	// address twice, said "peer listener" three times, and closed with a second,
+	// contradictory remedy — a command-line flag, to a caller holding an API.
+	if strings.Count(message, named) != 1 {
+		t.Errorf("the refusal names %q %d times: %q", named, strings.Count(message, named), message)
+	}
+	if strings.Contains(message, "peer listener") || strings.Contains(message, "-allow-lan") {
+		t.Errorf("the refusal still carries the node's command-line wording: %q", message)
+	}
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen != nil {
+		t.Fatalf("a refused write stored %v", stored.PeerListen)
+	}
+}
+
+// withdrawnStart is a server whose start took the remembered peer listener away
+// and stored the default in its place — the state every case below writes into.
+func withdrawnStart(t *testing.T) (*registry.Registry, http.Handler) {
+	t.Helper()
+	running := nodeconfig.Settings{PeerListen: nodeconfig.DefaultPeerListen}
+	sources := map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceDefault}
+	store, handler := settingsServer(t, running, sources, WithPeerListenWithdrawn())
+	storeSettings(t, store, nodeconfig.Partial{
+		PeerListen: stringSetting(nodeconfig.DefaultPeerListen), AllowLAN: boolSetting(false),
+	})
+	return store, handler
+}
+
+// A write about something else leaves the withdrawal exactly where it was.
+//
+// Pins the first clause of withdrawalStands against the write path: the fact is
+// about this process, and a PUT of discover neither restores the lost address
+// nor makes the stored default any less of one.
+func TestAWriteAboutAnotherFieldLeavesTheWithdrawalStanding(t *testing.T) {
+	_, handler := withdrawnStart(t)
+
+	written := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"discover": true})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write = %d %s", written.Code, written.Body.String())
+	}
+	if !readSettings(t, written.Body.Bytes()).PeerListenWithdrawn {
+		t.Errorf("a write about discover dropped the withdrawal: %s", written.Body.String())
+	}
+
+	after := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	view := readSettings(t, after.Body.Bytes())
+	if !view.PeerListenWithdrawn {
+		t.Fatalf("the withdrawal stopped being reported: %s", after.Body.String())
+	}
+	if !strings.Contains(view.Message, "withdrawn at start-up") {
+		t.Errorf("the read explains nothing about the default it shows: %q", view.Message)
+	}
+}
+
+// Opening allowLan does not bring the address back, and that is when the owner
+// most needs to hear so.
+//
+// The withdrawal overwrote the remembered listener with the default, so there
+// is nothing left to restore; wanting the listener back is the usual reason to
+// open the switch at all. The flag stands and the wording changes: the old
+// sentence blames allowLan, which is now on.
+func TestOpeningAllowLANLeavesTheWithdrawalStandingAndSaysTheAddressIsGone(t *testing.T) {
+	_, handler := withdrawnStart(t)
+
+	written := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"allowLan": true})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write = %d %s", written.Code, written.Body.String())
+	}
+	if !readSettings(t, written.Body.Bytes()).PeerListenWithdrawn {
+		t.Errorf("opening allowLan dropped the withdrawal: %s", written.Body.String())
+	}
+
+	after := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	view := readSettings(t, after.Body.Bytes())
+	if !view.Saved.AllowLAN {
+		t.Fatalf("saved = %+v; the write did not land", view.Saved)
+	}
+	if !view.PeerListenWithdrawn {
+		t.Fatalf("the withdrawal stopped being reported: %s", after.Body.String())
+	}
+	for _, want := range []string{"not recoverable", "send it again"} {
+		if !strings.Contains(view.Message, want) {
+			t.Errorf("the message never says %q: %q", want, view.Message)
+		}
+	}
+	// The other sentence is false now: allowLan is on, so "allowLan is off, so
+	// the address could not be served" describes nothing the owner can act on.
+	if strings.Contains(view.Message, "allowLan is off") {
+		t.Errorf("the message still blames a switch that is on: %q", view.Message)
+	}
+}
+
+// Storing a listener ends the sentence, whatever loopback spelling it uses.
+//
+// Once the owner has said where this node listens, peerListen is no longer a
+// default nobody chose, and going on calling it withdrawn would contradict the
+// `saved` block of the same response. localhost:7463 is here because
+// WithdrawPeerListen judges these addresses with ValidateLoopback rather than
+// by spelling: it is stored as sent, and it is not the default.
+func TestStoringALoopbackListenerEndsTheWithdrawalSentence(t *testing.T) {
+	for _, chosen := range []string{"127.0.0.1:9999", "localhost:7463"} {
+		t.Run(chosen, func(t *testing.T) {
+			_, handler := withdrawnStart(t)
+
+			written := perform(t, handler, http.MethodPut, "/v1/node/settings",
+				map[string]any{"peerListen": chosen})
+			if written.Code != http.StatusOK {
+				t.Fatalf("write = %d %s", written.Code, written.Body.String())
+			}
+
+			after := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+			view := readSettings(t, after.Body.Bytes())
+			if view.Saved.PeerListen != chosen {
+				t.Fatalf("saved = %+v; the write did not land", view.Saved)
+			}
+			if view.PeerListenWithdrawn {
+				t.Errorf("a listener the owner chose is still called withdrawn: %s", after.Body.String())
+			}
+			if strings.Contains(after.Body.String(), "peerListenWithdrawn") {
+				t.Errorf("the flag outlived the state it describes: %s", after.Body.String())
+			}
+			if view.Message != "" {
+				t.Errorf("a read still explains a withdrawal that no longer holds: %q", view.Message)
+			}
+		})
 	}
 }
