@@ -255,8 +255,26 @@ function hideBanner() {
 
 /* ---------------- data ---------------- */
 
+// Reads are numbered so a slow one cannot overwrite a fast one — the same
+// guard loadPairing() uses, and for the same reason now that this one is polled
+// every 15 seconds as well.
+//
+// The owner changing an audience or revoking a node runs its own load(), and a
+// background read that was already awaiting Overview() when they clicked can
+// answer after it. Skipping the tick while state.busy is set only covers reads
+// that have not started yet; one already in flight still lands, describing the
+// moment before the change.
+let overviewRequest = 0;
+let overviewApplied = 0;
+
 async function load() {
+  const sequence = ++overviewRequest;
   const overview = await Overview();
+  if (sequence <= overviewApplied) {
+    // A later read already landed. This one describes an older moment.
+    return;
+  }
+  overviewApplied = sequence;
   const reachable = Boolean(overview.reachable);
 
   // Only a read that reached the node may replace what is on screen. A node
