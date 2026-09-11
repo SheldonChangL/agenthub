@@ -299,18 +299,23 @@
 若新設計把 modal 改成抽屜，`.modal-card .warning` 這條選擇器仍要存在（可以是共用規則），
 或同步修改 `frontend_test.go` 並在 PR 說明寫出理由。
 
-### 7.6 #116 設定端點（#129 已合併，main `f35b327`；對方轉述，實作前對照 internal/api 原始碼）
+### 7.6 #116 設定端點（#129、#134 已合併，main `daff181`；對方轉述，實作前對照 internal/api 原始碼）
 
-- `GET /v1/node/settings` → `{settings:{peerListen, allowLan, discover, treatAsPrivate[], autoWake}, sources:{欄位→"flag"|"remembered"|"default"}, saved:{同 settings 形狀，DB 值}, restartRequired}`。
+- `GET /v1/node/settings` → `{settings:{peerListen, allowLan, discover, treatAsPrivate[], autoWake}, sources:{欄位→"flag"|"remembered"|"default"}, saved:{同 settings 形狀，DB 值}, restartRequired, peerListenWithdrawn?}`。
 - `PUT /v1/node/settings` 收任意子集；`treatAsPrivate` 一律陣列，`[]` 代表撤回。回同形狀加 `message`，`restartRequired: true`（設定只在啟動時生效）。
   錯誤：`400 INVALID_REQUEST`（帶 node 的啟動訊息）、`409 SETTINGS_UNAVAILABLE`、`500 REGISTRY_ERROR`。
-- UI 規則：(a) `PUT {allowLan:false}` 會同時把 `peerListen` 收回 `127.0.0.1:7463`，提交後**用回應刷新所有欄位**；
-  (b) `sources.peerListen === "default"` 不代表「尚未設定」（撤回後是 default，下次啟動變 remembered）。
+- **UI 規則（三條，都會咬人）**：
+  1. **提交後一律用回應刷新整個表單**，不要只更新送出的欄位。撤回判斷用的是「合併後生效」的 allowLan：
+     stored 已是 `allowLan:false` 而 peerListen 仍是 LAN 位址時，**任何一次 PUT（即使只改 discover）**都會順手把
+     peerListen 收回 `127.0.0.1:7463`，`message` 會講。
+  2. `peerListenWithdrawn: true` 是可選欄位（`omitempty`），只在「這次啟動或這次 PUT 把 LAN listener 收回 loopback」
+     之後、下一次啟動之前出現。**不出現就是沒有撤回**，不要當成 false 以外的意思。
+  3. `sources.peerListen === "default"` 不代表「尚未設定」（撤回後是 default，下次啟動變 remembered）。
+- 已知待修（#135，不擋前端）：同一 process 內 owner 又把 LAN 寫回去時，GET 的 `message` 說明字串會過期。
+  **顯示 `message` 時以 `saved` 欄位為準**，不要單看字串。
 - `--listen` 不進設定，UI 不給欄位。重啟用 `ah service restart`，尚無 API；需要時開 issue。
-- 設定頁改法：主按鈕「重新安裝（改旗標）」→「儲存並重啟服務」；desktop 端要加 `NodeSettings()` / `SaveNodeSettings()` 綁定與 `ah service restart` 的呼叫。
-- `GET /v1/outbound?session=` 對方正在加；到位後 `loadOutbound` 的客端過濾與自動往前讀可以拿掉。
-
-以上兩項是 PR #131 之後的接續 PR，不併入 #131。
+- 設定頁改法：主按鈕「重新安裝（改旗標）」→「儲存並重啟服務」；desktop 端要加 `NodeSettings()` / `SaveNodeSettings()`
+  綁定與 `ah service restart` 的呼叫。這一項是 PR #131 之後的接續 PR，不併入 #131。
 
 ### 7.7 `GET /v1/outbound?session=`（#132 已合併，main `c3234e7`）
 
