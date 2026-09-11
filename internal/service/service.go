@@ -244,6 +244,52 @@ func (m Manager) Uninstall(ctx context.Context) (Report, error) {
 	return report, nil
 }
 
+// Restart stops the node and starts it again, which is how a setting written
+// into the database takes effect.
+//
+// The settings the node reads at startup are tied to listeners and announcers
+// built once, so there is no reload short of a new process. This is that, by
+// the platform's own means: nothing about the registration, the unit file, the
+// key or the database is touched, so an owner changing one switch does not
+// risk the identity every pairing is keyed on.
+func (m Manager) Restart(ctx context.Context) (Report, error) {
+	unitPath, err := m.UnitPath()
+	if err != nil {
+		return Report{}, err
+	}
+	report := Report{UnitPath: unitPath}
+	switch m.GOOS {
+	case "darwin":
+		// kickstart -k kills the running job and starts it again in one step.
+		// `launchctl stop` would rely on KeepAlive to bring it back, which is
+		// a restart only by side effect and not one on a job whose KeepAlive
+		// an owner has changed.
+		out, err := m.Runner.Run(ctx, "launchctl", "kickstart", "-k", "gui/"+m.UID+"/"+Label)
+		if err != nil {
+			if notLoaded(out, err) {
+				return report, fmt.Errorf("%s is not registered with launchd, so there is nothing to restart; "+
+					"`ah service install --db PATH` registers it", Label)
+			}
+			return report, fmt.Errorf("launchctl kickstart: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "restarted "+Label)
+	case "linux":
+		out, err := m.Runner.Run(ctx, "systemctl", "--user", "restart", UnitName)
+		if err != nil {
+			if notLoaded(out, err) {
+				return report, fmt.Errorf("%s is not a registered user unit, so there is nothing to restart; "+
+					"`ah service install --db PATH` registers it", UnitName)
+			}
+			return report, fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "restarted "+UnitName)
+	default:
+		return report, ErrUnsupported
+	}
+	report.Notes = append(report.Notes, "the node re-reads its settings on start; `ah settings` says what it is running with")
+	return report, nil
+}
+
 // Status asks the service manager, and only the service manager. Whether the
 // node answers on its port is a separate question the caller can ask it.
 func (m Manager) Status(ctx context.Context) (Status, error) {
