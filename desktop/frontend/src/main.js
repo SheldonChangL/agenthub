@@ -11,6 +11,7 @@ import {
   ClosePairing,
   Inbox,
   ClearInbox,
+  MCPConfig,
   ServiceStatus,
   InstallService,
   UninstallService,
@@ -188,6 +189,16 @@ function renderRows(rows) {
       openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
     };
     idCell.append(openInboxButton);
+    // The `.mcp.json` for this row, on the clipboard. Assembling it by hand
+    // means finding one id among a thousand and an absolute path the owner has
+    // no reason to know; getting either wrong binds an agent to somebody else's
+    // session, which nothing downstream can detect (issue #112).
+    const mcpButton = element("button", "ghost mcp", "MCP 設定");
+    // The promise is returned, not swallowed: the browser ignores it, and the
+    // test can wait for the dialog to be filled in rather than for the click.
+    mcpButton.onclick = () =>
+      openMCPConfig(session.id).catch((error) => banner(`產生 MCP 設定失敗：${error}`));
+    idCell.append(mcpButton);
 
     const cwdCell = element("td", "mono muted", session.cwd || "—");
     if (session.cwd) cwdCell.title = session.cwd;
@@ -277,7 +288,7 @@ let overviewApplied = 0;
 // or a dialog standing on top of the list. The periodic tick and the moment a
 // background read lands both ask this — one list of conditions, checked twice,
 // because the state can change while the read is in the air.
-const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "modal"];
+const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "mcp-modal", "modal"];
 function anyModalOpen() {
   return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
 }
@@ -1226,6 +1237,44 @@ function closeInbox() {
   state.inboxSession = null;
 }
 
+/* ---------------- MCP config ---------------- */
+
+// The snippet is Go's, built with encoding/json from a path this process found
+// and the id of the row that was clicked, and it reaches the DOM through
+// textContent like everything else a provider had a hand in.
+async function openMCPConfig(sessionId) {
+  el("mcp-title").textContent = `MCP 設定 · ${sessionId}`;
+  el("mcp-text").textContent = "";
+  el("mcp-status").textContent = "正在產生…";
+  el("mcp-modal").classList.remove("hidden");
+
+  let result;
+  try {
+    result = await MCPConfig(sessionId);
+  } catch (error) {
+    // Shown here rather than in a banner: this dialog covers the banner, so an
+    // error there is an error nobody reads. The most likely one is that
+    // agenthub-mcp was not found, and the message says where it looked.
+    el("mcp-status").replaceChildren(
+      element("div", "stale", "產生不出這個 session 的設定，所以上面是空的。"),
+      element("div", "muted", String(error))
+    );
+    return;
+  }
+  el("mcp-text").textContent = result.text;
+  // Whether the clipboard took it. Saying "已複製" when it did not is the one
+  // outcome that sends someone to paste nothing into a file.
+  el("mcp-status").textContent = result.copied
+    ? "已複製到剪貼簿"
+    : "無法寫入剪貼簿，請手動複製上面的內容";
+}
+
+function closeMCPConfig() {
+  el("mcp-modal").classList.add("hidden");
+  el("mcp-text").textContent = "";
+  el("mcp-status").textContent = "";
+}
+
 /* ---------------- wiring ---------------- */
 
 el("search").oninput = (event) => {
@@ -1531,6 +1580,10 @@ async function loadPairing() {
   if (state.view === "network") renderPairing();
 }
 
+el("mcp-close").onclick = closeMCPConfig;
+el("mcp-modal").onclick = (event) => {
+  if (event.target === el("mcp-modal")) closeMCPConfig();
+};
 el("inbox-close").onclick = closeInbox;
 el("inbox-modal").onclick = (event) => {
   if (event.target === el("inbox-modal")) closeInbox();

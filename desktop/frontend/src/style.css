@@ -524,10 +524,23 @@ table.peer-sessions td.mono {
 
 /* ---------------- inbox ---------------- */
 
-.sid .inbox {
+.sid .inbox,
+.sid .mcp {
   margin-left: 8px;
   font-size: 11px;
   padding: 1px 6px;
+}
+
+/* The snippet is a file someone will save, so it keeps its own line breaks and
+   scrolls rather than stretching the dialog. */
+#mcp-text {
+  max-height: 40vh;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+#mcp-status {
+  margin: 10px 0;
 }
 
 .inboxrow {

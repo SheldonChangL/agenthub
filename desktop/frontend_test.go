@@ -366,3 +366,29 @@ func TestFrontendMainListRefreshesAndSurvivesAFailedRead(t *testing.T) {
 		t.Fatalf("main list refresh check failed: %v\n%s", err, output)
 	}
 }
+
+// TestFrontendMCPConfigButtonCarriesItsOwnRowsSession drives the per-row button
+// that hands over a `.mcp.json`.
+//
+// What the snippet binds is an agent to a session, and a wrong id in it is
+// invisible afterwards: the server starts, the four tools answer, and they
+// answer for somebody else's session. That is the mistake the button exists to
+// prevent — a session id from another machine was pasted into a config by hand
+// on 2026-09-10 — so the path from the row to the call is followed with more
+// than one row on screen. The check also pins the two warnings the snippet
+// cannot carry itself: an MCP config is per-project (issue #104), and reading
+// is all it buys until the owner opens the session's outbound gate.
+func TestFrontendMCPConfigButtonCarriesItsOwnRowsSession(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the MCP config check")
+	}
+	script := filepath.Join("frontend", "test", "mcp-config.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("MCP config check failed: %v\n%s", err, output)
+	}
+}
