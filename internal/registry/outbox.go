@@ -189,7 +189,13 @@ func ParseOutboundCursor(value string) (OutboundCursor, error) {
 // page of fifty 32KB bodies is both far more than that question needs and
 // enough to pass a reader's response limit — which is how the answer to
 // "what is jamming my outbox" becomes unreadable exactly when it is wanted.
-func (r *Registry) ListOutbound(ctx context.Context, limit int, after OutboundCursor) ([]OutboundMessage, error) {
+//
+// A non-empty session narrows the list to what that local session sent. The
+// filter runs in SQL rather than over a fetched page, because a page filtered
+// after the fact is a page of the wrong size: the caller would be handed two
+// rows where it asked for fifty and no way to tell that from the end of the
+// list.
+func (r *Registry) ListOutbound(ctx context.Context, session string, limit int, after OutboundCursor) ([]OutboundMessage, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -197,13 +203,38 @@ func (r *Registry) ListOutbound(ctx context.Context, limit int, after OutboundCu
 SELECT id, destination_node_id, recipient_session, sender_label, '', state, attempts,
        created_at_ms, updated_at_ms, last_error, wake_hops
 FROM outbound_messages`
+	// The two conditions are spelled out as constants and combined by a
+	// switch rather than joined from a slice: every fragment of this query is
+	// then a literal in the source, and the only way a value reaches the
+	// database is as a bound parameter.
+	//
+	// bySender matches on the session half of the label, not on the whole
+	// thing. A label is <node-id>/<session-id> — this node's id, since only a
+	// local session may queue — and comparing whole labels would make the
+	// answer depend on the node id still being what it was when the row was
+	// written. The session is what the caller asked about.
+	const bySender = `(CASE WHEN instr(sender_label, ?) > 0
+       THEN substr(sender_label, instr(sender_label, ?) + 1) ELSE sender_label END) = ?`
+	// beforeCursor is strictly before the cursor in the listing's own order,
+	// which is descending. The start cursor is zero and names no row, so it is
+	// not a bound at all — applied as one it would exclude everything.
+	const beforeCursor = `(created_at_ms < ? OR (created_at_ms = ? AND id < ?))`
+
 	arguments := []any{}
+	if session != "" {
+		separator := model.SessionIDSeparator
+		arguments = append(arguments, separator, separator, session)
+	}
 	if after != OutboundStart {
-		// Strictly before the cursor in the listing's own order, which is
-		// descending. The start cursor is zero and names no row, so it is not
-		// a bound at all — applied as one it would exclude everything.
-		query += ` WHERE (created_at_ms < ? OR (created_at_ms = ? AND id < ?))`
 		arguments = append(arguments, after.CreatedAtMS, after.CreatedAtMS, after.ID)
+	}
+	switch {
+	case session != "" && after != OutboundStart:
+		query += ` WHERE ` + bySender + ` AND ` + beforeCursor
+	case session != "":
+		query += ` WHERE ` + bySender
+	case after != OutboundStart:
+		query += ` WHERE ` + beforeCursor
 	}
 	query += ` ORDER BY created_at_ms DESC, id DESC LIMIT ?`
 	arguments = append(arguments, limit)

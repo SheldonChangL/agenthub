@@ -1087,3 +1087,56 @@ func TestUsageNamesInboxDelete(t *testing.T) {
 		t.Errorf("usage does not describe `ah inbox delete`: %q", usage)
 	}
 }
+
+// TestOutboundSessionFlagReachesTheQuery pins that the flag becomes a server
+// side filter. A flag that were dropped on the floor would look like it
+// worked: the listing still renders, just with everyone else's rows in it.
+func TestOutboundSessionFlagReachesTheQuery(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"id":"msg_1","to":"codex:theirs","state":"pending"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "outbound", "--session", "codex:mine"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(asked) != 1 || asked[0] != "GET /v1/outbound?session=codex%3Amine" {
+		t.Fatalf("requests = %v; want the session on the listing query", asked)
+	}
+}
+
+// TestOutboundSessionAndMessageIDAreExclusive covers the combination that
+// cannot mean anything: one message is one message, and a filter applied to it
+// would either be ignored or silently contradict the id.
+func TestOutboundSessionAndMessageIDAreExclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a request was sent: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	for _, args := range [][]string{
+		{"outbound", "msg_1", "--session", "codex:mine"},
+		{"outbound", "--session", "codex:mine", "msg_1"},
+		{"outbound", "--session"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr); code == 0 {
+			t.Errorf("%v was accepted", args)
+		}
+	}
+}
+
+// The usage has to name the flag, or it is a filter nobody finds.
+func TestUsageNamesTheOutboundSessionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	if usage := stdout.String() + stderr.String(); !strings.Contains(usage, "ah outbound [--session <session-id>]") {
+		t.Errorf("usage does not describe the filter: %q", usage)
+	}
+}
