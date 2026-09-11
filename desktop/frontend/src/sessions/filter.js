@@ -145,13 +145,16 @@ function sortValue(session, key) {
 export function sorted(sessions, sort = DEFAULT_SORT) {
   const key = SORT_KEYS.includes(sort?.key) ? sort.key : DEFAULT_SORT.key;
   const sign = sort?.dir === "asc" ? 1 : -1;
-  return [...sessions].sort((a, b) => {
-    const va = sortValue(a, key);
-    const vb = sortValue(b, key);
-    if (va < vb) return -1 * sign;
-    if (va > vb) return 1 * sign;
-    return String(a.id).localeCompare(String(b.id));
+  // Keys are computed once per row, not once per comparison: the default key
+  // parses a date, and n log n parses on every keystroke adds up at a
+  // thousand rows.
+  const keyed = sessions.map((session) => ({ session, value: sortValue(session, key), id: String(session.id) }));
+  keyed.sort((a, b) => {
+    if (a.value < b.value) return -1 * sign;
+    if (a.value > b.value) return 1 * sign;
+    return a.id.localeCompare(b.id);
   });
+  return keyed.map((entry) => entry.session);
 }
 
 // nextSort: clicking the current key flips direction; a new key starts in the
