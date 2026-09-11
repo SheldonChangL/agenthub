@@ -245,8 +245,29 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		return r.simple(ctx, http.MethodPost, "/v1/messages", body)
 	case "inbox":
+		// `ah inbox <session-id>` reads; `ah inbox delete <session-id>
+		// <message-id>` drops one message. The second is `inbox-clear`'s
+		// single-message mode under the name a reader looks for: the skill that
+		// deletes a message every tick told people to run `curl -X DELETE`,
+		// because nobody finds that mode under `inbox-clear`.
+		//
+		// `delete` cannot collide with a session id: a session id always begins
+		// with a provider name and a colon, which is what makes the two
+		// readings separable at all.
+		if len(args) >= 2 && args[1] == "delete" {
+			if len(args) != 4 {
+				return errors.New("usage: ah inbox delete <session-id> <message-id>")
+			}
+			if !looksLikeSessionID(args[2]) {
+				return errors.New("usage: ah inbox delete <session-id> <message-id>\n" +
+					"  a session id begins with a provider name, as in `claude:` or `codex:`")
+			}
+			return r.simple(ctx, http.MethodDelete,
+				"/v1/inbox/"+url.PathEscape(args[2])+"/"+url.PathEscape(args[3]), nil)
+		}
 		if len(args) != 2 {
-			return errors.New("usage: ah inbox <session-id>")
+			return errors.New("usage: ah inbox <session-id>\n" +
+				"       ah inbox delete <session-id> <message-id>")
 		}
 		return r.inbox(ctx, args[1])
 	case "wakes":
@@ -297,6 +318,19 @@ func (r runner) command(ctx context.Context, args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// looksLikeSessionID reports whether a string reads as a session id rather than
+// as a subcommand or a message id.
+//
+// It is the whole reason `ah inbox delete` can exist: session ids are the only
+// argument `ah inbox` ever took, and they all carry a provider prefix, so a
+// bare word in that position is a mistake rather than an inbox nobody can read.
+// Deliberately not a validity check — the node decides that, and answers with
+// its own reason.
+func looksLikeSessionID(arg string) bool {
+	provider, _, found := strings.Cut(arg, ":")
+	return found && model.KnownProvider(provider)
 }
 
 // pair records a peer whose fingerprint the owner has already compared on both
@@ -711,6 +745,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
 	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
+	_, _ = fmt.Fprintln(output, "  ah inbox <session-id>                        read a session's inbox")
+	_, _ = fmt.Fprintln(output, "  ah inbox delete <session-id> <message-id>    drop one message, once it has been handled")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")
 	_, _ = fmt.Fprintln(output, "  ah settings                                  what this node started with, and where each value came from")
