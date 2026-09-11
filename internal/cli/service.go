@@ -109,9 +109,14 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 		return fmt.Errorf("ah service install: unexpected argument %q", flags.Arg(0))
 	}
 
-	// Validated with the node's own rules, defaults included, so the answer
-	// here is the answer the node would give at startup — before a unit is
-	// written, not after a service that restarts on failure crashes forever.
+	// Validated with the node's own rules, so a unit is not written for a
+	// combination that fails at startup — a service that restarts on failure
+	// would otherwise crash forever.
+	//
+	// This checks the flags on this command line against the defaults, not
+	// against what the node has remembered: this command does not open the
+	// database. A value saved earlier can still refuse the start, and the
+	// node's own check at startup is the one that sees everything.
 	listenAddress := *listen
 	if listenAddress == "" {
 		listenAddress = "127.0.0.1:7462"
@@ -149,17 +154,25 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 			nodeArgs = append(nodeArgs, "--"+pair.name, *pair.value)
 		}
 	}
-	if *allowLAN {
-		nodeArgs = append(nodeArgs, "--allow-lan")
-	}
-	if *discover {
-		nodeArgs = append(nodeArgs, "--discover")
+	// Written in the --flag=value form whenever the flag was given, false
+	// included. A bare --allow-lan can only turn something on, so an owner who
+	// installs with --allow-lan=false used to get a unit carrying nothing at
+	// all: the setting they thought they had closed stayed remembered and
+	// applied on every start. Go's flag package reads --allow-lan=false back,
+	// which a second argument ("--allow-lan false") would not be.
+	for _, pair := range []struct {
+		name  string
+		value *bool
+	}{{"allow-lan", allowLAN}, {"discover", discover}} {
+		if wasGiven(flags, pair.name) {
+			nodeArgs = append(nodeArgs, fmt.Sprintf("--%s=%t", pair.name, *pair.value))
+		}
 	}
 	for _, cidr := range declaredPrivate {
 		nodeArgs = append(nodeArgs, "--treat-as-private", cidr)
 	}
-	if *autoWake {
-		nodeArgs = append(nodeArgs, "--auto-wake")
+	if wasGiven(flags, "auto-wake") {
+		nodeArgs = append(nodeArgs, fmt.Sprintf("--auto-wake=%t", *autoWake))
 	}
 
 	binary, err := resolveNodeBinary(*nodeBinary)
@@ -174,7 +187,7 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	// carry these flags and still work. A flag in the unit wins over what the
 	// node remembered — it is given on every start — so an owner who changes a
 	// setting from the desktop and sees nothing happen needs to know why.
-	if baked := bakedInSettings(flags); len(baked) > 0 {
+	if baked := bakedInSettings(nodeArgs); len(baked) > 0 {
 		report.Notes = append(report.Notes,
 			"this unit passes "+strings.Join(baked, ", ")+" on every start, which overrides anything saved later. "+
 				"`ah settings set ...` remembers them instead, and then the service needs only --db")
@@ -191,15 +204,41 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 
 // bakedInSettings names the remembered settings this install wrote into the
 // unit file, which is the second source of truth these settings exist to end.
-func bakedInSettings(flags *flag.FlagSet) []string {
+//
+// Read off the arguments that were written, not off the flags that were given.
+// Those two are not the same list — a flag can be given and still reach no
+// unit — and the note is a promise about the file on disk: telling an owner
+// that a unit passes --allow-lan when it passes nothing points them at the
+// wrong explanation for a setting that will not change.
+func bakedInSettings(nodeArgs []string) []string {
 	remembered := map[string]bool{
 		"peer-listen": true, "allow-lan": true, "discover": true,
 		"treat-as-private": true, "auto-wake": true,
 	}
+	seen := make(map[string]bool, len(remembered))
 	given := make([]string, 0, len(remembered))
+	for _, argument := range nodeArgs {
+		name, ok := strings.CutPrefix(argument, "--")
+		if !ok {
+			continue
+		}
+		name, _, _ = strings.Cut(name, "=")
+		if remembered[name] && !seen[name] {
+			seen[name] = true
+			given = append(given, "--"+name)
+		}
+	}
+	return given
+}
+
+// wasGiven reports whether a flag was passed, as opposed to left at its
+// default. For a boolean the two are indistinguishable by value, and
+// --allow-lan=false is an owner closing a switch.
+func wasGiven(flags *flag.FlagSet, name string) bool {
+	given := false
 	flags.Visit(func(f *flag.Flag) {
-		if remembered[f.Name] {
-			given = append(given, "--"+f.Name)
+		if f.Name == name {
+			given = true
 		}
 	})
 	return given
