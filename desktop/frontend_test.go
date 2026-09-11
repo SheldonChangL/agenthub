@@ -219,6 +219,15 @@ func TestFrontendStylesTheThingsThatCarryAWarning(t *testing.T) {
 		// nothing, and a test asserting only the class was green.
 		"a string somebody chose, inside prose": "\n.claimed {",
 		"that string against the muted note":    "\n#pairing-note .claimed {",
+		// A peer with no address is skipped in delivery without a word, while
+		// the sender's `ah send` still answers `queued`. This is the only place
+		// that failure is visible before it happens, so it must not be styled
+		// like the muted notes it sits among.
+		"a paired node with nowhere to deliver to": "\n.noaddress {",
+		// The key the peer has to type into its own dialog. Rendered in the
+		// body font it wraps mid-group and is retyped wrong, which is how a
+		// trailing "=" was lost on 2026-09-10.
+		"this node's own public key": "\n.keyvalue {",
 	} {
 		if !strings.Contains(css, selector) {
 			t.Errorf("no rule for %s: style.css has no %q, so it renders like ordinary text",
@@ -390,5 +399,32 @@ func TestFrontendMCPConfigButtonCarriesItsOwnRowsSession(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("MCP config check failed: %v\n%s", err, output)
+	}
+}
+
+// TestFrontendPairingIsCompleteFromInsideTheWindow drives the three things a
+// first real pairing needed and this window did not have (issues #63, #110).
+//
+// Each was found by pairing two machines by hand on 2026-09-10, and none of
+// them was visible from inside the app. The public key the peer has to type was
+// obtainable only by running `ah node` in a terminal — the node answers with it
+// and main.js never read the field, while the README pointed at a "node line"
+// that showed no such thing. Trust is recorded per machine, and nothing said so
+// when one side was done and the other still answered `No paired nodes`. And a
+// peer with no recorded address is skipped in delivery without a word while the
+// sender's `ah send` still says `queued`, with no button and no subcommand to
+// record one.
+func TestFrontendPairingIsCompleteFromInsideTheWindow(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the pairing completeness check")
+	}
+	script := filepath.Join("frontend", "test", "pairing-completeness.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("pairing completeness check failed: %v\n%s", err, output)
 	}
 }

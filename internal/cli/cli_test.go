@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -780,4 +781,149 @@ func TestUsageListsEveryCommandTheSwitchImplements(t *testing.T) {
 		}
 	}
 	t.Logf("checked %d commands", len(implemented))
+}
+
+// `ah nodes address` is the repair for the quietest failure in the system: a
+// paired node with no recorded address is skipped without a word, and the
+// sender's `ah send` still answers `queued`. Until this subcommand existed the
+// only way to fix it was a hand-written `curl -X PUT`.
+func TestNodesAddressRecordsTheAddress(t *testing.T) {
+	var method, path, contentType string
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, contentType = r.Method, r.URL.Path, r.Header.Get("Content-Type")
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodeId":"node_ubuntu000000000","address":"192.168.1.20:7463"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(),
+		[]string{"--url", server.URL, "nodes", "address", "node_ubuntu000000000", "192.168.1.20:7463"},
+		&stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if method != http.MethodPut {
+		t.Errorf("method = %s, want PUT", method)
+	}
+	if path != "/v1/nodes/node_ubuntu000000000/address" {
+		t.Errorf("path = %s", path)
+	}
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q", contentType)
+	}
+	var sent struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("decode request body %q: %v", body, err)
+	}
+	// The address as typed. Trimming or rewriting it here would mean the CLI
+	// and the node disagree about what was recorded.
+	if sent.Address != "192.168.1.20:7463" {
+		t.Errorf("body address = %q, want 192.168.1.20:7463", sent.Address)
+	}
+	if !strings.Contains(stdout.String(), "192.168.1.20:7463") {
+		t.Errorf("the node's answer was not printed: %q", stdout.String())
+	}
+}
+
+// A node id is a path segment, so it is escaped rather than pasted in.
+func TestNodesAddressEscapesTheNodeID(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "nodes", "address", "a/../b", "10.0.0.2:7463"},
+		&stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if path != "/v1/nodes/a%2F..%2Fb/address" {
+		t.Errorf("path = %s; the node id was not escaped into one segment", path)
+	}
+}
+
+// The node decides whether an address is one it will deliver to, and its
+// refusal is what the owner needs to read — not a message this CLI invented.
+func TestNodesAddressPassesTheNodesRefusalThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"INVALID_REQUEST","message":"address must be host:port"}}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(),
+		[]string{"--url", server.URL, "nodes", "address", "node_a00000000000000", "not-an-address"},
+		&stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("exit = 0 for a refused address; stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "address must be host:port") {
+		t.Errorf("the node's reason did not reach the owner: %q", stderr.String())
+	}
+}
+
+// Wrong arity must fail before any request: half a command must not record
+// half an address.
+func TestNodesRejectsIncoherentInput(t *testing.T) {
+	cases := map[string][]string{
+		"address with no arguments": {"nodes", "address"},
+		"address with no address":   {"nodes", "address", "node_a00000000000000"},
+		"address with a spare word": {"nodes", "address", "node_a00000000000000", "10.0.0.2:7463", "extra"},
+		"an unknown subcommand":     {"nodes", "addr", "node_a00000000000000", "10.0.0.2:7463"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			// Unreachable on purpose: these must fail before a request.
+			code := Run(context.Background(), append([]string{"--url", "http://127.0.0.1:1"}, args...), &stdout, &stderr)
+			if code == 0 {
+				t.Errorf("Run(%v) = 0; want a non-zero exit", args)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("Run(%v) wrote to stdout: %s", args, stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "ah nodes") {
+				t.Errorf("Run(%v) did not name the command in its usage: %q", args, stderr.String())
+			}
+		})
+	}
+}
+
+// `ah nodes` with nothing after it still lists, which is what it always did.
+func TestNodesStillLists(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodes":[{"nodeId":"node_a00000000000000"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "nodes"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if path != "/v1/nodes" || !strings.Contains(stdout.String(), "node_a00000000000000") {
+		t.Errorf("path = %s, stdout = %q", path, stdout.String())
+	}
+}
+
+// The usage has to name the subcommand, or it is a command nobody finds.
+func TestUsageNamesTheAddressSubcommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	usage := stdout.String() + stderr.String()
+	if !strings.Contains(usage, "ah nodes address <node-id> <host:port>") {
+		t.Errorf("usage does not describe `ah nodes address`: %q", usage)
+	}
 }

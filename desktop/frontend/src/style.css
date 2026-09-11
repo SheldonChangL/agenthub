@@ -650,3 +650,80 @@ table.peer-sessions td.mono {
   background: #0d1017; border: 1px solid var(--line); border-radius: 6px;
   font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; white-space: pre-wrap;
 }
+
+/* ---------- this node's own identity, in the pairing dialog ---------- */
+
+/* The public key is carried to the other machine and typed in; the fingerprint
+   is compared on two screens and never carried. Both are shown here, set apart
+   from the prose, because the only way to read either used to be `ah node` in a
+   terminal — which is the thing this window exists to replace. */
+.localidentity {
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.localidentity .line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+}
+
+.localidentity p { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
+
+/* Monospace and selectable, and it wraps rather than being clipped: a key
+   ending in "=" that is cut off at the edge is a key someone retypes wrong,
+   which is exactly how "public key is not a valid Ed25519 key" was earned. */
+.keyvalue {
+  margin-top: 6px;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+  color: var(--text);
+}
+
+/* ---------- a paired node's address ---------- */
+
+/* Red, and not styled like the muted notes around it. A peer with no address is
+   skipped in silence while the sender's `ah send` answers `queued`, so this is
+   the only place that failure is visible before it happens. */
+.noaddress {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--red);
+  background: rgba(229, 84, 75, 0.12);
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.addressform {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0;
+}
+
+.addressform .addressinput {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  user-select: text;
+}
+
+.addressform .addressinput:focus {
+  outline: none;
+  border-color: var(--accent);
+}

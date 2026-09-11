@@ -103,11 +103,10 @@ go run ./cmd/ah nodes
 go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
 
 # Pairing alone does not make delivery happen: a peer with no recorded address
-# is skipped. With --discover the address is learned from the peer's own
-# announcements and this is unnecessary — see "Two machines" below. Without it,
-# there is no `ah` subcommand, so it is a raw call.
-curl -X PUT http://127.0.0.1:7462/v1/nodes/<node-id>/address \
-  -H 'Content-Type: application/json' -d '{"address":"192.168.1.20:7463"}'
+# is skipped, silently, while `ah send` still answers `queued`. With --discover
+# the address is learned from the peer's own announcements and this is
+# unnecessary — see "Two machines" below. Without it, record it by hand:
+go run ./cmd/ah nodes address <node-id> 192.168.1.20:7463
 
 go run ./cmd/ah revoke <node-id>
 go run ./cmd/ah send <session-id> "please review the schema"
@@ -252,7 +251,14 @@ field is your statement that you compared one on the other machine's screen.
 So compare them. Both apps show the node's own fingerprint; they must match
 group for group, since comparing the first few is what an attacker defeats. Then
 get the peer's public key from its own machine — `bin/ah node` there, or the
-desktop's node line — and complete the dialog on each side.
+本機公鑰 line in that machine's own pairing dialog, which has a copy button —
+and complete the dialog on each side.
+
+**On each side.** Trust is recorded per machine: pairing on the mac tells the
+mac who the Ubuntu box is and nothing else, and until the same is done over
+there, that machine will neither accept this one's messages nor send it a
+heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
+half-done looks like.
 
 From a terminal the same thing is:
 
@@ -594,7 +600,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/nodes` | List paired nodes |
 | `POST` | `/v1/nodes` | Manually trust a node whose full fingerprint the owner compared |
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
-| `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, and there is no `ah` subcommand for it yet |
+| `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. `ah nodes address <node-id> <host:port>` is this call |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |

@@ -8,6 +8,11 @@ import { fileURLToPath } from "node:url";
 // its input as raw markup — exactly how a browser treats them. That difference
 // is what the render test measures.
 
+// Which element has the keyboard, for the one guard that asks. A browser
+// answers <body> when nothing is focused; null is this shim's stand-in for
+// "nothing", since there is no body here to hand back.
+let focused = null;
+
 class Node {
   constructor(tag) {
     this.tagName = tag;
@@ -35,6 +40,17 @@ class Node {
 
   set title(value) {
     this.attrs.title = String(value);
+  }
+
+  // Enough of focus for a test that needs to say "the owner is in this field".
+  // No focus or blur events, no tabindex rules, no scrolling into view — the
+  // code under test reads document.activeElement and nothing else.
+  focus() {
+    focused = this;
+  }
+
+  blur() {
+    if (focused === this) focused = null;
   }
 
   append(...kids) {
@@ -129,6 +145,9 @@ const initialClasses = (() => {
 })();
 
 export const document = {
+  get activeElement() {
+    return focused;
+  },
   createElement: (tag) => new Node(tag),
   createDocumentFragment: () => new Fragment(),
   getElementById: (id) => {

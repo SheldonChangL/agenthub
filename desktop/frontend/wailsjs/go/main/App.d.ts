@@ -34,6 +34,8 @@ export function ServiceStatus():Promise<main.ServiceStatus>;
 
 export function SetAudience(arg1:Array<string>,arg2:main.Audience):Promise<main.VisibilityResult>;
 
+export function SetNodeAddress(arg1:string,arg2:string):Promise<void>;
+
 export function SetNodeURL(arg1:string):Promise<void>;
 
 export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.VisibilityResult>;
