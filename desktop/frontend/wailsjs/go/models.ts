@@ -278,6 +278,90 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class OutboundMessage {
+	    id: string;
+	    destinationNodeId: string;
+	    to: string;
+	    from?: string;
+	    state: string;
+	    attempts: number;
+	    // Go type: time
+	    createdAt: any;
+	    // Go type: time
+	    updatedAt: any;
+	    lastError?: string;
+	    wakeHops?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new OutboundMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.destinationNodeId = source["destinationNodeId"];
+	        this.to = source["to"];
+	        this.from = source["from"];
+	        this.state = source["state"];
+	        this.attempts = source["attempts"];
+	        this.createdAt = this.convertValues(source["createdAt"], null);
+	        this.updatedAt = this.convertValues(source["updatedAt"], null);
+	        this.lastError = source["lastError"];
+	        this.wakeHops = source["wakeHops"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class OutboundView {
+	    messages: OutboundMessage[];
+	    next?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OutboundView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.messages = this.convertValues(source["messages"], OutboundMessage);
+	        this.next = source["next"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class Peer {
 	    nodeId: string;
 	    displayName: string;
@@ -643,6 +727,112 @@ export namespace main {
 	        this.failed = source["failed"];
 	        this.errors = source["errors"];
 	    }
+	}
+	export class WakeLimits {
+	    hops: number;
+	    pair: number;
+	    pairWindow: string;
+	    session: number;
+	    sessionWindow: string;
+	    node: number;
+	    nodeWindow: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WakeLimits(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.hops = source["hops"];
+	        this.pair = source["pair"];
+	        this.pairWindow = source["pairWindow"];
+	        this.session = source["session"];
+	        this.sessionWindow = source["sessionWindow"];
+	        this.node = source["node"];
+	        this.nodeWindow = source["nodeWindow"];
+	    }
+	}
+	export class WakeEvent {
+	    id: string;
+	    messageId: string;
+	    sourceNodeId?: string;
+	    sourceSession?: string;
+	    destinationSession: string;
+	    hops: number;
+	    outcome: string;
+	    detail?: string;
+	    // Go type: time
+	    at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new WakeEvent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.messageId = source["messageId"];
+	        this.sourceNodeId = source["sourceNodeId"];
+	        this.sourceSession = source["sourceSession"];
+	        this.destinationSession = source["destinationSession"];
+	        this.hops = source["hops"];
+	        this.outcome = source["outcome"];
+	        this.detail = source["detail"];
+	        this.at = this.convertValues(source["at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class WakesView {
+	    wakes: WakeEvent[];
+	    // Go type: WakeLimits
+	    limits: any;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new WakesView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.wakes = this.convertValues(source["wakes"], WakeEvent);
+	        this.limits = this.convertValues(source["limits"], null);
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

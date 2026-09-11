@@ -24,6 +24,8 @@ export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
 
+export function Outbound(arg1:number,arg2:string):Promise<main.OutboundView>;
+
 export function Overview():Promise<main.Overview>;
 
 export function Pairing():Promise<main.Pairing>;
@@ -43,3 +45,5 @@ export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.Visib
 export function TrustNode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.TrustedNode>;
 
 export function UninstallService():Promise<main.ServiceResult>;
+
+export function Wakes(arg1:string,arg2:number):Promise<main.WakesView>;
