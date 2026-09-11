@@ -9,29 +9,20 @@
 // the segment can write to, with no signature and no prior relationship: every
 // field is whatever the sender typed, from whoever happens to be on the wifi.
 //
-//   node frontend/test/render-hostile-candidate.mjs [path-to-main.js]
+//   node frontend/test/render-hostile-candidate.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
-const wiring = source.indexOf("/* ---------------- wiring ---------------- */");
-if (wiring > 0) source = source.slice(0, wiring);
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+const { configure, boot } = await import("../src/app.js");
 
 const noop = async () => ({});
-const scope = new Function(
-  "document", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode", "Heartbeat",
-  "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { renderPairing, candidateRow, prefillPairFrom, pairingRemaining, state };"
-)(document, noop, noop, noop, noop, noop, noop, noop, noop, noop);
+configure({
+  Overview: noop, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  Pairing: noop, OpenPairing: noop, ClosePairing: noop,
+});
+const scope = boot({ start: false });
 
 const { renderPairing, candidateRow, prefillPairFrom, state } = scope;
 const failures = [];
