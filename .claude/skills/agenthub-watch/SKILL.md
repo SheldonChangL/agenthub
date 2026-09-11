@@ -75,5 +75,5 @@ failure mode this exists to avoid, and it costs real money.
 
 It does not wake anything. Delivery into a running Claude Code session was measured and does
 not arrive (`docs/channel-push-not-observed.md`); polling is the honest substitute. A Codex
-thread on a node started with `-auto-wake` is woken by the node itself and should follow
+thread on a node started with `--auto-wake` is woken by the node itself and should follow
 section 4 when it is.
