@@ -342,3 +342,27 @@ func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
 		t.Fatalf("audience dialog check failed: %v\n%s", err, output)
 	}
 }
+
+// TestFrontendMainListRefreshesAndSurvivesAFailedRead covers the one state the
+// window cannot recover from on its own: showing nothing.
+//
+// The session table and the node list used to load once at startup and then
+// only when someone pressed refresh, and a read that could not reach the node
+// copied its emptiness into state. A node that was mid-rescan when the window
+// opened therefore left it claiming zero sessions and no paired node — observed
+// on 2026-09-10 against a node serving 1083 sessions — with nothing to correct
+// it until a person noticed and clicked.
+func TestFrontendMainListRefreshesAndSurvivesAFailedRead(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the main list refresh check")
+	}
+	script := filepath.Join("frontend", "test", "list-refresh.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("main list refresh check failed: %v\n%s", err, output)
+	}
+}

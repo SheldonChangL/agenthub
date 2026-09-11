@@ -44,6 +44,9 @@ const state = {
   localNodeId: "",
   localName: "",
   localNameIsChosen: false,
+  // Whether a read ever reached the node. It decides what an unreachable read
+  // says: "this is the last data we had" only means something if there is any.
+  loadedOnce: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -254,32 +257,48 @@ function hideBanner() {
 
 async function load() {
   const overview = await Overview();
-  state.sessions = overview.sessions || [];
-  state.nodes = overview.nodes || [];
-  state.counts = overview.counts || {};
-  state.localFingerprint = overview.node?.fingerprint || "";
-  // Needed to tell this machine's own messages from a peer's. Without it a
-  // qualified sender naming this node reads as a peer, and a bare one reads as
-  // local — which is the dangerous direction.
-  state.localNodeId = overview.node?.id || "";
-  if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
-    state.selectedNode = null;
+  const reachable = Boolean(overview.reachable);
+
+  // Only a read that reached the node may replace what is on screen. A node
+  // that is mid-rescan answers unreachable with no sessions, and copying that
+  // emptiness in blanked a window showing 1083 sessions until someone pressed
+  // refresh (issue #114). Keeping the last known lists costs a few seconds of
+  // staleness, which the banner says out loud; clearing them costs the owner
+  // every session they were looking at.
+  if (reachable) {
+    state.sessions = overview.sessions || [];
+    state.nodes = overview.nodes || [];
+    state.counts = overview.counts || {};
+    state.localFingerprint = overview.node?.fingerprint || "";
+    // Needed to tell this machine's own messages from a peer's. Without it a
+    // qualified sender naming this node reads as a peer, and a bare one reads as
+    // local — which is the dangerous direction.
+    state.localNodeId = overview.node?.id || "";
+    state.peers = overview.peers ?? [];
+    state.presenceError = overview.presenceError ?? "";
+    state.loadedOnce = true;
+    if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
+      state.selectedNode = null;
+    }
   }
 
-  el("conn-dot").className = overview.reachable ? "dot ok" : "dot bad";
-  el("node-line").textContent = overview.reachable
+  el("conn-dot").className = reachable ? "dot ok" : "dot bad";
+  el("node-line").textContent = reachable
     ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}`
     : `無法連線到 ${overview.nodeUrl}`;
-  el("footer-right").textContent = overview.reachable ? overview.node.id : "";
-  state.peers = overview.peers ?? [];
-  state.presenceError = overview.presenceError ?? "";
+  el("footer-right").textContent = reachable ? overview.node.id : "";
 
-  if (!overview.reachable) {
-    banner(`節點未連線：${overview.error || "unknown error"}。啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
+  if (!reachable) {
+    // The banner has to say which of the two situations this is, or a stale
+    // list reads as the current truth.
+    const shown = state.loadedOnce
+      ? "下面顯示的是上次成功載入的資料，可能已經過期。"
+      : "還沒有載入過任何資料。";
+    banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
   } else {
     hideBanner();
   }
-  state.nodeReachable = Boolean(overview.reachable);
+  state.nodeReachable = reachable;
   loadService().catch(() => {});
 
   // Drop selections that no longer exist after a rescan.
@@ -1475,6 +1494,27 @@ setInterval(() => {
     loadPairing().catch(() => {});
   }
 }, 1000);
+
+// The session table and the node list refresh on their own too.
+//
+// They used to load once at startup and then only when someone pressed
+// refresh. A node that was still rescanning at that moment left the window
+// empty for as long as nobody noticed — the window said "0 sessions" while the
+// node was serving 1083 (issue #114). Fifteen seconds is the same order as the
+// node's publish interval, so the table is never more than one interval behind.
+//
+// Skipped whenever a refresh would pull the ground out from under someone: a
+// write is in flight, a dialog is open on top of the table, or rows are
+// selected and a rescan would drop the selection out from under the next click.
+const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "modal"];
+function anyModalOpen() {
+  return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
+}
+
+setInterval(() => {
+  if (state.busy || state.selected.size > 0 || anyModalOpen()) return;
+  load().catch((error) => banner(`載入失敗：${error}`));
+}, 15000);
 
 load()
   .then(loadPairing)
