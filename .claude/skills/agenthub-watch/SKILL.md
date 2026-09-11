@@ -28,7 +28,8 @@ has not scanned this session yet — run `ah discover` once and retry; if still 
 - `ah peers` shows the other machine `online` with at least one row in SEND TO. Offline or
   empty: report exactly which, and stop — do not schedule a loop that can only fail.
 - `ah audience SELF` has `acceptMessages: true`. If not, tell the owner the exact command
-  (`ah audience SELF <mode> ... --messages --outbound`) and stop; opening it is their call.
+  (`ah audience SELF <mode> ... --messages --outbound`) and stop; opening it is their call
+  (each call replaces the session's whole set, so pass every flag you want to keep).
 - Record `PEER` = the SEND TO value the owner names (or the only one).
 
 ## 3. Schedule
