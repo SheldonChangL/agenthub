@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #0f1115; color: #e6e9ef; font: 13px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang TC", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #4f8cff; } a:hover { color: #3f7bef; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; }
+    .muted { color: #8b93a5; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font-size: 12.5px; white-space: nowrap; }
+    .btn.primary { background: #4f8cff; border-color: #4f8cff; color: #fff; }
+    .btn.ghost { background: transparent; }
+    .btn.danger { background: transparent; border-color: #5a3330; color: #f0908a; }
+    .pill { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 999px; font-size: 11px; border: 1px solid #272c38; color: #8b93a5; }
+    .pill.active { color: #35c07a; border-color: rgba(53,192,122,.4); }
+    .pill.idle { color: #e0a33e; border-color: rgba(224,163,62,.4); }
+    .pill.public { color: #4f8cff; border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.1); }
+    .pill.bad { color: #f0908a; border-color: rgba(229,84,75,.45); }
+    .titlebar { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 16px; border-bottom: 1px solid #272c38; background: #161920; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #35c07a; box-shadow: 0 0 0 3px rgba(53,192,122,.15); }
+    .tabs { display: flex; gap: 2px; margin-left: 18px; }
+    .tab { padding: 0 12px; height: 30px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; color: #8b93a5; font-size: 12.5px; }
+    .tab.on { background: #1c202a; color: #e6e9ef; }
+    .tab .n { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: #272c38; color: #8b93a5; }
+    .statusbar { height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid #272c38; font-size: 11px; color: #8b93a5; background: #161920; }
+    .stale { padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(224,163,62,.35); background: rgba(224,163,62,.07); color: #e6e9ef; font-size: 12px; }
+    .fingerprint { font-family: "SF Mono", ui-monospace, Menlo, monospace; letter-spacing: .06em; }
+    .claimed { font-family: "SF Mono", ui-monospace, Menlo, monospace; color: #e0a33e; }
+    input.field, .field { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font: inherit; font-size: 12.5px; }
+    .check { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .check.on { background: #4f8cff; border-color: #4f8cff; }
+    .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .radio.on { border: 4px solid #4f8cff; background: #fff; }
+    .kbd { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid #272c38; color: #8b93a5; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 800px; display: flex; flex-direction: column; background: #0f1115; overflow: hidden;">
+  <div class="titlebar">
+    <div style="display: flex; align-items: center; gap: 10px;"><span class="dot"></span><div><div style="font-size: 13px; font-weight: 600; line-height: 1.2;">AgentHub</div><div class="muted" style="font-size: 11px; line-height: 1.2;">sheldon-mbp · darwin/arm64 · 127.0.0.1:7462</div></div></div>
+    <div class="tabs"><span class="tab">本機 session <span class="n">14</span></span><span class="tab on">區網 <span class="n">2</span></span><span class="tab">設定</span></div>
+    <div style="flex: 1;"></div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <span style="display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: #8b93a5;"><span style="width: 6px; height: 6px; border-radius: 50%; background: #35c07a;"></span>背景服務執行中</span>
+      <span class="btn ghost">重新整理</span>
+      <span class="btn ghost">重新掃描</span>
+      <span class="btn ghost">預覽 heartbeat</span>
+    </div>
+  </div>
+
+  <div style="flex: 1; display: flex; overflow: hidden;">
+    <div style="width: 320px; flex: none; border-right: 1px solid #272c38; display: flex; flex-direction: column;">
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-bottom: 1px solid #272c38;">
+        <span style="font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600;">已配對節點 · 2</span>
+        <span class="btn primary" style="height: 24px; font-size: 12px;">配對新節點…</span>
+      </div>
+      <div style="padding: 12px 14px; border-bottom: 1px solid rgba(39,44,56,.6); border-left: 2px solid #4f8cff; background: rgba(79,140,255,.09);">
+        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 8px; height: 8px; border-radius: 50%; background: #3fb950;"></span><span style="font-weight: 500;">ubuntu-lab</span><span style="margin-left: auto; font-size: 11px; color: #3fb950;">線上</span></div>
+        <div class="muted" style="font-size: 11.5px; margin-top: 3px;">linux/amd64 · 最後聯繫 8 秒前 · 公開給它 3 個</div>
+      </div>
+      <div style="padding: 12px 14px; border-bottom: 1px solid rgba(39,44,56,.6); border-left: 2px solid transparent;">
+        <div style="display: flex; align-items: center; gap: 8px;"><span style="width: 8px; height: 8px; border-radius: 50%; border: 1px solid #6e7681;"></span><span style="font-weight: 500;">win-bench</span><span style="margin-left: auto; font-size: 11px; color: #8b949e;">尚未收到心跳</span></div>
+        <div class="muted" style="font-size: 11.5px; margin-top: 3px;">windows/amd64 · 配對於 3 天前 · 公開給它 0 個</div>
+      </div>
+      <div style="flex: 1;"></div>
+      <div style="padding: 12px 14px; border-top: 1px solid #272c38;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+          <span style="font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600;">配對模式</span>
+          <span class="pill" style="color: #e0a33e; border-color: rgba(224,163,62,.4);">廣播中 · 剩 4:12</span>
+        </div>
+        <p class="muted" style="margin: 8px 0 10px; font-size: 11.5px;">正在廣播的機器 <b style="color: #e6e9ef; font-weight: 500;">2</b> 台，其中 1 台身分有爭用。</p>
+        <span class="btn" style="width: 100%; justify-content: center;">開啟配對面板</span>
+      </div>
+    </div>
+
+    <div style="flex: 1; overflow: hidden; padding: 22px 26px; display: flex; flex-direction: column; gap: 18px;">
+      <div style="display: flex; align-items: flex-start; gap: 16px;">
+        <div style="flex: 1;">
+          <div style="font-size: 16px; font-weight: 600;">ubuntu-lab</div>
+          <div class="fingerprint" style="font-size: 14px; margin: 4px 0 6px;">2DCF 9604 DBA9 778A 6DDD 035B 4C1E 90F2</div>
+          <p class="muted" style="margin: 0; font-size: 12px;">在對方機器上執行 <span class="mono">ah node</span>，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。</p>
+        </div>
+        <span class="btn danger">撤銷信任</span>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px;">
+        <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">節點 ID</div><div class="mono" style="margin-top: 4px; word-break: break-all;">node_a91c3e7b2d5f8046c0e1</div></div>
+        <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">平台</div><div class="mono" style="margin-top: 4px;">linux/amd64</div></div>
+        <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">配對時間</div><div style="margin-top: 4px;">3 天前</div></div>
+        <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">最後聯繫</div><div style="margin-top: 4px;">8 秒前</div></div>
+        <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">我公開給它的 session</div><div style="margin-top: 4px;">3 個 <span style="color: #4f8cff; font-size: 12px; margin-left: 6px;">在本機頁篩選</span></div></div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 8px; flex: 1;">
+        <div style="display: flex; align-items: baseline; gap: 10px;"><span style="font-size: 13px; font-weight: 600;">這個節點公開給我的 session</span><span class="muted" style="font-size: 11.5px;">線上 · 心跳 8 秒前</span></div>
+        <div style="border: 1px solid #272c38; border-radius: 6px; overflow: hidden;">
+          <div style="display: grid; grid-template-columns: 1fr 90px 90px 110px; height: 30px; align-items: center; padding: 0 12px; background: #161920; font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600;"><div>SESSION</div><div>PROVIDER</div><div>狀態</div><div>最後活動</div></div>
+          <div style="display: grid; grid-template-columns: 1fr 90px 90px 110px; height: 36px; align-items: center; padding: 0 12px; border-top: 1px solid rgba(39,44,56,.6);"><div class="mono">claude:3f1e…-agenthub-node</div><div>claude</div><div><span class="pill active">active</span></div><div class="muted">20 秒前</div></div>
+          <div style="display: grid; grid-template-columns: 1fr 90px 90px 110px; height: 36px; align-items: center; padding: 0 12px; border-top: 1px solid rgba(39,44,56,.6);"><div class="mono">codex:77ab…-serial-bench</div><div>codex</div><div><span class="pill idle">idle</span></div><div class="muted">14 分鐘前</div></div>
+        </div>
+        <p class="muted" style="margin: 4px 0 0; font-size: 11.5px;">撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。</p>
+      </div>
+    </div>
+  </div>
+  <div class="statusbar"><span>2 個已配對節點 · 1 個線上</span><span class="mono">node_7f2e9c41a0b3d8e6f1c2</span></div>
+</div>
+</x-dc>
+</body>
+</html>
