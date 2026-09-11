@@ -88,35 +88,56 @@ var findTool = func() (string, error) {
 }
 
 func locateTool() (string, error) {
-	looked := make([]string, 0, 5)
-	if given := os.Getenv("AGENTHUB_AH"); given != "" {
+	return locateBinary("ah", "AGENTHUB_AH")
+}
+
+// locateBinary is that search, with the binary's name and the environment
+// variable that overrides it as parameters: ah and agenthub-mcp ship side by
+// side and are found the same way, and a second copy of this list would be a
+// second thing to keep in step with how the app is packaged.
+//
+// The answer is always absolute. A relative path works for exec, which resolves
+// it against this process's working directory, but the caller may be writing it
+// into a config file that another program will read from somewhere else.
+func locateBinary(name, envName string) (string, error) {
+	looked := make([]string, 0, 6)
+	if given := os.Getenv(envName); given != "" {
 		if _, err := os.Stat(given); err == nil {
-			return given, nil
+			return absolute(given)
 		}
-		looked = append(looked, "$AGENTHUB_AH="+given)
+		looked = append(looked, "$"+envName+"="+given)
 	}
 	if self, err := os.Executable(); err == nil {
 		dir := filepath.Dir(self)
 		for _, candidate := range []string{
-			filepath.Join(dir, "ah"),
-			filepath.Join(dir, "..", "Resources", "ah"),
+			filepath.Join(dir, name),
+			filepath.Join(dir, "..", "Resources", name),
 			// The source tree: <repo>/desktop/build/bin/<app>.app/Contents/MacOS
 			// on macOS (six levels up), <repo>/desktop/build/bin on Linux
-			// (three), with the CLI at <repo>/bin/ah.
-			filepath.Join(dir, "..", "..", "..", "..", "..", "..", "bin", "ah"),
-			filepath.Join(dir, "..", "..", "..", "bin", "ah"),
+			// (three), with the binaries at <repo>/bin/<name>.
+			filepath.Join(dir, "..", "..", "..", "..", "..", "..", "bin", name),
+			filepath.Join(dir, "..", "..", "..", "bin", name),
 		} {
 			if _, err := os.Stat(candidate); err == nil {
-				return filepath.Clean(candidate), nil
+				return absolute(filepath.Clean(candidate))
 			}
 			looked = append(looked, candidate)
 		}
 	}
-	if found, err := exec.LookPath("ah"); err == nil {
-		return found, nil
+	if found, err := exec.LookPath(name); err == nil {
+		return absolute(found)
 	}
 	looked = append(looked, "PATH")
-	return "", fmt.Errorf("ah was not found (looked: %s); set AGENTHUB_AH to its path", strings.Join(looked, ", "))
+	return "", fmt.Errorf("%s was not found (looked: %s); set %s to its path",
+		name, strings.Join(looked, ", "), envName)
+}
+
+func absolute(path string) (string, error) {
+	full, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s to an absolute path: %w", path, err)
+	}
+	return full, nil
 }
 
 // ServiceStatus asks ah whether the node is installed as a service and

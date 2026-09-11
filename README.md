@@ -329,6 +329,10 @@ In `.mcp.json`, for a Claude Code session:
 }
 ```
 
+The desktop app writes that snippet for you: each session row has an
+「MCP 設定」 button that copies a `.mcp.json` naming this machine's
+`agenthub-mcp` and that row's session.
+
 The four tools are `agent_list`, `agent_status`, `agent_inbox` and `agent_send`;
 their contract is [mcp-tools.json](docs/mcp-tools.json). Reading is enough on its
 own, but sending needs the owner to open the gate for that session
