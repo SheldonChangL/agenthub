@@ -143,7 +143,7 @@ state.busy = false;
 state.pairing = { availability: "off", candidates: [], error: "DISCOVERY_DISABLED: not listening" };
 renderPairing();
 const off = panel() + el("candidate-full").serialize() + el("candidate-rows").serialize();
-if (off.includes("目前沒有看到任何機器在廣播")) {
+if (off.includes("機器在廣播。")) {
   failures.push('a node that is not looking was rendered as "nobody is advertising"');
 }
 if (!off.includes("-discover")) {
@@ -159,7 +159,7 @@ const unknown = panel() + el("pairing-note").serialize() + el("candidate-rows").
 if (unknown.includes("-discover")) {
   failures.push("an unreachable node was blamed on a missing flag");
 }
-if (unknown.includes("目前沒有看到任何機器在廣播")) {
+if (unknown.includes("機器在廣播。")) {
   failures.push("a failed read was rendered as a fact about the network");
 }
 // The heading "正在廣播的機器" stands over this region either way, so an empty
@@ -365,7 +365,7 @@ state.pairing = {
 };
 renderPairing();
 const listFailed = el("candidate-full").serialize() + el("candidate-rows").serialize();
-if (listFailed.includes("目前沒有看到任何機器在廣播")) {
+if (listFailed.includes("機器在廣播。")) {
   failures.push("a failed candidate read was rendered as nobody advertising");
 }
 if (!listFailed.includes("connection reset by peer")) {
@@ -374,6 +374,44 @@ if (!listFailed.includes("connection reset by peer")) {
 if (!listFailed.includes("不代表沒有人在廣播")) {
   failures.push("a failed candidate read did not say what it does not mean");
 }
+
+// 4e. An empty list means two different things, because the node filters
+//     paired nodes out of it on purpose. Two machines that are already paired
+//     with each other both show nothing here — which is exactly what happened
+//     on 2026-09-10, and was read as the feature being broken. So the empty
+//     region has to say whether the silence is about unpaired machines only,
+//     and where the one the owner is looking for already is.
+state.pairing = {
+  availability: "on",
+  state: { open: true, remainingSeconds: 240, announcing: { announceableAddresses: 1 } },
+  candidates: [],
+};
+state.pairingReadAt = performance.now();
+scope.state.nodes = [];
+renderPairing();
+const emptyNoPeers = el("candidate-rows").serialize();
+if (!emptyNoPeers.includes("沒有看到任何機器在廣播")) {
+  failures.push(`an empty list on a node with no paired peers did not say so: ${emptyNoPeers}`);
+}
+if (emptyNoPeers.includes("已配對節點")) {
+  failures.push("a node with nothing paired was pointed at a paired list that is empty too");
+}
+
+scope.state.nodes = [{ nodeId: "node_abc", displayName: "desktop", platform: "linux/amd64" }];
+renderPairing();
+const emptyWithPeers = el("candidate-rows").serialize();
+if (!emptyWithPeers.includes("還沒配對的機器")) {
+  failures.push(`an empty list was still described as nobody advertising at all: ${emptyWithPeers}`);
+}
+if (!emptyWithPeers.includes("已配對節點")) {
+  failures.push(`the empty list does not point at where a paired machine is listed: ${emptyWithPeers}`);
+}
+// Text, not markup — the em dash and the corner brackets are prose, and this
+// region is rebuilt from the same element() helper as every hostile row.
+if (/<(?!\/?div)/.test(emptyWithPeers)) {
+  failures.push(`the empty-list sentence built markup: ${emptyWithPeers}`);
+}
+scope.state.nodes = [];
 
 // 5. A full list is a condition an attacker can hold this node in, so the owner
 //    has to learn their machine may be missing for that reason.
