@@ -275,3 +275,22 @@
 - 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
 - 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
 - 與「收件匣」「MCP 設定」並排為三個列動作；設計稿與實作都要有。
+
+### 4.2 Go 端靜態測試的硬性要求（`desktop/frontend_test.go`）
+
+除了 node 測試，`go test ./desktop/...` 還直接讀前端原始碼。新 UI 必須滿足：
+
+- **禁用 sink**：任何 `src/*.js` 不得出現 `innerHTML`、`outerHTML`、`insertAdjacentHTML`、`document.write`。
+- **`statusPillClass`**：某個 `src/*.js` 要有 `function statusPillClass`，且內含
+  `status === "active" || status === "idle"`（未知 status 只能落到 `pill`）。
+- **每個 `el("...")` 字面查找的 id 都必須在 index.html 存在**（動態建立的元素用變數查找不算）。
+- **style.css 必須有這些選擇器**（以換行開頭的完整規則）：`.stale {`、`.pill.bad {`、
+  `.modal-card .warning {`、`.claimed {`、`#pairing-note .claimed {`、`.noaddress {`、`.keyvalue {`；
+  且要提到 `#candidate-rows`。
+- **可捲動容器要有對應屬性**：`.nodelist {` 含 `overflow-y`；`#candidate-rows {`、`#inbox-body {`、
+  `.inboxrow .inboxbody {` 含 `max-height`。
+- index.html 至少一個 `<p class="warning">`。
+- 九個 node 測試由 Go 測試以 `node frontend/test/<file>.mjs` 執行，路徑與檔名不可改。
+
+若新設計把 modal 改成抽屜，`.modal-card .warning` 這條選擇器仍要存在（可以是共用規則），
+或同步修改 `frontend_test.go` 並在 PR 說明寫出理由。
