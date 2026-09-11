@@ -159,6 +159,33 @@
       </div>
     </div>
 
+    <div id="mcp-modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2 id="mcp-title">MCP 設定</h2>
+          <button id="mcp-close" class="ghost">關閉</button>
+        </header>
+        <p class="muted">
+          把下面的內容存成這個 agent 專案裡的 <code>.mcp.json</code>。
+          <code>command</code> 是這台機器上 <code>agenthub-mcp</code> 的絕對路徑，
+          <code>-as</code> 是這一列的 session。
+        </p>
+        <pre id="mcp-text"></pre>
+        <div id="mcp-status" class="muted"></div>
+        <p class="warning">
+          這份設定是 per-project 的；同一個目錄下的第二個 Claude Code 會以同一個 session
+          身分啟動 <code>agenthub-mcp</code>。每個 session 給自己的設定檔，或用
+          <code>--strict-mcp-config</code> 指定獨立的檔。
+        </p>
+        <div class="modal-actions">
+          <span class="muted">
+            這個 session 要能主動送出訊息，還要 owner 開 <code>--outbound</code>
+            （<code>ah audience &lt;id&gt; ... --outbound</code>）。
+          </span>
+        </div>
+      </div>
+    </div>
+
       <footer class="statusbar">
         <span id="footer-left">—</span>
         <span id="footer-right" class="muted"></span>

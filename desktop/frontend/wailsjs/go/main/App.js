@@ -10,6 +10,10 @@ export function ClosePairing() {
   return window['go']['main']['App']['ClosePairing']();
 }
 
+export function CopyText(arg1) {
+  return window['go']['main']['App']['CopyText'](arg1);
+}
+
 export function Discover() {
   return window['go']['main']['App']['Discover']();
 }
@@ -28,6 +32,10 @@ export function InstallService(arg1) {
 
 export function LocalAddresses() {
   return window['go']['main']['App']['LocalAddresses']();
+}
+
+export function MCPConfig(arg1) {
+  return window['go']['main']['App']['MCPConfig'](arg1);
 }
 
 export function NodeURL() {

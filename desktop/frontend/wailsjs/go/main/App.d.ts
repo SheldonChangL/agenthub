@@ -6,6 +6,8 @@ export function ClearInbox(arg1:string):Promise<main.ClearedInbox>;
 
 export function ClosePairing():Promise<main.PairingState>;
 
+export function CopyText(arg1:string):Promise<void>;
+
 export function Discover():Promise<Record<string, number>>;
 
 export function Heartbeat():Promise<string>;
@@ -15,6 +17,8 @@ export function Inbox(arg1:string):Promise<main.InboxView>;
 export function InstallService(arg1:main.ServiceForm):Promise<main.ServiceResult>;
 
 export function LocalAddresses():Promise<Array<main.LocalAddress>>;
+
+export function MCPConfig(arg1:string):Promise<main.MCPConfigResult>;
 
 export function NodeURL():Promise<string>;
 
