@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"agenthub.local/agenthub/internal/discovery"
+	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/wake"
 )
 
@@ -286,4 +287,78 @@ func functionBody(t *testing.T, file, opener string) string {
 		t.Fatalf("no closing brace at column zero after %q in %s", opener, file)
 	}
 	return rest[:end]
+}
+
+// A flag given now decides this start and is recorded; a flag left off means
+// whatever the node remembered. The distinction is "was it passed", not "does
+// it differ from the default": -allow-lan=false is an owner turning something
+// off, and reading that as absence would make a remembered switch impossible
+// to close.
+func TestFlagSettingsCollectsOnlyWhatTheCommandLineGave(t *testing.T) {
+	parse := func(args ...string) nodeconfig.Partial {
+		t.Helper()
+		flags := flag.NewFlagSet("agenthub-node", flag.ContinueOnError)
+		peerListen := flags.String("peer-listen", nodeconfig.DefaultPeerListen, "")
+		allowLAN := flags.Bool("allow-lan", false, "")
+		discover := flags.Bool("discover", false, "")
+		autoWake := flags.Bool("auto-wake", false, "")
+		flags.String("db", "", "")
+		var declaredPrivate nodeconfig.StringList
+		flags.Var(&declaredPrivate, "treat-as-private", "")
+		if err := flags.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return flagSettings(flags, peerListen, allowLAN, discover, autoWake, declaredPrivate)
+	}
+
+	if given := parse("-db", "/tmp/x.db"); !given.Empty() {
+		t.Fatalf("a command line with no remembered flag collected %+v", given)
+	}
+
+	off := parse("-allow-lan=false")
+	if off.AllowLAN == nil || *off.AllowLAN {
+		t.Fatalf("-allow-lan=false collected %v; a switch has to be closable", off.AllowLAN)
+	}
+	if off.Discover != nil || off.PeerListen != nil || off.TreatAsPrivate != nil {
+		t.Fatalf("one flag collected others: %+v", off)
+	}
+
+	// Given at all, -treat-as-private replaces the whole declaration — empty
+	// included, which is how the last range is withdrawn.
+	both := parse("-treat-as-private", "10.9.0.0/16", "-treat-as-private", "122.122.0.0/16")
+	if both.TreatAsPrivate == nil || len(*both.TreatAsPrivate) != 2 {
+		t.Fatalf("treatAsPrivate = %v", both.TreatAsPrivate)
+	}
+	settings, sources := nodeconfig.Resolve(both, nodeconfig.Partial{
+		TreatAsPrivate: func() *[]string { old := []string{"172.20.0.0/16"}; return &old }(),
+	}, nodeconfig.DefaultSettings())
+	if len(settings.TreatAsPrivate) != 2 || sources[nodeconfig.SettingTreatAsPrivate] != nodeconfig.SourceFlag {
+		t.Fatalf("settings = %+v, sources = %v", settings, sources)
+	}
+}
+
+// A remembered value can stop being valid with nothing changing on this
+// command line — a renumbered network, a range that no longer covers the
+// address. The refusal has to say where the value came from and how to replace
+// it, or the owner reads an error about an address they never typed.
+func TestARefusalOverARememberedValueSaysSo(t *testing.T) {
+	settings := nodeconfig.Settings{PeerListen: "192.168.1.10:7463"}
+	_, err := settings.Validate()
+	if err == nil {
+		t.Fatal("a LAN listener without -allow-lan was accepted")
+	}
+	explained := rememberedRefusal(err, map[string]string{
+		nodeconfig.SettingPeerListen: nodeconfig.SourceRemembered,
+	})
+	for _, want := range []string{"remembering", "-peer-listen", "ah settings"} {
+		if !strings.Contains(explained.Error(), want) {
+			t.Errorf("the refusal lacks %q: %v", want, explained)
+		}
+	}
+	// Nothing was remembered, so nothing is added: the flag the owner typed is
+	// right there on their command line.
+	plain := rememberedRefusal(err, map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceFlag})
+	if plain.Error() != err.Error() {
+		t.Errorf("a refusal over a typed flag was decorated: %v", plain)
+	}
 }
