@@ -355,10 +355,18 @@ func TestARefusalOverARememberedValueSaysSo(t *testing.T) {
 	explained := rememberedRefusal(err, map[string]string{
 		nodeconfig.SettingPeerListen: nodeconfig.SourceRemembered,
 	})
-	for _, want := range []string{"remembering", "-peer-listen", "ah settings"} {
+	// It has to name a route that works from where the owner is standing. The
+	// node is refusing to start, so every `ah settings` suggestion points at an
+	// API this node is not serving; the only thing that reaches a dead node is
+	// its own command line.
+	for _, want := range []string{"remembering", "-peer-listen", "agenthub-node", nodeconfig.DefaultPeerListen} {
 		if !strings.Contains(explained.Error(), want) {
 			t.Errorf("the refusal lacks %q: %v", want, explained)
 		}
+	}
+	// And where it does mention the API, it says why that route is shut.
+	if !strings.Contains(explained.Error(), "only answers once the node starts") {
+		t.Errorf("the refusal offers `ah settings` without saying it cannot answer: %v", explained)
 	}
 	// Nothing was remembered, so nothing is added: the flag the owner typed is
 	// right there on their command line.

@@ -119,7 +119,7 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 			return writing, nil
 		})
 	if invalid != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", invalid.Error())
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", explainRefusal(requested, invalid))
 		return
 	}
 	if err != nil {
@@ -164,6 +164,23 @@ func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings)
 	}
 	requested.PeerListen = &address
 	return requested, true
+}
+
+// explainRefusal answers the caller in the terms of what they actually sent.
+//
+// The validator speaks to a command line: its refusal of a LAN listener ends
+// "pass -allow-lan to serve paired peers on this network" — which is the switch
+// this very request is turning off. A caller who sent both halves reads that as
+// the API contradicting them, with nothing to say that the two fields were
+// judged as one decision. The original message is kept: it is the node's own,
+// and it names the address.
+func explainRefusal(requested nodeconfig.Partial, err error) string {
+	if requested.AllowLAN != nil && !*requested.AllowLAN && requested.PeerListen != nil &&
+		nodeconfig.ValidateLoopback(*requested.PeerListen) != nil {
+		return "this write turns allowLan off, so peerListen has to be a loopback address, " +
+			"and it was sent as " + *requested.PeerListen + ": " + err.Error()
+	}
+	return err.Error()
 }
 
 // settingsView renders the running configuration beside the saved one.
