@@ -523,7 +523,11 @@ func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *test
 	// and a listener moving is the one thing about this node that is visible
 	// from another machine.
 	logged := strings.Join(lines, "\n")
-	for _, want := range []string{"192.168.1.10:7463", nodeconfig.DefaultPeerListen, "allow-lan is off"} {
+	for _, want := range []string{
+		"192.168.1.10:7463", nodeconfig.DefaultPeerListen, "allow-lan is off",
+		// Printed only once the save went through, which on this start it did.
+		nodeconfig.DefaultPeerListen + " is now what this node remembers",
+	} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the start-up log never says %q:\n%s", want, logged)
 		}
@@ -545,6 +549,47 @@ func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *test
 	}
 	if next.settings.PeerListen != nodeconfig.DefaultPeerListen {
 		t.Fatalf("the following start ran with %+v", next.settings)
+	}
+}
+
+// The log must not claim a withdrawal was remembered by a start that then
+// refused.
+//
+// The withdrawal is announced before Validate, so the owner reads it next to
+// the settings it is about. But Validate can still end this start over some
+// other field, and nothing is saved when it does — so the announcement can say
+// what was not bound and cannot say what was stored. It said both in one
+// sentence, and this is the start where that sentence was false.
+func TestARefusedStartNeverSaysTheWithdrawalWasRemembered(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"),
+		AllowLAN:   boolFlag(true),
+	}}
+	nonsense := []string{"not-a-cidr"}
+	var lines []string
+	_, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{AllowLAN: boolFlag(false), TreatAsPrivate: &nonsense},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err == nil {
+		t.Fatal("a start with an unparseable -treat-as-private was accepted")
+	}
+	if store.saves != 0 {
+		t.Fatalf("a refused start wrote to the store %d time(s)", store.saves)
+	}
+	logged := strings.Join(lines, "\n")
+	// The withdrawal itself is still announced: it is the reason the listener
+	// in the lines below is not the one in the database.
+	if !strings.Contains(logged, "withdrawing peer-listen") {
+		t.Errorf("the withdrawal went unmentioned:\n%s", logged)
+	}
+	// Both spellings: the sentence that used to end "and remembering it", and
+	// the separate line that replaced it. Saying where the withdrawn address
+	// came *from* is still true and still printed; claiming this start stored
+	// the new one is not.
+	for _, forbidden := range []string{"is now what this node remembers", "remembering it"} {
+		if strings.Contains(logged, forbidden) {
+			t.Errorf("a start that saved nothing said %q:\n%s", forbidden, logged)
+		}
 	}
 }
 
