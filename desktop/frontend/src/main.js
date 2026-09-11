@@ -301,8 +301,37 @@ const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "mcp-modal", "
 function anyModalOpen() {
   return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
 }
+
+// Typing is one of those conditions. A refresh that rebuilds a panel while the
+// owner is in one of its fields does not merely change text around them: it
+// replaces the element they are typing into, and the replacement arrives
+// unfocused with the caret at the start. The address field kept a draft of what
+// had been typed (see addressSection) and that still could not save the caret,
+// because by then the field the caret was in no longer existed. Asking here
+// instead protects every field in this window, including ones not written yet,
+// and leaves the draft as the second line of defence for the reads that do
+// apply.
+//
+// Every field is covered, the search box included — a search being retyped
+// under the owner is the same annoyance as an address being retyped. The
+// checkboxes and radios are not: they are not typed into, they all live in
+// dialogs that already hold the tick off, and a focus ring is not a caret.
+const EDITABLE_TAGS = new Set(["textarea", "select"]);
+const EDITABLE_INPUT_TYPES = new Set([
+  "text", "search", "url", "email", "tel", "number", "password",
+]);
+function fieldHasFocus() {
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = String(active.tagName || "").toLowerCase();
+  if (EDITABLE_TAGS.has(tag)) return true;
+  if (tag !== "input") return false;
+  // An <input> with no type attribute is a text input, which is what the
+  // property answers in a browser; the fallback is for a DOM that does not.
+  return EDITABLE_INPUT_TYPES.has(String(active.type || "text").toLowerCase());
+}
 function interactionInProgress() {
-  return state.busy || state.selected.size > 0 || anyModalOpen();
+  return state.busy || state.selected.size > 0 || anyModalOpen() || fieldHasFocus();
 }
 
 // background: this read is the 15-second tick's, not the owner's. A background
@@ -987,10 +1016,12 @@ function addressSection(node) {
   input.type = "text";
   input.placeholder = "192.168.1.20:7463";
   // What is half-typed survives a re-render. This page is rebuilt from scratch
-  // every fifteen seconds by the background refresh, which does not count
-  // typing as an interaction in progress — so without the draft, an address
-  // being entered is deleted under the owner's hands mid-word, and the field
-  // silently reverts to the recorded value they are trying to change.
+  // every fifteen seconds by the background refresh; a refresh while the field
+  // has focus is now held off entirely (interactionInProgress), so this is the
+  // second line of defence — it covers a re-render the owner caused themselves,
+  // and a refresh landing after they clicked away from a field they had not
+  // finished. Without it an address being entered is deleted under the owner's
+  // hands and the field silently reverts to the value they are replacing.
   const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.value : null;
   input.value = draft ?? node.address ?? "";
   input.oninput = (event) => {

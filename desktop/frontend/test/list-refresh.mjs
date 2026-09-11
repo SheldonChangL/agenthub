@@ -422,8 +422,100 @@ if (refresh) {
   }
 }
 
+// 10. Someone typing in a field is interacting too, and a refresh that redraws
+//     the panel around them takes the caret with it — replaceChildren() throws
+//     away the element the caret is in, and its replacement starts empty and
+//     unfocused. The address draft could put the text back but never the caret,
+//     because the field it belonged to was gone. Measured on the address field
+//     because that is where it was reported, but the guard is asked about
+//     whichever field has focus, so a field added later is covered too.
+//
+//     Element identity is the assertion: the same object still in the tree is
+//     the only thing that says the panel was left alone rather than redrawn
+//     with matching contents.
+const find = (node, className, found = []) => {
+  if (!node || typeof node !== "object") return found;
+  if ((node.className ?? "").split(" ").includes(className)) found.push(node);
+  for (const child of node.children ?? []) find(child, className, found);
+  return found;
+};
+
+if (refresh) {
+  state.selected.clear();
+  overviewAnswer = reachableOverview(["claude:three"], ["node_alice"]);
+  await scope.load();
+  await settle();
+
+  // The detail panel — and its address field — is only on screen with the
+  // 區網 view showing and a node selected.
+  state.view = "network";
+  state.selectedNode = "node_alice";
+  scope.render();
+
+  const addressField = () => find(el("node-detail-body"), "addressinput")[0];
+  const field = addressField();
+  if (!field) {
+    failures.push("the detail panel drew no address field, so nothing below is measuring anything");
+  } else {
+    // Half an address typed, and the caret still in it.
+    field.value = "192.168.1.2";
+    field.oninput({ target: field });
+    field.focus();
+
+    // The tick does not even ask while they are in the field.
+    const askedWhileTyping = overviewCalls;
+    refresh.fn();
+    await settle();
+    if (overviewCalls !== askedWhileTyping) {
+      failures.push("the periodic refresh asked the node while an address was being typed");
+    }
+
+    // And a read that was already in the air when they started typing is
+    // thrown away rather than applied, which is the half the tick's own guard
+    // cannot cover.
+    field.blur();
+    let release;
+    overviewPark = (resolve) => { release = resolve; };
+    const askedIdle = overviewCalls;
+    refresh.fn();
+    await settle();
+    if (overviewCalls === askedIdle) {
+      failures.push("the background tick never asked the node with no field focused");
+    }
+    field.focus();
+    release(reachableOverview(["claude:other"], ["node_alice", "node_bob"]));
+    await settle();
+
+    if (addressField() !== field) {
+      failures.push("a background read landing while an address was being typed replaced the field being typed into");
+    }
+    if (document.activeElement !== field) {
+      failures.push("a background read landing while an address was being typed took the keyboard focus");
+    }
+    if (field.value !== "192.168.1.2") {
+      failures.push(`a background read landing while an address was being typed left ${JSON.stringify(field.value)} in the field`);
+    }
+    if (state.nodes.length !== 1) {
+      failures.push(`a background read landing while an address was being typed was applied (${state.nodes.length} nodes)`);
+    }
+
+    // Once they click away the window catches up again — otherwise the
+    // assertions above would pass over a refresh that had simply stopped.
+    field.blur();
+    overviewAnswer = reachableOverview(["claude:after"], ["node_alice", "node_bob"]);
+    refresh.fn();
+    await settle();
+    if (state.nodes.length !== 2) {
+      failures.push(`with the field no longer focused the next refresh still did not apply (${state.nodes.length} nodes)`);
+    }
+    if (addressField() === field) {
+      failures.push("the detail panel was never redrawn, so the untouched field above proves nothing");
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("the main list refreshes itself and survives a failed read");
+console.log("the main list refreshes itself, survives a failed read, and leaves a field being typed in alone");
