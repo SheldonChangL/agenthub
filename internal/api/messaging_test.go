@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -818,14 +820,16 @@ func queueForPeerViaAPI(t *testing.T, owner http.Handler, from, body string) str
 
 type outboundPage struct {
 	Messages []struct {
-		ID        string `json:"id"`
-		To        string `json:"to"`
-		From      string `json:"from"`
-		State     string `json:"state"`
-		Attempts  int    `json:"attempts"`
-		LastError string `json:"lastError"`
-		Body      string `json:"body"`
-		CreatedAt string `json:"createdAt"`
+		ID                string `json:"id"`
+		DestinationNodeID string `json:"destinationNodeId"`
+		To                string `json:"to"`
+		From              string `json:"from"`
+		State             string `json:"state"`
+		Attempts          int    `json:"attempts"`
+		LastError         string `json:"lastError"`
+		Body              string `json:"body"`
+		CreatedAt         string `json:"createdAt"`
+		WakeHops          int    `json:"wakeHops"`
 	} `json:"messages"`
 	Next string `json:"next"`
 }
@@ -866,6 +870,12 @@ func TestOutboundListAnswersNewestFirst(t *testing.T) {
 	row := page.Messages[0]
 	if row.State != string(registry.OutboundPending) || row.To != "codex:their-session" {
 		t.Errorf("row = %#v; want the same fields the single lookup answers with", row)
+	}
+	// The destination node travels with the row: `to` is the session half
+	// alone, so without it a reader cannot say which machine a message is
+	// stuck on — which is the question an owner opens this list with.
+	if row.DestinationNodeID != peerNodeID {
+		t.Errorf("destinationNodeId = %q; want %q", row.DestinationNodeID, peerNodeID)
 	}
 	if row.CreatedAt == "" {
 		t.Error("a row carries no time, so nothing can say when it was sent")
@@ -939,6 +949,14 @@ func TestOutboundListPagesAndBoundsItself(t *testing.T) {
 			t.Errorf("GET /v1/outbound%s = %d; want 400", bad, code)
 		}
 	}
+	// And the ends of the range are inside it. Only the refusals were covered,
+	// so a bound written one step too tight would have refused a caller asking
+	// for exactly one row, or for a full page, and nothing would have said so.
+	for _, good := range []string{"?limit=1", "?limit=200"} {
+		if code := perform(t, owner, http.MethodGet, "/v1/outbound"+good, nil).Code; code != http.StatusOK {
+			t.Errorf("GET /v1/outbound%s = %d; want 200, the limit is inclusive", good, code)
+		}
+	}
 	// A cursor this node did not issue is refused rather than silently read as
 	// the start, which would answer a page the caller has already seen.
 	if code := perform(t, owner, http.MethodGet, "/v1/outbound?after=nonsense", nil).Code; code != http.StatusBadRequest {
@@ -1010,4 +1028,118 @@ func TestOutboundListRefusesASessionThatIsNotLocal(t *testing.T) {
 	if malformed.Code != http.StatusBadRequest {
 		t.Fatalf("a malformed session = %d %s; want 400", malformed.Code, malformed.Body.String())
 	}
+}
+
+// TestABlankSessionFilterIsRefusedNotIgnored covers the value that used to be
+// trimmed away: a caller that asked to narrow the list was handed the whole
+// node's, which reads as the session's own traffic and is not. The two
+// listings answer alike, because they are the same mistake.
+func TestABlankSessionFilterIsRefusedNotIgnored(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	for _, path := range []string{
+		"/v1/outbound?session=",
+		"/v1/outbound?session=%20%20",
+		"/v1/wakes?session=",
+		"/v1/wakes?session=%20%20",
+	} {
+		response := perform(t, owner, http.MethodGet, path, nil)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_REQUEST") {
+			t.Errorf("GET %s = %d %s; want 400 INVALID_REQUEST rather than the whole node's list",
+				path, response.Code, response.Body.String())
+		}
+	}
+	// Absent still means everything: nobody asked to narrow anything.
+	for _, path := range []string{"/v1/outbound", "/v1/wakes"} {
+		if code := perform(t, owner, http.MethodGet, path, nil).Code; code != http.StatusOK {
+			t.Errorf("GET %s = %d; want 200 when no filter was asked for", path, code)
+		}
+	}
+}
+
+// TestTheListRowCarriesEveryFieldTheSingleLookupDoes pins the promise
+// outboundSummary makes in its own comment. The summary is written out by
+// hand, so a field added to registry.OutboundMessage reaches GET
+// /v1/outbound/{id} and silently never reaches the list — and nothing else in
+// the suite notices, because every existing assertion names the fields it
+// already knows.
+func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	// Every omitempty field filled, or the comparison would pass by both sides
+	// omitting the same key. WakeHops is set here rather than earned through a
+	// wake because what is under test is the shape of the answer.
+	queued, err := store.QueueOutbound(context.Background(), registry.OutboundMessage{
+		DestinationNodeID: peerNodeID,
+		To:                "codex:their-session",
+		From:              testNodeID + "/" + from,
+		Body:              "a body the list does not carry",
+		WakeHops:          2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkOutbound(context.Background(), queued.ID, registry.OutboundRefused,
+		"the addressed session does not accept messages"); err != nil {
+		t.Fatal(err)
+	}
+
+	single := perform(t, owner, http.MethodGet, "/v1/outbound/"+queued.ID, nil)
+	if single.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound/%s = %d %s", queued.ID, single.Code, single.Body.String())
+	}
+	var one map[string]json.RawMessage
+	if err := json.Unmarshal(single.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	listed := perform(t, owner, http.MethodGet, "/v1/outbound", nil)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound = %d %s", listed.Code, listed.Body.String())
+	}
+	var page struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 1 {
+		t.Fatalf("listed %d rows; want the one queued", len(page.Messages))
+	}
+
+	// The list deliberately carries no body, and only that.
+	if _, present := page.Messages[0]["body"]; present {
+		t.Error("the list row carries a body")
+	}
+	// The values travel too, not only the keys: wakeHops is how far an
+	// automatic exchange has gone, and a row that always reads zero would say
+	// the opposite of what happened.
+	typed := readOutboundPage(t, owner, "")
+	if typed.Messages[0].WakeHops != 2 || typed.Messages[0].DestinationNodeID != peerNodeID {
+		t.Errorf("row = %#v; want wakeHops 2 and the destination node", typed.Messages[0])
+	}
+
+	row := keysOf(page.Messages[0])
+	row = append(row, "body")
+	sort.Strings(row)
+	lookup := keysOf(one)
+	sort.Strings(lookup)
+	if !slices.Equal(row, lookup) {
+		t.Errorf("the list row and the single lookup answer with different fields:\n"+
+			" list + body: %v\n lookup:      %v\n"+
+			"a field added to registry.OutboundMessage has to be added to outboundSummary too",
+			row, lookup)
+	}
+}
+
+// keysOf is the top-level field set of one JSON object.
+func keysOf(object map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	return keys
 }
