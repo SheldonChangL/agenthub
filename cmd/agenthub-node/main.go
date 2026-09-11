@@ -601,9 +601,11 @@ func rememberedRefusal(err error, sources map[string]string) error {
 	}
 	return fmt.Errorf("%w\n"+
 		"this node is remembering %s from an earlier start, so the refusal is about a value that "+
-		"is not on this command line. `ah settings` prints what is stored; pass the flag again to "+
-		"replace it, or run `ah settings set --peer-listen ADDR --allow-lan=false` and restart",
-		err, strings.Join(remembered, ", "))
+		"is not on this command line. Run agenthub-node again with the flag that replaces the "+
+		"stored value — for example `-peer-listen %s` — and the new value is remembered in its "+
+		"place. (`ah settings` reads this node's own API, which only answers once the node starts, "+
+		"so it cannot undo a value that is stopping it.)",
+		err, strings.Join(remembered, ", "), nodeconfig.DefaultPeerListen)
 }
 
 // wasSet reports whether a flag was passed, as opposed to left at its default.

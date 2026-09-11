@@ -261,3 +261,52 @@ func TestTurningAllowLANOffLeavesALoopbackListenerAlone(t *testing.T) {
 		t.Errorf("the response claims a listener moved: %q", view.Message)
 	}
 }
+
+// The withdrawal is for a caller who said nothing about the listener. A caller
+// who names a LAN address in the same write that closes the switch has given
+// two contradictory halves, and the only honest answer is to refuse — silently
+// storing loopback would be the API deciding which half they meant and
+// answering 200 to a request it did not carry out.
+//
+// Pinned because the guard that does this is one clause: dropping
+// `requested.PeerListen != nil` from withdrawLANListener turns this 400 into a
+// 200 that stores an address the caller never sent, and every other test here
+// still passes.
+func TestNamingALANListenerWhileClosingTheSwitchIsRefusedNotQuietlyWithdrawn(t *testing.T) {
+	store, handler := settingsServer(t, nodeconfig.DefaultSettings(), map[string]string{})
+	// The node already serves the LAN, which is the only state in which the
+	// guard is reachable: the withdrawal looks at the saved listener, so with
+	// nothing saved there is nothing for a missing guard to withdraw.
+	if opened := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": "192.168.1.10:7463", "allowLan": true}); opened.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", opened.Code, opened.Body.String())
+	}
+
+	const named = "192.168.1.20:7463"
+	response := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"allowLan": false, "peerListen": named})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("a contradictory write = %d %s", response.Code, response.Body.String())
+	}
+	// Answered in the caller's own terms. The node's validator says "pass
+	// -allow-lan", which is the switch this write is closing, and on its own it
+	// reads as the API contradicting the request.
+	body := response.Body.String()
+	for _, want := range []string{"allowLan", "loopback", named} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the refusal never says %q: %s", want, body)
+		}
+	}
+
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != "192.168.1.10:7463" {
+		t.Fatalf("a refused write moved the listener to %v; neither half of it was carried out",
+			stored.PeerListen)
+	}
+	if stored.AllowLAN == nil || !*stored.AllowLAN {
+		t.Fatalf("a refused write closed the switch: %v", stored.AllowLAN)
+	}
+}
