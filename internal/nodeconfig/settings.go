@@ -230,3 +230,38 @@ func FlagName(field string) string {
 	}
 	return out.String()
 }
+
+// WithdrawPeerListen decides whether a peer listener has to come off the
+// network because allowLan is off, and says which address it falls back to.
+//
+// peerListen is the listener that would otherwise be in effect; peerListenNamed
+// says whether this request or this command line said anything about it.
+//
+// The two fields are one decision, and Validate refuses a configuration that
+// serves a LAN address with allowLan off. That refusal is right when the owner
+// typed both halves in the same breath — they gave contradictory instructions
+// and only they can say which one they meant. It is wrong in every other case,
+// and wrong in the worst way: a node that remembered 192.168.1.10:7463 and is
+// then started with -allow-lan=false refuses, the supervisor restarts it, and
+// it refuses again, forever. The owner's API never comes up, so the
+// `ah settings` rescue runs behind a listener the dead node is not serving.
+//
+// So when nothing at hand names the listener, the safe direction is the only
+// one: stop serving the network. Widening is never done here — a LAN address
+// still has to be asked for.
+//
+// One function because the owner's PUT and the node's own start-up have to
+// answer this identically. The API predicting one thing and the node doing
+// another is how a desktop comes to show a setting that does not survive a
+// restart.
+func WithdrawPeerListen(allowLAN, peerListenNamed bool, peerListen string) (string, bool) {
+	if allowLAN || peerListenNamed {
+		return "", false
+	}
+	// A loopback listener is already off the network, whatever its port, and an
+	// owner who chose that port did not ask for it to move.
+	if ValidateLoopback(peerListen) == nil {
+		return "", false
+	}
+	return DefaultPeerListen, true
+}
