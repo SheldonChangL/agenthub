@@ -296,8 +296,15 @@ func (r runner) command(ctx context.Context, args []string) error {
 	case "outbound":
 		// A message to another node is queued, not delivered, so there has to
 		// be somewhere to find out what became of it.
-		if len(args) != 2 {
-			return errors.New("usage: ah outbound <message-id>")
+		//
+		// Without an id it lists, newest first. An owner who has lost the id —
+		// the terminal that printed it is closed, or the send came from an
+		// agent rather than from them — otherwise could not ask at all.
+		if len(args) > 2 {
+			return errors.New("usage: ah outbound [message-id]")
+		}
+		if len(args) == 1 {
+			return r.simple(ctx, http.MethodGet, "/v1/outbound", nil)
 		}
 		return r.simple(ctx, http.MethodGet, "/v1/outbound/"+url.PathEscape(args[1]), nil)
 	case "node":
@@ -735,7 +742,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
-	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
+	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
 	_, _ = fmt.Fprintln(output, "  ah inbox <session-id>                        read a session's inbox")
 	_, _ = fmt.Fprintln(output, "  ah inbox delete <session-id> <message-id>    drop one message, once it has been handled")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
