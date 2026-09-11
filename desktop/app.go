@@ -434,6 +434,22 @@ func (a *App) TrustNode(nodeID, displayName, platform, publicKey, confirmedFinge
 	})
 }
 
+// SetNodeAddress records where a paired node answers, as host:port.
+//
+// Trust and address are separate facts and this changes only the second:
+// pairing says who a node is, this says where it currently is, which is what
+// changes when a laptop moves between networks. It exists because a peer with
+// no address is skipped in silence — the sender's `ah send` still answers
+// `queued` — and with no broadcast on the segment there was nothing in this
+// window that could supply one.
+//
+// The node validates the address and its refusal is returned verbatim, because
+// what is wrong with an address is something only the node knows.
+func (a *App) SetNodeAddress(nodeID, address string) error {
+	activeClient, _ := a.current()
+	return activeClient.setNodeAddress(a.ctx, nodeID, address)
+}
+
 // RevokeNode withdraws trust and every session grant the node held.
 func (a *App) RevokeNode(nodeID string) error {
 	activeClient, _ := a.current()

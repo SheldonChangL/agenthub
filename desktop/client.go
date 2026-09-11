@@ -48,6 +48,13 @@ type TrustedNode struct {
 	Fingerprint string    `json:"fingerprint"`
 	PairedAt    time.Time `json:"pairedAt"`
 	LastSeenAt  time.Time `json:"lastSeenAt,omitzero"`
+	// Address is where this node reaches the peer, as host:port, empty until
+	// something supplies one. Named here rather than left to pass through: an
+	// unknown key is dropped in decoding, so a field this struct does not
+	// carry is one the window can never render — and an empty address is the
+	// quietest failure in the system. Delivery skips a peer without one
+	// without a word, and the sender's `ah send` still answers `queued`.
+	Address string `json:"address,omitempty"`
 }
 
 // Peer is what this node currently believes about one paired peer.
@@ -251,6 +258,18 @@ func (c *client) trustNode(ctx context.Context, input map[string]string) (Truste
 		return TrustedNode{}, fmt.Errorf("decode trusted node: %w", err)
 	}
 	return node, nil
+}
+
+// setNodeAddress records where a paired peer answers.
+//
+// The address is not validated here. The node refuses one it would not deliver
+// to — not host:port, or outside the ranges this build trusts — and says which,
+// and a second rule in this process could only disagree with the one that
+// actually decides whether anything is sent.
+func (c *client) setNodeAddress(ctx context.Context, nodeID, address string) error {
+	_, err := c.request(ctx, http.MethodPut, "/v1/nodes/"+url.PathEscape(nodeID)+"/address",
+		map[string]string{"address": address})
+	return err
 }
 
 func (c *client) revokeNode(ctx context.Context, nodeID string) error {
