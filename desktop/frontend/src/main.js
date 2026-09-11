@@ -44,6 +44,9 @@ const state = {
   localNodeId: "",
   localName: "",
   localNameIsChosen: false,
+  // Whether a read ever reached the node. It decides what an unreachable read
+  // says: "this is the last data we had" only means something if there is any.
+  loadedOnce: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -252,34 +255,100 @@ function hideBanner() {
 
 /* ---------------- data ---------------- */
 
-async function load() {
+// Reads are numbered so a slow one cannot overwrite a fast one — the same
+// guard loadPairing() uses, and for the same reason now that this one is polled
+// every 15 seconds as well.
+//
+// The owner changing an audience or revoking a node runs its own load(), and a
+// background read that was already awaiting Overview() when they clicked can
+// answer after it. Skipping the tick while state.busy is set only covers reads
+// that have not started yet; one already in flight still lands, describing the
+// moment before the change.
+let overviewRequest = 0;
+let overviewApplied = 0;
+
+// Anything the owner is in the middle of that a repainted table would pull out
+// from under them: a write in flight, rows selected that a rescan could drop,
+// or a dialog standing on top of the list. The periodic tick and the moment a
+// background read lands both ask this — one list of conditions, checked twice,
+// because the state can change while the read is in the air.
+const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "modal"];
+function anyModalOpen() {
+  return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
+}
+function interactionInProgress() {
+  return state.busy || state.selected.size > 0 || anyModalOpen();
+}
+
+// background: this read is the 15-second tick's, not the owner's. A background
+// read is abandoned if the owner started interacting while it was in flight;
+// a foreground read — startup, 「重新整理」, the reload after a mutation — is
+// what the owner asked for and always applies.
+async function load({ background = false } = {}) {
+  const sequence = ++overviewRequest;
   const overview = await Overview();
-  state.sessions = overview.sessions || [];
-  state.nodes = overview.nodes || [];
-  state.counts = overview.counts || {};
-  state.localFingerprint = overview.node?.fingerprint || "";
-  // Needed to tell this machine's own messages from a peer's. Without it a
-  // qualified sender naming this node reads as a peer, and a bare one reads as
-  // local — which is the dangerous direction.
-  state.localNodeId = overview.node?.id || "";
-  if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
-    state.selectedNode = null;
+  if (sequence <= overviewApplied) {
+    // A later read already landed. This one describes an older moment.
+    return;
+  }
+  if (background && interactionInProgress()) {
+    // The guards passed when this tick fired, but the owner has since selected
+    // rows or opened a dialog. Applying it now would redraw the table under
+    // them, so the answer is thrown away whole — no state, no render, no
+    // banner.
+    //
+    // overviewApplied deliberately does not move. It means "the newest read
+    // whose contents are on screen", and nothing from this one is; advancing it
+    // would make the next foreground read — which carries a lower number only
+    // because it started later than this abandoned one did — look stale and be
+    // dropped too. Leaving it put is also right for a read still in flight from
+    // before this one: nothing from this tick reached the screen, so that older
+    // read is still newer than what is displayed and should land.
+    return;
+  }
+  overviewApplied = sequence;
+  const reachable = Boolean(overview.reachable);
+
+  // Only a read that reached the node may replace what is on screen. A node
+  // that is mid-rescan answers unreachable with no sessions, and copying that
+  // emptiness in blanked a window showing 1083 sessions until someone pressed
+  // refresh (issue #114). Keeping the last known lists costs a few seconds of
+  // staleness, which the banner says out loud; clearing them costs the owner
+  // every session they were looking at.
+  if (reachable) {
+    state.sessions = overview.sessions || [];
+    state.nodes = overview.nodes || [];
+    state.counts = overview.counts || {};
+    state.localFingerprint = overview.node?.fingerprint || "";
+    // Needed to tell this machine's own messages from a peer's. Without it a
+    // qualified sender naming this node reads as a peer, and a bare one reads as
+    // local — which is the dangerous direction.
+    state.localNodeId = overview.node?.id || "";
+    state.peers = overview.peers ?? [];
+    state.presenceError = overview.presenceError ?? "";
+    state.loadedOnce = true;
+    if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
+      state.selectedNode = null;
+    }
   }
 
-  el("conn-dot").className = overview.reachable ? "dot ok" : "dot bad";
-  el("node-line").textContent = overview.reachable
+  el("conn-dot").className = reachable ? "dot ok" : "dot bad";
+  el("node-line").textContent = reachable
     ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}`
     : `無法連線到 ${overview.nodeUrl}`;
-  el("footer-right").textContent = overview.reachable ? overview.node.id : "";
-  state.peers = overview.peers ?? [];
-  state.presenceError = overview.presenceError ?? "";
+  el("footer-right").textContent = reachable ? overview.node.id : "";
 
-  if (!overview.reachable) {
-    banner(`節點未連線：${overview.error || "unknown error"}。啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
+  if (!reachable) {
+    // The banner has to say which of the two situations this is, or a stale
+    // list reads as the current truth.
+    const shown = state.loadedOnce
+      ? "下面顯示的是上次成功載入的資料，可能已經過期。"
+      : "還沒有載入過任何資料。";
+    banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
   } else {
     hideBanner();
   }
-  state.nodeReachable = Boolean(overview.reachable);
+  state.nodeReachable = reachable;
   loadService().catch(() => {});
 
   // Drop selections that no longer exist after a rescan.
@@ -1475,6 +1544,25 @@ setInterval(() => {
     loadPairing().catch(() => {});
   }
 }, 1000);
+
+// The session table and the node list refresh on their own too.
+//
+// They used to load once at startup and then only when someone pressed
+// refresh. A node that was still rescanning at that moment left the window
+// empty for as long as nobody noticed — the window said "0 sessions" while the
+// node was serving 1083 (issue #114). Fifteen seconds is the same order as the
+// node's publish interval, so the table is never more than one interval behind.
+//
+// Skipped whenever a refresh would pull the ground out from under someone: a
+// write is in flight, a dialog is open on top of the table, or rows are
+// selected and a rescan would drop the selection out from under the next click.
+// The same check runs again inside load() before a background answer is
+// applied, because the owner can start any of those while the read is in the
+// air.
+setInterval(() => {
+  if (interactionInProgress()) return;
+  load({ background: true }).catch((error) => banner(`載入失敗：${error}`));
+}, 15000);
 
 load()
   .then(loadPairing)
