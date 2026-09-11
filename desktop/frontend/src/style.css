@@ -607,3 +607,33 @@ table.peer-sessions td.mono {
      left-to-right sentence otherwise reorders the punctuation around it. */
   unicode-bidi: isolate;
 }
+
+/* ---------- background service ---------- */
+
+/* Sits under the banner, above the toolbar: it answers the banner's "請先啟動
+   agenthub-node" with the button that does it. */
+.servicepanel {
+  flex: none;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #11141c;
+  font-size: 12px;
+}
+.service-head { display: flex; align-items: center; gap: 8px; }
+.service-head .line { color: var(--muted); }
+.service-head .line.ok { color: var(--ok, #3fb950); }
+.service-head .line.warn { color: #f3a49e; }
+.servicepanel .spacer { flex: 1; }
+.serviceform { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; max-width: 720px; }
+.serviceform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.serviceform label.checkline { flex-direction: row; align-items: center; gap: 8px; }
+.serviceform input[type="text"], .serviceform select {
+  background: #0d1017; color: inherit; border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; font: inherit;
+}
+.serviceform p.muted { margin: 0; }
+.serviceoutput {
+  margin: 8px 0 0; padding: 8px 10px; max-height: 160px; overflow: auto;
+  background: #0d1017; border: 1px solid var(--line); border-radius: 6px;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; white-space: pre-wrap;
+}

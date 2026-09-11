@@ -1,0 +1,282 @@
+package cli
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"runtime"
+	"time"
+
+	"agenthub.local/agenthub/internal/nodeconfig"
+	"agenthub.local/agenthub/internal/service"
+)
+
+// newServiceManager builds the manager for this machine. A variable so tests
+// can substitute one that drives a fake instead of launchd or systemd.
+var newServiceManager = func() (service.Manager, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return service.Manager{}, fmt.Errorf("find home directory: %w", err)
+	}
+	current, err := user.Current()
+	if err != nil {
+		return service.Manager{}, fmt.Errorf("find current user: %w", err)
+	}
+	return service.Manager{GOOS: runtime.GOOS, Home: home, UID: current.Uid, Runner: service.ExecRunner{}}, nil
+}
+
+// service installs, removes or inspects the node as a background service.
+//
+//	ah service install [node flags...] [--node-binary PATH]
+//	ah service uninstall
+//	ah service status
+//
+// Install takes the node's own flags by the node's own names and carries them
+// into the service, so the owner learns one vocabulary. The peer listener is
+// validated here with the node's rule before anything is written: a bad
+// address would otherwise become a service that crashes on every restart.
+func (r runner) service(ctx context.Context, args []string) error {
+	if len(args) < 2 {
+		return errors.New("usage: ah service install [--db PATH] [--listen ADDR] [--peer-listen ADDR] [--allow-lan] [--discover] [--treat-as-private CIDR]... [--auto-wake] [--node-binary PATH] | uninstall | status")
+	}
+	manager, err := newServiceManager()
+	if err != nil {
+		return err
+	}
+	switch args[1] {
+	case "install":
+		return r.serviceInstall(ctx, manager, args[2:])
+	case "uninstall":
+		report, err := manager.Uninstall(ctx)
+		if err != nil {
+			return err
+		}
+		return r.printReport("uninstalled", report)
+	case "status":
+		return r.serviceStatus(ctx, manager)
+	default:
+		return fmt.Errorf("unknown service command %q; want install, uninstall or status", args[1])
+	}
+}
+
+func (r runner) serviceInstall(ctx context.Context, manager service.Manager, args []string) error {
+	flags := flag.NewFlagSet("ah service install", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	nodeBinary := flags.String("node-binary", "", "path to agenthub-node (default: beside ah, then PATH)")
+	// The node's flags, by the node's names. Only those the owner set are
+	// carried, so the node's own defaults apply to the rest.
+	dbPath := flags.String("db", "", "SQLite database path (relative paths are made absolute)")
+	listen := flags.String("listen", "", "local HTTP listen address")
+	peerListen := flags.String("peer-listen", "", "TLS listen address for peer traffic")
+	allowLAN := flags.Bool("allow-lan", false, "permit a non-loopback peer listener")
+	discover := flags.Bool("discover", false, "learn paired peers' addresses from the local network")
+	autoWake := flags.Bool("auto-wake", false, "let an arriving message start a turn")
+	claudeRoot := flags.String("claude-root", "", "Claude data root")
+	codexRoot := flags.String("codex-root", "", "Codex data root")
+	var declaredPrivate nodeconfig.StringList
+	flags.Var(&declaredPrivate, "treat-as-private", "CIDR block to treat as a private network, repeatable")
+	// --display-name is deliberately not here. The node persists a chosen
+	// name, and a flag on every start would pin the installed name over any
+	// later rename; set it once with `agenthub-node --display-name`.
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("ah service install: %w", err)
+	}
+	if flags.NArg() > 0 {
+		return fmt.Errorf("ah service install: unexpected argument %q", flags.Arg(0))
+	}
+
+	// Validated with the node's own rules, defaults included, so the answer
+	// here is the answer the node would give at startup — before a unit is
+	// written, not after a service that restarts on failure crashes forever.
+	listenAddress := *listen
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1:7462"
+	}
+	if err := nodeconfig.ValidateLoopback(listenAddress); err != nil {
+		return err
+	}
+	ranges, err := nodeconfig.ParsePrivateRanges(declaredPrivate)
+	if err != nil {
+		return err
+	}
+	peerAddress := *peerListen
+	if peerAddress == "" {
+		peerAddress = "127.0.0.1:7463"
+	}
+	if err := nodeconfig.ValidatePeerListen(peerAddress, *allowLAN, ranges); err != nil {
+		return err
+	}
+
+	nodeArgs := make([]string, 0, 16)
+	if *dbPath != "" {
+		absolute, err := filepath.Abs(*dbPath)
+		if err != nil {
+			return fmt.Errorf("resolve --db: %w", err)
+		}
+		nodeArgs = append(nodeArgs, "--db", absolute)
+	}
+	// In a fixed order, so the unit is the same file for the same flags and a
+	// diff of two installs shows only what changed.
+	for _, pair := range []struct {
+		name  string
+		value *string
+	}{{"listen", listen}, {"peer-listen", peerListen}, {"claude-root", claudeRoot}, {"codex-root", codexRoot}} {
+		if *pair.value != "" {
+			nodeArgs = append(nodeArgs, "--"+pair.name, *pair.value)
+		}
+	}
+	if *allowLAN {
+		nodeArgs = append(nodeArgs, "--allow-lan")
+	}
+	if *discover {
+		nodeArgs = append(nodeArgs, "--discover")
+	}
+	for _, cidr := range declaredPrivate {
+		nodeArgs = append(nodeArgs, "--treat-as-private", cidr)
+	}
+	if *autoWake {
+		nodeArgs = append(nodeArgs, "--auto-wake")
+	}
+
+	binary, err := resolveNodeBinary(*nodeBinary)
+	if err != nil {
+		return err
+	}
+	report, err := manager.Install(ctx, service.Config{NodeBinary: binary, Args: nodeArgs})
+	if err != nil {
+		return err
+	}
+	// Installed is not the same as answering. Ask the node, briefly, so the
+	// owner leaves knowing which of the two they have.
+	if answer := r.waitForNode(ctx, 10*time.Second); answer != "" {
+		report.Steps = append(report.Steps, answer)
+	} else {
+		report.Notes = append(report.Notes, "the node has not answered on "+r.baseURL+" yet; ah service status, and the log, say why")
+	}
+	return r.printReport("installed", report)
+}
+
+// resolveNodeBinary finds agenthub-node: the path given, else beside this
+// executable, else on PATH. Always returned absolute, because the service
+// runs without the owner's PATH or working directory.
+func resolveNodeBinary(given string) (string, error) {
+	if given != "" {
+		absolute, err := filepath.Abs(given)
+		if err != nil {
+			return "", fmt.Errorf("resolve --node-binary: %w", err)
+		}
+		return absolute, nil
+	}
+	if self, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(self), "agenthub-node")
+		if runtime.GOOS == "windows" {
+			candidate += ".exe"
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Abs(candidate)
+		}
+	}
+	if found, err := exec.LookPath("agenthub-node"); err == nil {
+		return filepath.Abs(found)
+	}
+	return "", errors.New("agenthub-node not found beside ah or on PATH; pass --node-binary /absolute/path/to/agenthub-node")
+}
+
+// waitForNode polls the owner's API until it answers or the budget is spent.
+func (r runner) waitForNode(ctx context.Context, budget time.Duration) string {
+	deadline := time.Now().Add(budget)
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/v1/node", nil)
+		if err == nil {
+			response, err := r.client.Do(request)
+			if err == nil {
+				var identity struct {
+					ID          string `json:"id"`
+					DisplayName string `json:"displayName"`
+				}
+				_ = json.NewDecoder(response.Body).Decode(&identity)
+				_ = response.Body.Close()
+				if response.StatusCode == http.StatusOK && identity.ID != "" {
+					return fmt.Sprintf("node answering on %s as %s (%q)", r.baseURL, identity.ID, identity.DisplayName)
+				}
+			}
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return ""
+		}
+		select {
+		case <-ctx.Done():
+			return ""
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func (r runner) serviceStatus(ctx context.Context, manager service.Manager) error {
+	status, err := manager.Status(ctx)
+	if err != nil {
+		return err
+	}
+	answer := r.waitForNode(ctx, 0)
+	if r.json {
+		return r.printJSONValue(map[string]any{
+			"service":       status,
+			"nodeAnswering": answer != "",
+			"node":          answer,
+		})
+	}
+	if !status.Supported {
+		fmt.Fprintln(r.stdout, "background service: not supported on this operating system")
+	} else {
+		state := "not installed"
+		switch {
+		case status.Installed && status.Running:
+			state = fmt.Sprintf("installed and running (pid %d)", status.PID)
+		case status.Installed:
+			state = "installed but not running"
+		case status.Running:
+			state = fmt.Sprintf("running (pid %d) but no unit file at %s — registered some other way", status.PID, status.UnitPath)
+		}
+		fmt.Fprintln(r.stdout, "background service:", state)
+		fmt.Fprintln(r.stdout, "unit:", status.UnitPath)
+		if status.LogHint != "" {
+			fmt.Fprintln(r.stdout, "log:", status.LogHint)
+		}
+	}
+	if answer != "" {
+		fmt.Fprintln(r.stdout, answer)
+	} else {
+		fmt.Fprintln(r.stdout, "node: not answering on", r.baseURL)
+	}
+	return nil
+}
+
+func (r runner) printReport(verb string, report service.Report) error {
+	if r.json {
+		return r.printJSONValue(map[string]any{"result": verb, "report": report})
+	}
+	for _, step := range report.Steps {
+		fmt.Fprintln(r.stdout, step)
+	}
+	for _, note := range report.Notes {
+		fmt.Fprintln(r.stdout, "note:", note)
+	}
+	return nil
+}
+
+// printJSONValue prints one value the way every other --json path does.
+func (r runner) printJSONValue(value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return writePrettyJSON(r.stdout, data)
+}
