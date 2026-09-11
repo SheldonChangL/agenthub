@@ -54,6 +54,11 @@ type Server struct {
 	// One entry per node id the owner has paired, dropped on revoke.
 	refusedMu sync.Mutex
 	refused   map[string]uint64
+	// settings is the start-up configuration main resolved for this process,
+	// with the provenance of each value. Nil on a server built without it, and
+	// the two settings endpoints then refuse rather than answering from the
+	// database, which cannot say what this process is running with.
+	settings *effectiveSettings
 	// autoWake is the node's own -auto-wake flag, published on the owner
 	// surface. A session's own autoWake does nothing while this is closed, and
 	// the owner has to be able to see that before ticking the session's box.
@@ -156,6 +161,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/sessions/{id}/audience", s.setAudience)
 	mux.HandleFunc("POST /v1/sessions/audience", s.setAudienceBatch)
 	mux.HandleFunc("GET /v1/node", s.getNode)
+	mux.HandleFunc("GET /v1/node/settings", s.getNodeSettings)
+	mux.HandleFunc("PUT /v1/node/settings", s.setNodeSettings)
 	mux.HandleFunc("GET /v1/nodes", s.listNodes)
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
