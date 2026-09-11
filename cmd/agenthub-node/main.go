@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,7 +54,8 @@ func run() error {
 	codexRoot := flag.String("codex-root", defaults.codex, "Codex data root")
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
-	peerListenAddress := flag.String("peer-listen", "127.0.0.1:7463", "TLS listen address for peer traffic")
+	peerListenAddress := flag.String("peer-listen", nodeconfig.DefaultPeerListen,
+		"TLS listen address for peer traffic. Remembered: given once, it applies on every later start")
 	displayName := flag.String("display-name", "",
 		"what this node calls itself to other machines, and it is announced to everyone on "+
 			"the segment while pairing mode is open. Pinned once given: without this flag the "+
@@ -62,43 +64,28 @@ func run() error {
 	autoWake := flag.Bool("auto-wake", false,
 		"let an arriving message start a turn in the agent it was addressed to, for sessions "+
 			"whose owner opened that per-session switch. Off here means no session can be woken "+
-			"whatever its own setting says")
-	discover := flag.Bool("discover", false, "learn paired peers' addresses from mDNS on the local network")
+			"whatever its own setting says. Remembered: given once, it applies on every later start")
+	discover := flag.Bool("discover", false,
+		"learn paired peers' addresses from mDNS on the local network. Remembered: given once, "+
+			"it applies on every later start")
 	allowLAN := flag.Bool("allow-lan", false,
-		"serve paired peers on a private network address instead of loopback only")
+		"serve paired peers on a private network address instead of loopback only. Remembered: "+
+			"given once, it applies on every later start, and every start says so in the log")
 	outboundRetention := flag.Duration("outbound-retention", 7*24*time.Hour,
 		"how long a delivered or refused outbound message stays queryable")
 	var declaredPrivate nodeconfig.StringList
 	flag.Var(&declaredPrivate, "treat-as-private",
 		"CIDR block to treat as a private network, repeatable "+
-			"(for a network that is private despite its addresses, such as a direct cable)")
+			"(for a network that is private despite its addresses, such as a direct cable). "+
+			"Remembered, and given at all it replaces the whole remembered set")
 	flag.Parse()
 	if *scanInterval <= 0 {
 		return errors.New("scan interval must be positive")
 	}
-	// The peer listener is the only surface that may leave this machine, and
-	// only when the owner says so. Without -allow-lan it stays on loopback,
-	// which is what every earlier build did.
-	//
-	// The owner's API is never widened: it changes who may see a session and
-	// revokes peers, and whoever can reach it can already restart the process.
-	// What the owner says is private, recorded before it is used so the claim
-	// is in the log next to whatever it later allows.
-	declaredRanges, err := nodeconfig.ParsePrivateRanges(declaredPrivate)
-	if err != nil {
-		return err
-	}
-	if len(declaredRanges) > 0 {
-		log.Printf("treating these as private networks on the owner's word: %s", declaredRanges)
-		if !*allowLAN {
-			// Said plainly, because the line above otherwise reads as though
-			// something had been enabled.
-			log.Printf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
-		}
-	}
-	if err := nodeconfig.ValidatePeerListen(*peerListenAddress, *allowLAN, declaredRanges); err != nil {
-		return fmt.Errorf("peer listener: %w", err)
-	}
+	// -listen is checked here and nowhere else, because it is not one of the
+	// remembered settings. The owner's API has no authentication and is safe
+	// only because reaching it means being on this machine; a value that could
+	// be stored is a value a mistaken write could move.
 	if err := nodeconfig.ValidateLoopback(*listenAddress); err != nil {
 		return err
 	}
@@ -109,6 +96,17 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+
+	// What this node will run with, and where each value came from. A flag
+	// given now wins and is recorded; a flag left off means whatever was said
+	// last time. This is why `ah service install` needs only --db: the unit
+	// file stopped being a second copy of the configuration.
+	given := flagSettings(flag.CommandLine, peerListenAddress, allowLAN, discover, autoWake, declaredPrivate)
+	startup, err := applyStartupSettings(ctx, store, given, log.Printf)
+	if err != nil {
+		return err
+	}
+	settings, sources, declaredRanges := startup.settings, startup.sources, startup.ranges
 
 	node, err := identity.LoadOrCreate(ctx, store, *displayName, wasSet(flag.CommandLine, "display-name"))
 	if err != nil {
@@ -142,7 +140,7 @@ func run() error {
 	// owner's API will accept. If they disagreed, an owner could save an address
 	// that is silently never used, with the reason only in a log line.
 	deliveryPolicy := transport.LoopbackOnly
-	if *allowLAN {
+	if settings.AllowLAN {
 		deliveryPolicy = transport.PrivateNetworks(declaredRanges)
 	}
 
@@ -154,14 +152,14 @@ func run() error {
 	options := []api.Option{api.WithDeliveryPolicy(deliveryPolicy)}
 	var candidates *discovery.Candidates
 	var announcer *pairing.Announcer
-	if *discover {
+	if settings.Discover {
 		pairingMode := pairing.NewMode()
 		candidates = discovery.NewCandidates(node.ID, store.IsPaired, deliveryPolicy)
 		// Built before the API rather than beside the listen loop, because the
 		// API answers with what this announcer is actually managing to do: an
 		// open window on a node with no announceable address is the one failure
 		// an owner cannot see from the other machine.
-		endpoint, err := pairing.PeerEndpoint(deliveryPolicy, *peerListenAddress)
+		endpoint, err := pairing.PeerEndpoint(deliveryPolicy, settings.PeerListen)
 		if err != nil {
 			// Stopping the node rather than starting one that cannot pair: the
 			// owner asked for -discover, and a peer listener an announcement
@@ -198,7 +196,7 @@ func run() error {
 			// The reason comes from the endpoint so it names the actual cause —
 			// loopback and IPv6 are different problems with different fixes.
 			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s",
-				*peerListenAddress, reason)
+				settings.PeerListen, reason)
 		}
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
@@ -212,7 +210,7 @@ func run() error {
 	// the request header is read, so a poll as long as the deadline is a poll
 	// that can never answer — measured: at 30s against a 30s deadline, every
 	// quiet poll produced an empty reply instead of its 204.
-	if *autoWake {
+	if settings.AutoWake {
 		supervisor := codexapp.NewSupervisor(codexapp.SupervisorOptions{})
 		defer func() { _ = supervisor.Close() }()
 		// Two drivers, one per provider, because the two providers are reached
@@ -234,7 +232,10 @@ func run() error {
 	// Published on the owner surface whether it is on or off: a desktop that
 	// offers a per-session auto-wake switch has to be able to say that the node
 	// flag is closed and the switch will do nothing.
-	options = append(options, api.WithAutoWake(*autoWake))
+	options = append(options, api.WithAutoWake(settings.AutoWake),
+		// Published so the desktop can show what this node is running with,
+		// where each value came from, and what a restart would change.
+		api.WithNodeSettings(settings, sources))
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := ownerServer(*listenAddress, apiServer.Handler())
 
@@ -255,7 +256,7 @@ func run() error {
 		return fmt.Errorf("build node certificate: %w", err)
 	}
 	peerServer := &http.Server{
-		Addr:              *peerListenAddress,
+		Addr:              settings.PeerListen,
 		Handler:           apiServer.PeerHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -307,7 +308,7 @@ func run() error {
 	// addresses this build would deliver to. It cannot create trust, and a
 	// forged announcement cannot leak anything: delivery pins TLS to the key
 	// recorded when pairing, and whoever forged the packet does not hold it.
-	if *discover {
+	if settings.Discover {
 		browser := discovery.NewBrowser(store, deliveryPolicy)
 		// One packet, two readers: an address for a peer already paired, and an
 		// offer from one that is not. Parsed once by Listen and given to both.
@@ -327,7 +328,7 @@ func run() error {
 		go announcer.Run(publishCtx)
 	}
 	log.Printf("listening on http://%s", *listenAddress)
-	log.Printf("peer listener on https://%s", *peerListenAddress)
+	log.Printf("peer listener on https://%s", settings.PeerListen)
 
 	select {
 	case err := <-serveError:
@@ -460,6 +461,151 @@ func nameProvenance(chosen bool) string {
 		return "chosen with -display-name"
 	}
 	return "read from this machine"
+}
+
+// settingsStore is the part of the registry the start-up settings need.
+//
+// An interface rather than *registry.Registry so the order below can be tested
+// against a store that records what it was asked to do: the bug this shape
+// exists to prevent is invisible in the return value and visible only in what
+// reached the database.
+type settingsStore interface {
+	GetNodeSettings(ctx context.Context) (nodeconfig.Partial, error)
+	SaveNodeSettings(ctx context.Context, settings nodeconfig.Partial) error
+}
+
+// startupSettings is what this start will run with.
+type startupSettings struct {
+	settings nodeconfig.Settings
+	sources  map[string]string
+	ranges   nodeconfig.PrivateRanges
+}
+
+// applyStartupSettings resolves the configuration, validates it, and only then
+// records what this command line gave.
+//
+// The order is the whole point. Saving before validating turns one mistyped
+// flag into a node that can never start again: the bad value is remembered, so
+// the next start refuses too, with nothing on the command line to blame — and
+// the `ah settings set ...` the refusal suggests goes through the owner's API,
+// which a node that will not start is not serving. Nothing is remembered until
+// it is known to be startable, which is the order the API's PUT already uses.
+//
+// logf is injected so a test can read the start-up log. Every setting is
+// printed on every start, and -allow-lan is the only switch here that lets
+// anything leave this machine: remembered, those lines are the one place it is
+// visible.
+func applyStartupSettings(ctx context.Context, store settingsStore, given nodeconfig.Partial,
+	logf func(string, ...any)) (startupSettings, error) {
+	remembered, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		return startupSettings{}, err
+	}
+	settings, sources := nodeconfig.Resolve(given, remembered, nodeconfig.DefaultSettings())
+	// The same rule the owner's PUT applies, applied here before anything is
+	// validated: a remembered LAN listener plus -allow-lan=false is a refusal
+	// that repeats on every restart, and the API that could undo it belongs to
+	// the node that is not starting. The withdrawal is recorded below in the
+	// same save as the flags, so the next start does not have to redo it.
+	//
+	// Only when this command line said nothing about the listener. An owner who
+	// typed -peer-listen 192.168.1.10:7463 -allow-lan=false gave two halves that
+	// contradict each other, and guessing which half they meant is not this
+	// function's decision to make: that start is still refused.
+	if address, withdrawn := nodeconfig.WithdrawPeerListen(
+		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
+		logf("withdrawing peer-listen: allow-lan is off, so the remembered LAN listener %q was not bound; "+
+			"using %s and remembering it", settings.PeerListen, address)
+		settings.PeerListen = address
+		given.PeerListen = &address
+		// Not "remembered": the remembered address is the one just withdrawn.
+		// Of the three provenances this map can carry, the value now in effect
+		// is the default, and saying so keeps the owner's API from reporting a
+		// value nobody stored.
+		sources[nodeconfig.SettingPeerListen] = nodeconfig.SourceDefault
+	}
+	// Printed before the validation that may end this start, so the refusal
+	// below is read next to the values it is about.
+	for _, line := range nodeconfig.Describe(settings, sources) {
+		logf("setting %s", line)
+	}
+	declaredRanges, err := settings.Validate()
+	if err != nil {
+		return startupSettings{}, rememberedRefusal(err, sources)
+	}
+	if err := store.SaveNodeSettings(ctx, given); err != nil {
+		return startupSettings{}, fmt.Errorf("remember node settings: %w", err)
+	}
+	// The owner's word about which networks are private, recorded next to
+	// whatever it later allows.
+	if len(declaredRanges) > 0 {
+		logf("treating these as private networks on the owner's word: %s", declaredRanges)
+		if !settings.AllowLAN {
+			// Said plainly, because the line above otherwise reads as though
+			// something had been enabled.
+			logf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
+		}
+	}
+	return startupSettings{settings: settings, sources: sources, ranges: declaredRanges}, nil
+}
+
+// flagSettings collects the remembered settings this command line actually
+// gave, as opposed to the ones left at their defaults.
+//
+// Whether a flag was passed, not whether its value differs from the default:
+// -allow-lan=false is an owner turning something off, and the zero value
+// cannot tell that apart from the flag being absent. Without the distinction,
+// a node would forget an answer every time it started without the flag —
+// which is the whole failure these settings exist to end.
+func flagSettings(flags *flag.FlagSet, peerListen *string, allowLAN, discover, autoWake *bool,
+	declaredPrivate nodeconfig.StringList) nodeconfig.Partial {
+	var given nodeconfig.Partial
+	if wasSet(flags, "peer-listen") {
+		given.PeerListen = peerListen
+	}
+	if wasSet(flags, "allow-lan") {
+		given.AllowLAN = allowLAN
+	}
+	if wasSet(flags, "discover") {
+		given.Discover = discover
+	}
+	if wasSet(flags, "auto-wake") {
+		given.AutoWake = autoWake
+	}
+	// Given at all, it replaces the whole set. A declaration says which
+	// networks the owner believes are private; adding to a set they cannot see
+	// would make the belief something nobody ever stated.
+	if wasSet(flags, "treat-as-private") {
+		ranges := []string(declaredPrivate)
+		given.TreatAsPrivate = &ranges
+	}
+	return given
+}
+
+// rememberedRefusal explains a start-up refusal caused by a value nobody typed.
+//
+// A remembered setting can stop being valid without anything changing on this
+// machine's command line: a network is renumbered, a declared range no longer
+// covers the address, and the node then refuses to start over a flag that is
+// not there. The refusal has to say where the value came from and how to
+// replace it, or the owner reads an error about an address they never gave.
+func rememberedRefusal(err error, sources map[string]string) error {
+	remembered := make([]string, 0, len(nodeconfig.SettingNames))
+	for _, field := range nodeconfig.SettingNames {
+		if sources[field] == nodeconfig.SourceRemembered {
+			remembered = append(remembered, "-"+nodeconfig.FlagName(field))
+		}
+	}
+	if len(remembered) == 0 {
+		return err
+	}
+	return fmt.Errorf("%w\n"+
+		"this node is remembering %s from an earlier start, so the refusal is about a value that "+
+		"is not on this command line. Run agenthub-node again with the flag that replaces the "+
+		"stored value — for example `-peer-listen %s` — and the new value is remembered in its "+
+		"place. (`ah settings` reads this node's own API, which only answers once the node starts, "+
+		"so it cannot undo a value that is stopping it.)",
+		err, strings.Join(remembered, ", "), nodeconfig.DefaultPeerListen)
 }
 
 // wasSet reports whether a flag was passed, as opposed to left at its default.
