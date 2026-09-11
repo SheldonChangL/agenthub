@@ -185,9 +185,12 @@ func TestInstallOnLinuxWritesUnitReloadsThenEnables(t *testing.T) {
 	if !strings.Contains(string(content), "ExecStart="+node+" --discover") {
 		t.Errorf("unit ExecStart wrong:\n%s", content)
 	}
+	// enable then restart, never `enable --now`: an already-active unit would
+	// keep the previous binary and flags.
 	wantCalls := []string{
 		"systemctl --user daemon-reload",
-		"systemctl --user enable --now " + UnitName,
+		"systemctl --user enable " + UnitName,
+		"systemctl --user restart " + UnitName,
 	}
 	if strings.Join(runner.calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(runner.calls, "\n"), strings.Join(wantCalls, "\n"))
@@ -464,5 +467,25 @@ func TestInstallWritesPrivateFiles(t *testing.T) {
 	}
 	if info, _ := os.Stat(filepath.Join(home, "Library", "Logs", "agenthub")); info.Mode().Perm() != 0o700 {
 		t.Errorf("log dir mode = %o, want 700", info.Mode().Perm())
+	}
+}
+
+// A unit left behind by an earlier build at 0644 is tightened by the next
+// install, not inherited.
+func TestInstallTightensAnExistingUnitsMode(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: &fakeRunner{}, Sleep: noSleep}
+	if _, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(unitPath); info.Mode().Perm() != 0o600 {
+		t.Errorf("unit mode after reinstall = %o, want 600", info.Mode().Perm())
 	}
 }

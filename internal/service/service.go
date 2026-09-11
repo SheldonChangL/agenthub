@@ -187,10 +187,16 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return report, fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(out))
 		}
-		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "enable", "--now", UnitName); err != nil {
-			return report, fmt.Errorf("systemctl enable --now: %w: %s", err, strings.TrimSpace(out))
+		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
+			return report, fmt.Errorf("systemctl enable: %w: %s", err, strings.TrimSpace(out))
 		}
-		report.Steps = append(report.Steps, "enabled and started "+UnitName+" (systemd --user; restarted if it exits)")
+		// restart, not start: a unit that is already active keeps running the
+		// old binary and the old flags under `enable --now`, which is how a
+		// reinstall on Ubuntu left the previous build in place.
+		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "restart", UnitName); err != nil {
+			return report, fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "enabled and (re)started "+UnitName+" (systemd --user; restarted if it exits)")
 		report.Notes = append(report.Notes,
 			"log: journalctl --user -u "+UnitName,
 			"a user service starts when you log in; to have it start at boot with nobody logged in, run: loginctl enable-linger "+userName())
@@ -324,6 +330,13 @@ func writeUnit(path string, content []byte) error {
 	}
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
+	}
+	// WriteFile applies the mode only when it creates the file. A reinstall
+	// over a unit written by an earlier build keeps that build's mode, so it
+	// is set explicitly — measured: two machines reinstalled and both units
+	// stayed 0644.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
 	}
 	return nil
 }
