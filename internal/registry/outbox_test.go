@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agenthub.local/agenthub/internal/model"
 )
@@ -803,5 +805,75 @@ func TestListOutboundPagesWithinTheFilter(t *testing.T) {
 	if fmt.Sprint(seen) != fmt.Sprint(want) {
 		t.Fatalf("paged ids = %v; want %v — nothing repeated, nothing skipped over the rows the filter drops",
 			seen, want)
+	}
+}
+
+// TestAFailureReasonIsBoundedWhereItIsWritten keeps peer-supplied text from
+// setting the size of this node's answers. The reason in an ack comes over the
+// wire; stored whole, a single refusal could be tens of kilobytes and a page of
+// 200 rows would compose a response no reader can take.
+func TestAFailureReasonIsBoundedWhereItIsWritten(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	// A reason that ends mid-rune if it is cut by bytes alone: the last byte
+	// inside the bound is part of a multi-byte character.
+	huge := strings.Repeat("一", 64*1024)
+
+	attempted, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "one",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAttempt(ctx, attempted.ID, huge); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "two",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkOutbound(ctx, settled.ID, OutboundRefused, huge); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{attempted.ID, settled.ID} {
+		stored, err := store.OutboundFor(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.LastError) > MaxOutboundErrorBytes {
+			t.Errorf("stored reason is %d bytes; want at most %d",
+				len(stored.LastError), MaxOutboundErrorBytes)
+		}
+		if !utf8.ValidString(stored.LastError) {
+			t.Errorf("stored reason is not valid UTF-8: %q", stored.LastError)
+		}
+		if !strings.HasSuffix(stored.LastError, "…") {
+			t.Errorf("a cut reason does not say it was cut: %q", stored.LastError)
+		}
+	}
+
+	// A reason that fits is stored exactly, ellipsis and all absent: the bound
+	// must not rewrite the ordinary case.
+	short, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "three",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const plain = "the addressed session does not accept messages"
+	if err := store.MarkOutbound(ctx, short.ID, OutboundRefused, plain); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.OutboundFor(ctx, short.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LastError != plain {
+		t.Errorf("a short reason was rewritten: %q", stored.LastError)
 	}
 }

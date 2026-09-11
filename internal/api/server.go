@@ -297,6 +297,29 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 //
 // It writes the response and returns false when the address is malformed or
 // names another node, so every session-addressed handler answers the same way.
+// sessionFilter reads the optional `session` query parameter shared by the
+// listing endpoints.
+//
+// A parameter that is present but blank is refused rather than trimmed away.
+// Trimming it left `?session=%20%20` answering with the whole node's list —
+// which a caller that asked for one session reads as that session's, and
+// believing a node's traffic is one session's is precisely what the filter
+// exists to prevent. An absent parameter still means "everything", because
+// nobody asked to narrow anything.
+func sessionFilter(w http.ResponseWriter, r *http.Request) (string, bool) {
+	raw, present := r.URL.Query()["session"]
+	if !present {
+		return "", true
+	}
+	session := strings.TrimSpace(raw[0])
+	if session == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"session must name a session; omit the parameter to list every session on this node")
+		return "", false
+	}
+	return session, true
+}
+
 func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) {
 	sessionID, err := address.ResolveLocal(raw, s.node.ID)
 	switch {
@@ -969,7 +992,10 @@ func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	session, ok := sessionFilter(w, r)
+	if !ok {
+		return
+	}
 	if session != "" {
 		// Resolved through the same check every other session-scoped endpoint
 		// uses, so a qualified address for another node is refused here rather
