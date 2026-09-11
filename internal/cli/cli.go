@@ -290,6 +290,8 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodGet, "/v1/node", nil)
 	case "heartbeat":
 		return r.simple(ctx, http.MethodGet, "/v1/heartbeat", nil)
+	case "settings":
+		return r.settings(ctx, args)
 	case "service":
 		return r.service(ctx, args)
 	default:
@@ -695,7 +697,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound,")
-	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, service")
+	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, settings, service")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
@@ -711,11 +713,16 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")
+	_, _ = fmt.Fprintln(output, "  ah settings                                  what this node started with, and where each value came from")
+	_, _ = fmt.Fprintln(output, "  ah settings set [--peer-listen ADDR] [--allow-lan=true|false] [--discover=true|false]")
+	_, _ = fmt.Fprintln(output, "                  [--auto-wake=true|false] [--treat-as-private CIDR]... [--clear-private-ranges]")
+	_, _ = fmt.Fprintln(output, "                                               remember these; they apply when the node next starts")
 	_, _ = fmt.Fprintln(output, "  ah service install [--db PATH] [--listen ADDR] [--peer-listen ADDR] [--allow-lan] [--discover]")
 	_, _ = fmt.Fprintln(output, "                     [--treat-as-private CIDR]... [--auto-wake] [--node-binary PATH]")
 	_, _ = fmt.Fprintln(output, "                                               run the node as a background service that starts at login")
 	_, _ = fmt.Fprintln(output, "                                               and is restarted if it exits; node flags are the node's own")
 	_, _ = fmt.Fprintln(output, "  ah service uninstall                         stop it and remove the registration; identity and data stay")
+	_, _ = fmt.Fprintln(output, "  ah service restart                           restart it, which is how a saved setting takes effect")
 	_, _ = fmt.Fprintln(output, "  ah service status                            is it installed, running, and is the node answering")
 }
 
