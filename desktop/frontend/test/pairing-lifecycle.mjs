@@ -9,20 +9,11 @@
 // one, an expired window counting 0:00 until the next read, and the countdown
 // rebuilding the candidate rows every second.
 //
-//   node frontend/test/pairing-lifecycle.mjs [path-to-main.js]
+//   node frontend/test/pairing-lifecycle.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
+globalThis.document = document;
 
 const failures = [];
 const el = (id) => document.getElementById(id);
@@ -78,14 +69,16 @@ const ClearInboxStub = async (sessionId) => {
   return clearResult;
 };
 
-const scope = new Function(
-  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "confirm",
-  source + "\nreturn { state, loadPairing, renderPairing, tickCountdown, pairingRemaining, openInbox };"
-)(document, fakeSetInterval, Overview, noop, noop, noop, noop, noop, Pairing, OpenPairing,
-  ClosePairing, InboxStub, ClearInboxStub, () => confirmAnswer);
-
 let confirmAnswer = true;
+globalThis.setInterval = fakeSetInterval;
+globalThis.confirm = () => confirmAnswer;
+
+const { configure, boot } = await import("../src/app.js");
+configure({
+  Overview, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+  Heartbeat: noop, Pairing, OpenPairing, ClosePairing, Inbox: InboxStub, ClearInbox: ClearInboxStub,
+});
+const scope = boot();
 
 const { state, loadPairing } = scope;
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
@@ -375,12 +368,13 @@ if (clearCalls.length !== 0) {
 // which looks exactly like the button not working.
 // 7. A binding that throws is a failure to read, not a fact about the network.
 pairingQueue = [];
-const throwing = new Function(
-  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { state, loadPairing };"
-)(document, () => 0, Overview, noop, noop, noop, noop, noop,
-  () => Promise.reject(new Error("binding exploded")), OpenPairing, ClosePairing);
+globalThis.setInterval = () => 0;
+configure({
+  Overview, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+  Heartbeat: noop, Pairing: () => Promise.reject(new Error("binding exploded")),
+  OpenPairing, ClosePairing,
+});
+const throwing = boot();
 throwing.state.view = "network";
 await throwing.loadPairing();
 if (throwing.state.pairing?.availability !== "unknown") {
@@ -408,12 +402,12 @@ const announcing = (displayName, nameIsChosen = false) => ({
   state: { open: false, displayName, nameIsChosen, announcing: { announceableAddresses: 1 } },
 });
 let answer = announcing("sheldon.chang mac");
-const named = new Function(
-  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { state, loadPairing };"
-)(document, () => 0, Overview, noop, noop, noop, noop, noop,
-  () => Promise.resolve(answer), OpenPairing, ClosePairing);
+globalThis.setInterval = () => 0;
+configure({
+  Overview, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+  Heartbeat: noop, Pairing: () => Promise.resolve(answer), OpenPairing, ClosePairing,
+});
+const named = boot();
 named.state.view = "network";
 
 await named.loadPairing();
