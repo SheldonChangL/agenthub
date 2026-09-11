@@ -172,6 +172,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 	if err := r.migratePresence(ctx); err != nil {
 		return err
 	}
+	if err := r.migrateNodeSettings(ctx); err != nil {
+		return err
+	}
 	return r.migrateWakeEvents(ctx)
 }
 
