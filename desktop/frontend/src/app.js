@@ -8,14 +8,13 @@ import { api } from "./api.js";
 import * as F from "./sessions/filter.js";
 export { configure } from "./api.js";
 
-export function boot({ start = true } = {}) {
+export function boot({ start = true, backdropUrl = "" } = {}) {
 
   const state = {
     sessions: [],
     counts: {},
     selected: new Set(),
     search: "",
-    filters: { provider: null, status: null, audience: null },
     view: "local",
     nodes: [],
     peers: [],
@@ -87,6 +86,8 @@ export function boot({ start = true } = {}) {
 
   // localStorage can be absent or throw (a WebView with storage disabled); a
   // failure to remember the filters is not worth a banner.
+  const UI_PREFS_KEY = "agenthub.desktop.ui.v1";
+
   function loadPrefs() {
     let raw = null;
     try {
@@ -110,6 +111,17 @@ export function boot({ start = true } = {}) {
     }
   }
 
+  // Typing in the search box would otherwise write localStorage on every
+  // keystroke; the write is deferred and coalesced.
+  let savePrefsTimer = null;
+  function savePrefsSoon() {
+    if (savePrefsTimer) clearTimeout(savePrefsTimer);
+    savePrefsTimer = setTimeout(() => {
+      savePrefsTimer = null;
+      savePrefs();
+    }, 300);
+  }
+
   function savePrefs() {
     try {
       globalThis.localStorage?.setItem(F.PREFS_KEY, F.serializePrefs(state));
@@ -118,8 +130,6 @@ export function boot({ start = true } = {}) {
       // Nothing to do: the table still works, it just forgets on restart.
     }
   }
-  const UI_PREFS_KEY = "agenthub.desktop.ui.v1";
-
 
   /* ---------------- rendering ---------------- */
 
@@ -222,14 +232,19 @@ export function boot({ start = true } = {}) {
     return `claude --resume ${id}`;
   }
 
-  // Numbered like the MCP copy: a reply that lands after the owner clicked a
-  // different row must not put another session's command on the clipboard.
+  // Clipboard writes are serialised, not merely numbered: two quick clicks on
+  // different rows each start a CopyText call, and the one that resolves last
+  // is what the clipboard holds. Chaining them keeps the last click's command
+  // on the clipboard, and only the last click gets to report.
+  let clipboardQueue = Promise.resolve();
   let resumeRequest = 0;
   async function copyResumeCommand(session) {
     const sequence = ++resumeRequest;
     const command = resumeCommand(session);
+    const write = clipboardQueue.then(() => api.CopyText(command));
+    clipboardQueue = write.catch(() => {});
     try {
-      await api.CopyText(command);
+      await write;
     } catch (error) {
       if (sequence !== resumeRequest) return;
       banner(`無法寫入剪貼簿（${error}），請手動輸入：${command}`);
@@ -426,8 +441,6 @@ export function boot({ start = true } = {}) {
   function buildRain() {
     const rain = el("rain");
     if (!rain || rain.children.length > 0) return;
-    // A DOM without element.style (the test shim) gets no rain and no error.
-    if (!document.createElement("div").style) return;
     const columns = 56;
     const fragment = document.createDocumentFragment();
     for (let i = 0; i < columns; i++) {
@@ -635,7 +648,7 @@ export function boot({ start = true } = {}) {
       const shown = state.loadedOnce
         ? "下面顯示的是上次成功載入的資料，可能已經過期。"
         : "還沒有載入過任何資料。";
-      banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
+      banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或到「設定」分頁把它安裝成背景服務（若這裡支援）。`);
     } else {
       hideBanner();
     }
@@ -1330,8 +1343,8 @@ export function boot({ start = true } = {}) {
   // A clipboard that refuses says so rather than leaving the owner believing a
   // copy happened: the key is on screen either way, and the failure mode this
   // replaces is a hand-retyped key missing its last character.
-  async function copyLocalPublicKey() {
-    const status = el("copy-public-key-status");
+  async function copyLocalPublicKey(statusId = "copy-public-key-status") {
+    const status = el(statusId);
     if (!state.localPublicKey) {
       status.textContent = "還沒有從節點讀到本機公鑰，沒有東西可以複製。";
       return;
@@ -1392,6 +1405,11 @@ export function boot({ start = true } = {}) {
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
     renderAudienceNodeList();
+    // The mode starts at 不公開 every time, like the flags: a mode left over from
+    // the last selection is a publication about to happen to a different one.
+    for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
+      radio.checked = radio.value === "none";
+    }
     // Every flag starts off, every time.
     //
     // The dialog applies to whatever is selected and reads its values from the
@@ -1491,6 +1509,17 @@ export function boot({ start = true } = {}) {
       body.append(element("div", "muted", "正在讀取…"));
       return;
     }
+    if (view.cleared) {
+      // What the destructive action did, where the person who pressed it is
+      // looking. The count matters because messages can arrive between reading
+      // the list and confirming, and those go with the rest. Before the error
+      // branch: a clear that succeeded and a re-read that then failed are two
+      // facts, and the irreversible one must not be the one that goes unsaid.
+      body.append(view.cleared.error
+        ? element("div", "stale", `清空失敗，收件匣沒有變動：${view.cleared.error}`)
+        : element("div", "muted", `已清空，移除 ${view.cleared.removed} 則。`));
+    }
+
     if (view.error) {
       // A failed read is not an empty inbox, and only one of them means there is
       // nothing to come back for. Shown here rather than in a banner: the dialog
@@ -1499,15 +1528,6 @@ export function boot({ start = true } = {}) {
       body.append(element("div", "stale", "讀不到這個 session 的收件匣，所以這裡不顯示任何內容。"));
       body.append(element("div", "muted", view.error));
       return;
-    }
-
-    if (view.cleared) {
-      // What the destructive action did, where the person who pressed it is
-      // looking. The count matters because messages can arrive between reading
-      // the list and confirming, and those go with the rest.
-      body.append(view.cleared.error
-        ? element("div", "stale", `清空失敗，收件匣沒有變動：${view.cleared.error}`)
-        : element("div", "muted", `已清空，移除 ${view.cleared.removed} 則。`));
     }
     meta.textContent = view.more
       ? `${view.sessionId} · 顯示最舊的 ${view.showing} 則，共 ${view.held} / ${view.capacity} 則`
@@ -1798,7 +1818,7 @@ export function boot({ start = true } = {}) {
   async function loadOutbound({ reset = false } = {}) {
     const session = state.inboxSessionAsked;
     const sequence = ++outboundRequest;
-    if (reset) state.outbound = { messages: [], next: "", loading: true, error: "", session };
+    if (reset) state.outbound = { messages: [], next: "", scanned: 0, loading: true, error: "", session };
     else state.outbound.loading = true;
     renderOutbound();
     let page;
@@ -1809,15 +1829,37 @@ export function boot({ start = true } = {}) {
     }
     if (sequence <= outboundApplied) return;
     outboundApplied = sequence;
-    const mine = (page.messages ?? []).filter((m) => !session || m.from === session || m.to === session || !m.from);
+    // /v1/outbound is node-wide and has no session filter, so the page is
+    // narrowed here. `from` is what the node stored: `<node id>/<session>`
+    // (address.QualifiedID), so the session half is compared, never the whole.
+    const mine = (page.messages ?? []).filter((m) => !session || fromSession(m.from) === session);
+    const scanned = (reset ? 0 : state.outbound.scanned ?? 0) + (page.messages ?? []).length;
     state.outbound = {
       session,
       messages: reset ? mine : [...state.outbound.messages, ...mine],
       next: page.next ?? "",
+      scanned,
       loading: false,
       error: page.error ?? "",
     };
     renderOutbound();
+    // A page with nothing for this session is not an answer yet: keep reading
+    // while the node has more, up to a bounded number of rows, so the owner
+    // is not shown "nothing" because the newest 50 belonged to someone else.
+    if (mine.length === 0 && state.outbound.next && scanned < OUTBOUND_SCAN_LIMIT && sequence === outboundRequest) {
+      await loadOutbound();
+    }
+  }
+
+  const OUTBOUND_SCAN_LIMIT = 200;
+
+  // fromSession returns the session half of a stored sender. A bare value
+  // (no separator) is returned whole, so a message queued without a node
+  // prefix still compares against a session id.
+  function fromSession(from) {
+    const value = String(from ?? "");
+    const slash = value.indexOf("/");
+    return slash >= 0 ? value.slice(slash + 1) : value;
   }
 
   // lastError is text the peer chose, with no length limit on the node yet
@@ -1840,8 +1882,16 @@ export function boot({ start = true } = {}) {
       return;
     }
     if (o.messages.length === 0) {
-      body.append(element("div", "empty", "這個 session 還沒有送出過訊息。"));
-      more.classList.add("hidden");
+      // Two different facts: the node has no more to show, or it has more and
+      // none of what was read so far was this session's. Only the first may
+      // claim the session never sent anything, and the second keeps the
+      // button that leads onward.
+      body.append(element("div", "empty", o.next
+        ? `最新的 ${o.scanned ?? 0} 筆送出紀錄裡沒有這個 session 的；節點還有更早的，按下面繼續往前找。`
+        : "這個 session 還沒有送出過訊息。"));
+      more.classList.toggle("hidden", !o.next);
+      more.disabled = o.loading;
+      more.textContent = o.loading ? "讀取中…" : "往前找更多";
       return;
     }
     for (const m of o.messages) {
@@ -1904,7 +1954,10 @@ export function boot({ start = true } = {}) {
     }
     if (sequence <= wakesApplied) return;
     wakesApplied = sequence;
-    state.wakes = { session, wakes: page.wakes ?? [], limits: page.limits ?? null, loading: false, error: page.error ?? "" };
+    // Limits only count as present when they carry a rule; a node that omits
+    // them must not be quoted as "0 hops".
+    const limits = page.limits && (page.limits.hops > 0 || page.limits.pair > 0 || page.limits.session > 0 || page.limits.node > 0) ? page.limits : null;
+    state.wakes = { session, wakes: page.wakes ?? [], limits, loading: false, error: page.error ?? "" };
     renderWakes();
   }
 
@@ -1979,16 +2032,17 @@ export function boot({ start = true } = {}) {
 
   el("search").oninput = (event) => {
     state.search = event.target.value;
-    savePrefs();
+    savePrefsSoon();
     render();
   };
 
-  el("select-all").onchange = (event) => {
+  function setSelectionForVisible(event) {
     const rows = visible();
     if (event.target.checked) rows.forEach((s) => state.selected.add(s.id));
     else rows.forEach((s) => state.selected.delete(s.id));
     render();
-  };
+  }
+  el("select-all").onchange = setSelectionForVisible;
 
   /* ---------------- background service ---------------- */
 
@@ -2345,7 +2399,7 @@ export function boot({ start = true } = {}) {
 
   /* ---------------- redesign wiring ---------------- */
 
-  el("select-all-visible").onchange = el("select-all").onchange;
+  el("select-all-visible").onchange = setSelectionForVisible;
   el("btn-deselect").onclick = () => {
     state.selected.clear();
     render();
@@ -2385,19 +2439,7 @@ export function boot({ start = true } = {}) {
     state.settingsSection = "settings-service";
     render();
   };
-  el("copy-identity-key").onclick = async () => {
-    const status = el("identity-copy-status");
-    if (!state.localPublicKey) {
-      status.textContent = "還沒有從節點讀到本機公鑰。";
-      return;
-    }
-    try {
-      await api.CopyText(state.localPublicKey);
-      status.textContent = "已複製";
-    } catch (error) {
-      status.textContent = `無法寫入剪貼簿（${error}），請手動複製，注意結尾的 = 也要一起。`;
-    }
-  };
+  el("copy-identity-key").onclick = () => copyLocalPublicKey("identity-copy-status");
   el("toggle-backdrop").onchange = (event) => {
     state.ui.backdrop = Boolean(event.target.checked);
     savePrefs();
@@ -2414,7 +2456,14 @@ export function boot({ start = true } = {}) {
   el("search").value = state.search;
   applyBackdrop();
   buildRain();
-  if (typeof globalThis.AGENTHUB_BACKDROP === "string") el("backdrop-photo").src = globalThis.AGENTHUB_BACKDROP;
+  if (backdropUrl) el("backdrop-photo").src = backdropUrl;
+  // The rain is pure CSS, but the compositor still pays for it while the
+  // window is hidden; pause it there and let it resume on return.
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", () => {
+      document.body?.classList?.toggle("bg-paused", Boolean(document.hidden));
+    });
+  }
 
   // What the tests reach for. Nothing here is for main.js: the app is driven
   // through the DOM, and these are the same functions the handlers call.

@@ -170,6 +170,9 @@ func TestWakesCarriesTheLimitsAndTheSessionFilter(t *testing.T) {
 	if session != "claude:x" {
 		t.Errorf("session = %q, want the id it was given, verbatim", session)
 	}
+	if view.Limits == nil {
+		t.Fatal("limits missing")
+	}
 	if view.Limits.Hops != 4 || view.Limits.Pair != 3 || view.Limits.PairWindow != "1h0m0s" ||
 		view.Limits.Session != 10 || view.Limits.SessionWindow != "1h0m0s" ||
 		view.Limits.Node != 30 || view.Limits.NodeWindow != "1h0m0s" {

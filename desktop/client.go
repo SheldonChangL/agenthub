@@ -541,7 +541,9 @@ type WakeLimits struct {
 
 type WakesPage struct {
 	Wakes  []WakeEvent `json:"wakes"`
-	Limits WakeLimits  `json:"limits"`
+	// A pointer, so a node that answers without limits yields null rather than
+	// an all-zero rule set the UI would print as real numbers.
+	Limits *WakeLimits `json:"limits,omitempty"`
 }
 
 // defaultPageLimit is what the node uses when a caller names no limit, repeated
