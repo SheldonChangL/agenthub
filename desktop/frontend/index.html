@@ -210,8 +210,33 @@
           <label>對方顯示的指紋<input id="pair-fingerprint" type="text" placeholder="2DCF 9604 DBA9 778A 6DDD 035B" autocomplete="off" /></label>
         </div>
         <p id="pair-prefill-note" class="muted hidden"></p>
+        <!-- This machine's own identity, for the person at the other keyboard.
+             The public key was only ever obtainable by running `ah node` on
+             this machine, which is a terminal the desktop app exists to avoid
+             — and carrying it by hand is how a trailing `=` went missing on
+             2026-09-10, for which the only message is "public key is not a
+             valid Ed25519 key". -->
+        <div class="localidentity">
+          <div class="line">
+            <span class="muted">本機公鑰</span>
+            <button id="copy-local-public-key" class="ghost">複製</button>
+          </div>
+          <div id="local-public-key" class="keyvalue">—</div>
+          <div id="copy-public-key-status" class="muted"></div>
+          <p class="muted">
+            對方在配對對話框裡要填的就是這串；指紋則要在兩台螢幕上逐組比對。
+          </p>
+          <div class="line">
+            <span class="muted">本機指紋</span>
+            <code id="local-fingerprint">—</code>
+          </div>
+        </div>
+        <p class="warning">
+          配對是每台各自記的。這裡按下去只代表<b>這台信任對方</b>；
+          對方那台也要對這台做一次配對，否則它送不到這裡，也不會送心跳過來。
+        </p>
         <div class="modal-actions">
-          <span class="muted">本機指紋：<code id="local-fingerprint">—</code></span>
+          <span class="muted">配對只確認身分，不會公開任何 session。</span>
           <button id="pair-submit" class="primary">指紋一致，信任此節點</button>
         </div>
       </div>

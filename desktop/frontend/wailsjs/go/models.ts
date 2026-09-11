@@ -334,6 +334,7 @@ export namespace main {
 	    pairedAt: any;
 	    // Go type: time
 	    lastSeenAt: any;
+	    address?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TrustedNode(source);
@@ -348,6 +349,7 @@ export namespace main {
 	        this.fingerprint = source["fingerprint"];
 	        this.pairedAt = this.convertValues(source["pairedAt"], null);
 	        this.lastSeenAt = this.convertValues(source["lastSeenAt"], null);
+	        this.address = source["address"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

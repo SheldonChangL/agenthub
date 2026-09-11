@@ -709,3 +709,120 @@ func TestAFullPageIsNotTakenAsProofOfMore(t *testing.T) {
 		})
 	}
 }
+
+// SetNodeAddress is the window's repair for the quietest failure in the
+// system: a paired node with no recorded address is skipped without a word and
+// the sender's `ah send` still answers `queued`. With no `--discover`
+// broadcast on the segment, nothing else in this app could supply one.
+func TestSetNodeAddressRecordsWhereThePeerAnswers(t *testing.T) {
+	var method, path, contentType string
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path, contentType = r.Method, r.URL.EscapedPath(), r.Header.Get("Content-Type")
+		body, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if err := app.SetNodeAddress("node_ubuntu000000000", "192.168.1.20:7463"); err != nil {
+		t.Fatalf("SetNodeAddress: %v", err)
+	}
+	if method != http.MethodPut {
+		t.Errorf("method = %s, want PUT", method)
+	}
+	if path != "/v1/nodes/node_ubuntu000000000/address" {
+		t.Errorf("path = %s", path)
+	}
+	if contentType != "application/json" {
+		t.Errorf("Content-Type = %q", contentType)
+	}
+	var sent struct {
+		Address string `json:"address"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil {
+		t.Fatalf("decode request body %q: %v", body, err)
+	}
+	// Exactly what the owner typed. Rewriting it here would mean this window
+	// and the node disagree about what was recorded.
+	if sent.Address != "192.168.1.20:7463" {
+		t.Errorf("address sent = %q, want 192.168.1.20:7463", sent.Address)
+	}
+}
+
+// A node id becomes one path segment, whatever is in it.
+func TestSetNodeAddressEscapesTheNodeID(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if err := app.SetNodeAddress("a/../b", "10.0.0.2:7463"); err != nil {
+		t.Fatalf("SetNodeAddress: %v", err)
+	}
+	if path != "/v1/nodes/a%2F..%2Fb/address" {
+		t.Errorf("path = %s; the node id was not escaped into one segment", path)
+	}
+}
+
+// What is wrong with an address is something only the node knows — it holds the
+// ranges this build will deliver to — so its words are what the banner shows.
+// Replacing them with a message invented here would send the owner looking for
+// the wrong fault.
+func TestSetNodeAddressPassesTheNodesRefusalThrough(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"INVALID_REQUEST","message":"address must be host:port"}}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	err := app.SetNodeAddress("node_a00000000000000", "not-an-address")
+	if err == nil {
+		t.Fatal("SetNodeAddress returned nil for an address the node refused")
+	}
+	if !strings.Contains(err.Error(), "address must be host:port") {
+		t.Errorf("the node's reason did not reach the window: %v", err)
+	}
+}
+
+// The address the node already has must reach the window, or the warning that
+// there is none cannot tell the two apart. An unknown key is dropped in
+// decoding, so this is a fact about the struct, not about the wire.
+func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/node":
+			_, _ = w.Write([]byte(`{"id":"node_self0000000000","displayName":"self","platform":"darwin","publicKey":"AAAA","fingerprint":"2DCF 9604"}`))
+		case "/v1/nodes":
+			_, _ = w.Write([]byte(`{"nodes":[` +
+				`{"nodeId":"node_with000000000","displayName":"has one","platform":"linux","address":"192.168.1.20:7463"},` +
+				`{"nodeId":"node_without000000","displayName":"has none","platform":"linux"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"sessions":[],"peers":[],"pagination":{"totalPages":1}}`))
+		}
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	overview := app.Overview()
+	if len(overview.Nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2 (error: %s)", len(overview.Nodes), overview.Error)
+	}
+	if overview.Nodes[0].Address != "192.168.1.20:7463" {
+		t.Errorf("recorded address = %q, want 192.168.1.20:7463", overview.Nodes[0].Address)
+	}
+	if overview.Nodes[1].Address != "" {
+		t.Errorf("a node with no address reported %q", overview.Nodes[1].Address)
+	}
+	// The local public key is what the peer types into its own dialog, and the
+	// window had no way to show it: main.js never read the field.
+	if overview.Node.PublicKey != "AAAA" {
+		t.Errorf("local public key = %q, want AAAA", overview.Node.PublicKey)
+	}
+}

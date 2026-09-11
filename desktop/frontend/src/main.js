@@ -5,6 +5,7 @@ import {
   SetAudience,
   TrustNode,
   RevokeNode,
+  SetNodeAddress,
   Heartbeat,
   Pairing,
   OpenPairing,
@@ -44,6 +45,13 @@ const state = {
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
   localNodeId: "",
+  localFingerprint: "",
+  // This node's own public key, as the peer must type it. Read from the node
+  // on every overview; empty until one succeeds.
+  localPublicKey: "",
+  // An address being typed into a node's detail page, kept across the renders
+  // the background refresh causes. { nodeId, value } or null.
+  addressDraft: null,
   // nodeAutoWake is the node's own -auto-wake flag, which is half of what
   // waking needs. The per-session box in the audience dialog does nothing
   // while this is false, and the dialog says so rather than letting the owner
@@ -337,6 +345,13 @@ async function load({ background = false } = {}) {
     state.nodes = overview.nodes || [];
     state.counts = overview.counts || {};
     state.localFingerprint = overview.node?.fingerprint || "";
+    // The string the person at the other keyboard has to type into their own
+    // pairing dialog. The node has always answered with it and this window
+    // never read it, so the only way to get it was `ah node` in a terminal on
+    // this machine — and copying it by hand is how a trailing "=" was lost on
+    // 2026-09-10, leaving "public key is not a valid Ed25519 key" as the only
+    // explanation anyone got.
+    state.localPublicKey = overview.node?.publicKey || "";
     // Needed to tell this machine's own messages from a peer's. Without it a
     // qualified sender naming this node reads as a peer, and a bare one reads as
     // local — which is the dangerous direction.
@@ -795,7 +810,8 @@ function nodeSessions(node) {
     return [heading, element(
       "div",
       "empty",
-      "尚未收到這個節點的心跳。配對只確認身分，對方仍須主動發布，而且必須把 session 公開給這個節點。"
+      heartbeatSilenceReasons +
+      "（配對本身也只確認身分：對方仍須把 session 公開給這個節點才會出現在這裡。）"
     )];
   }
   if (!presence.online) {
@@ -872,10 +888,27 @@ function heardFrom(presence) {
 // state, so the label always says when the information is from.
 function presenceLabel(presence) {
   if (state.presenceError) return { text: "節點狀態無法取得", className: "unknown" };
-  if (!heardFrom(presence)) return { text: "尚未收到心跳", className: "never" };
+  // Silence has two causes and this side cannot tell them apart. /v1/peers
+  // reports what arrived, and nothing arrives either when the peer has not
+  // paired back — trust is recorded per machine — or when it has and is simply
+  // not sending. Naming one would be a guess; the row names both, and the
+  // detail below says where the answer is.
+  if (!heardFrom(presence)) return { text: "尚未收到心跳 · 對方可能還沒配對這台", className: "never" };
   if (presence.online) return { text: "線上", className: "online" };
   return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
 }
+
+// heartbeatSilenceReasons spells out both causes of silence, because this node
+// has no way to choose between them.
+//
+// The node lists a peer it trusts whether or not that peer trusts it back, and
+// a heartbeat that never arrives looks identical in both cases. The only place
+// the difference is visible is the other machine's own `ah nodes`.
+const heartbeatSilenceReasons =
+  "尚未收到這個節點的心跳。有兩種可能，這台分不出來是哪一種：" +
+  "（一）對方還沒對這台做配對——配對是每台各自記的，這台信任它不代表它信任這台；" +
+  "（二）對方已經配對了，但還沒送出心跳（節點沒在跑，或沒有這台的位址）。" +
+  "要分辨，在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。";
 
 function nodeDetail(node) {
   const heading = element("h2", "", node.displayName);
@@ -886,12 +919,24 @@ function nodeDetail(node) {
     "在對方機器上執行 ah node，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。"
   );
 
+  // Trust is recorded per machine, and this page shows only this machine's
+  // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
+  // on 2026-09-10, and nothing here said that was half-done — the row simply
+  // sat there having never been heard from, which reads as the peer being off.
+  const mutualNote = element(
+    "p",
+    "stale",
+    "配對是每台各自記的：這一列只代表這台已信任對方。對方那台也要對這台做一次配對，" +
+    "否則它送不到這裡，也不會送心跳過來——在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。"
+  );
+
   const rows = [
     ["節點 ID", node.nodeId],
     ["平台", node.platform],
     ["配對時間", node.pairedAt ? relative(node.pairedAt) : "—"],
     ["最後聯繫", node.lastSeenAt ? relative(node.lastSeenAt) : "尚未聯繫過"],
     ["可見的 session", `${grantedCount(node.nodeId)} 個`],
+    ["記錄的位址", node.address ? node.address : "（沒有）"],
   ].map(([label, value]) => {
     const row = element("div", "detailrow");
     row.append(element("span", "muted", label), element("span", "mono", value));
@@ -906,7 +951,81 @@ function nodeDetail(node) {
     "撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。"
   );
 
-  return [heading, fingerprint, note, ...rows, element("div", "", ""), revoke, revokeNote];
+  return [
+    heading, fingerprint, note, mutualNote, ...rows,
+    ...addressSection(node),
+    element("div", "", ""), revoke, revokeNote,
+  ];
+}
+
+// addressSection is where a paired node's address is read and written.
+//
+// An address is not a trust decision — pairing says who a node is, this says
+// where it currently answers — and the two are separated here because only the
+// second changes when a laptop moves between networks.
+//
+// The missing case is the loud one, and deliberately so: delivery skips a peer
+// with no address without a word, and the sender's own `ah send` still answers
+// `queued`. Nothing anywhere else in this app or the CLI says it happened. With
+// `--discover` running the address is learned from the peer's announcements; on
+// a segment with no broadcast — a direct cable, a network that drops multicast
+// — it has to be typed, and until now that meant a hand-written `curl -X PUT`.
+function addressSection(node) {
+  const parts = [];
+  if (node.address) {
+    parts.push(element("p", "muted", `目前記錄的位址是 ${node.address}，訊息會送到這裡。`));
+  } else {
+    parts.push(element(
+      "p",
+      "noaddress",
+      "沒有位址：送到這個節點的訊息會被靜默跳過，ah send 仍會回 queued。" +
+      "有 --discover 時會自動學到；沒有就在下面填。"
+    ));
+  }
+
+  const input = element("input", "addressinput");
+  input.type = "text";
+  input.placeholder = "192.168.1.20:7463";
+  // What is half-typed survives a re-render. This page is rebuilt from scratch
+  // every fifteen seconds by the background refresh, which does not count
+  // typing as an interaction in progress — so without the draft, an address
+  // being entered is deleted under the owner's hands mid-word, and the field
+  // silently reverts to the recorded value they are trying to change.
+  const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.value : null;
+  input.value = draft ?? node.address ?? "";
+  input.oninput = (event) => {
+    state.addressDraft = { nodeId: node.nodeId, value: event.target.value };
+  };
+
+  const submit = element("button", "btn setaddress", "記錄位址");
+  submit.onclick = () => recordAddress(node, input.value);
+
+  const form = element("div", "addressform");
+  form.append(input, submit);
+  parts.push(form);
+  parts.push(element(
+    "p",
+    "muted",
+    "格式是 host:port，由節點驗證——它拒絕自己不會投遞的位址，理由會原文顯示在上方橫幅。"
+  ));
+  return parts;
+}
+
+async function recordAddress(node, raw) {
+  const address = String(raw ?? "").trim();
+  if (address === "") {
+    banner("位址是空的。要記錄一個位址，請填 host:port，例如 192.168.1.20:7463。");
+    return;
+  }
+  await withBusy("記錄位址", async () => {
+    await SetNodeAddress(node.nodeId, address);
+    // Only once the node has it. A draft cleared before the call would leave a
+    // refused address nowhere, with the field back to the value the owner was
+    // replacing and nothing to correct.
+    state.addressDraft = null;
+    await load();
+    banner(`已記錄 ${node.displayName} 的位址 ${address}。`, true);
+  });
 }
 
 // A node's reach is the owner's real question, so count it rather than making
@@ -931,7 +1050,32 @@ async function revokeSelected(node) {
 
 function openPairModal() {
   el("local-fingerprint").textContent = state.localFingerprint || "—";
+  // The two are shown together and described differently on purpose. The key
+  // is carried to the other machine and typed in; the fingerprint is compared
+  // on two screens and never carried. Presenting them the same way is how
+  // someone ends up pasting a fingerprint into a key field.
+  el("local-public-key").textContent = state.localPublicKey || "—";
+  el("copy-public-key-status").textContent = "";
   el("pair-modal").classList.remove("hidden");
+}
+
+// copyLocalPublicKey hands this node's key to the clipboard.
+//
+// A clipboard that refuses says so rather than leaving the owner believing a
+// copy happened: the key is on screen either way, and the failure mode this
+// replaces is a hand-retyped key missing its last character.
+async function copyLocalPublicKey() {
+  const status = el("copy-public-key-status");
+  if (!state.localPublicKey) {
+    status.textContent = "還沒有從節點讀到本機公鑰，沒有東西可以複製。";
+    return;
+  }
+  try {
+    await CopyText(state.localPublicKey);
+    status.textContent = "已複製本機公鑰到剪貼簿";
+  } catch (error) {
+    status.textContent = `無法寫入剪貼簿（${error}），請手動複製上面那一串，注意結尾的 = 也要一起。`;
+  }
 }
 
 function closePairModal() {
@@ -1516,6 +1660,7 @@ for (const segment of document.querySelectorAll("#view-switch span")) {
 
 el("btn-pair").onclick = openPairModal;
 el("pair-close").onclick = closePairModal;
+el("copy-local-public-key").onclick = () => copyLocalPublicKey();
 el("pair-modal").onclick = (event) => {
   if (event.target === el("pair-modal")) closePairModal();
 };
@@ -1531,7 +1676,14 @@ el("pair-submit").onclick = () =>
     closePairModal();
     state.selectedNode = node.nodeId;
     await load();
-    banner(`已信任 ${node.displayName}。配對本身不會公開任何 session。`, true);
+    // Not marked successful, so it stays on screen. A four-second green
+    // banner is how "you are half done" gets missed, and half-done pairing is
+    // exactly what happened on 2026-09-10: the mac was paired, the Ubuntu box
+    // still answered `No paired nodes`, and nothing said so.
+    banner(
+      `已信任 ${node.displayName}：這台已信任對方，配對本身不會公開任何 session。` +
+      "對方那台也要對這台做一次配對，否則它送不到這裡也收不到心跳。"
+    );
   });
 
 el("btn-audience").onclick = openAudienceModal;
