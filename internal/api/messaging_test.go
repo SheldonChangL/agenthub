@@ -793,3 +793,155 @@ func TestAPageBoundaryOnAPeerChosenIDIsCrossable(t *testing.T) {
 		t.Errorf("page 2 = %+v; want the message after the first", page.Messages)
 	}
 }
+
+// queueForPeerViaAPI sends one message to a peer through the owner API and
+// returns the id it was queued under.
+func queueForPeerViaAPI(t *testing.T, owner http.Handler, from, body string) string {
+	t.Helper()
+	response := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": peerNodeID + "/codex:their-session", "from": from, "body": body,
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("queue = %d %s", response.Code, response.Body.String())
+	}
+	var queued struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil {
+		t.Fatal(err)
+	}
+	// Two in the same millisecond tie, and the tie-break is a random id — so a
+	// test asserting an order would be asserting nothing.
+	time.Sleep(2 * time.Millisecond)
+	return queued.ID
+}
+
+type outboundPage struct {
+	Messages []struct {
+		ID        string `json:"id"`
+		To        string `json:"to"`
+		From      string `json:"from"`
+		State     string `json:"state"`
+		Attempts  int    `json:"attempts"`
+		LastError string `json:"lastError"`
+		Body      string `json:"body"`
+		CreatedAt string `json:"createdAt"`
+	} `json:"messages"`
+	Next string `json:"next"`
+}
+
+func readOutboundPage(t *testing.T, owner http.Handler, query string) outboundPage {
+	t.Helper()
+	response := perform(t, owner, http.MethodGet, "/v1/outbound"+query, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound%s = %d %s", query, response.Code, response.Body.String())
+	}
+	var page outboundPage
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode %s: %v", response.Body.String(), err)
+	}
+	return page
+}
+
+// TestOutboundListAnswersNewestFirst is the endpoint the desktop reads. `ah
+// send` answers "queued" and nothing else, so an owner without the id — the
+// terminal is closed, or an agent sent it — had no way to ask what happened.
+func TestOutboundListAnswersNewestFirst(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	first := queueForPeerViaAPI(t, owner, from, "one")
+	second := queueForPeerViaAPI(t, owner, from, "two")
+
+	page := readOutboundPage(t, owner, "")
+	if len(page.Messages) != 2 {
+		t.Fatalf("listed %d rows; want 2", len(page.Messages))
+	}
+	if page.Messages[0].ID != second || page.Messages[1].ID != first {
+		t.Fatalf("ids = %q, %q; want the newest first",
+			page.Messages[0].ID, page.Messages[1].ID)
+	}
+	row := page.Messages[0]
+	if row.State != string(registry.OutboundPending) || row.To != "codex:their-session" {
+		t.Errorf("row = %#v; want the same fields the single lookup answers with", row)
+	}
+	if row.CreatedAt == "" {
+		t.Error("a row carries no time, so nothing can say when it was sent")
+	}
+	// No bodies. A page of fifty 32KB bodies is both more than this question
+	// needs and enough to pass a reader's response cap — which is how the
+	// answer to "what is jamming my outbox" becomes unreadable exactly when it
+	// is wanted.
+	if strings.Contains(bodyOf(t, owner, "/v1/outbound"), `"body"`) {
+		t.Error("the listing carries message bodies")
+	}
+	// And the settled state travels: a refusal is the outcome the owner most
+	// needs to see, and it is only ever visible here.
+	if err := store.MarkOutbound(context.Background(), second, registry.OutboundRefused,
+		"the addressed session does not accept messages"); err != nil {
+		t.Fatal(err)
+	}
+	page = readOutboundPage(t, owner, "")
+	if page.Messages[0].State != string(registry.OutboundRefused) ||
+		page.Messages[0].Attempts != 1 ||
+		!strings.Contains(page.Messages[0].LastError, "does not accept") {
+		t.Fatalf("refused row = %#v; want the state, the attempt and the reason", page.Messages[0])
+	}
+}
+
+// bodyOf reads a path as a string, for the assertions about what a body does
+// not contain.
+func bodyOf(t *testing.T, owner http.Handler, path string) string {
+	t.Helper()
+	return perform(t, owner, http.MethodGet, path, nil).Body.String()
+}
+
+// TestOutboundListPagesAndBoundsItself covers the three ways a caller can ask
+// for the wrong thing.
+func TestOutboundListPagesAndBoundsItself(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	// Empty is an empty list, not an error and not a missing field.
+	empty := readOutboundPage(t, owner, "")
+	if len(empty.Messages) != 0 || empty.Next != "" {
+		t.Fatalf("empty node answered %#v", empty)
+	}
+	if !strings.Contains(bodyOf(t, owner, "/v1/outbound"), `"messages"`) {
+		t.Error("an empty answer omits the messages key, so a client cannot tell it from a failure")
+	}
+
+	oldest := queueForPeerViaAPI(t, owner, from, "one")
+	middle := queueForPeerViaAPI(t, owner, from, "two")
+	newest := queueForPeerViaAPI(t, owner, from, "three")
+
+	page := readOutboundPage(t, owner, "?limit=2")
+	if len(page.Messages) != 2 || page.Messages[0].ID != newest || page.Messages[1].ID != middle {
+		t.Fatalf("first page = %#v", page.Messages)
+	}
+	if page.Next == "" {
+		t.Fatal("a full page carries no cursor, so the rest is unreachable")
+	}
+	next := readOutboundPage(t, owner, "?limit=2&after="+url.QueryEscape(page.Next))
+	if len(next.Messages) != 1 || next.Messages[0].ID != oldest {
+		t.Fatalf("second page = %#v; want the oldest alone, nothing repeated", next.Messages)
+	}
+	if next.Next != "" {
+		t.Error("a short page carries a cursor, which reads as more to come")
+	}
+
+	for _, bad := range []string{"?limit=0", "?limit=201", "?limit=x"} {
+		if code := perform(t, owner, http.MethodGet, "/v1/outbound"+bad, nil).Code; code != http.StatusBadRequest {
+			t.Errorf("GET /v1/outbound%s = %d; want 400", bad, code)
+		}
+	}
+	// A cursor this node did not issue is refused rather than silently read as
+	// the start, which would answer a page the caller has already seen.
+	if code := perform(t, owner, http.MethodGet, "/v1/outbound?after=nonsense", nil).Code; code != http.StatusBadRequest {
+		t.Errorf("a forged cursor = %d; want 400", code)
+	}
+}

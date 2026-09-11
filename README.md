@@ -294,6 +294,7 @@ agent does, through the MCP tools in the next section. From a terminal:
 bin/ah peers                                           # what they published, and the address to send to
 bin/ah send --from <your-session-id> <node-id>/<their-session-id> -- "hi"
 bin/ah outbound <message-id>                           # queued, delivered, or refused
+bin/ah outbound                                        # ...or the last 50, newest first
 ```
 
 A remote session is addressed `<node-id>/<session-id>`; `ah peers` prints that
@@ -607,6 +608,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message |
+| `GET` | `/v1/outbound?limit=50` | What this node has queued for peers, newest first: `limit` (1–200) and `after` (the `next` value a full page carries). No bodies — state, attempts and the last error |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
 | `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |

@@ -927,3 +927,58 @@ func TestUsageNamesTheAddressSubcommand(t *testing.T) {
 		t.Errorf("usage does not describe `ah nodes address`: %q", usage)
 	}
 }
+
+// TestOutboundWithoutAnIDListsTheQueue covers the command an owner reaches for
+// when they no longer have the id — the terminal that printed it is closed, or
+// an agent sent the message rather than them.
+func TestOutboundWithoutAnIDListsTheQueue(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"id":"msg_1","to":"codex:theirs","state":"refused","attempts":2,"lastError":"nowhere to deliver to"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "outbound"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(asked) != 1 || asked[0] != "GET /v1/outbound" {
+		t.Fatalf("requests = %v; want the listing endpoint, not the single lookup", asked)
+	}
+	// The refusal and its reason are the whole point of looking.
+	for _, want := range []string{"msg_1", "refused", "nowhere to deliver to"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout = %q; want it to contain %q", stdout.String(), want)
+		}
+	}
+}
+
+// TestOutboundWithAnIDStillAsksAboutThatMessage keeps the listing from taking
+// over the lookup that already existed.
+func TestOutboundWithAnIDStillAsksAboutThatMessage(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "outbound", "msg_1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(asked) != 1 || asked[0] != "/v1/outbound/msg_1" {
+		t.Fatalf("requests = %v", asked)
+	}
+
+	// And a second argument is still refused, before anything is sent.
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(),
+		[]string{"--url", "http://127.0.0.1:1", "outbound", "msg_1", "msg_2"}, &stdout, &stderr); code == 0 {
+		t.Fatal("two message ids were accepted")
+	}
+}
