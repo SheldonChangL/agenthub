@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/address"
@@ -266,14 +265,17 @@ func (s *Server) outboundList(w http.ResponseWriter, r *http.Request) {
 			"after is not a cursor this node issued; pass the `next` value from the previous page, or omit it to start over")
 		return
 	}
-	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	session, ok := sessionFilter(w, r)
+	if !ok {
+		return
+	}
 	if session != "" {
 		// The same resolution /v1/wakes uses, for the same reason: a window
 		// opened from one session's row asks about that session, and an
 		// address naming another node is answered as a routing error rather
 		// than as an empty list that reads as "this session sent nothing".
-		resolved, ok := s.localSession(w, session)
-		if !ok {
+		resolved, localOK := s.localSession(w, session)
+		if !localOK {
 			return
 		}
 		session = resolved
