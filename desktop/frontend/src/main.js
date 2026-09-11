@@ -275,7 +275,7 @@ async function load() {
   state.presenceError = overview.presenceError ?? "";
 
   if (!overview.reachable) {
-    banner(`節點未連線：${overview.error || "unknown error"}。下面可以把它安裝成背景服務。`);
+    banner(`節點未連線：${overview.error || "unknown error"}。啟動 agenthub-node，或在下面把它安裝成背景服務（若這裡支援）。`);
   } else {
     hideBanner();
   }
@@ -1197,17 +1197,24 @@ async function openServiceForm() {
   for (const item of addresses) {
     const option = document.createElement("option");
     option.value = `${item.address}:7463`;
-    option.textContent = `${item.address}:7463 · ${item.interface}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
+    option.textContent = `${item.address}:7463 · ${item.interface} · ${item.subnet}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
     option.dataset.private = item.private ? "1" : "";
-    option.dataset.address = item.address;
+    option.dataset.subnet = item.subnet;
     select.append(option);
   }
+  state.servicePrivateSuggested = "";
+  el("service-private").value = "";
   syncServiceForm();
 }
 
 // A non-loopback address needs --allow-lan, and a non-private one needs the
 // range declared: filled in for the owner, and said out loud, rather than
 // left for ah to refuse.
+//
+// The suggestion is the interface's own subnet, never a wider guess: the
+// range governs who the node will deliver to, so it should be what the cable
+// actually carries. It is remembered, so switching addresses replaces a
+// suggestion the owner did not touch and leaves alone one they edited.
 function syncServiceForm() {
   const select = el("service-address");
   const option = select.options[select.selectedIndex];
@@ -1215,10 +1222,17 @@ function syncServiceForm() {
   el("service-allow-lan").checked = lan;
   el("service-lan-note").classList.toggle("hidden", !lan);
   const privateField = el("service-private");
-  if (option && option.value && option.dataset.private === "" && !privateField.value.trim()) {
-    const parts = option.dataset.address.split(".");
-    privateField.value = `${parts[0]}.${parts[1]}.0.0/16`;
+  const note = el("service-private-note");
+  const untouched = privateField.value.trim() === "" || privateField.value.trim() === state.servicePrivateSuggested;
+  const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
+  if (untouched) {
+    privateField.value = suggestion;
+    state.servicePrivateSuggested = suggestion;
   }
+  note.textContent = suggestion
+    ? `已帶入這個介面自己的網段 ${suggestion}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
+    : "";
+  note.classList.toggle("hidden", !suggestion);
 }
 
 function readServiceForm() {
@@ -1229,7 +1243,6 @@ function readServiceForm() {
     discover: el("service-discover").checked,
     treatAsPrivate: el("service-private").value.split(/[\s,]+/).map((v) => v.trim()).filter(Boolean),
     autoWake: el("service-autowake").checked,
-    displayName: el("service-name").value.trim(),
   };
 }
 

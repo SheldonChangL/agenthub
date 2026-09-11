@@ -130,7 +130,9 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		if config.LogPath == "" {
 			config.LogPath = m.DefaultLogPath()
 		}
-		if err := os.MkdirAll(filepath.Dir(config.LogPath), 0o755); err != nil {
+		// 0700: the log carries the node id, fingerprint and session counts,
+		// which are the owner's to share, not the machine's.
+		if err := os.MkdirAll(filepath.Dir(config.LogPath), 0o700); err != nil {
 			return report, fmt.Errorf("create log directory: %w", err)
 		}
 		unit, err := LaunchdPlist(config)
@@ -142,14 +144,18 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		}
 		report.Steps = append(report.Steps, "wrote "+unitPath)
 		domain := "gui/" + m.UID
-		// Best effort: a job that is not loaded makes bootout fail, and that
-		// is the common case on a first install.
-		_, _ = m.Runner.Run(ctx, "launchctl", "bootout", domain+"/"+Label)
+		// A job that is not loaded makes bootout fail, and that is the common
+		// case on a first install; any other failure is kept, because if the
+		// bootstrap below then fails, the bootout's words are the cause.
+		bootoutOut, bootoutErr := m.Runner.Run(ctx, "launchctl", "bootout", domain+"/"+Label)
+		if bootoutErr != nil && notLoaded(bootoutOut, bootoutErr) {
+			bootoutErr = nil
+		}
 		// bootout returns before the job is gone. A bootstrap that lands while
 		// the old registration is still being torn down fails with EIO
-		// ("Input/output error"), which is what a reinstall from the desktop
-		// app hit. So wait for launchd to stop knowing the job, then retry the
-		// bootstrap a few times rather than once.
+		// ("Input/output error"), which a reinstall from the desktop app hit.
+		// So wait until launchctl itself says the job is not loaded, then
+		// retry the bootstrap a few times rather than once.
 		m.waitUntilUnloaded(ctx, domain)
 		var out string
 		var bootstrapErr error
@@ -164,7 +170,11 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 			m.pause(ctx, 500*time.Millisecond)
 		}
 		if bootstrapErr != nil {
-			return report, fmt.Errorf("launchctl bootstrap: %w: %s", bootstrapErr, strings.TrimSpace(out))
+			message := fmt.Sprintf("launchctl bootstrap: %v: %s", bootstrapErr, strings.TrimSpace(out))
+			if bootoutErr != nil {
+				message += fmt.Sprintf(" (the bootout before it also failed: %v: %s)", bootoutErr, strings.TrimSpace(bootoutOut))
+			}
+			return report, errors.New(message)
 		}
 		report.Steps = append(report.Steps, "registered with launchd as "+Label+" (starts at login, restarted if it exits)")
 		report.Notes = append(report.Notes, "log: "+config.LogPath)
@@ -268,12 +278,14 @@ var (
 	systemdPID = regexp.MustCompile(`MainPID=(\d+)`)
 )
 
-// waitUntilUnloaded polls launchctl until the job is no longer known, for a
-// bounded time. launchctl print fails once the job is gone; that failure is
-// the signal.
+// waitUntilUnloaded polls launchctl until it says the job is not loaded, for
+// a bounded time. Only that answer ends the wait early: a print that fails
+// for some other reason says nothing about the job, so the wait runs out
+// rather than pretending.
 func (m Manager) waitUntilUnloaded(ctx context.Context, domain string) {
 	for attempt := 0; attempt < 20; attempt++ {
-		if _, err := m.Runner.Run(ctx, "launchctl", "print", domain+"/"+Label); err != nil {
+		out, err := m.Runner.Run(ctx, "launchctl", "print", domain+"/"+Label)
+		if err != nil && notLoaded(out, err) {
 			return
 		}
 		m.pause(ctx, 250*time.Millisecond)
@@ -305,10 +317,12 @@ func notLoaded(out string, err error) bool {
 }
 
 func writeUnit(path string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0700 and 0600: launchd and systemd --user read the unit as the owning
+	// user, so nobody else needs to.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, content, 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

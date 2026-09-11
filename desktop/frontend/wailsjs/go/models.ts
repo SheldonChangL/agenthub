@@ -206,6 +206,7 @@ export namespace main {
 	export class LocalAddress {
 	    interface: string;
 	    address: string;
+	    subnet: string;
 	    private: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -216,6 +217,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.interface = source["interface"];
 	        this.address = source["address"];
+	        this.subnet = source["subnet"];
 	        this.private = source["private"];
 	    }
 	}
@@ -547,7 +549,6 @@ export namespace main {
 	    discover: boolean;
 	    treatAsPrivate: string[];
 	    autoWake: boolean;
-	    displayName: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ServiceForm(source);
@@ -561,7 +562,6 @@ export namespace main {
 	        this.discover = source["discover"];
 	        this.treatAsPrivate = source["treatAsPrivate"];
 	        this.autoWake = source["autoWake"];
-	        this.displayName = source["displayName"];
 	    }
 	}
 	export class ServiceResult {

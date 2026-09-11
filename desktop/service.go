@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -34,7 +32,6 @@ type ServiceForm struct {
 	// addresses, one CIDR per entry; a direct cable often needs it.
 	TreatAsPrivate []string `json:"treatAsPrivate"`
 	AutoWake       bool     `json:"autoWake"`
-	DisplayName    string   `json:"displayName"`
 }
 
 // ServiceStatus is `ah --json service status`, plus where ah was found — or
@@ -68,11 +65,30 @@ var runTool = func(ctx context.Context, tool string, args ...string) (string, er
 	return output.String(), err
 }
 
+// toolPath remembers where ah was found. The places do not move while the
+// app runs, and every panel refresh would otherwise stat them all again.
+var toolPath string
+
 // findTool locates ah: named by the owner, beside this executable, inside the
-// bundle, then on PATH. Reported in that order when none of them has it. A
-// variable so tests can stand in for the lookup.
+// bundle, in the source tree, then on PATH. Reported in that order when none
+// of them has it. A variable so tests can stand in for the lookup.
+//
+// Shelling out at all is forced by the module split: desktop/ is its own Go
+// module and cannot import internal/service. Running the same ah the owner
+// runs keeps the two faces of the feature identical.
 var findTool = func() (string, error) {
-	looked := make([]string, 0, 4)
+	if toolPath != "" {
+		return toolPath, nil
+	}
+	path, err := locateTool()
+	if err == nil {
+		toolPath = path
+	}
+	return path, err
+}
+
+func locateTool() (string, error) {
+	looked := make([]string, 0, 5)
 	if given := os.Getenv("AGENTHUB_AH"); given != "" {
 		if _, err := os.Stat(given); err == nil {
 			return given, nil
@@ -84,10 +100,11 @@ var findTool = func() (string, error) {
 		for _, candidate := range []string{
 			filepath.Join(dir, "ah"),
 			filepath.Join(dir, "..", "Resources", "ah"),
-			// The source tree: desktop/build/bin/<app>/Contents/MacOS on macOS,
-			// desktop/build/bin on Linux, with the CLI at <repo>/bin/ah.
+			// The source tree: <repo>/desktop/build/bin/<app>.app/Contents/MacOS
+			// on macOS (six levels up), <repo>/desktop/build/bin on Linux
+			// (three), with the CLI at <repo>/bin/ah.
 			filepath.Join(dir, "..", "..", "..", "..", "..", "..", "bin", "ah"),
-			filepath.Join(dir, "..", "..", "..", "..", "bin", "ah"),
+			filepath.Join(dir, "..", "..", "..", "bin", "ah"),
 		} {
 			if _, err := os.Stat(candidate); err == nil {
 				return filepath.Clean(candidate), nil
@@ -170,8 +187,6 @@ func (a *App) runService(args ...string) (ServiceResult, error) {
 	return result, nil
 }
 
-var cidrPattern = regexp.MustCompile(`^\d{1,3}(\.\d{1,3}){3}/\d{1,2}$`)
-
 // installArgs translates the form into the node's flags. Only what the owner
 // set is passed, so the node's defaults apply to the rest; the peer listener
 // itself is validated by ah with the node's rule, not guessed at here.
@@ -186,9 +201,6 @@ func installArgs(form ServiceForm) ([]string, error) {
 		}
 		args = append(args, "--peer-listen", address)
 	}
-	if name := strings.TrimSpace(form.DisplayName); name != "" {
-		args = append(args, "--display-name", name)
-	}
 	if form.AllowLAN {
 		args = append(args, "--allow-lan")
 	}
@@ -200,8 +212,10 @@ func installArgs(form ServiceForm) ([]string, error) {
 		if cidr == "" {
 			continue
 		}
-		if !cidrPattern.MatchString(cidr) {
-			return nil, errors.New("treat-as-private entries must be IPv4 CIDR blocks such as 122.122.0.0/16, got " + cidr)
+		// Shape only; whether the range is acceptable is ah's call, with the
+		// node's own rule, and its message comes back to the panel verbatim.
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return nil, fmt.Errorf("treat-as-private entries must be CIDR blocks such as 122.122.0.0/16: %w", err)
 		}
 		args = append(args, "--treat-as-private", cidr)
 	}
@@ -215,7 +229,12 @@ func installArgs(form ServiceForm) ([]string, error) {
 type LocalAddress struct {
 	Interface string `json:"interface"`
 	Address   string `json:"address"`
-	// Private says whether the node would accept it without --treat-as-private.
+	// Subnet is the interface's own network in CIDR form, so a range the owner
+	// is asked to declare is the one the cable actually carries, not a guess.
+	Subnet string `json:"subnet"`
+	// Private approximates whether the node would accept the address without
+	// --treat-as-private: RFC 1918, loopback and link-local. The node's own
+	// rule lives in internal/nodeconfig, which this module cannot import.
 	Private bool `json:"private"`
 }
 
@@ -240,7 +259,14 @@ func (a *App) LocalAddresses() ([]LocalAddress, error) {
 			if !ok || ipNet.IP.To4() == nil {
 				continue
 			}
-			addresses = append(addresses, LocalAddress{Interface: iface.Name, Address: ipNet.IP.String(), Private: ipNet.IP.IsPrivate()})
+			ip := ipNet.IP.To4()
+			network := &net.IPNet{IP: ip.Mask(ipNet.Mask), Mask: ipNet.Mask}
+			addresses = append(addresses, LocalAddress{
+				Interface: iface.Name,
+				Address:   ip.String(),
+				Subnet:    network.String(),
+				Private:   ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast(),
+			})
 		}
 	}
 	return addresses, nil
