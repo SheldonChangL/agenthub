@@ -135,8 +135,8 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settingsView(saved, message))
 }
 
-// withdrawLANListener takes the peer listener off the network when allowLan is
-// turned off and nothing else was said about it.
+// withdrawLANListener takes the peer listener off the network when the allowLan
+// this write leaves in effect is off and nothing else was said about it.
 //
 // Without this, closing the switch is refused on exactly the nodes that need
 // it closed: a saved peerListen of 192.168.1.10:7463 makes {"allowLan": false}
@@ -149,16 +149,25 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 // Both fields are written in the same transaction, so no start can see the
 // half of this that serves a network address with allowLan off.
 func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, bool) {
-	// Only a write that turns the switch off withdraws anything. A request that
-	// says nothing about allowLan is not the owner closing it, and inferring a
-	// withdrawal from stored state would move a listener nobody mentioned.
-	if requested.AllowLAN == nil || *requested.AllowLAN {
+	// The switch this decision is about is the one that will be in effect after
+	// this write, not the one this write happens to mention. A request that
+	// says nothing about allowLan inherits the saved answer, and if that answer
+	// is already "off" beside a saved LAN listener, then this write is landing
+	// on a configuration the next start cannot run — the same configuration the
+	// start-up path silently withdraws. Reading `requested.AllowLAN` here
+	// instead made the two routes disagree: the PUT refused what the start
+	// quietly repaired.
+	allowLAN := next.AllowLAN
+	if requested.AllowLAN != nil {
+		allowLAN = *requested.AllowLAN
+	}
+	if allowLAN {
 		return requested, false
 	}
 	// The rule itself lives in nodeconfig, because the node's own start-up
 	// applies the same one: see nodeconfig.WithdrawPeerListen.
 	address, withdrawn := nodeconfig.WithdrawPeerListen(
-		*requested.AllowLAN, requested.PeerListen != nil, next.PeerListen)
+		allowLAN, requested.PeerListen != nil, next.PeerListen)
 	if !withdrawn {
 		return requested, false
 	}
