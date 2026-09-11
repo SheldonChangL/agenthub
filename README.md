@@ -133,29 +133,41 @@ is down are not delivered, and the sender's `ah send` still says `queued`. So
 the node should belong to the operating system, not to a window:
 
 ```sh
-bin/ah service install --db ./data/agenthub.db \
-  --peer-listen 192.168.1.10:7463 --allow-lan --discover
+bin/ah settings set --peer-listen 192.168.1.10:7463 --allow-lan=true --discover=true
+bin/ah service install --db ./data/agenthub.db
 ```
 
-`install` takes the node's own flags by the node's own names, validates the
-listen addresses with the node's rules — defaults included — before writing
-anything, and registers the node with launchd (macOS) or `systemd --user`
-(Linux): it starts at login and is restarted if it exits. `--display-name` is
-the one flag it does not take: the node remembers a chosen name, and a flag on
-every start would pin the installed name over any later rename. `agenthub-node` is looked for beside `ah`, then on
-`PATH`; pass `--node-binary` to name it. A relative `--db` is made absolute,
-because a service has no working directory of yours. The command ends by
-asking the node whether it answers, and says so either way.
+The settings come first and the service carries only `--db`, because the node
+remembers them (see [What this node remembers](#what-this-node-remembers)). A
+unit file full of flags was a second copy of the configuration: changing one
+switch meant reinstalling the service, and the desktop app could not change it
+at all.
+
+`install` registers the node with launchd (macOS) or `systemd --user` (Linux):
+it starts at login and is restarted if it exits. `agenthub-node` is looked for
+beside `ah`, then on `PATH`; pass `--node-binary` to name it. A relative `--db`
+is made absolute, because a service has no working directory of yours. The
+command ends by asking the node whether it answers, and says so either way.
+
+It still accepts `--peer-listen`, `--allow-lan`, `--discover`,
+`--treat-as-private` and `--auto-wake`, and still writes them into the unit,
+because installations made that way are out there. It says so when you use
+them: a flag in the unit is given on every start and therefore overrides
+anything saved later, which is how a setting changed in the app appears to do
+nothing. `--display-name` is the one flag it has never taken: the node
+remembers a chosen name, and a flag on every start would pin the installed name
+over any later rename.
 
 ```sh
 bin/ah service status      # installed? running? is the node answering?
+bin/ah service restart     # apply a saved setting: launchctl kickstart -k / systemctl --user restart
 bin/ah service uninstall   # stop it and remove the registration
 ```
 
 Uninstall removes the service and nothing else: `node.key` and the database
 stay where they are, so installing again brings the same node back and every
-pairing holds. To change a flag, run `install` again; the registration is
-replaced.
+pairing holds. To change a setting, `ah settings set ...` then `ah service
+restart`; `install` is needed again only for a new binary path or database.
 
 On Linux a user service starts when you log in. For a machine that should run
 the node with nobody logged in, `loginctl enable-linger <user>` is the one
@@ -227,6 +239,51 @@ made of nothing that renders.
 
 A peer you have already paired with keeps the name it recorded at pairing time;
 re-pair to update it there.
+
+### What this node remembers
+
+`--peer-listen`, `--allow-lan`, `--discover`, `--treat-as-private` and
+`--auto-wake` work the way `--display-name` does: give one and it is recorded,
+leave it off and the recorded value applies. So a service needs only `--db`,
+and the desktop app can change a setting without reinstalling anything.
+
+```sh
+bin/ah settings                                   # what is running, and where each value came from
+bin/ah settings set --allow-lan=true --peer-listen 192.168.1.10:7463
+bin/ah settings set --allow-lan=false             # booleans take =false, so a switch can be closed
+bin/ah settings set --treat-as-private 122.122.0.0/16   # replaces the whole declaration
+bin/ah settings set --clear-private-ranges        # withdraws it
+bin/ah service restart                            # settings apply at startup, so this is the step that matters
+```
+
+Every start prints all five with where each came from — `flag`, `remembered` or
+`default`:
+
+```
+setting peer-listen = 192.168.1.10:7463 (remembered)
+setting allow-lan = true (remembered)
+setting discover = true (remembered)
+setting treat-as-private = none (default)
+setting auto-wake = false (default)
+```
+
+That is deliberate for `--allow-lan`, which is the only switch here that lets
+anything leave this machine: remembered, it appears on no command line, so the
+log is the one place it is visible.
+
+A remembered value is validated on every start, with the same rules a flag gets.
+If it has stopped being valid — the network was renumbered, a declared range no
+longer covers the address — the node refuses to start, says the value was
+remembered rather than typed, and names the flag to replace it with.
+
+`--listen` is not remembered. The owner's API has no authentication and is safe
+only because reaching it means being on this machine, so it stays a flag,
+checked on every start. Neither are `--db`, `--claude-root`, `--codex-root` or
+the interval flags.
+
+These settings are read when the node starts and are wired into listeners built
+once, so nothing is reloaded live: saving one and restarting are two steps, and
+both `ah settings` and the API say when a saved value is not the running one.
 
 If the two machines are on a direct cable in a range that is not private —
 `122.122.0.0/16`, say — add `--treat-as-private 122.122.0.0/16` **on both**.
@@ -603,6 +660,8 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. `ah nodes address <node-id> <host:port>` is this call |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
+| `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ |
+| `PUT` | `/v1/node/settings` | Remember some or all of `peerListen`, `allowLan`, `discover`, `treatAsPrivate`, `autoWake`. Validated with the node's own start-up rules; answers `restartRequired: true`, because these are read only at startup |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
