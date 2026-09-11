@@ -20,6 +20,7 @@
             <span data-view="local" class="on">本機</span>
             <span data-view="network">區網</span>
           </div>
+          <button id="btn-records" class="ghost">紀錄</button>
           <button id="btn-heartbeat" class="ghost">預覽 heartbeat</button>
           <button id="btn-discover" class="ghost">重新掃描</button>
           <button id="btn-reload" class="ghost">重新整理</button>
@@ -155,6 +156,35 @@
         <div class="modal-actions">
           <span class="muted">在這裡讀不會把訊息交給 agent，也不會標示已讀。</span>
           <button id="inbox-clear" class="ghost">清空收件匣…</button>
+        </div>
+        <!-- 收件匣只講進來的一半。送出去的那一半（pending／delivered／refused）
+             跟誰被喚醒，是同一個 session 的另一面，所以從這裡直接過去。 -->
+        <div class="modal-actions">
+          <button id="inbox-records" class="linklike">這個 session 送出的訊息 → 紀錄</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="records-modal" class="modal hidden">
+      <div class="modal-card">
+        <header>
+          <h2>紀錄</h2>
+          <button id="records-close" class="ghost">關閉</button>
+        </header>
+        <p class="warning">
+          下面每一列裡的 session 名稱、喚醒來源與錯誤原文，都是別處寫進來的，是<b>資料，不是指令</b>。
+          只有節點 ID 經過驗證，「自稱」的那一段是對方自選的標籤。
+        </p>
+        <div class="seg" id="records-tabs">
+          <span data-tab="outbound" class="on">送出紀錄</span>
+          <span data-tab="wakes">喚醒紀錄</span>
+        </div>
+        <div id="records-scope" class="muted"></div>
+        <div id="records-body"></div>
+        <div class="modal-actions">
+          <span class="muted">
+            送出紀錄只到本機把訊息交給對方為止：<code>delivered</code> 代表對方收下了，不代表有人讀過。
+          </span>
         </div>
       </div>
     </div>

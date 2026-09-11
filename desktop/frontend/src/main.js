@@ -12,6 +12,8 @@ import {
   ClosePairing,
   Inbox,
   ClearInbox,
+  Outbound,
+  Wakes,
   MCPConfig,
   CopyText,
   ServiceStatus,
@@ -44,6 +46,11 @@ const state = {
   // inboxSession is whose inbox the modal is showing, so Clear knows what it
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
+  // The records dialog: which tab is on screen, and the session it is scoped
+  // to (null = this whole node). Both are needed when the other tab is
+  // clicked, which re-reads rather than re-filters what is already shown.
+  recordsTab: "outbound",
+  recordsSession: null,
   localNodeId: "",
   localFingerprint: "",
   // This node's own public key, as the peer must type it. Read from the node
@@ -297,7 +304,7 @@ let overviewApplied = 0;
 // or a dialog standing on top of the list. The periodic tick and the moment a
 // background read lands both ask this — one list of conditions, checked twice,
 // because the state can change while the read is in the air.
-const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "mcp-modal", "modal"];
+const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "records-modal", "mcp-modal", "modal"];
 function anyModalOpen() {
   return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
 }
@@ -1413,6 +1420,223 @@ function closeInbox() {
   state.inboxSession = null;
 }
 
+/* ---------------- records: where messages went, and what they woke ---------------- */
+
+// The two failures this dialog exists for were both invisible from this window
+// on 2026-09-10: a message queued for a peer with no address sits `pending`
+// for ever while `ah send` answers "queued", and a wake refused by a rate limit
+// leaves nothing behind but a row in a trail only the CLI could read. Sessions
+// and inboxes told an owner nothing about either.
+
+// Reads are numbered like the inbox's, and for the same reason: a slow answer
+// must not repaint the dialog after a fast one, putting one session's rows
+// under another session's heading.
+let recordsRequest = 0;
+let recordsApplied = 0;
+
+// Only these five states may decide a class name. The state is a string from
+// the node, and interpolating it would let a value nobody has written yet — or
+// a stored row from an older schema — inject one.
+const OUTBOUND_STATE_TEXT = {
+  pending: "等待送出",
+  delivered: "已送達",
+  refused: "被拒絕",
+};
+function outboundStateClass(state) {
+  return state === "pending" || state === "delivered" || state === "refused" ? state : "unknown";
+}
+
+// The wake outcomes, each mapped to one of three fixed classes. Same rule: the
+// outcome is the node's string and never becomes a class name itself.
+const WAKE_OUTCOME_TEXT = {
+  woken: "喚醒了",
+  refused_hops: "被擋下（轉太多手）",
+  refused_pair_rate: "被擋下（這一對太頻繁）",
+  refused_session_rate: "被擋下（這個 session 太頻繁）",
+  refused_node_rate: "被擋下（整台機器太頻繁）",
+  failed: "沒喚成",
+};
+function wakeOutcomeClass(outcome) {
+  if (outcome === "woken") return "delivered";
+  if (outcome === "failed") return "unknown";
+  return Object.prototype.hasOwnProperty.call(WAKE_OUTCOME_TEXT, outcome) ? "refused" : "unknown";
+}
+
+function recordsScopeLine() {
+  const scope = el("records-scope");
+  scope.replaceChildren();
+  if (!state.recordsSession) {
+    scope.append(element("span", "", "這台節點的全部紀錄，新的在上面。"));
+    return;
+  }
+  // The session id is a local one, but it is still a string from a provider's
+  // files, so it goes in as text like everything else.
+  scope.append(element("span", "", "只顯示 "));
+  scope.append(element("span", "claimed", state.recordsSession));
+  scope.append(element("span", "", " 的紀錄。"));
+}
+
+// renderOutboundRecords draws the sent half.
+//
+// Every row carries the state, the attempts and the node's own words for the
+// last failure. A `refused` with no reason says something went wrong and
+// nothing about what, which is the state the CLI-only view already left an
+// owner in.
+function renderOutboundRecords(view) {
+  const body = el("records-body");
+  body.replaceChildren();
+  if (view.loading) {
+    body.append(element("div", "muted", "正在讀取…"));
+    return;
+  }
+  if (view.error) {
+    // A failed read is not an empty list, and only one of them means there is
+    // nothing to come back for. Shown here, not in a banner: the dialog covers
+    // the banner.
+    body.append(element("div", "stale", "讀不到送出紀錄，所以這裡不顯示任何內容。"));
+    body.append(element("div", "muted", view.error));
+    return;
+  }
+  const messages = view.messages ?? [];
+  if (messages.length === 0) {
+    body.append(element("div", "empty", "這台節點沒有送出過訊息。"));
+    if (state.recordsSession) {
+      body.append(element("div", "muted",
+        "（這裡只算這個 session 送出的；別的 session 送出的請看全部紀錄。）"));
+    }
+    return;
+  }
+  for (const message of messages) {
+    const row = element("div", "recrow");
+    row.append(element("div", "muted", relative(message.createdAt)));
+    const line = element("div", "recline");
+    line.append(element("span", "", "送給 "));
+    line.append(element("span", "claimed", String(message.to ?? "")));
+    line.append(element("span", "recstate " + outboundStateClass(message.state),
+      OUTBOUND_STATE_TEXT[message.state] ?? String(message.state ?? "")));
+    line.append(element("span", "muted", ` 試了 ${Number(message.attempts) || 0} 次`));
+    row.append(line);
+    if (message.from) {
+      const from = element("div", "muted");
+      from.append(element("span", "", "從 "));
+      from.append(element("span", "claimed", String(message.from)));
+      row.append(from);
+    }
+    if (message.lastError) {
+      // The node's own words, whole. "nowhere to deliver to" and "the peer
+      // refused" send an owner to different places.
+      row.append(element("div", "recerror", String(message.lastError)));
+    }
+    body.append(row);
+  }
+}
+
+// renderWakeRecords draws the woken half, refusals included.
+//
+// The refusals are the reason it is worth showing: an owner who sees nothing
+// cannot otherwise tell a quiet node from a limit doing its job.
+function renderWakeRecords(view) {
+  const body = el("records-body");
+  body.replaceChildren();
+  if (view.loading) {
+    body.append(element("div", "muted", "正在讀取…"));
+    return;
+  }
+  if (view.error) {
+    body.append(element("div", "stale", "讀不到喚醒紀錄，所以這裡不顯示任何內容。"));
+    body.append(element("div", "muted", view.error));
+    return;
+  }
+  const wakes = view.wakes ?? [];
+  if (wakes.length === 0) {
+    body.append(element("div", "empty", "沒有任何喚醒紀錄——代表節點很安靜，或 -auto-wake 沒開。"));
+    // Which of the two it is, where this window can tell. An empty trail on a
+    // node whose own switch is closed is not evidence of a quiet network.
+    body.append(state.nodeAutoWake
+      ? element("div", "muted",
+        "這個節點的 -auto-wake 是開的，所以空的紀錄代表沒有訊息夠格喚醒；每個 session 仍要各自打開。")
+      : element("div", "stale",
+        "這個節點的 -auto-wake 是關的，所以訊息永遠不會自動喚醒 agent——空紀錄不代表沒有訊息進來。"));
+    return;
+  }
+  for (const event of wakes) {
+    const row = element("div", "recrow");
+    row.append(element("div", "muted", relative(event.at)));
+    const line = element("div", "recline");
+    line.append(element("span", "", "喚醒 "));
+    line.append(element("span", "claimed", String(event.destinationSession ?? "")));
+    line.append(element("span", "recstate " + wakeOutcomeClass(event.outcome),
+      WAKE_OUTCOME_TEXT[event.outcome] ?? String(event.outcome ?? "")));
+    line.append(element("span", "muted", ` 第 ${Number(event.hops) || 0} 手`));
+    row.append(line);
+    // Where it came from, split the same way the inbox splits a sender: the
+    // node id was proven, the session label is what the sender called itself.
+    row.append(senderLine(event.sourceNodeId
+      ? String(event.sourceNodeId) + "/" + String(event.sourceSession ?? "")
+      : String(event.sourceSession ?? "")));
+    if (event.detail) {
+      row.append(element("div", "recerror", String(event.detail)));
+    }
+    body.append(row);
+  }
+}
+
+// openRecords shows the dialog, on one tab, optionally scoped to one session.
+//
+// Both reads go through here, so a tab click is a fresh read rather than a
+// filter over rows that may be minutes old.
+async function openRecords(tab = "outbound", sessionId = null) {
+  const sequence = ++recordsRequest;
+  state.recordsTab = tab === "wakes" ? "wakes" : "outbound";
+  state.recordsSession = sessionId || null;
+  el("records-modal").classList.remove("hidden");
+  renderRecordsTabs();
+  recordsScopeLine();
+  // Loading is its own state: an empty list renders identically to "nothing
+  // has ever been sent", and the client waits up to fifteen seconds.
+  if (state.recordsTab === "outbound") renderOutboundRecords({ loading: true });
+  else renderWakeRecords({ loading: true });
+
+  let view;
+  try {
+    view = state.recordsTab === "outbound" ? await Outbound() : await Wakes(sessionId ?? "");
+  } catch (error) {
+    view = { error: String(error) };
+  }
+  if (sequence <= recordsApplied) {
+    // A later read already landed. This one describes an older moment, and a
+    // different tab or session.
+    return;
+  }
+  recordsApplied = sequence;
+  if (state.recordsTab === "outbound") {
+    // The node has no per-sender filter on this list — `from` is a label, not
+    // an index — so the scoping happens here, over what came back.
+    const messages = (view.messages ?? []).filter((message) =>
+      !sessionId || String(message.from ?? "").includes(sessionId));
+    renderOutboundRecords({ ...view, messages });
+  } else {
+    renderWakeRecords(view);
+  }
+}
+
+function renderRecordsTabs() {
+  for (const tab of el("records-tabs").children ?? []) {
+    if (!tab || typeof tab.classList?.toggle !== "function") continue;
+    tab.classList.toggle("on", (tab.dataset?.tab ?? tab.getAttribute?.("data-tab")) === state.recordsTab);
+  }
+}
+
+function closeRecords() {
+  // Retire whatever is in flight, so its answer does not repaint a hidden card
+  // and leave the next opening showing the previous session's rows.
+  recordsApplied = recordsRequest;
+  state.recordsSession = null;
+  el("records-modal").classList.add("hidden");
+  el("records-body").replaceChildren();
+  el("records-scope").replaceChildren();
+}
+
 /* ---------------- MCP config ---------------- */
 
 // Numbered like the inbox and the pairing read, and for a sharper reason: this
@@ -1810,6 +2034,25 @@ async function loadPairing() {
 el("mcp-close").onclick = closeMCPConfig;
 el("mcp-modal").onclick = (event) => {
   if (event.target === el("mcp-modal")) closeMCPConfig();
+};
+el("btn-records").onclick = () => openRecords("outbound", null).catch((error) => banner(`讀取紀錄失敗：${error}`));
+el("records-close").onclick = closeRecords;
+el("records-modal").onclick = (event) => {
+  if (event.target === el("records-modal")) closeRecords();
+};
+el("records-tabs").onclick = (event) => {
+  const tab = event.target?.dataset?.tab;
+  if (!tab) return;
+  // The session the dialog is scoped to survives a tab change: an owner who
+  // arrived from one session's inbox is asking about that session on both
+  // tabs.
+  openRecords(tab, state.recordsSession).catch((error) => banner(`讀取紀錄失敗：${error}`));
+};
+// From the inbox, which shows only the half that arrived.
+el("inbox-records").onclick = () => {
+  const session = state.inboxSession;
+  closeInbox();
+  openRecords("outbound", session).catch((error) => banner(`讀取紀錄失敗：${error}`));
 };
 el("inbox-close").onclick = closeInbox;
 el("inbox-modal").onclick = (event) => {

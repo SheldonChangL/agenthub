@@ -329,6 +329,31 @@ func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
 	}
 }
 
+// TestFrontendRecordsDialogShowsWhereMessagesWentAndWhatTheyWoke covers the
+// dialog added for the two failures this window could not see.
+//
+// A message queued for a peer with no address sits pending for ever while
+// `ah send` answers "queued", and a wake refused by a rate limit leaves nothing
+// behind but a row in a trail only the CLI could read — both were walked into
+// on 2026-09-10. Everything the dialog shows is a string this machine did not
+// write, so the check pins that none of it becomes markup or a class name, that
+// a refusal does not read like a delivery, and that the two empty lists say
+// different things.
+func TestFrontendRecordsDialogShowsWhereMessagesWentAndWhatTheyWoke(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed; skipping the records dialog check")
+	}
+	script := filepath.Join("frontend", "test", "records.mjs")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("records dialog check failed: %v\n%s", err, output)
+	}
+}
+
 // TestFrontendAudienceDialogStartsEveryFlagOff drives the dialog itself.
 //
 // It applies to whatever is selected and reads its values straight from the

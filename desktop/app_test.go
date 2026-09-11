@@ -826,3 +826,103 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 		t.Errorf("local public key = %q, want AAAA", overview.Node.PublicKey)
 	}
 }
+
+// TestOutboundAndWakesAskTheRightQuestions pins both records reads: the path
+// and query each sends, and that every field an owner needs survives decoding.
+//
+// The fields are the whole point. A `refused` with no reason and no attempt
+// count is a row that says something went wrong and nothing about what, which
+// is the state the CLI-only view already left them in.
+func TestOutboundAndWakesAskTheRightQuestions(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/outbound":
+			_, _ = io.WriteString(w, `{"messages":[{"id":"msg_1","destinationNodeId":"node_peer",`+
+				`"to":"codex:theirs","from":"claude:mine","state":"refused","attempts":3,`+
+				`"createdAt":"2026-09-10T01:00:00Z","updatedAt":"2026-09-10T01:05:00Z",`+
+				`"lastError":"nowhere to deliver to"}]}`)
+		case "/v1/wakes":
+			_, _ = io.WriteString(w, `{"wakes":[{"id":"wake_1","messageId":"msg_9",`+
+				`"sourceNodeId":"node_peer","sourceSession":"codex:theirs",`+
+				`"destinationSession":"claude:mine","hops":2,"outcome":"refused_pair_rate",`+
+				`"detail":"3 in the last 10m0s, at the limit of 3","at":"2026-09-10T01:00:00Z"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+
+	outbound := app.Outbound()
+	if outbound.Error != "" {
+		t.Fatalf("Outbound() error = %q", outbound.Error)
+	}
+	if len(outbound.Messages) != 1 {
+		t.Fatalf("Outbound() messages = %#v", outbound.Messages)
+	}
+	message := outbound.Messages[0]
+	if message.ID != "msg_1" || message.To != "codex:theirs" || message.From != "claude:mine" ||
+		message.State != "refused" || message.Attempts != 3 ||
+		message.LastError != "nowhere to deliver to" {
+		t.Errorf("message = %#v; a field the dialog renders was dropped in decoding", message)
+	}
+	if message.CreatedAt.IsZero() {
+		t.Error("the queued time did not decode, so no row can say when it was sent")
+	}
+
+	wakes := app.Wakes("claude:mine")
+	if wakes.Error != "" {
+		t.Fatalf("Wakes() error = %q", wakes.Error)
+	}
+	if len(wakes.Wakes) != 1 {
+		t.Fatalf("Wakes() = %#v", wakes.Wakes)
+	}
+	event := wakes.Wakes[0]
+	if event.DestinationSession != "claude:mine" || event.SourceSession != "codex:theirs" ||
+		event.Hops != 2 || event.Outcome != "refused_pair_rate" ||
+		!strings.Contains(event.Detail, "at the limit of 3") {
+		t.Errorf("wake = %#v; a field the dialog renders was dropped in decoding", event)
+	}
+
+	// The session filter travels as a query parameter, and no filter means no
+	// parameter — not an empty one, which the node resolves as a session id and
+	// refuses.
+	if unfiltered := app.Wakes(""); unfiltered.Error != "" {
+		t.Errorf("unfiltered Wakes() failed: %q", unfiltered.Error)
+	}
+	want := []string{
+		"/v1/outbound?limit=50",
+		"/v1/wakes?limit=50&session=claude%3Amine",
+		"/v1/wakes?limit=50",
+	}
+	if strings.Join(asked, "|") != strings.Join(want, "|") {
+		t.Fatalf("requests = %v; want %v", asked, want)
+	}
+}
+
+// TestRecordsReadsCarryTheirFailureIntoTheDialog covers the unreachable node.
+//
+// Thrown, the error would reach a banner the dialog is drawn over, and the
+// dialog would show an empty list — which reads as "this node has never sent
+// anything", the one answer that must not be invented.
+func TestRecordsReadsCarryTheirFailureIntoTheDialog(t *testing.T) {
+	app := &App{client: newClient("http://127.0.0.1:1"), url: "http://127.0.0.1:1",
+		ctx: context.Background()}
+	outbound := app.Outbound()
+	if outbound.Error == "" {
+		t.Error("Outbound() from an unreachable node reported no error")
+	}
+	if outbound.Messages == nil {
+		t.Error("Outbound() returned a nil list, which the frontend cannot iterate")
+	}
+	wakes := app.Wakes("")
+	if wakes.Error == "" {
+		t.Error("Wakes() from an unreachable node reported no error")
+	}
+	if wakes.Wakes == nil {
+		t.Error("Wakes() returned a nil list, which the frontend cannot iterate")
+	}
+}

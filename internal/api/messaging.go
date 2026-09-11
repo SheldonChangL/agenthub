@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"agenthub.local/agenthub/internal/address"
@@ -216,6 +217,70 @@ func (s *Server) queueForPeer(w http.ResponseWriter, r *http.Request, destinatio
 	default:
 		writeInternalError(w, "REGISTRY_ERROR", "could not queue the message", err)
 	}
+}
+
+// outboundSummary is one row of the outbound list.
+//
+// Spelled out rather than encoding registry.OutboundMessage directly, because
+// the list deliberately carries no bodies and a struct with an empty `body`
+// field would read as a message whose body was empty. The fields are otherwise
+// the ones GET /v1/outbound/{id} answers with, under the same names.
+type outboundSummary struct {
+	ID                string    `json:"id"`
+	DestinationNodeID string    `json:"destinationNodeId"`
+	To                string    `json:"to"`
+	From              string    `json:"from,omitempty"`
+	State             string    `json:"state"`
+	Attempts          int       `json:"attempts"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	LastError         string    `json:"lastError,omitempty"`
+	WakeHops          int       `json:"wakeHops,omitempty"`
+}
+
+// outboundList answers with what this node has queued for peers, newest first.
+//
+// `ah send` answers "queued" and nothing more, by design, so without a list the
+// only way to find out what became of a message is to still have its id. An
+// owner who has closed that terminal — or who is looking at a window rather
+// than a terminal — had no way to ask at all.
+func (s *Server) outboundList(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "limit must be between 1 and 200")
+			return
+		}
+		limit = parsed
+	}
+	after, err := registry.ParseOutboundCursor(r.URL.Query().Get("after"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"after is not a cursor this node issued; pass the `next` value from the previous page, or omit it to start over")
+		return
+	}
+	messages, err := s.store.ListOutbound(r.Context(), limit, after)
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	rows := make([]outboundSummary, 0, len(messages))
+	for _, message := range messages {
+		rows = append(rows, outboundSummary{
+			ID: message.ID, DestinationNodeID: message.DestinationNodeID, To: message.To,
+			From: message.From, State: string(message.State), Attempts: message.Attempts,
+			CreatedAt: message.CreatedAt, UpdatedAt: message.UpdatedAt,
+			LastError: message.LastError, WakeHops: message.WakeHops,
+		})
+	}
+	page := map[string]any{"messages": rows}
+	// A full page may not be the last; `next` says where the following one
+	// begins. Absent on a short page, which is the end.
+	if len(messages) == limit {
+		page["next"] = registry.OutboundCursorAfter(messages[len(messages)-1]).String()
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 // outboundStatus reports what happened to a queued message.
