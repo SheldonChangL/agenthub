@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -1143,6 +1144,20 @@ func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
 		t.Errorf("row = %#v; want wakeHops 2 and the destination node", typed.Messages[0])
 	}
 
+	// The single lookup is checked against the struct itself rather than
+	// against the fixture: an omitempty field added later and left zero here
+	// would drop out of both answers and the two would still agree.
+	declared := jsonFieldsOf(registry.OutboundMessage{})
+	sort.Strings(declared)
+	lookupKeys := keysOf(one)
+	sort.Strings(lookupKeys)
+	if !slices.Equal(declared, lookupKeys) {
+		t.Errorf("GET /v1/outbound/{id} does not answer with every declared field:\n"+
+			" declared: %v\n answered: %v\n"+
+			"fill the new field in this fixture, or say here why it is not carried",
+			declared, lookupKeys)
+	}
+
 	row := keysOf(page.Messages[0])
 	row = append(row, "body")
 	sort.Strings(row)
@@ -1154,6 +1169,22 @@ func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
 			"a field added to registry.OutboundMessage has to be added to outboundSummary too",
 			row, lookup)
 	}
+}
+
+// jsonFieldsOf is the field set a struct declares through its json tags — the
+// names its answers can carry, whatever a given value happens to fill in.
+func jsonFieldsOf(value any) []string {
+	structType := reflect.TypeOf(value)
+	fields := make([]string, 0, structType.NumField())
+	for i := range structType.NumField() {
+		tag := structType.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		fields = append(fields, name)
+	}
+	return fields
 }
 
 // keysOf is the top-level field set of one JSON object.
