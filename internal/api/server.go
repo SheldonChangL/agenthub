@@ -54,6 +54,10 @@ type Server struct {
 	// One entry per node id the owner has paired, dropped on revoke.
 	refusedMu sync.Mutex
 	refused   map[string]uint64
+	// autoWake is the node's own -auto-wake flag, published on the owner
+	// surface. A session's own autoWake does nothing while this is closed, and
+	// the owner has to be able to see that before ticking the session's box.
+	autoWake bool
 	// waker decides whether a message that has just landed may start a turn.
 	// Nil on a node with no wake drivers configured, which is the default:
 	// storing a message must not depend on a provider being reachable.
@@ -110,6 +114,15 @@ func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer
 // been told to serve peers on a network.
 func WithDeliveryPolicy(policy func(string) error) Option {
 	return func(s *Server) { s.deliveryPolicy = policy }
+}
+
+// WithAutoWake records whether this node was started with -auto-wake, so the
+// owner surface can answer "will anything happen if I tick this". Kept as its
+// own fact rather than inferred from whether a waker was installed: the two are
+// wired together today, and a reader of /v1/node should not be reporting an
+// implementation detail of how main assembles the server.
+func WithAutoWake(on bool) Option {
+	return func(s *Server) { s.autoWake = on }
 }
 
 // WithWaker gives the API a wake gate. Without one, nothing is ever woken and
@@ -532,8 +545,21 @@ func (s *Server) setVisibility(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
+// nodeResponse is this node's identity plus the one owner-only fact about the
+// machine it runs on: whether waking is armed here at all.
+//
+// autoWake is deliberately not a field of model.NodeIdentity. That struct is
+// what a peer is shown, and whether this machine will start turns with nobody
+// at the keyboard is nobody else's business. It is published here because the
+// owner's own GUI offers a per-session auto-wake switch that does nothing
+// while the node flag is closed, and had no way to say so.
+type nodeResponse struct {
+	model.NodeIdentity
+	AutoWake bool `json:"autoWake"`
+}
+
 func (s *Server) getNode(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.node)
+	writeJSON(w, http.StatusOK, nodeResponse{NodeIdentity: s.node, AutoWake: s.autoWake})
 }
 
 func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {

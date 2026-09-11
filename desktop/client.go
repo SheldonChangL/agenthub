@@ -79,6 +79,10 @@ type NodeIdentity struct {
 	CreatedAt   time.Time `json:"createdAt"`
 	PublicKey   string    `json:"publicKey,omitempty"`
 	Fingerprint string    `json:"fingerprint,omitempty"`
+	// AutoWake is the node's own -auto-wake flag, not any session's. Waking
+	// needs both switches open, and a session's box does nothing while this is
+	// closed — so the dialog offering that box has to be able to say so.
+	AutoWake bool `json:"autoWake"`
 }
 
 // Candidate is one machine currently advertising that it is willing to pair.

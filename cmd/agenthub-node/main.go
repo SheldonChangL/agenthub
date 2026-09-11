@@ -231,6 +231,10 @@ func run() error {
 		log.Printf("auto-wake is on for this node; a session is woken only if its own " +
 			"autoWake is also open (ah audience <id> ... --auto-wake)")
 	}
+	// Published on the owner surface whether it is on or off: a desktop that
+	// offers a per-session auto-wake switch has to be able to say that the node
+	// flag is closed and the switch will do nothing.
+	options = append(options, api.WithAutoWake(*autoWake))
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := ownerServer(*listenAddress, apiServer.Handler())
 
