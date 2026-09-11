@@ -28,6 +28,44 @@
 
       <div id="banner" class="banner hidden"></div>
 
+      <section id="service-panel" class="servicepanel hidden">
+        <div class="service-head">
+          <div id="service-line" class="line">背景服務狀態讀取中…</div>
+          <div class="spacer"></div>
+          <button id="service-refresh" class="ghost">重新讀取</button>
+          <button id="service-open" class="ghost">安裝為背景服務…</button>
+          <button id="service-uninstall" class="ghost danger">移除服務…</button>
+        </div>
+        <div id="service-form" class="serviceform hidden">
+          <p class="muted">
+            節點會由作業系統在登入時啟動、意外結束時重啟，不再跟著哪個視窗或終端機活著。
+            下面的欄位就是 <code>agenthub-node</code> 的啟動旗標；沒填的用節點預設值。
+          </p>
+          <label>資料庫路徑<input id="service-db" type="text" placeholder="留空＝節點預設位置" autocomplete="off" /></label>
+          <label>對外位址（其他機器連進來的地方）
+            <select id="service-address"><option value="">只在本機（127.0.0.1:7463）</option></select>
+          </label>
+          <label class="checkline"><input type="checkbox" id="service-allow-lan" /> 允許區網連線（--allow-lan）</label>
+          <p id="service-lan-note" class="muted hidden">
+            這是唯一會讓資料離開這台機器的開關。開了之後，配對過的節點才能連進來；沒配對的仍然連不上，
+            但同網段的人會看得到這個 port 在聽。選了非本機位址就需要它。
+          </p>
+          <label class="checkline"><input type="checkbox" id="service-discover" /> 在區網上尋找配對節點的位址（--discover）</label>
+          <label>視為私有網段（--treat-as-private，直連網路線常需要，逗號分隔）
+            <input id="service-private" type="text" placeholder="例如 122.122.0.0/16" autocomplete="off" />
+          </label>
+          <p id="service-private-note" class="muted hidden"></p>
+          <label class="checkline"><input type="checkbox" id="service-autowake" /> 允許訊息自動喚醒 agent（--auto-wake；每個 session 仍要各自打開）</label>
+          <p class="muted">節點的顯示名稱不在這裡設：它會記住上次用 <code>--display-name</code> 給的名字，服務不該每次啟動都把它蓋回去。</p>
+          <div class="modal-actions">
+            <span class="muted">安裝會取代已有的登記；要改旗標就再安裝一次。</span>
+            <button id="service-cancel" class="ghost">取消</button>
+            <button id="service-install" class="primary">安裝為背景服務</button>
+          </div>
+        </div>
+        <pre id="service-output" class="serviceoutput hidden"></pre>
+      </section>
+
       <section class="toolbar">
         <input id="search" type="search" placeholder="搜尋 session ID 或工作目錄…" autocomplete="off" />
         <div class="chips" id="chips"></div>

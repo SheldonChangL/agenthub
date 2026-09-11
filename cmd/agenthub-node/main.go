@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -69,7 +68,7 @@ func run() error {
 		"serve paired peers on a private network address instead of loopback only")
 	outboundRetention := flag.Duration("outbound-retention", 7*24*time.Hour,
 		"how long a delivered or refused outbound message stays queryable")
-	var declaredPrivate stringList
+	var declaredPrivate nodeconfig.StringList
 	flag.Var(&declaredPrivate, "treat-as-private",
 		"CIDR block to treat as a private network, repeatable "+
 			"(for a network that is private despite its addresses, such as a direct cable)")
@@ -408,15 +407,6 @@ func pruneLoop(store *registry.Registry, retention time.Duration) {
 }
 
 // stringList collects a flag given more than once.
-type stringList []string
-
-func (s *stringList) String() string { return strings.Join(*s, ",") }
-
-func (s *stringList) Set(value string) error {
-	*s = append(*s, value)
-	return nil
-}
-
 // candidateHandler feeds offers from unpaired nodes to the candidate list.
 //
 // Errors are logged rather than returned: one bad packet on a multicast group

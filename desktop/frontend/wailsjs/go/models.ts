@@ -203,6 +203,24 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class LocalAddress {
+	    interface: string;
+	    address: string;
+	    subnet: string;
+	    private: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LocalAddress(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.interface = source["interface"];
+	        this.address = source["address"];
+	        this.subnet = source["subnet"];
+	        this.private = source["private"];
+	    }
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;
@@ -524,6 +542,72 @@ export namespace main {
 	}
 	
 	
+	export class ServiceForm {
+	    dbPath: string;
+	    peerListen: string;
+	    allowLan: boolean;
+	    discover: boolean;
+	    treatAsPrivate: string[];
+	    autoWake: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServiceForm(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dbPath = source["dbPath"];
+	        this.peerListen = source["peerListen"];
+	        this.allowLan = source["allowLan"];
+	        this.discover = source["discover"];
+	        this.treatAsPrivate = source["treatAsPrivate"];
+	        this.autoWake = source["autoWake"];
+	    }
+	}
+	export class ServiceResult {
+	    command: string;
+	    output: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServiceResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.command = source["command"];
+	        this.output = source["output"];
+	    }
+	}
+	export class ServiceStatus {
+	    tool: string;
+	    toolError?: string;
+	    supported: boolean;
+	    installed: boolean;
+	    running: boolean;
+	    pid: number;
+	    unitPath: string;
+	    logHint: string;
+	    nodeAnswering: boolean;
+	    node: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServiceStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tool = source["tool"];
+	        this.toolError = source["toolError"];
+	        this.supported = source["supported"];
+	        this.installed = source["installed"];
+	        this.running = source["running"];
+	        this.pid = source["pid"];
+	        this.unitPath = source["unitPath"];
+	        this.logHint = source["logHint"];
+	        this.nodeAnswering = source["nodeAnswering"];
+	        this.node = source["node"];
+	    }
+	}
 	
 	
 	export class VisibilityResult {

@@ -12,6 +12,10 @@ export function Heartbeat():Promise<string>;
 
 export function Inbox(arg1:string):Promise<main.InboxView>;
 
+export function InstallService(arg1:main.ServiceForm):Promise<main.ServiceResult>;
+
+export function LocalAddresses():Promise<Array<main.LocalAddress>>;
+
 export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
@@ -22,6 +26,8 @@ export function Pairing():Promise<main.Pairing>;
 
 export function RevokeNode(arg1:string):Promise<void>;
 
+export function ServiceStatus():Promise<main.ServiceStatus>;
+
 export function SetAudience(arg1:Array<string>,arg2:main.Audience):Promise<main.VisibilityResult>;
 
 export function SetNodeURL(arg1:string):Promise<void>;
@@ -29,3 +35,5 @@ export function SetNodeURL(arg1:string):Promise<void>;
 export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.VisibilityResult>;
 
 export function TrustNode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.TrustedNode>;
+
+export function UninstallService():Promise<main.ServiceResult>;
