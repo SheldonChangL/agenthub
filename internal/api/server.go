@@ -59,6 +59,11 @@ type Server struct {
 	// the two settings endpoints then refuse rather than answering from the
 	// database, which cannot say what this process is running with.
 	settings *effectiveSettings
+	// peerListenWithdrawn says this start took the remembered peer listener off
+	// the network because allowLan was off. The value in effect is then the
+	// default, and sources says so — truthfully, but in a way that reads as
+	// "nobody ever stored one". This is the difference.
+	peerListenWithdrawn bool
 	// autoWake is the node's own -auto-wake flag, published on the owner
 	// surface. A session's own autoWake does nothing while this is closed, and
 	// the owner has to be able to see that before ticking the session's box.

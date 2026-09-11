@@ -31,7 +31,21 @@ type settingsResponse struct {
 	// RestartRequired says the two differ, so something written here is not
 	// live yet.
 	RestartRequired bool `json:"restartRequired"`
-	// Message is the human sentence a GUI can show verbatim after a write.
+	// PeerListenWithdrawn says the running peerListen is not a value anybody
+	// chose: this node started with allowLan off beside a peer listener it
+	// could not serve, so the listener was withdrawn to the default and that
+	// default was stored.
+	//
+	// Absent unless it happened, and absent again from the next start, where
+	// the stored default is an ordinary remembered value. It exists because
+	// sources cannot say this: the three provenances are a contract a desktop
+	// already reads, and "default" is the only honest one of them for a value
+	// nobody asked for — but on its own it reads as "nothing is stored", which
+	// would have `ah settings` and a settings page print a value that is very
+	// much in the database as though it were not.
+	PeerListenWithdrawn bool `json:"peerListenWithdrawn,omitempty"`
+	// Message is the human sentence a GUI can show verbatim: what a write did,
+	// or why the running configuration is not the one that was remembered.
 	Message string `json:"message,omitempty"`
 }
 
@@ -49,6 +63,18 @@ type effectiveSettings struct {
 func WithNodeSettings(settings nodeconfig.Settings, sources map[string]string) Option {
 	return func(s *Server) {
 		s.settings = &effectiveSettings{settings: settings, sources: sources}
+	}
+}
+
+// WithPeerListenWithdrawn records that this start withdrew the peer listener it
+// had remembered, so the answers can say why peerListen reads as a default.
+//
+// Its own option rather than a fourth argument to WithNodeSettings, because it
+// is a fact about how this start went rather than part of the configuration,
+// and a node that did not withdraw anything simply does not pass it.
+func WithPeerListenWithdrawn() Option {
+	return func(s *Server) {
+		s.peerListenWithdrawn = true
 	}
 }
 
@@ -135,8 +161,8 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settingsView(saved, message))
 }
 
-// withdrawLANListener takes the peer listener off the network when allowLan is
-// turned off and nothing else was said about it.
+// withdrawLANListener takes the peer listener off the network when the allowLan
+// this write leaves in effect is off and nothing else was said about it.
 //
 // Without this, closing the switch is refused on exactly the nodes that need
 // it closed: a saved peerListen of 192.168.1.10:7463 makes {"allowLan": false}
@@ -149,16 +175,25 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 // Both fields are written in the same transaction, so no start can see the
 // half of this that serves a network address with allowLan off.
 func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, bool) {
-	// Only a write that turns the switch off withdraws anything. A request that
-	// says nothing about allowLan is not the owner closing it, and inferring a
-	// withdrawal from stored state would move a listener nobody mentioned.
-	if requested.AllowLAN == nil || *requested.AllowLAN {
+	// The switch this decision is about is the one that will be in effect after
+	// this write, not the one this write happens to mention. A request that
+	// says nothing about allowLan inherits the saved answer, and if that answer
+	// is already "off" beside a saved LAN listener, then this write is landing
+	// on a configuration the next start cannot run — the same configuration the
+	// start-up path silently withdraws. Reading `requested.AllowLAN` here
+	// instead made the two routes disagree: the PUT refused what the start
+	// quietly repaired.
+	allowLAN := next.AllowLAN
+	if requested.AllowLAN != nil {
+		allowLAN = *requested.AllowLAN
+	}
+	if allowLAN {
 		return requested, false
 	}
 	// The rule itself lives in nodeconfig, because the node's own start-up
 	// applies the same one: see nodeconfig.WithdrawPeerListen.
 	address, withdrawn := nodeconfig.WithdrawPeerListen(
-		*requested.AllowLAN, requested.PeerListen != nil, next.PeerListen)
+		allowLAN, requested.PeerListen != nil, next.PeerListen)
 	if !withdrawn {
 		return requested, false
 	}
@@ -183,6 +218,20 @@ func explainRefusal(requested nodeconfig.Partial, err error) string {
 	return err.Error()
 }
 
+// withdrawnAtStart is the sentence a reader gets when nothing else was said.
+//
+// Only on a read: after a write, the message is about the write, and the
+// boolean beside it still carries this fact for anything that wants to render
+// it itself.
+func (s *Server) withdrawnAtStart() string {
+	if !s.peerListenWithdrawn {
+		return ""
+	}
+	return "peerListen reads as a default because it was withdrawn at start-up: allowLan is off, so the " +
+		"address this node had remembered could not be served, and " + nodeconfig.DefaultPeerListen +
+		" was stored in its place"
+}
+
 // settingsView renders the running configuration beside the saved one.
 func (s *Server) settingsView(saved nodeconfig.Partial, message string) settingsResponse {
 	// What the next start will resolve to: no flags but --db, the saved values,
@@ -190,12 +239,16 @@ func (s *Server) settingsView(saved nodeconfig.Partial, message string) settings
 	// prediction of the node's own behaviour rather than a second opinion.
 	next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, saved, nodeconfig.DefaultSettings())
 	running := s.settings.settings
+	if message == "" {
+		message = s.withdrawnAtStart()
+	}
 	return settingsResponse{
-		Settings:        withRanges(running),
-		Sources:         s.settings.sources,
-		Saved:           withRanges(next),
-		RestartRequired: !sameSettings(running, next),
-		Message:         message,
+		Settings:            withRanges(running),
+		Sources:             s.settings.sources,
+		Saved:               withRanges(next),
+		RestartRequired:     !sameSettings(running, next),
+		PeerListenWithdrawn: s.peerListenWithdrawn,
+		Message:             message,
 	}
 }
 
