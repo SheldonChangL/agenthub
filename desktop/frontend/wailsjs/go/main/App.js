@@ -22,6 +22,14 @@ export function Inbox(arg1) {
   return window['go']['main']['App']['Inbox'](arg1);
 }
 
+export function InstallService(arg1) {
+  return window['go']['main']['App']['InstallService'](arg1);
+}
+
+export function LocalAddresses() {
+  return window['go']['main']['App']['LocalAddresses']();
+}
+
 export function NodeURL() {
   return window['go']['main']['App']['NodeURL']();
 }
@@ -42,6 +50,10 @@ export function RevokeNode(arg1) {
   return window['go']['main']['App']['RevokeNode'](arg1);
 }
 
+export function ServiceStatus() {
+  return window['go']['main']['App']['ServiceStatus']();
+}
+
 export function SetAudience(arg1, arg2) {
   return window['go']['main']['App']['SetAudience'](arg1, arg2);
 }
@@ -56,4 +68,8 @@ export function SetVisibility(arg1, arg2) {
 
 export function TrustNode(arg1, arg2, arg3, arg4, arg5) {
   return window['go']['main']['App']['TrustNode'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function UninstallService() {
+  return window['go']['main']['App']['UninstallService']();
 }

@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/service"
 )
@@ -16,7 +18,12 @@ import (
 type recordingRunner struct{ calls []string }
 
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) (string, error) {
-	r.calls = append(r.calls, strings.Join(append([]string{name}, args...), " "))
+	line := strings.Join(append([]string{name}, args...), " ")
+	r.calls = append(r.calls, line)
+	// launchd knows no such job, which is what install waits for after bootout.
+	if strings.HasPrefix(line, "launchctl print ") {
+		return "Could not find service", errors.New("exit status 113")
+	}
 	return "", nil
 }
 
@@ -28,7 +35,7 @@ func useFakeManager(t *testing.T, goos string) (home string, runner *recordingRu
 	runner = &recordingRunner{}
 	previous := newServiceManager
 	newServiceManager = func() (service.Manager, error) {
-		return service.Manager{GOOS: goos, Home: home, UID: "501", Runner: runner}, nil
+		return service.Manager{GOOS: goos, Home: home, UID: "501", Runner: runner, Sleep: func(time.Duration) {}}, nil
 	}
 	t.Cleanup(func() { newServiceManager = previous })
 	return home, runner
@@ -96,7 +103,7 @@ func TestServiceInstallCarriesTheNodesFlagsByTheNodesNames(t *testing.T) {
 	if !strings.Contains(stdout.String(), "node answering on "+server.URL+" as node_test") {
 		t.Errorf("stdout should report the node answering:\n%s", stdout.String())
 	}
-	if len(runner.calls) != 2 || !strings.HasPrefix(runner.calls[1], "launchctl bootstrap gui/501 ") {
+	if len(runner.calls) != 3 || !strings.HasPrefix(runner.calls[2], "launchctl bootstrap gui/501 ") {
 		t.Errorf("manager calls = %v", runner.calls)
 	}
 }
