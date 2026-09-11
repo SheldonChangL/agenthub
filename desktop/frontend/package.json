@@ -5,9 +5,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "for f in test/*.mjs; do case $f in *dom-shim*) continue;; esac; node $f || exit 1; done"
   },
   "devDependencies": {
     "vite": "^7.0.0"
-  }
+  },
+  "type": "module"
 }
