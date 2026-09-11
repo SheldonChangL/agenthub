@@ -687,3 +687,46 @@ func TestTheWakeSwitchTravelsThroughTheAudienceEndpoint(t *testing.T) {
 		t.Error("closing the wake switch also closed the inbox")
 	}
 }
+
+// The node's own -auto-wake flag reaches the owner surface.
+//
+// Both switches have to be open before anything is woken, and until this field
+// existed only one of them was visible to the desktop: it offered a per-session
+// auto-wake box, the owner ticked it on a node started without the flag, and
+// nothing ever happened with nothing anywhere saying why. The value has to
+// track the flag in both directions — a field hard-wired to true would be
+// worse than none, because it would explain the silence wrongly.
+func TestNodeEndpointReportsTheNodesAutoWakeFlag(t *testing.T) {
+	for _, autoWake := range []bool{false, true} {
+		ctx := context.Background()
+		store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		node := model.NodeIdentity{ID: testNodeID}
+		heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
+		handler := NewServer(store, nil, heartbeats, node, WithAutoWake(autoWake)).Handler()
+
+		response := perform(t, handler, http.MethodGet, "/v1/node", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("response = %d %s", response.Code, response.Body.String())
+		}
+		var body struct {
+			ID       string `json:"id"`
+			AutoWake *bool  `json:"autoWake"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode body: %v (%s)", err, response.Body.String())
+		}
+		if body.ID != testNodeID {
+			t.Errorf("the identity fields did not survive the wrapper: id = %q", body.ID)
+		}
+		if body.AutoWake == nil {
+			t.Fatalf("/v1/node carries no autoWake at all: %s", response.Body.String())
+		}
+		if *body.AutoWake != autoWake {
+			t.Errorf("/v1/node says autoWake %v for a node started with %v", *body.AutoWake, autoWake)
+		}
+	}
+}
