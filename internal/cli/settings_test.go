@@ -139,3 +139,42 @@ func TestSettingsSetClearsPrivateRangesExplicitly(t *testing.T) {
 		t.Fatalf("treatAsPrivate = %v; clearing must send an empty list", received["treatAsPrivate"])
 	}
 }
+
+// A withdrawn listener must not print as a plain default.
+//
+// The node started with allowLan off beside a peer listener it could not
+// serve, moved the listener back to the default and stored it. The source is
+// "default", which is true of the value and reads as "nothing is saved" — on
+// the one setting where what is saved decides whether this machine is on the
+// network.
+func TestSettingsMarksAPeerListenerThatWasWithdrawn(t *testing.T) {
+	const answer = `{
+  "settings": {"peerListen":"127.0.0.1:7463","allowLan":false,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "sources": {"peerListen":"default","allowLan":"remembered","discover":"default","treatAsPrivate":"default","autoWake":"default"},
+  "saved": {"peerListen":"127.0.0.1:7463","allowLan":false,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "restartRequired": false,
+  "peerListenWithdrawn": true,
+  "message": "peerListen reads as a default because it was withdrawn at start-up"
+}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, answer)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "settings"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "default (withdrawn)") {
+		t.Errorf("the withdrawal is invisible in the table:\n%s", out)
+	}
+	// Only that row. allow-lan is remembered and says so, unqualified.
+	if strings.Contains(out, "remembered (withdrawn)") {
+		t.Errorf("the marker leaked onto another setting:\n%s", out)
+	}
+	if !strings.Contains(out, "withdrawn at start-up") {
+		t.Errorf("the explanation was dropped:\n%s", out)
+	}
+}

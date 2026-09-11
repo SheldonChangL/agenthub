@@ -518,12 +518,22 @@ func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *test
 	if startup.settings.PeerListen != nodeconfig.DefaultPeerListen || startup.settings.AllowLAN {
 		t.Fatalf("this start ran with %+v", startup.settings)
 	}
+	// Carried out, because the owner's API cannot work it out later: by then
+	// the withdrawn address is gone from the database and the default sitting
+	// there is indistinguishable from one nobody ever chose.
+	if !startup.peerListenWithdrawn {
+		t.Error("the start did not report the withdrawal, so no reader of the API can explain it")
+	}
 
 	// Said out loud. The owner asked about one switch and the listener moved,
 	// and a listener moving is the one thing about this node that is visible
 	// from another machine.
 	logged := strings.Join(lines, "\n")
-	for _, want := range []string{"192.168.1.10:7463", nodeconfig.DefaultPeerListen, "allow-lan is off"} {
+	for _, want := range []string{
+		"192.168.1.10:7463", nodeconfig.DefaultPeerListen, "allow-lan is off",
+		// Printed only once the save went through, which on this start it did.
+		nodeconfig.DefaultPeerListen + " is now what this node remembers",
+	} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the start-up log never says %q:\n%s", want, logged)
 		}
@@ -545,6 +555,47 @@ func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *test
 	}
 	if next.settings.PeerListen != nodeconfig.DefaultPeerListen {
 		t.Fatalf("the following start ran with %+v", next.settings)
+	}
+}
+
+// The log must not claim a withdrawal was remembered by a start that then
+// refused.
+//
+// The withdrawal is announced before Validate, so the owner reads it next to
+// the settings it is about. But Validate can still end this start over some
+// other field, and nothing is saved when it does — so the announcement can say
+// what was not bound and cannot say what was stored. It said both in one
+// sentence, and this is the start where that sentence was false.
+func TestARefusedStartNeverSaysTheWithdrawalWasRemembered(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"),
+		AllowLAN:   boolFlag(true),
+	}}
+	nonsense := []string{"not-a-cidr"}
+	var lines []string
+	_, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{AllowLAN: boolFlag(false), TreatAsPrivate: &nonsense},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err == nil {
+		t.Fatal("a start with an unparseable -treat-as-private was accepted")
+	}
+	if store.saves != 0 {
+		t.Fatalf("a refused start wrote to the store %d time(s)", store.saves)
+	}
+	logged := strings.Join(lines, "\n")
+	// The withdrawal itself is still announced: it is the reason the listener
+	// in the lines below is not the one in the database.
+	if !strings.Contains(logged, "withdrawing peer-listen") {
+		t.Errorf("the withdrawal went unmentioned:\n%s", logged)
+	}
+	// Both spellings: the sentence that used to end "and remembering it", and
+	// the separate line that replaced it. Saying where the withdrawn address
+	// came *from* is still true and still printed; claiming this start stored
+	// the new one is not.
+	for _, forbidden := range []string{"is now what this node remembers", "remembering it"} {
+		if strings.Contains(logged, forbidden) {
+			t.Errorf("a start that saved nothing said %q:\n%s", forbidden, logged)
+		}
 	}
 }
 
@@ -576,6 +627,9 @@ func TestTheStartupWithdrawalDoesNotGuessAtAContradictionOrMoveALoopbackPort(t *
 	if startup.settings.PeerListen != chosen {
 		t.Errorf("a chosen loopback port was moved to %q for no reason", startup.settings.PeerListen)
 	}
+	if startup.peerListenWithdrawn {
+		t.Error("a start that withdrew nothing reported a withdrawal")
+	}
 }
 
 // settingsTestSigner signs heartbeats with a throwaway key, so an owner API can
@@ -594,60 +648,90 @@ func (settingsTestSigner) Sign([]byte) []byte { return make([]byte, ed25519.Sign
 // rescued. Both now call nodeconfig.WithdrawPeerListen, and this is the
 // assertion that says so in terms of what each route leaves in a database.
 func TestTheOwnerAPIAndTheNodeItselfWithdrawTheSameListener(t *testing.T) {
-	ctx := context.Background()
 	const lan = "192.168.1.10:7463"
-	opened := nodeconfig.Partial{PeerListen: stringFlag(lan), AllowLAN: boolFlag(true)}
+	for _, tc := range []struct {
+		name string
+		// stored is what the database already holds. Written straight through
+		// the registry, because the second case is a pair no write path can
+		// produce — both of them validate first — and the point of the case is
+		// that the two routes still agree about a database somebody edited by
+		// hand, or an older build left behind.
+		stored nodeconfig.Partial
+		// written is the owner's PUT body, and flags is the node's command
+		// line. Each pair is the same change arriving by the two routes.
+		written map[string]any
+		flags   nodeconfig.Partial
+	}{{
+		name:    "the switch is closed by this very write",
+		stored:  nodeconfig.Partial{PeerListen: stringFlag(lan), AllowLAN: boolFlag(true)},
+		written: map[string]any{"allowLan": false},
+		flags:   nodeconfig.Partial{AllowLAN: boolFlag(false)},
+	}, {
+		// The switch is already off beside a LAN listener, and neither route
+		// mentions either field. The start withdraws, so the PUT has to: a PUT
+		// that judged only what it was handed would answer 400 to
+		// {"discover": true} and tell the owner to pass the flag that is
+		// already off, on a node that starts perfectly well.
+		name:    "the switch was already off and this write says nothing about it",
+		stored:  nodeconfig.Partial{PeerListen: stringFlag(lan), AllowLAN: boolFlag(false)},
+		written: map[string]any{"discover": true},
+		flags:   nodeconfig.Partial{},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
 
-	// Route one: the owner PUTs {"allowLan": false} to a running node.
-	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-	if err := store.SaveNodeSettings(ctx, opened); err != nil {
-		t.Fatal(err)
-	}
-	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"}
-	handler := api.NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, settingsTestSigner{}), node,
-		api.WithNodeSettings(nodeconfig.Settings{PeerListen: lan, AllowLAN: true},
-			map[string]string{})).Handler()
+			// Route one: the owner PUTs to a running node.
+			store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			if err := store.SaveNodeSettings(ctx, tc.stored); err != nil {
+				t.Fatal(err)
+			}
+			node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"}
+			handler := api.NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, settingsTestSigner{}), node,
+				api.WithNodeSettings(nodeconfig.Settings{PeerListen: lan, AllowLAN: true},
+					map[string]string{})).Handler()
 
-	body, err := json.Marshal(map[string]any{"allowLan": false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPut, "/v1/node/settings", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	recorded := httptest.NewRecorder()
-	handler.ServeHTTP(recorded, request)
-	if recorded.Code != http.StatusOK {
-		t.Fatalf("the owner's write = %d %s", recorded.Code, recorded.Body.String())
-	}
-	viaAPI, err := store.GetNodeSettings(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+			body, err := json.Marshal(tc.written)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPut, "/v1/node/settings", bytes.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			recorded := httptest.NewRecorder()
+			handler.ServeHTTP(recorded, request)
+			if recorded.Code != http.StatusOK {
+				t.Fatalf("the owner's write = %d %s", recorded.Code, recorded.Body.String())
+			}
+			viaAPI, err := store.GetNodeSettings(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	// Route two: the same node started with -allow-lan=false and nothing else,
-	// which is what `ah service install --allow-lan=false` writes into the unit.
-	direct := &rememberingStore{stored: opened}
-	if _, err := applyStartupSettings(ctx, direct,
-		nodeconfig.Partial{AllowLAN: boolFlag(false)}, func(string, ...any) {}); err != nil {
-		t.Fatalf("the node refused to start where the API accepted the same change: %v", err)
-	}
-	viaStart := direct.stored
+			// Route two: the same node started with the same change and
+			// nothing else, which is what `ah service install` writes into the
+			// unit.
+			direct := &rememberingStore{stored: tc.stored}
+			if _, err := applyStartupSettings(ctx, direct, tc.flags, func(string, ...any) {}); err != nil {
+				t.Fatalf("the node refused to start where the API accepted the same change: %v", err)
+			}
+			viaStart := direct.stored
 
-	if viaAPI.PeerListen == nil || viaStart.PeerListen == nil ||
-		*viaAPI.PeerListen != *viaStart.PeerListen {
-		t.Fatalf("the two routes stored different listeners: api %v, start %v",
-			viaAPI.PeerListen, viaStart.PeerListen)
-	}
-	if *viaAPI.PeerListen != nodeconfig.DefaultPeerListen {
-		t.Fatalf("both routes agreed on %q, which still serves the network", *viaAPI.PeerListen)
-	}
-	if viaAPI.AllowLAN == nil || viaStart.AllowLAN == nil ||
-		*viaAPI.AllowLAN != *viaStart.AllowLAN || *viaAPI.AllowLAN {
-		t.Fatalf("the two routes stored different switches: api %v, start %v",
-			viaAPI.AllowLAN, viaStart.AllowLAN)
+			if viaAPI.PeerListen == nil || viaStart.PeerListen == nil ||
+				*viaAPI.PeerListen != *viaStart.PeerListen {
+				t.Fatalf("the two routes stored different listeners: api %v, start %v",
+					viaAPI.PeerListen, viaStart.PeerListen)
+			}
+			if *viaAPI.PeerListen != nodeconfig.DefaultPeerListen {
+				t.Fatalf("both routes agreed on %q, which still serves the network", *viaAPI.PeerListen)
+			}
+			if viaAPI.AllowLAN == nil || viaStart.AllowLAN == nil ||
+				*viaAPI.AllowLAN != *viaStart.AllowLAN || *viaAPI.AllowLAN {
+				t.Fatalf("the two routes stored different switches: api %v, start %v",
+					viaAPI.AllowLAN, viaStart.AllowLAN)
+			}
+		})
 	}
 }

@@ -30,6 +30,10 @@ func settingsServer(t *testing.T, running nodeconfig.Settings, sources map[strin
 		WithNodeSettings(running, sources)).Handler()
 }
 
+// boolSetting is the pointer a Partial needs: absent and false are different
+// answers here, so every stored switch is addressed.
+func boolSetting(value bool) *bool { return &value }
+
 func readSettings(t *testing.T, body []byte) settingsResponse {
 	t.Helper()
 	var view settingsResponse
@@ -308,5 +312,81 @@ func TestNamingALANListenerWhileClosingTheSwitchIsRefusedNotQuietlyWithdrawn(t *
 	}
 	if stored.AllowLAN == nil || !*stored.AllowLAN {
 		t.Fatalf("a refused write closed the switch: %v", stored.AllowLAN)
+	}
+}
+
+// A withdrawn peer listener is a value in the database that no source name can
+// describe.
+//
+// A node that started with allowLan off beside a remembered LAN listener moved
+// that listener to the default and stored it. Of the three provenances the
+// desktop contract allows, "default" is the only true one — and it reads as
+// "nothing is stored", which is the one thing that is no longer the case. The
+// boolean is the difference, and it lasts exactly as long as this process: the
+// next start finds the default in the database and calls it remembered.
+func TestAWithdrawnPeerListenerIsReportedBesideItsDefaultSource(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	// What the start-up withdrawal leaves behind: the default, stored.
+	withdrawnTo := nodeconfig.DefaultPeerListen
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{
+		PeerListen: &withdrawnTo, AllowLAN: boolSetting(false),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	heartbeats := protocol.NewHeartbeatBuilder(store, node, apiTestSigner{})
+	running := nodeconfig.Settings{PeerListen: nodeconfig.DefaultPeerListen}
+	sources := map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceDefault}
+	handler := NewServer(store, nil, heartbeats, model.NodeIdentity{ID: testNodeID},
+		WithNodeSettings(running, sources), WithPeerListenWithdrawn()).Handler()
+
+	response := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	view := readSettings(t, response.Body.Bytes())
+	if !view.PeerListenWithdrawn {
+		t.Fatalf("a withdrawn listener was reported as an ordinary default: %s", response.Body.String())
+	}
+	// The source stays one of the three the desktop knows.
+	if view.Sources[nodeconfig.SettingPeerListen] != nodeconfig.SourceDefault {
+		t.Fatalf("sources = %v; the contract is flag/remembered/default", view.Sources)
+	}
+	if !strings.Contains(view.Message, "withdrawn") {
+		t.Errorf("a read of a withdrawn listener explains nothing: %q", view.Message)
+	}
+
+	// A write still answers about the write. The boolean carries the fact for
+	// anything that wants to render it.
+	written := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"discover": true})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write = %d %s", written.Code, written.Body.String())
+	}
+	afterWrite := readSettings(t, written.Body.Bytes())
+	if !afterWrite.PeerListenWithdrawn || !strings.Contains(afterWrite.Message, "take effect") {
+		t.Fatalf("the write answered %+v", afterWrite)
+	}
+}
+
+// The next start is an ordinary one, and must not keep explaining a withdrawal
+// that happened before the last restart. Absent from the JSON entirely, so a
+// reader never has to tell false from missing.
+func TestAStartThatWithdrewNothingSaysNothingAboutWithdrawal(t *testing.T) {
+	_, handler := settingsServer(t, nodeconfig.Settings{PeerListen: nodeconfig.DefaultPeerListen},
+		map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceRemembered})
+	response := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "peerListenWithdrawn") {
+		t.Fatalf("an ordinary start reported a withdrawal: %s", response.Body.String())
+	}
+	if readSettings(t, response.Body.Bytes()).Message != "" {
+		t.Fatalf("an ordinary read carried a message: %s", response.Body.String())
 	}
 }
