@@ -219,3 +219,46 @@
 
 重新設計在獨立 worktree `../agenthub-ui-redesign`、分支 `feat/desktop-ui-redesign`（自 `ea41a17` 開）。
 本顆樹 `agenthub/` 留給另一個 session 的 agent 做每個 PR 的 checkout。
+
+### 7.5 #111 端點形狀（#125 已合併，main `a742023`；欄位已對照原始碼核實）
+
+新 UI 的「送出紀錄」「喚醒紀錄」視圖接這兩個端點。desktop 端還沒有對應的 Go 綁定，
+實作時要在 `app.go` / `client.go` 加 `Outbound(limit, after)` 與 `Wakes(session, limit)`。
+
+**`GET /v1/outbound?limit=50[&after=<cursor>]`** — 本節點排給 peer 的訊息，最新在前。
+`limit` 1–200，預設 50。回應 `{"messages":[…],"next":"<cursor>"}`；空清單無 `next`，滿頁才有。
+每列（`registry.OutboundMessage`，清單**不含 `body`**）：
+
+| 欄位 | 型別 | UI 用法 |
+|---|---|---|
+| `id` | string | 列鍵；點開可打 `GET /v1/outbound/{id}` 看 body |
+| `to` | string | 目的 session（peer 端的 id） |
+| `destinationNodeId` | string | 對應已配對節點名稱顯示 |
+| `from` | string, 可空 | 本機來源 session |
+| `state` | `pending` / `delivered` / `refused` | pill 三色；refused 為警示 |
+| `attempts` | int | 次要資訊 |
+| `createdAt` / `updatedAt` | ISO | 相對時間；預設以 `updatedAt` 排 |
+| `lastError` | string, 可空 | **peer 提供、無長度上限（最壞 64KB）**；顯示前截到 ~200 字，完整內容放展開列 |
+| `wakeHops` | int, 可空 | 有才顯示 |
+
+**`GET /v1/wakes?limit=50[&session=<id>]`** — 誰喚醒了這台的 agent，最新在前。
+`session` 過濾單一本機 session（非本機 id 會被拒，不是回空）。回應 `{"wakes":[…],"limits":{…}}`。
+每筆（`registry.WakeEvent`）：
+
+| 欄位 | 型別 | UI 用法 |
+|---|---|---|
+| `id`, `messageID` | string | 列鍵；`messageID` 可連到收件匣 |
+| `sourceNodeId` | string, 可空 | 空＝本機來源 |
+| `sourceSession` | string, 可空 | 寄件者自選，**用 `claimed` 樣式** |
+| `destinationSession` | string | 被喚醒的 session |
+| `hops` | int | |
+| `outcome` | `woken` / `refused_hops` / `refused_pair_rate` / `refused_session_rate` / `refused_node_rate` / `failed` | woken 綠；refused_* 琥珀並在旁邊放對應 `limits` 值；failed 紅 |
+| `detail` | string, 可空 | 原因文字 |
+| `at` | ISO | 相對時間 |
+
+`limits` 帶 `hops`、`pair`+`pairWindow`、`session`+`sessionWindow`、`node`+`nodeWindow`，
+拒絕理由要跟產生它的規則並排顯示。對應 CLI：`ah outbound`、`ah wakes [session]`。
+
+**#116 設定端點（尚未合併，先照此設計）**：一個 `GET /v1/node/settings` 回各欄位＋來源，
+一個 `PUT` 部分更新回 `restartRequired: true`；欄位 `peerListen`、`allowLan`、`discover`、
+`treatAsPrivate[]`、`autoWake`。設定頁的主按鈕由「重新安裝（改旗標）」改為「儲存並重啟服務」。
