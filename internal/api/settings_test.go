@@ -196,3 +196,68 @@ func TestPutNodeSettingsJudgesTheSavedConfigurationNotTheRunningOne(t *testing.T
 		t.Fatalf("response = %d %s", together.Code, together.Body.String())
 	}
 }
+
+// Turning allowLan off is the one write that must never be refused for being
+// inconsistent with the listener, because the node it is refused on is the one
+// serving a network. Before this, a saved peerListen of 192.168.1.10:7463 made
+// {"allowLan": false} a 400 telling the owner to pass -allow-lan — the switch
+// they were closing — and the README told them to type exactly that.
+func TestTurningAllowLANOffTakesTheListenerOffTheNetwork(t *testing.T) {
+	store, handler := settingsServer(t, nodeconfig.DefaultSettings(), map[string]string{})
+	opened := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": "192.168.1.10:7463", "allowLan": true})
+	if opened.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", opened.Code, opened.Body.String())
+	}
+
+	closed := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"allowLan": false})
+	if closed.Code != http.StatusOK {
+		t.Fatalf("closing the switch = %d %s", closed.Code, closed.Body.String())
+	}
+	view := readSettings(t, closed.Body.Bytes())
+	if view.Saved.AllowLAN || view.Saved.PeerListen != nodeconfig.DefaultPeerListen {
+		t.Fatalf("the next start would use %+v", view.Saved)
+	}
+	// Said out loud: the owner asked about one field and two moved, and the
+	// one that moved on its own is where this node listens.
+	if !strings.Contains(view.Message, nodeconfig.DefaultPeerListen) ||
+		!strings.Contains(view.Message, "peerListen") {
+		t.Errorf("the response does not say the listener moved: %q", view.Message)
+	}
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != nodeconfig.DefaultPeerListen {
+		t.Fatalf("peerListen was stored as %v; the next start would still bind the network", stored.PeerListen)
+	}
+	if stored.AllowLAN == nil || *stored.AllowLAN {
+		t.Fatalf("allowLan was stored as %v", stored.AllowLAN)
+	}
+}
+
+// The withdrawal is narrow: it never widens anything, and it does not move a
+// listener that is already off the network. A loopback port somebody chose is
+// a choice, not a consequence of allowLan.
+func TestTurningAllowLANOffLeavesALoopbackListenerAlone(t *testing.T) {
+	store, handler := settingsServer(t, nodeconfig.DefaultSettings(), map[string]string{})
+	const chosen = "127.0.0.1:9463"
+	if opened := perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": chosen}); opened.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", opened.Code, opened.Body.String())
+	}
+	closed := perform(t, handler, http.MethodPut, "/v1/node/settings", map[string]any{"allowLan": false})
+	if closed.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", closed.Code, closed.Body.String())
+	}
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != chosen {
+		t.Fatalf("peerListen = %v; a loopback listener was moved for no reason", stored.PeerListen)
+	}
+	if view := readSettings(t, closed.Body.Bytes()); strings.Contains(view.Message, "went back to") {
+		t.Errorf("the response claims a listener moved: %q", view.Message)
+	}
+}
