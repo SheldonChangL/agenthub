@@ -140,7 +140,35 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	case "nodes":
-		return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
+		// `ah nodes` lists, `ah nodes address <node-id> <host:port>` records
+		// where one of them answers. The address is a sub-command of nodes
+		// rather than a verb of its own because it is not a trust decision:
+		// pairing says who a node is, this says where it currently is, and a
+		// laptop that moved between networks needs the second changed without
+		// touching the first.
+		//
+		// Until now there was no subcommand at all and the README told owners
+		// to `curl -X PUT`. A peer with no recorded address is skipped
+		// silently — `ah send` still answers `queued` — so the one repair for
+		// the quietest failure in the system was the one thing the CLI could
+		// not do.
+		switch {
+		case len(args) == 1:
+			return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
+		case args[1] == "address":
+			if len(args) != 4 {
+				return errors.New("usage: ah nodes address <node-id> <host:port>")
+			}
+			// host:port is validated by the node, which refuses an address
+			// this build would not deliver to and says why. Checking it here
+			// as well would mean two rules that can disagree, and the node's
+			// is the one that decides whether anything is ever sent.
+			return r.simple(ctx, http.MethodPut,
+				"/v1/nodes/"+url.PathEscape(args[2])+"/address",
+				map[string]string{"address": args[3]})
+		default:
+			return fmt.Errorf("ah nodes does not take %q\nusage: ah nodes [address <node-id> <host:port>]", args[1])
+		}
 	case "peers":
 		if len(args) != 1 {
 			return fmt.Errorf("ah peers takes no arguments, got %s\nusage: ah peers",
@@ -665,6 +693,9 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
 	_, _ = fmt.Fprintln(output, "                                               with the address to send to")
+	_, _ = fmt.Fprintln(output, "  ah nodes                                     the nodes this one trusts")
+	_, _ = fmt.Fprintln(output, "  ah nodes address <node-id> <host:port>       record where a paired node answers; without one,")
+	_, _ = fmt.Fprintln(output, "                                               delivery skips it and `ah send` still says queued")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
