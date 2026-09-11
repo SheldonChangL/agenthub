@@ -102,34 +102,11 @@ func run() error {
 	// last time. This is why `ah service install` needs only --db: the unit
 	// file stopped being a second copy of the configuration.
 	given := flagSettings(flag.CommandLine, peerListenAddress, allowLAN, discover, autoWake, declaredPrivate)
-	remembered, err := store.GetNodeSettings(ctx)
+	startup, err := applyStartupSettings(ctx, store, given, log.Printf)
 	if err != nil {
 		return err
 	}
-	settings, sources := nodeconfig.Resolve(given, remembered, nodeconfig.DefaultSettings())
-	if err := store.SaveNodeSettings(ctx, given); err != nil {
-		return fmt.Errorf("remember node settings: %w", err)
-	}
-	// Every setting, every start. -allow-lan is the only switch here that lets
-	// anything leave this machine, and a remembered one is otherwise invisible:
-	// nothing on the command line mentions it.
-	for _, line := range nodeconfig.Describe(settings, sources) {
-		log.Printf("setting %s", line)
-	}
-	// The owner's word about which networks are private, recorded before it is
-	// used so the claim is in the log next to whatever it later allows.
-	declaredRanges, err := settings.Validate()
-	if err != nil {
-		return rememberedRefusal(err, sources)
-	}
-	if len(declaredRanges) > 0 {
-		log.Printf("treating these as private networks on the owner's word: %s", declaredRanges)
-		if !settings.AllowLAN {
-			// Said plainly, because the line above otherwise reads as though
-			// something had been enabled.
-			log.Printf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
-		}
-	}
+	settings, sources, declaredRanges := startup.settings, startup.sources, startup.ranges
 
 	node, err := identity.LoadOrCreate(ctx, store, *displayName, wasSet(flag.CommandLine, "display-name"))
 	if err != nil {
@@ -484,6 +461,70 @@ func nameProvenance(chosen bool) string {
 		return "chosen with -display-name"
 	}
 	return "read from this machine"
+}
+
+// settingsStore is the part of the registry the start-up settings need.
+//
+// An interface rather than *registry.Registry so the order below can be tested
+// against a store that records what it was asked to do: the bug this shape
+// exists to prevent is invisible in the return value and visible only in what
+// reached the database.
+type settingsStore interface {
+	GetNodeSettings(ctx context.Context) (nodeconfig.Partial, error)
+	SaveNodeSettings(ctx context.Context, settings nodeconfig.Partial) error
+}
+
+// startupSettings is what this start will run with.
+type startupSettings struct {
+	settings nodeconfig.Settings
+	sources  map[string]string
+	ranges   nodeconfig.PrivateRanges
+}
+
+// applyStartupSettings resolves the configuration, validates it, and only then
+// records what this command line gave.
+//
+// The order is the whole point. Saving before validating turns one mistyped
+// flag into a node that can never start again: the bad value is remembered, so
+// the next start refuses too, with nothing on the command line to blame — and
+// the `ah settings set ...` the refusal suggests goes through the owner's API,
+// which a node that will not start is not serving. Nothing is remembered until
+// it is known to be startable, which is the order the API's PUT already uses.
+//
+// logf is injected so a test can read the start-up log. Every setting is
+// printed on every start, and -allow-lan is the only switch here that lets
+// anything leave this machine: remembered, those lines are the one place it is
+// visible.
+func applyStartupSettings(ctx context.Context, store settingsStore, given nodeconfig.Partial,
+	logf func(string, ...any)) (startupSettings, error) {
+	remembered, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		return startupSettings{}, err
+	}
+	settings, sources := nodeconfig.Resolve(given, remembered, nodeconfig.DefaultSettings())
+	// Printed before the validation that may end this start, so the refusal
+	// below is read next to the values it is about.
+	for _, line := range nodeconfig.Describe(settings, sources) {
+		logf("setting %s", line)
+	}
+	declaredRanges, err := settings.Validate()
+	if err != nil {
+		return startupSettings{}, rememberedRefusal(err, sources)
+	}
+	if err := store.SaveNodeSettings(ctx, given); err != nil {
+		return startupSettings{}, fmt.Errorf("remember node settings: %w", err)
+	}
+	// The owner's word about which networks are private, recorded next to
+	// whatever it later allows.
+	if len(declaredRanges) > 0 {
+		logf("treating these as private networks on the owner's word: %s", declaredRanges)
+		if !settings.AllowLAN {
+			// Said plainly, because the line above otherwise reads as though
+			// something had been enabled.
+			logf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
+		}
+	}
+	return startupSettings{settings: settings, sources: sources, ranges: declaredRanges}, nil
 }
 
 // flagSettings collects the remembered settings this command line actually

@@ -362,3 +362,121 @@ func TestARefusalOverARememberedValueSaysSo(t *testing.T) {
 		t.Errorf("a refusal over a typed flag was decorated: %v", plain)
 	}
 }
+
+// rememberingStore is a settingsStore that keeps what it was told, so a test
+// can ask what actually reached the database rather than what was returned.
+type rememberingStore struct {
+	stored nodeconfig.Partial
+	saves  int
+	getErr error
+}
+
+func (s *rememberingStore) GetNodeSettings(context.Context) (nodeconfig.Partial, error) {
+	return s.stored, s.getErr
+}
+
+func (s *rememberingStore) SaveNodeSettings(_ context.Context, settings nodeconfig.Partial) error {
+	s.saves++
+	s.stored = s.stored.Overlay(settings)
+	return nil
+}
+
+func boolFlag(value bool) *bool       { return &value }
+func stringFlag(value string) *string { return &value }
+
+// A flag that cannot start this node must not be remembered, because a
+// remembered one cannot be taken back: the next start refuses over a value
+// that is on no command line, the service restarts forever, and the
+// `ah settings set ...` the refusal names goes through an API a node that will
+// not start is not serving.
+func TestAnInvalidFlagIsNotRemembered(t *testing.T) {
+	store := &rememberingStore{}
+	given := nodeconfig.Partial{PeerListen: stringFlag("8.8.8.8:7463"), AllowLAN: boolFlag(true)}
+
+	if _, err := applyStartupSettings(context.Background(), store, given, func(string, ...any) {}); err == nil {
+		t.Fatal("a public peer listener was accepted")
+	}
+	if store.saves != 0 {
+		t.Errorf("a refused configuration was written to the store %d time(s)", store.saves)
+	}
+	if !store.stored.Empty() {
+		t.Fatalf("the store holds %+v after a refusal; the next start would refuse over it too", store.stored)
+	}
+	// The proof that this is about order and not about the error: the same
+	// start with nothing given now succeeds, which is exactly what a service
+	// restart does.
+	after, err := applyStartupSettings(context.Background(), store, nodeconfig.Partial{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("the next start was still blocked: %v", err)
+	}
+	if after.settings.PeerListen != nodeconfig.DefaultPeerListen || after.settings.AllowLAN {
+		t.Errorf("the next start ran with %+v, not the defaults", after.settings)
+	}
+}
+
+// A valid flag is remembered, which is the whole reason these settings exist:
+// `ah service install` needs only --db because the value given once is read
+// back on every later start.
+func TestAValidFlagIsRemembered(t *testing.T) {
+	store := &rememberingStore{}
+	given := nodeconfig.Partial{PeerListen: stringFlag("192.168.1.10:7463"), AllowLAN: boolFlag(true)}
+
+	if _, err := applyStartupSettings(context.Background(), store, given, func(string, ...any) {}); err != nil {
+		t.Fatalf("applyStartupSettings: %v", err)
+	}
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != "192.168.1.10:7463" {
+		t.Errorf("peerListen read back as %v; nothing was remembered", stored.PeerListen)
+	}
+	if stored.AllowLAN == nil || !*stored.AllowLAN {
+		t.Errorf("allowLan read back as %v; nothing was remembered", stored.AllowLAN)
+	}
+
+	// And it applies on a later start with no flags at all.
+	next, err := applyStartupSettings(context.Background(), store, nodeconfig.Partial{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("the remembered configuration did not start: %v", err)
+	}
+	if next.settings.PeerListen != "192.168.1.10:7463" || !next.settings.AllowLAN {
+		t.Errorf("the next start ran with %+v", next.settings)
+	}
+	if next.sources[nodeconfig.SettingPeerListen] != nodeconfig.SourceRemembered {
+		t.Errorf("peerListen came from %q, not %q", next.sources[nodeconfig.SettingPeerListen], nodeconfig.SourceRemembered)
+	}
+}
+
+// Every setting, every start. A remembered -allow-lan appears on no command
+// line, so these lines are the only place an owner can see that this machine
+// is serving the network — which the README promises they are.
+func TestTheStartupLogSaysEverySettingAndWhereItCameFrom(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"),
+		AllowLAN:   boolFlag(true),
+	}}
+	var lines []string
+	startup, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{Discover: boolFlag(true)},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatalf("applyStartupSettings: %v", err)
+	}
+	logged := strings.Join(lines, "\n")
+	for _, want := range nodeconfig.Describe(startup.settings, startup.sources) {
+		if !strings.Contains(logged, "setting "+want) {
+			t.Errorf("the start-up log never said %q:\n%s", want, logged)
+		}
+	}
+	// Named, so that "remembered" and "typed just now" stay distinguishable in
+	// the one place a remembered switch is visible at all.
+	for _, want := range []string{
+		"setting allow-lan = true (remembered)",
+		"setting discover = true (flag)",
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the start-up log lacks %q:\n%s", want, logged)
+		}
+	}
+}
