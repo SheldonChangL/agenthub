@@ -291,6 +291,137 @@ if (!state.selected.has("claude:three")) {
   }
 }
 
+// 8. A background refresh that was already in flight when the owner started
+//    interacting is thrown away rather than applied. The tick's guards only
+//    speak for the moment the read was sent; by the time it answers the owner
+//    may have selected rows or opened a dialog, and applying it then is the
+//    same repaint-under-the-click the guards exist to prevent.
+const droppedMidInteraction = async (label, arrange, restore) => {
+  if (!refresh) return;
+
+  // A known-good starting point, so what follows measures the background read
+  // and not whatever the previous section left behind.
+  state.selected.clear();
+  overviewAnswer = reachableOverview(["claude:three"], ["node_alice"]);
+  await scope.load();
+  await settle();
+
+  const sessionsBefore = state.sessions.map((s) => s.id).join(",");
+  const nodesBefore = state.nodes.map((n) => n.nodeId).join(",");
+  const rowsBefore = drawnRows();
+  const bannerHiddenBefore = el("banner").classList.contains("hidden");
+  const bannerTextBefore = el("banner").textContent;
+  const dotBefore = el("conn-dot").className;
+
+  // The tick fires with nothing in the way, and the read parks in flight.
+  let release;
+  overviewPark = (resolve) => { release = resolve; };
+  const asked = overviewCalls;
+  refresh.fn();
+  await settle();
+  if (overviewCalls === asked) {
+    failures.push(`the background tick never asked the node before ${label}`);
+  }
+
+  // Only now does the owner start interacting.
+  arrange();
+  const selectedBefore = [...state.selected].join(",");
+
+  // And only then does the read answer, describing a different world.
+  release(reachableOverview(["claude:other"], ["node_alice", "node_bob"]));
+  await settle();
+
+  if (state.sessions.map((s) => s.id).join(",") !== sessionsBefore) {
+    failures.push(`a background read landing while ${label} replaced the session list: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
+  }
+  if (state.nodes.map((n) => n.nodeId).join(",") !== nodesBefore) {
+    failures.push(`a background read landing while ${label} replaced the node list: ${JSON.stringify(state.nodes.map((n) => n.nodeId))}`);
+  }
+  if ([...state.selected].join(",") !== selectedBefore) {
+    failures.push(`a background read landing while ${label} changed the selection: ${JSON.stringify([...state.selected])}`);
+  }
+  if (drawnRows() !== rowsBefore) {
+    failures.push(`a background read landing while ${label} redrew the table (${rowsBefore} rows -> ${drawnRows()})`);
+  }
+  if (el("banner").classList.contains("hidden") !== bannerHiddenBefore
+    || el("banner").textContent !== bannerTextBefore) {
+    failures.push(`a background read landing while ${label} moved the banner`);
+  }
+  if (el("conn-dot").className !== dotBefore) {
+    failures.push(`a background read landing while ${label} changed the connection dot to ${el("conn-dot").className}`);
+  }
+
+  restore();
+  state.selected.clear();
+
+  // And the abandoned read did not poison the sequence. The next foreground
+  // load started before that read was thrown away is not what matters — this
+  // one starts after, carries a higher number, and must still apply; a read
+  // that was dropped whole must not count as the newest one on screen.
+  overviewAnswer = reachableOverview(["claude:after"], ["node_alice"]);
+  await scope.load();
+  await settle();
+  if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:after") {
+    failures.push(`after a background read was dropped while ${label}, a foreground load no longer applies: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
+  }
+  if (drawnRows() !== 1) {
+    failures.push(`after a background read was dropped while ${label}, the table shows ${drawnRows()} rows, want 1`);
+  }
+};
+
+await droppedMidInteraction("rows were selected",
+  () => state.selected.add("claude:three"),
+  () => state.selected.clear());
+await droppedMidInteraction("the audience dialog was open",
+  () => el("audience-modal").classList.remove("hidden"),
+  () => el("audience-modal").classList.add("hidden"));
+
+// 9. Dropping that read leaves the numbering alone, so a foreground read that
+//    started before it still lands. The owner presses 「重新整理」, the tick
+//    fires while that read is still in the air, the owner selects a row, and
+//    the tick's answer is thrown away. If throwing it away had counted as
+//    "applied", the refresh the owner actually asked for would come back
+//    carrying a lower number and be discarded as stale — the window would sit
+//    on the old list with no way to tell.
+if (refresh) {
+  state.selected.clear();
+  overviewAnswer = reachableOverview(["claude:three"], ["node_alice"]);
+  await scope.load();
+  await settle();
+
+  // The owner's own refresh, still in flight.
+  let releaseManual;
+  overviewPark = (resolve) => { releaseManual = resolve; };
+  const manual = scope.load();
+  await settle();
+
+  // The tick fires behind it and parks too.
+  let releaseTick;
+  overviewPark = (resolve) => { releaseTick = resolve; };
+  refresh.fn();
+  await settle();
+
+  // The owner selects a row, and the tick's read answers into that.
+  state.selected.add("claude:three");
+  releaseTick(reachableOverview(["claude:fromTick"], ["node_alice", "node_bob"]));
+  await settle();
+  if (state.sessions.some((s) => s.id === "claude:fromTick")) {
+    failures.push("a background read landing while a row was selected was applied");
+  }
+
+  // The owner clicks away, and their own refresh finally answers.
+  state.selected.clear();
+  releaseManual(reachableOverview(["claude:fromManual"], ["node_alice"]));
+  await manual;
+  await settle();
+  if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:fromManual") {
+    failures.push(`the owner's refresh was discarded after a later background read was dropped: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
+  }
+  if (drawnRows() !== 1) {
+    failures.push(`the table shows ${drawnRows()} rows after the owner's refresh landed, want 1`);
+  }
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

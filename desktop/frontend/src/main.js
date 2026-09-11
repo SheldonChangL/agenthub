@@ -267,11 +267,43 @@ function hideBanner() {
 let overviewRequest = 0;
 let overviewApplied = 0;
 
-async function load() {
+// Anything the owner is in the middle of that a repainted table would pull out
+// from under them: a write in flight, rows selected that a rescan could drop,
+// or a dialog standing on top of the list. The periodic tick and the moment a
+// background read lands both ask this — one list of conditions, checked twice,
+// because the state can change while the read is in the air.
+const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "modal"];
+function anyModalOpen() {
+  return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
+}
+function interactionInProgress() {
+  return state.busy || state.selected.size > 0 || anyModalOpen();
+}
+
+// background: this read is the 15-second tick's, not the owner's. A background
+// read is abandoned if the owner started interacting while it was in flight;
+// a foreground read — startup, 「重新整理」, the reload after a mutation — is
+// what the owner asked for and always applies.
+async function load({ background = false } = {}) {
   const sequence = ++overviewRequest;
   const overview = await Overview();
   if (sequence <= overviewApplied) {
     // A later read already landed. This one describes an older moment.
+    return;
+  }
+  if (background && interactionInProgress()) {
+    // The guards passed when this tick fired, but the owner has since selected
+    // rows or opened a dialog. Applying it now would redraw the table under
+    // them, so the answer is thrown away whole — no state, no render, no
+    // banner.
+    //
+    // overviewApplied deliberately does not move. It means "the newest read
+    // whose contents are on screen", and nothing from this one is; advancing it
+    // would make the next foreground read — which carries a lower number only
+    // because it started later than this abandoned one did — look stale and be
+    // dropped too. Leaving it put is also right for a read still in flight from
+    // before this one: nothing from this tick reached the screen, so that older
+    // read is still newer than what is displayed and should land.
     return;
   }
   overviewApplied = sequence;
@@ -1524,14 +1556,12 @@ setInterval(() => {
 // Skipped whenever a refresh would pull the ground out from under someone: a
 // write is in flight, a dialog is open on top of the table, or rows are
 // selected and a rescan would drop the selection out from under the next click.
-const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "modal"];
-function anyModalOpen() {
-  return MODAL_IDS.some((id) => !el(id).classList.contains("hidden"));
-}
-
+// The same check runs again inside load() before a background answer is
+// applied, because the owner can start any of those while the read is in the
+// air.
 setInterval(() => {
-  if (state.busy || state.selected.size > 0 || anyModalOpen()) return;
-  load().catch((error) => banner(`載入失敗：${error}`));
+  if (interactionInProgress()) return;
+  load({ background: true }).catch((error) => banner(`載入失敗：${error}`));
 }, 15000);
 
 load()
