@@ -620,7 +620,7 @@ func TestListOutboundIsNewestFirst(t *testing.T) {
 	node := trustedPeer(t, store)
 	queued := queueThree(t, store, node)
 
-	listed, err := store.ListOutbound(ctx, 50, OutboundStart)
+	listed, err := store.ListOutbound(ctx, "", 50, OutboundStart)
 	if err != nil {
 		t.Fatalf("ListOutbound() error = %v", err)
 	}
@@ -646,7 +646,7 @@ func TestListOutboundPagesByCursor(t *testing.T) {
 	node := trustedPeer(t, store)
 	queued := queueThree(t, store, node)
 
-	first, err := store.ListOutbound(ctx, 2, OutboundStart)
+	first, err := store.ListOutbound(ctx, "", 2, OutboundStart)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +657,7 @@ func TestListOutboundPagesByCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseOutboundCursor() error = %v", err)
 	}
-	second, err := store.ListOutbound(ctx, 2, cursor)
+	second, err := store.ListOutbound(ctx, "", 2, cursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestListOutboundPagesByCursor(t *testing.T) {
 	}
 	// And the end is an empty page, not the first one again — which is what a
 	// cursor applied in the wrong direction would produce.
-	third, err := store.ListOutbound(ctx, 2, OutboundCursorAfter(second[0]))
+	third, err := store.ListOutbound(ctx, "", 2, OutboundCursorAfter(second[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +681,7 @@ func TestListOutboundBoundsItsPage(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
 
-	empty, err := store.ListOutbound(ctx, 50, OutboundStart)
+	empty, err := store.ListOutbound(ctx, "", 50, OutboundStart)
 	if err != nil {
 		t.Fatalf("ListOutbound() on an empty store error = %v", err)
 	}
@@ -692,7 +692,7 @@ func TestListOutboundBoundsItsPage(t *testing.T) {
 	node := trustedPeer(t, store)
 	queueThree(t, store, node)
 	for _, limit := range []int{0, -1, 1000} {
-		listed, err := store.ListOutbound(ctx, limit, OutboundStart)
+		listed, err := store.ListOutbound(ctx, "", limit, OutboundStart)
 		if err != nil {
 			t.Fatalf("ListOutbound(limit=%d) error = %v", limit, err)
 		}
@@ -701,7 +701,107 @@ func TestListOutboundBoundsItsPage(t *testing.T) {
 				limit, len(listed))
 		}
 	}
-	if listed, err := store.ListOutbound(ctx, 1, OutboundStart); err != nil || len(listed) != 1 {
+	if listed, err := store.ListOutbound(ctx, "", 1, OutboundStart); err != nil || len(listed) != 1 {
 		t.Fatalf("limit 1 listed %d rows (err %v)", len(listed), err)
+	}
+}
+
+// queueFrom queues one message labelled with a local sender, the way the API
+// does: <node-id>/<session-id>, never a bare session id.
+func queueFrom(t *testing.T, store *Registry, node, from, id string) OutboundMessage {
+	t.Helper()
+	message, err := store.QueueOutbound(context.Background(), OutboundMessage{
+		ID: id, DestinationNodeID: node, To: "codex:theirs", From: from, Body: "hello " + id,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	return message
+}
+
+// TestListOutboundNarrowsToOneSender is the filter the desktop opens from a
+// session's row. Without it a window showing one session's sends has to page
+// the whole node and throw most of it away.
+func TestListOutboundNarrowsToOneSender(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	const local = "node_local"
+	mine := queueFrom(t, store, node, local+"/codex:mine", "msg_mine_1")
+	queueFrom(t, store, node, local+"/codex:theirs", "msg_other")
+	mineToo := queueFrom(t, store, node, local+"/codex:mine", "msg_mine_2")
+
+	listed, err := store.ListOutbound(ctx, "codex:mine", 50, OutboundStart)
+	if err != nil {
+		t.Fatalf("ListOutbound() error = %v", err)
+	}
+	got := make([]string, 0, len(listed))
+	for _, message := range listed {
+		got = append(got, message.ID)
+	}
+	if fmt.Sprint(got) != fmt.Sprint([]string{mineToo.ID, mine.ID}) {
+		t.Fatalf("ids = %v; want only codex:mine's two rows, newest first", got)
+	}
+
+	// A session that sent nothing is an empty list, not everything.
+	none, err := store.ListOutbound(ctx, "codex:silent", 50, OutboundStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a session that sent nothing listed %d rows: %#v", len(none), none)
+	}
+
+	// The label is matched on its session half. A row queued under a different
+	// node id is still this session's — the alternative is a listing that
+	// silently empties if the node is ever renamed.
+	queueFrom(t, store, node, "node_was_called_this/codex:mine", "msg_mine_3")
+	if listed, err := store.ListOutbound(ctx, "codex:mine", 50, OutboundStart); err != nil || len(listed) != 3 {
+		t.Fatalf("listed %d rows (err %v); want the session half to decide", len(listed), err)
+	}
+}
+
+// TestListOutboundPagesWithinTheFilter is the composition, which is where the
+// bug would be: a filter and a cursor are each easy to get right alone, and a
+// cursor from a filtered page must resume inside the same filtered list.
+func TestListOutboundPagesWithinTheFilter(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	const local = "node_local"
+
+	want := make([]string, 0, 3)
+	for _, step := range []struct{ from, id string }{
+		{"codex:mine", "msg_a"},
+		{"codex:other", "msg_b"},
+		{"codex:mine", "msg_c"},
+		{"codex:other", "msg_d"},
+		{"codex:mine", "msg_e"},
+	} {
+		queueFrom(t, store, node, local+"/"+step.from, step.id)
+		if step.from == "codex:mine" {
+			want = append([]string{step.id}, want...)
+		}
+	}
+
+	seen := make([]string, 0, 3)
+	cursor := OutboundStart
+	for page := 0; page < 4; page++ {
+		listed, err := store.ListOutbound(ctx, "codex:mine", 2, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range listed {
+			seen = append(seen, message.ID)
+		}
+		if len(listed) < 2 {
+			break
+		}
+		cursor = OutboundCursorAfter(listed[len(listed)-1])
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("paged ids = %v; want %v — nothing repeated, nothing skipped over the rows the filter drops",
+			seen, want)
 	}
 }
