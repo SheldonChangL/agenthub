@@ -42,6 +42,11 @@ const state = {
   // would empty and a refresh knows what to re-read.
   inboxSession: null,
   localNodeId: "",
+  // nodeAutoWake is the node's own -auto-wake flag, which is half of what
+  // waking needs. The per-session box in the audience dialog does nothing
+  // while this is false, and the dialog says so rather than letting the owner
+  // tick it and wait.
+  nodeAutoWake: false,
   localName: "",
   localNameIsChosen: false,
   // Whether a read ever reached the node. It decides what an unreachable read
@@ -324,6 +329,7 @@ async function load({ background = false } = {}) {
     // qualified sender naming this node reads as a peer, and a bare one reads as
     // local — which is the dangerous direction.
     state.localNodeId = overview.node?.id || "";
+    state.nodeAutoWake = Boolean(overview.node?.autoWake);
     state.peers = overview.peers ?? [];
     state.presenceError = overview.presenceError ?? "";
     state.loadedOnce = true;
@@ -955,8 +961,46 @@ function openAudienceModal() {
   for (const id of ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"]) {
     el(id).checked = false;
   }
+  renderAutoWakeNote();
   el("audience-modal").classList.remove("hidden");
   syncAudienceForm();
+}
+
+// What the auto-wake box will actually do, next to the auto-wake box.
+//
+// Waking needs more than the one switch this dialog offers, and every missing
+// piece fails silently: the message lands in the inbox and nothing else
+// happens, which is indistinguishable from the box not having been ticked. The
+// node's own -auto-wake flag is one piece; for a Claude Code session there is
+// also its agenthub-mcp -channel, and beyond that a push that was measured
+// arriving at Claude Code and never being injected (docs/channel-push-not-
+// observed.md). None of it is a reason to disable the box — an owner may
+// reasonably set a session up before restarting the node — so this only says
+// what will happen, and never blocks the dialog.
+function renderAutoWakeNote() {
+  const note = el("audience-autowake-note");
+  note.replaceChildren();
+  if (!state.nodeAutoWake) {
+    note.append(element("div", "muted",
+      "這台節點沒有開自動喚醒（agenthub-node 沒帶 -auto-wake），勾了也不會有任何 session 被叫醒。" +
+      "用 ah service install … --auto-wake 重裝或重啟節點才會生效。"));
+    return;
+  }
+  // Which providers are selected decides which of the remaining obstacles
+  // apply, and a mixed selection gets both sentences: the owner is about to
+  // apply one setting to sessions that will behave differently.
+  const providers = new Set(
+    state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
+  );
+  if (providers.has("codex")) {
+    note.append(element("div", "muted", "Codex session 會由節點透過 app-server 叫醒（真機驗過）。"));
+  }
+  if (providers.has("claude")) {
+    note.append(element("div", "muted",
+      "Claude Code 還需要該 session 的 agenthub-mcp 帶 -channel，" +
+      "而且目前量測到 Claude Code 不會注入這類推送（見 docs/channel-push-not-observed.md）" +
+      "——勾了訊息仍只會躺在收件匣。"));
+  }
 }
 
 function closeAudienceModal() {

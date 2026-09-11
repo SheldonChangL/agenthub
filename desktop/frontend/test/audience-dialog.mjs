@@ -28,7 +28,7 @@ const Overview = async () => ({ sessions: [], nodes: [], node: {} });
 const module = new Function(
   "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
   "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { openAudienceModal, readAudienceForm };",
+  source + "\nreturn { openAudienceModal, readAudienceForm, state };",
 )(document, () => 0, Overview, noop, noop, noop, noop, noop,
   async () => ({ availability: "unknown", candidates: [] }), noop, noop);
 
@@ -54,8 +54,65 @@ for (const [name, value] of Object.entries(module.readAudienceForm())) {
   }
 }
 
+// The dependencies of the auto-wake box, said next to the auto-wake box.
+//
+// Ticking it does nothing unless the node itself was started with -auto-wake,
+// and for a Claude Code session not even then: that path needs the session's
+// own agenthub-mcp -channel, and the push was measured arriving at Claude Code
+// and never being injected. Every one of those failures looks identical from
+// the owner's chair — the message sits in the inbox — so the dialog has to name
+// which one applies before they tick the box and wait.
+const noteText = () => el("audience-autowake-note").textContent;
+
+const withSelection = (autoWake, sessions) => {
+  module.state.nodeAutoWake = autoWake;
+  module.state.sessions = sessions;
+  module.state.selected.clear();
+  for (const session of sessions) module.state.selected.add(session.id);
+  module.openAudienceModal();
+  return noteText();
+};
+
+const codex = { id: "codex:one", provider: "codex" };
+const claude = { id: "claude:two", provider: "claude" };
+
+const nodeOff = withSelection(false, [codex]);
+if (!nodeOff.includes("-auto-wake") || !nodeOff.includes("不會有任何 session 被叫醒")) {
+  failures.push(`a node without -auto-wake is not named: ${nodeOff}`);
+}
+if (nodeOff.includes("app-server")) {
+  failures.push("the node-off note also promised the Codex path would work");
+}
+
+const codexOnly = withSelection(true, [codex]);
+if (!codexOnly.includes("app-server") || !codexOnly.includes("真機驗過")) {
+  failures.push(`an all-Codex selection is not told the wake works: ${codexOnly}`);
+}
+if (codexOnly.includes("Claude Code")) {
+  failures.push("an all-Codex selection was warned about Claude Code");
+}
+
+const claudeOnly = withSelection(true, [claude]);
+if (!claudeOnly.includes("-channel") || !claudeOnly.includes("channel-push-not-observed.md")) {
+  failures.push(`a Claude selection is not told the push was never observed: ${claudeOnly}`);
+}
+if (claudeOnly.includes("app-server")) {
+  failures.push("a Claude-only selection was told the Codex path applies");
+}
+
+const mixed = withSelection(true, [codex, claude]);
+if (!mixed.includes("app-server") || !mixed.includes("channel-push-not-observed.md")) {
+  failures.push(`a mixed selection does not get both sentences: ${mixed}`);
+}
+
+// The box itself stays usable throughout: an owner may set a session up before
+// restarting the node, and a disabled box would take that away.
+if (el("audience-autowake").disabled) {
+  failures.push("the auto-wake box was disabled instead of explained");
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("the audience dialog starts every flag off");
+console.log("the audience dialog starts every flag off and names what auto-wake depends on");
