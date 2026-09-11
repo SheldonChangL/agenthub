@@ -62,14 +62,17 @@ func TestFrontendNeverAssignsUntrustedMarkup(t *testing.T) {
 // provider-supplied status would inject a class name.
 func TestFrontendConstrainsStatusDerivedClasses(t *testing.T) {
 	sources := frontendSources(t)
-	main, ok := sources[filepath.Join("frontend", "src", "main.js")]
-	if !ok {
-		t.Fatal("frontend/src/main.js not found")
+	// Any file under src/: the renderer moved from main.js into app.js when the
+	// frontend became importable, and may move again when it is split further.
+	var all strings.Builder
+	for _, source := range sources {
+		all.WriteString(source)
 	}
-	if !strings.Contains(main, "function statusPillClass") {
+	joined := all.String()
+	if !strings.Contains(joined, "function statusPillClass") {
 		t.Error("statusPillClass is missing; status must not be interpolated into a class name directly")
 	}
-	if !strings.Contains(main, `status === "active" || status === "idle"`) {
+	if !strings.Contains(joined, `status === "active" || status === "idle"`) {
 		t.Error("statusPillClass no longer restricts itself to the known status values")
 	}
 }
