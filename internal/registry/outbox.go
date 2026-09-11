@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
@@ -267,6 +268,36 @@ FROM outbound_messages WHERE id = ?`, messageID)
 	return messages[0], nil
 }
 
+// MaxOutboundErrorBytes bounds what a delivery failure may write into
+// last_error.
+//
+// The reason is peer-supplied text: an ack's Reason field comes over the wire
+// from the other node. Stored whole, one refused message could carry tens of
+// kilobytes, and GET /v1/outbound?limit=200 would then compose a response no
+// reader can take — the same failure the list avoids by carrying no bodies.
+// Bounded here, at the one place the text is written, so the single lookup is
+// covered by the same rule rather than by a second one.
+const MaxOutboundErrorBytes = 512
+
+// truncateReason cuts a failure reason to MaxOutboundErrorBytes, on a rune
+// boundary.
+//
+// Cut by bytes because the bound is on the stored size, but never through the
+// middle of a rune: a reason is shown to a person, and a trailing half-rune
+// renders as a replacement character that reads as corruption rather than as
+// an abridgement. The ellipsis says the text was cut.
+func truncateReason(reason string) string {
+	if len(reason) <= MaxOutboundErrorBytes {
+		return reason
+	}
+	const ellipsis = "\u2026"
+	cut := MaxOutboundErrorBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + ellipsis
+}
+
 // MarkOutbound records the outcome of a delivery attempt.
 //
 // A delivered or refused message is terminal and is never moved back to
@@ -283,7 +314,7 @@ func (r *Registry) MarkOutbound(ctx context.Context, messageID string, state Out
 UPDATE outbound_messages
 SET state = ?, last_error = ?, attempts = attempts + 1, updated_at_ms = ?
 WHERE id = ? AND state = 'pending'`,
-		string(state), reason, time.Now().UTC().UnixMilli(), messageID)
+		string(state), truncateReason(reason), time.Now().UTC().UnixMilli(), messageID)
 	if err != nil {
 		return fmt.Errorf("update outbound message: %w", err)
 	}
@@ -465,7 +496,7 @@ func (r *Registry) RecordAttempt(ctx context.Context, messageID, reason string) 
 UPDATE outbound_messages
 SET attempts = attempts + 1, last_error = ?, updated_at_ms = ?
 WHERE id = ? AND state = 'pending'`,
-		reason, time.Now().UTC().UnixMilli(), messageID); err != nil {
+		truncateReason(reason), time.Now().UTC().UnixMilli(), messageID); err != nil {
 		return fmt.Errorf("record delivery attempt: %w", err)
 	}
 	return nil
