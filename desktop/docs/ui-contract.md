@@ -262,3 +262,16 @@
 **#116 設定端點（尚未合併，先照此設計）**：一個 `GET /v1/node/settings` 回各欄位＋來源，
 一個 `PUT` 部分更新回 `restartRequired: true`；欄位 `peerListen`、`allowLan`、`discover`、
 `treatAsPrivate[]`、`autoWake`。設定頁的主按鈕由「重新安裝（改旗標）」改為「儲存並重啟服務」。
+
+## 8. 新需求（2026-09-11，owner 指定）
+
+**列動作「複製 resume 指令」。** 依 provider 產生指令並寫入剪貼簿：
+
+| provider | 指令 | 依據 |
+|---|---|---|
+| claude | `claude --resume <providerSessionId>` | `adapter/claude.go` 讀 jsonl 的 `sessionId`，與 `claude --resume` 接受的 id 相同（已用本機檔案核對） |
+| codex | `codex resume <providerSessionId>` | thread id |
+
+- 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
+- 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
+- 與「收件匣」「MCP 設定」並排為三個列動作；設計稿與實作都要有。
