@@ -106,6 +106,7 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	// are one decision: a field checked on its own accepts a LAN address while
 	// allowLan stays false.
 	next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
+	requested, withdrawn := withdrawLANListener(requested, next)
 	if _, err := requested.Apply(next).Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
@@ -119,8 +120,40 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.settingsView(saved,
-		"saved; these take effect when the node next starts (ah service restart)"))
+	message := "saved; these take effect when the node next starts (ah service restart)"
+	if withdrawn {
+		message = "saved; allowLan is off, so peerListen went back to " + nodeconfig.DefaultPeerListen +
+			" — the address it held can only be served with allowLan on. " +
+			"These take effect when the node next starts (ah service restart)"
+	}
+	writeJSON(w, http.StatusOK, s.settingsView(saved, message))
+}
+
+// withdrawLANListener takes the peer listener off the network when allowLan is
+// turned off and nothing else was said about it.
+//
+// Without this, closing the switch is refused on exactly the nodes that need
+// it closed: a saved peerListen of 192.168.1.10:7463 makes {"allowLan": false}
+// an invalid configuration, and the refusal tells the owner to pass -allow-lan
+// — the flag they are trying to turn off. The two fields are one decision, and
+// when they conflict the safe direction is the only one: stop serving the
+// network. Widening is never done here; a LAN address still has to be asked
+// for.
+//
+// Both fields are written in the same transaction, so no start can see the
+// half of this that serves a network address with allowLan off.
+func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, bool) {
+	if requested.AllowLAN == nil || *requested.AllowLAN || requested.PeerListen != nil {
+		return requested, false
+	}
+	// A loopback listener is already off the network, whatever its port, and
+	// an owner who chose that port did not ask for it to move.
+	if nodeconfig.ValidateLoopback(next.PeerListen) == nil {
+		return requested, false
+	}
+	address := nodeconfig.DefaultPeerListen
+	requested.PeerListen = &address
+	return requested, true
 }
 
 // settingsView renders the running configuration beside the saved one.

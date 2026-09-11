@@ -250,7 +250,8 @@ and the desktop app can change a setting without reinstalling anything.
 ```sh
 bin/ah settings                                   # what is running, and where each value came from
 bin/ah settings set --allow-lan=true --peer-listen 192.168.1.10:7463
-bin/ah settings set --allow-lan=false             # booleans take =false, so a switch can be closed
+bin/ah settings set --allow-lan=false             # booleans take =false, so a switch can be closed;
+                                                  # a peer listener on a LAN address goes back to 127.0.0.1:7463 with it
 bin/ah settings set --treat-as-private 122.122.0.0/16   # replaces the whole declaration
 bin/ah settings set --clear-private-ranges        # withdraws it
 bin/ah service restart                            # settings apply at startup, so this is the step that matters
