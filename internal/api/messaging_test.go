@@ -1058,6 +1058,27 @@ func TestABlankSessionFilterIsRefusedNotIgnored(t *testing.T) {
 	}
 }
 
+// TestASessionFilterGivenTwiceIsRefused covers the query the CLI already
+// refuses on its own side: `--session` twice is an error there, so `?session=`
+// twice cannot quietly keep the first value and drop the second. Two different
+// sessions asked for is not a listing anyone can read.
+func TestASessionFilterGivenTwiceIsRefused(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	for _, path := range []string{
+		"/v1/outbound?session=codex:a&session=codex:b",
+		"/v1/wakes?session=codex:a&session=codex:b",
+	} {
+		response := perform(t, owner, http.MethodGet, path, nil)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_REQUEST") ||
+			!strings.Contains(response.Body.String(), "more than once") {
+			t.Errorf("GET %s = %d %s; want 400 INVALID_REQUEST naming the repeat",
+				path, response.Code, response.Body.String())
+		}
+	}
+}
+
 // TestTheListRowCarriesEveryFieldTheSingleLookupDoes pins the promise
 // outboundSummary makes in its own comment. The summary is written out by
 // hand, so a field added to registry.OutboundMessage reaches GET

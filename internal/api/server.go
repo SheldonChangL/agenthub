@@ -292,11 +292,6 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, session)
 }
 
-// localSession resolves an address a caller wrote, in either form, to a session
-// on this node.
-//
-// It writes the response and returns false when the address is malformed or
-// names another node, so every session-addressed handler answers the same way.
 // sessionFilter reads the optional `session` query parameter shared by the
 // listing endpoints.
 //
@@ -311,6 +306,11 @@ func sessionFilter(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if !present {
 		return "", true
 	}
+	if len(raw) > 1 {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"session was given more than once; a listing is filtered by one session")
+		return "", false
+	}
 	session := strings.TrimSpace(raw[0])
 	if session == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
@@ -320,6 +320,11 @@ func sessionFilter(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return session, true
 }
 
+// localSession resolves an address a caller wrote, in either form, to a session
+// on this node.
+//
+// It writes the response and returns false when the address is malformed or
+// names another node, so every session-addressed handler answers the same way.
 func (s *Server) localSession(w http.ResponseWriter, raw string) (string, bool) {
 	sessionID, err := address.ResolveLocal(raw, s.node.ID)
 	switch {
