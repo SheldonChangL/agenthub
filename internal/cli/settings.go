@@ -42,7 +42,12 @@ type settingsView struct {
 	Sources         map[string]string   `json:"sources"`
 	Saved           nodeconfig.Settings `json:"saved"`
 	RestartRequired bool                `json:"restartRequired"`
-	Message         string              `json:"message"`
+	// PeerListenWithdrawn says the node started with allowLan off beside a peer
+	// listener it could not serve, and moved that listener back to the default.
+	// The FROM column then reads "default", which is true of the value and
+	// false about the database, where the default is now stored.
+	PeerListenWithdrawn bool   `json:"peerListenWithdrawn"`
+	Message             string `json:"message"`
 }
 
 func (r runner) showSettings(ctx context.Context) error {
@@ -136,7 +141,14 @@ func (r runner) renderSettings(body []byte) error {
 		if next == running[field] {
 			next = ""
 		}
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", nodeconfig.FlagName(field), running[field], view.Sources[field], next)
+		from := view.Sources[field]
+		if field == nodeconfig.SettingPeerListen && view.PeerListenWithdrawn {
+			// Marked rather than given a fourth source name: "withdrawn" is not
+			// a place a value comes from, and the three names are what the API
+			// promises its other readers.
+			from += " (withdrawn)"
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", nodeconfig.FlagName(field), running[field], from, next)
 	}
 	if err := writer.Flush(); err != nil {
 		return err

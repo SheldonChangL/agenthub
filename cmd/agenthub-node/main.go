@@ -236,6 +236,12 @@ func run() error {
 		// Published so the desktop can show what this node is running with,
 		// where each value came from, and what a restart would change.
 		api.WithNodeSettings(settings, sources))
+	if startup.peerListenWithdrawn {
+		// Only this start knows it: by the time the API reads the database, the
+		// withdrawn address is gone and the default sitting there looks like
+		// one nobody ever chose.
+		options = append(options, api.WithPeerListenWithdrawn())
+	}
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := ownerServer(*listenAddress, apiServer.Handler())
 
@@ -479,6 +485,11 @@ type startupSettings struct {
 	settings nodeconfig.Settings
 	sources  map[string]string
 	ranges   nodeconfig.PrivateRanges
+	// peerListenWithdrawn says this start moved the remembered peer listener
+	// back to the default. Carried out of here because the owner's API has to
+	// say it: the provenance map can only call the value a default, which is
+	// true and reads as though nothing were stored.
+	peerListenWithdrawn bool
 }
 
 // applyStartupSettings resolves the configuration, validates it, and only then
@@ -563,7 +574,9 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 			logf("note: -treat-as-private has no effect without -allow-lan; the peer listener stays on loopback")
 		}
 	}
-	return startupSettings{settings: settings, sources: sources, ranges: declaredRanges}, nil
+	return startupSettings{
+		settings: settings, sources: sources, ranges: declaredRanges, peerListenWithdrawn: withdrew,
+	}, nil
 }
 
 // flagSettings collects the remembered settings this command line actually
