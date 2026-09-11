@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRunner records every command and answers from a script keyed on the
@@ -25,8 +26,16 @@ func (f *fakeRunner) Run(_ context.Context, name string, args ...string) (string
 	if answer, ok := f.answers[line]; ok {
 		return answer.out, answer.err
 	}
+	// Unscripted, launchd knows no such job: print fails, which is what the
+	// install path waits for after a bootout.
+	if strings.HasPrefix(line, "launchctl print ") {
+		return "Could not find service", errors.New("exit status 113")
+	}
 	return "", nil
 }
+
+// noSleep keeps the retry loops from taking real time in tests.
+func noSleep(time.Duration) {}
 
 func writeFakeNode(t *testing.T) string {
 	t.Helper()
@@ -104,7 +113,7 @@ func TestInstallOnDarwinWritesPlistThenBootstraps(t *testing.T) {
 	home := t.TempDir()
 	node := writeFakeNode(t)
 	runner := &fakeRunner{}
-	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
 
 	report, err := manager.Install(context.Background(), Config{NodeBinary: node, Args: []string{"--db", "/x/agenthub.db", "--allow-lan"}})
 	if err != nil {
@@ -130,6 +139,7 @@ func TestInstallOnDarwinWritesPlistThenBootstraps(t *testing.T) {
 	}
 	wantCalls := []string{
 		"launchctl bootout gui/501/" + Label,
+		"launchctl print gui/501/" + Label,
 		"launchctl bootstrap gui/501 " + unitPath,
 	}
 	if strings.Join(runner.calls, "\n") != strings.Join(wantCalls, "\n") {
@@ -150,7 +160,7 @@ func TestInstallOnDarwinReportsABootstrapFailureWithTheManagersWords(t *testing.
 	}{
 		"launchctl bootstrap gui/501 " + unitPath: {out: "Bootstrap failed: 5: Input/output error", err: errors.New("exit status 5")},
 	}}
-	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
 	_, err := manager.Install(context.Background(), Config{NodeBinary: node})
 	if err == nil || !strings.Contains(err.Error(), "Input/output error") {
 		t.Fatalf("err = %v, want the manager's own message", err)
@@ -161,7 +171,7 @@ func TestInstallOnLinuxWritesUnitReloadsThenEnables(t *testing.T) {
 	home := t.TempDir()
 	node := writeFakeNode(t)
 	runner := &fakeRunner{}
-	manager := Manager{GOOS: "linux", Home: home, UID: "1000", Runner: runner}
+	manager := Manager{GOOS: "linux", Home: home, UID: "1000", Runner: runner, Sleep: noSleep}
 
 	report, err := manager.Install(context.Background(), Config{NodeBinary: node, Args: []string{"--discover"}})
 	if err != nil {
@@ -192,7 +202,7 @@ func TestInstallOnLinuxWritesUnitReloadsThenEnables(t *testing.T) {
 }
 
 func TestInstallRefusesARelativeOrMissingBinary(t *testing.T) {
-	manager := Manager{GOOS: "darwin", Home: t.TempDir(), UID: "501", Runner: &fakeRunner{}}
+	manager := Manager{GOOS: "darwin", Home: t.TempDir(), UID: "501", Runner: &fakeRunner{}, Sleep: noSleep}
 	if _, err := manager.Install(context.Background(), Config{NodeBinary: "bin/agenthub-node"}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Errorf("relative binary: err = %v", err)
 	}
@@ -211,7 +221,7 @@ func TestUninstallRemovesOnlyTheUnitAndSaysSo(t *testing.T) {
 			home := t.TempDir()
 			node := writeFakeNode(t)
 			runner := &fakeRunner{}
-			manager := Manager{GOOS: goos, Home: home, UID: "501", Runner: runner}
+			manager := Manager{GOOS: goos, Home: home, UID: "501", Runner: runner, Sleep: noSleep}
 			if _, err := manager.Install(context.Background(), Config{NodeBinary: node}); err != nil {
 				t.Fatal(err)
 			}
@@ -261,7 +271,7 @@ func TestUninstallWhenNothingIsLoadedStillRemovesTheUnit(t *testing.T) {
 	}{
 		"launchctl bootout gui/501/" + Label: {out: "Boot-out failed: 3: No such process", err: errors.New("exit status 3")},
 	}}
-	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
 	if _, err := manager.Uninstall(context.Background()); err != nil {
 		t.Fatalf("uninstall with nothing loaded: %v", err)
 	}
@@ -285,7 +295,7 @@ func TestStatusReadsTheManagersAnswer(t *testing.T) {
 	}{
 		"launchctl print gui/501/" + Label: {out: "gui/501/local.agenthub.node = {\n\tactive count = 1\n\tpath = /x\n\tstate = running\n\n\tprogram = /x/agenthub-node\n\tpid = 4242\n}"},
 	}}
-	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
 	status, err := manager.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +309,7 @@ func TestStatusReadsTheManagersAnswer(t *testing.T) {
 		err error
 	}{
 		"systemctl --user show " + UnitName + " -p ActiveState -p MainPID": {out: "ActiveState=active\nMainPID=777\n"},
-	}}}
+	}}, Sleep: noSleep}
 	status, err = linux.Status(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -310,7 +320,7 @@ func TestStatusReadsTheManagersAnswer(t *testing.T) {
 }
 
 func TestUnsupportedPlatformIsRefusedNotGuessed(t *testing.T) {
-	manager := Manager{GOOS: "windows", Home: t.TempDir(), UID: "0", Runner: &fakeRunner{}}
+	manager := Manager{GOOS: "windows", Home: t.TempDir(), UID: "0", Runner: &fakeRunner{}, Sleep: noSleep}
 	if _, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("install: err = %v", err)
 	}
@@ -321,4 +331,84 @@ func TestUnsupportedPlatformIsRefusedNotGuessed(t *testing.T) {
 	if err != nil || status.Supported {
 		t.Errorf("status = %+v, %v; want unsupported without error", status, err)
 	}
+}
+
+// The reinstall that the desktop app hit: bootout returns while launchd is
+// still tearing the job down, and an immediate bootstrap fails with EIO.
+func TestInstallOnDarwinWaitsForTheOldJobAndRetriesBootstrap(t *testing.T) {
+	home := t.TempDir()
+	node := writeFakeNode(t)
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	runner := &sequencedRunner{
+		print:     []error{nil, nil, errors.New("exit status 113")}, // still loaded twice, then gone
+		bootstrap: []error{errors.New("exit status 5"), nil},        // EIO once, then fine
+	}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
+	if _, err := manager.Install(context.Background(), Config{NodeBinary: node}); err != nil {
+		t.Fatalf("install should have outlasted the teardown: %v", err)
+	}
+	want := []string{
+		"launchctl bootout gui/501/" + Label,
+		"launchctl print gui/501/" + Label,
+		"launchctl print gui/501/" + Label,
+		"launchctl print gui/501/" + Label,
+		"launchctl bootstrap gui/501 " + unitPath,
+		"launchctl bootstrap gui/501 " + unitPath,
+	}
+	if strings.Join(runner.calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(runner.calls, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A bootstrap failure that is not EIO is not retried: it is a real answer.
+func TestInstallOnDarwinDoesNotRetryAnUnrelatedBootstrapFailure(t *testing.T) {
+	runner := &sequencedRunner{bootstrap: []error{errors.New("exit status 37")}, bootstrapOut: "Bootstrap failed: 37: Operation already in progress"}
+	manager := Manager{GOOS: "darwin", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+	if _, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)}); err == nil {
+		t.Fatal("a non-EIO bootstrap failure was swallowed")
+	}
+	bootstraps := 0
+	for _, call := range runner.calls {
+		if strings.HasPrefix(call, "launchctl bootstrap") {
+			bootstraps++
+		}
+	}
+	if bootstraps != 1 {
+		t.Errorf("bootstrap attempted %d times, want 1", bootstraps)
+	}
+}
+
+// sequencedRunner answers launchctl print and bootstrap from queues, one
+// answer per call, and treats an exhausted queue as success.
+type sequencedRunner struct {
+	calls        []string
+	print        []error
+	bootstrap    []error
+	bootstrapOut string
+}
+
+func (s *sequencedRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	line := strings.Join(append([]string{name}, args...), " ")
+	s.calls = append(s.calls, line)
+	switch {
+	case strings.HasPrefix(line, "launchctl print "):
+		if len(s.print) == 0 {
+			return "", errors.New("exit status 113")
+		}
+		err := s.print[0]
+		s.print = s.print[1:]
+		return "", err
+	case strings.HasPrefix(line, "launchctl bootstrap "):
+		if len(s.bootstrap) == 0 {
+			return "", nil
+		}
+		err := s.bootstrap[0]
+		s.bootstrap = s.bootstrap[1:]
+		out := s.bootstrapOut
+		if err != nil && out == "" {
+			out = "Bootstrap failed: 5: Input/output error"
+		}
+		return out, err
+	}
+	return "", nil
 }

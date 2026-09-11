@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Label names the service on both platforms. launchd sees it as the job
@@ -66,6 +67,8 @@ type Manager struct {
 	UID string
 	// Runner drives launchctl or systemctl.
 	Runner Runner
+	// Sleep replaces real waiting between retries; nil means time.Sleep.
+	Sleep func(time.Duration)
 }
 
 // Report says what an install or uninstall did, in the order it did it.
@@ -142,8 +145,26 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		// Best effort: a job that is not loaded makes bootout fail, and that
 		// is the common case on a first install.
 		_, _ = m.Runner.Run(ctx, "launchctl", "bootout", domain+"/"+Label)
-		if out, err := m.Runner.Run(ctx, "launchctl", "bootstrap", domain, unitPath); err != nil {
-			return report, fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(out))
+		// bootout returns before the job is gone. A bootstrap that lands while
+		// the old registration is still being torn down fails with EIO
+		// ("Input/output error"), which is what a reinstall from the desktop
+		// app hit. So wait for launchd to stop knowing the job, then retry the
+		// bootstrap a few times rather than once.
+		m.waitUntilUnloaded(ctx, domain)
+		var out string
+		var bootstrapErr error
+		for attempt := 0; attempt < 5; attempt++ {
+			out, bootstrapErr = m.Runner.Run(ctx, "launchctl", "bootstrap", domain, unitPath)
+			if bootstrapErr == nil {
+				break
+			}
+			if !strings.Contains(out, "Input/output error") && !strings.Contains(out, "already loaded") {
+				break
+			}
+			m.pause(ctx, 500*time.Millisecond)
+		}
+		if bootstrapErr != nil {
+			return report, fmt.Errorf("launchctl bootstrap: %w: %s", bootstrapErr, strings.TrimSpace(out))
 		}
 		report.Steps = append(report.Steps, "registered with launchd as "+Label+" (starts at login, restarted if it exits)")
 		report.Notes = append(report.Notes, "log: "+config.LogPath)
@@ -246,6 +267,31 @@ var (
 	launchdPID = regexp.MustCompile(`\bpid = (\d+)`)
 	systemdPID = regexp.MustCompile(`MainPID=(\d+)`)
 )
+
+// waitUntilUnloaded polls launchctl until the job is no longer known, for a
+// bounded time. launchctl print fails once the job is gone; that failure is
+// the signal.
+func (m Manager) waitUntilUnloaded(ctx context.Context, domain string) {
+	for attempt := 0; attempt < 20; attempt++ {
+		if _, err := m.Runner.Run(ctx, "launchctl", "print", domain+"/"+Label); err != nil {
+			return
+		}
+		m.pause(ctx, 250*time.Millisecond)
+	}
+}
+
+// pause sleeps unless the context ends first. Sleep is a field so the tests
+// do not wait; nil means real time.
+func (m Manager) pause(ctx context.Context, duration time.Duration) {
+	if m.Sleep != nil {
+		m.Sleep(duration)
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(duration):
+	}
+}
 
 // notLoaded recognises the manager saying there was nothing to stop.
 func notLoaded(out string, err error) bool {

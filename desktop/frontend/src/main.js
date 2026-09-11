@@ -11,6 +11,10 @@ import {
   ClosePairing,
   Inbox,
   ClearInbox,
+  ServiceStatus,
+  InstallService,
+  UninstallService,
+  LocalAddresses,
 } from "../wailsjs/go/main/App";
 
 const state = {
@@ -271,10 +275,12 @@ async function load() {
   state.presenceError = overview.presenceError ?? "";
 
   if (!overview.reachable) {
-    banner(`節點未連線：${overview.error || "unknown error"}。請先啟動 agenthub-node。`);
+    banner(`節點未連線：${overview.error || "unknown error"}。下面可以把它安裝成背景服務。`);
   } else {
     hideBanner();
   }
+  state.nodeReachable = Boolean(overview.reachable);
+  loadService().catch(() => {});
 
   // Drop selections that no longer exist after a rescan.
   const alive = new Set(state.sessions.map((s) => s.id));
@@ -1110,6 +1116,163 @@ el("select-all").onchange = (event) => {
   render();
 };
 
+/* ---------------- background service ---------------- */
+
+// The node should belong to the operating system, not to this window: a node
+// that dies with a terminal drops messages while the sender is told "queued".
+// This panel is the desktop face of `ah service`; the app runs that command
+// rather than reimplementing it, so the two cannot disagree.
+
+let serviceRequest = 0;
+
+async function loadService() {
+  const sequence = ++serviceRequest;
+  const status = await ServiceStatus();
+  if (sequence !== serviceRequest) return;
+  state.service = status;
+  renderService();
+}
+
+function renderService() {
+  const panel = el("service-panel");
+  const status = state.service;
+  if (!status) return;
+  panel.classList.remove("hidden");
+  const line = el("service-line");
+  const open = el("service-open");
+  const uninstall = el("service-uninstall");
+  line.className = "line";
+  if (status.toolError) {
+    line.textContent = `找不到 ah，無法管理背景服務：${status.toolError}`;
+    line.classList.add("warn");
+    open.classList.add("hidden");
+    uninstall.classList.add("hidden");
+    return;
+  }
+  if (!status.supported) {
+    line.textContent = "這個作業系統還不支援背景服務（目前支援 macOS 與 Linux）。";
+    open.classList.add("hidden");
+    uninstall.classList.add("hidden");
+    return;
+  }
+  if (status.installed && status.running) {
+    line.textContent = `背景服務：已安裝、正在執行（pid ${status.pid}）· ${status.unitPath}`;
+    line.classList.add("ok");
+    open.textContent = "重新安裝（改旗標）…";
+  } else if (status.installed) {
+    line.textContent = `背景服務：已安裝但沒有在執行 · 看 log：${status.logHint}`;
+    line.classList.add("warn");
+    open.textContent = "重新安裝…";
+  } else if (state.nodeReachable) {
+    line.textContent = "節點在執行，但不是背景服務：關掉啟動它的視窗或終端機，它就停了，送到這台的訊息會等在對方那邊。";
+    line.classList.add("warn");
+    open.textContent = "安裝為背景服務…";
+  } else {
+    line.textContent = "節點沒有在執行，也沒有安裝成背景服務。";
+    line.classList.add("warn");
+    open.textContent = "安裝為背景服務…";
+  }
+  open.classList.remove("hidden");
+  uninstall.classList.toggle("hidden", !status.installed);
+  // The form opens itself only when nothing is running: that is the moment
+  // the owner has nothing else to do here.
+  if (!state.nodeReachable && !status.installed && !state.serviceFormTouched) openServiceForm().catch(() => {});
+}
+
+async function openServiceForm() {
+  state.serviceFormTouched = true;
+  const form = el("service-form");
+  form.classList.remove("hidden");
+  el("service-output").classList.add("hidden");
+  const select = el("service-address");
+  // Rebuilt each time: an adapter plugged in since the last open should be
+  // offered, and a stale one should not.
+  while (select.options.length > 1) select.remove(1);
+  let addresses = [];
+  try {
+    addresses = (await LocalAddresses()) ?? [];
+  } catch (error) {
+    banner(`讀取本機位址失敗：${error}`);
+  }
+  for (const item of addresses) {
+    const option = document.createElement("option");
+    option.value = `${item.address}:7463`;
+    option.textContent = `${item.address}:7463 · ${item.interface}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
+    option.dataset.private = item.private ? "1" : "";
+    option.dataset.address = item.address;
+    select.append(option);
+  }
+  syncServiceForm();
+}
+
+// A non-loopback address needs --allow-lan, and a non-private one needs the
+// range declared: filled in for the owner, and said out loud, rather than
+// left for ah to refuse.
+function syncServiceForm() {
+  const select = el("service-address");
+  const option = select.options[select.selectedIndex];
+  const lan = Boolean(option && option.value);
+  el("service-allow-lan").checked = lan;
+  el("service-lan-note").classList.toggle("hidden", !lan);
+  const privateField = el("service-private");
+  if (option && option.value && option.dataset.private === "" && !privateField.value.trim()) {
+    const parts = option.dataset.address.split(".");
+    privateField.value = `${parts[0]}.${parts[1]}.0.0/16`;
+  }
+}
+
+function readServiceForm() {
+  return {
+    dbPath: el("service-db").value.trim(),
+    peerListen: el("service-address").value,
+    allowLan: el("service-allow-lan").checked,
+    discover: el("service-discover").checked,
+    treatAsPrivate: el("service-private").value.split(/[\s,]+/).map((v) => v.trim()).filter(Boolean),
+    autoWake: el("service-autowake").checked,
+    displayName: el("service-name").value.trim(),
+  };
+}
+
+function showServiceOutput(result) {
+  const output = el("service-output");
+  output.textContent = `$ ${result.command}\n${result.output}`;
+  output.classList.remove("hidden");
+}
+
+async function installService() {
+  await withBusy("安裝背景服務", async () => {
+    let result;
+    try {
+      result = await InstallService(readServiceForm());
+    } catch (error) {
+      // ah's own words are the useful part of a failure; the banner is too
+      // small for them, so they go where the output goes.
+      const output = el("service-output");
+      output.textContent = String(error);
+      output.classList.remove("hidden");
+      throw error;
+    }
+    showServiceOutput(result);
+    el("service-form").classList.add("hidden");
+    banner("背景服務已安裝。", true);
+    await load();
+  });
+}
+
+async function uninstallService() {
+  const ok = window.confirm(
+    "移除背景服務？\n\n節點會停止，登入時不再自動啟動。這台機器的節點身分（node.key）與資料庫都會留著，" +
+      "再安裝就是同一個節點、配對不用重做。"
+  );
+  if (!ok) return;
+  await withBusy("移除背景服務", async () => {
+    const result = await UninstallService();
+    showServiceOutput(result);
+    banner("背景服務已移除；節點已停止。", true);
+    await load();
+  });
+}
+
 for (const segment of document.querySelectorAll("#view-switch span")) {
   segment.onclick = () => {
     state.view = segment.dataset.view;
@@ -1292,3 +1455,10 @@ setInterval(() => {
 load()
   .then(loadPairing)
   .catch((error) => banner(`載入失敗：${error}`));
+
+el("service-refresh").onclick = () => loadService().catch((error) => banner(`讀取背景服務狀態失敗：${error}`));
+el("service-open").onclick = () => openServiceForm().catch((error) => banner(`開啟表單失敗：${error}`));
+el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
+el("service-address").onchange = syncServiceForm;
+el("service-install").onclick = installService;
+el("service-uninstall").onclick = uninstallService;

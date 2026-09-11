@@ -516,6 +516,16 @@ wails build   # produces build/bin/agenthub-desktop.app
 
 The app requires a running node and talks to it over the same local HTTP API as the CLI. It refuses non-loopback node URLs, because the owner's API has no authentication and stays on loopback for that reason.
 
+When the node is not running, the panel under the header offers to install it
+as a background service, with the node's flags as form fields: the address other
+machines connect to is picked from this machine's interfaces, `--allow-lan` is
+ticked when that address is not loopback and explained as the one switch that
+lets anything leave the machine, and a non-private address pre-fills
+`--treat-as-private`. When the node is running, the same panel says whether it
+is a service and offers to remove it. Both buttons run `ah service`, so the
+app and the CLI cannot disagree; the app looks for `ah` beside itself, in the
+source tree, then on `PATH`, and `AGENTHUB_AH` names it explicitly.
+
 ## Privacy model
 
 `ah list` is an owner-local view and can show private sessions. Publishing
