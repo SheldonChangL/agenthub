@@ -554,7 +554,18 @@ function renderCandidates() {
   }
   const candidates = pairing.candidates ?? [];
   if (candidates.length === 0) {
-    rows.append(element("div", "empty", "目前沒有看到任何機器在廣播。"));
+    // The node filters paired nodes out of this list on purpose
+    // (internal/discovery/candidates.go), so an empty list does not mean the
+    // same thing in both directions. On 2026-09-10 two machines had pairing
+    // mode open, both showed this region empty, and the owner read it as
+    // broken — they were already paired with each other, which is precisely
+    // why neither appeared. So the sentence says which of the two it is, and
+    // where the missing machine actually is.
+    rows.append(element("div", "empty", state.nodes.length > 0
+      ? "沒有看到任何還沒配對的機器在廣播。已經配對過的節點不會出現在這份清單裡——" +
+        "它們在上方的「已配對節點」。"
+      : "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，" +
+        "所以這份清單空白就是真的什麼都沒收到。"));
   }
   for (const candidate of candidates) {
     rows.append(candidateRow(candidate));
