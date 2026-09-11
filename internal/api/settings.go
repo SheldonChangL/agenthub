@@ -120,7 +120,14 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	// validated is what gets stored: two writes arriving together would
 	// otherwise each check against the state before the other and commit a
 	// combination nobody validated, which the next start refuses.
-	var withdrawn bool
+	// The address the withdrawal took away, kept because the message names it:
+	// the owner asked about allowLan and the listener moved, and a sentence
+	// that does not say which address was given up leaves them to guess what
+	// this node was serving.
+	var withdrawnFrom string
+	// What this write leaves in effect, which is what a refusal has to be
+	// explained in terms of — see explainRefusal.
+	var effective nodeconfig.Settings
 	var invalid error
 	saved, err := s.store.UpdateNodeSettings(r.Context(),
 		func(stored nodeconfig.Partial) (nodeconfig.Partial, error) {
@@ -137,15 +144,19 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 			// LAN address while allowLan stays false.
 			next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
 			writing, closed := withdrawLANListener(requested, next)
-			if _, err := writing.Apply(next).Validate(); err != nil {
+			effective = writing.Apply(next)
+			if _, err := effective.Validate(); err != nil {
 				invalid = err
 				return nodeconfig.Partial{}, err
 			}
-			withdrawn = closed
+			withdrawnFrom = ""
+			if closed {
+				withdrawnFrom = next.PeerListen
+			}
 			return writing, nil
 		})
 	if invalid != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", explainRefusal(requested, invalid))
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", explainRefusal(requested, effective, invalid))
 		return
 	}
 	if err != nil {
@@ -153,10 +164,13 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	message := "saved; these take effect when the node next starts (ah service restart)"
-	if withdrawn {
-		message = "saved; allowLan is off, so peerListen went back to " + nodeconfig.DefaultPeerListen +
-			" — the address it held can only be served with allowLan on. " +
-			"These take effect when the node next starts (ah service restart)"
+	if withdrawnFrom != "" {
+		// The same reason the node's own start-up log gives for the same
+		// withdrawal, from the same function, with both addresses named: the
+		// one given up and the one now in its place.
+		message = "saved; " + nodeconfig.WithdrawalReason(nodeconfig.SettingAllowLAN, withdrawnFrom) +
+			"; peerListen went back to " + nodeconfig.DefaultPeerListen +
+			". These take effect when the node next starts (ah service restart)"
 	}
 	writeJSON(w, http.StatusOK, s.settingsView(saved, message))
 }
@@ -201,21 +215,48 @@ func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings)
 	return requested, true
 }
 
-// explainRefusal answers the caller in the terms of what they actually sent.
+// explainRefusal answers the caller in the terms of the configuration this
+// write would leave behind.
 //
 // The validator speaks to a command line: its refusal of a LAN listener ends
-// "pass -allow-lan to serve paired peers on this network" — which is the switch
-// this very request is turning off. A caller who sent both halves reads that as
-// the API contradicting them, with nothing to say that the two fields were
-// judged as one decision. The original message is kept: it is the node's own,
-// and it names the address.
-func explainRefusal(requested nodeconfig.Partial, err error) string {
-	if requested.AllowLAN != nil && !*requested.AllowLAN && requested.PeerListen != nil &&
+// "pass -allow-lan to serve paired peers on this network" — a flag, and on the
+// write that closes that very switch it reads as the API contradicting the
+// request. A caller who sent a LAN address needs to be told the two fields are
+// one decision, and which one to send differently.
+//
+// Judged on `effective` — allowLan as it stands after this write — rather than
+// on what the request happened to mention, which is the same value the
+// withdrawal is decided on. A request that names only a LAN peerListen against
+// a stored `allowLan: false` says nothing about the switch and is refused by
+// it; explained from the request alone, that refusal fell back to the flag
+// wording about a switch the caller never touched. The validator's own message
+// is kept after the colon: it is the node's, and it names the address.
+func explainRefusal(requested nodeconfig.Partial, effective nodeconfig.Settings, err error) string {
+	if !effective.AllowLAN && requested.PeerListen != nil &&
 		nodeconfig.ValidateLoopback(*requested.PeerListen) != nil {
-		return "this write turns allowLan off, so peerListen has to be a loopback address, " +
-			"and it was sent as " + *requested.PeerListen + ": " + err.Error()
+		return "allowLan is off, so peerListen has to be a loopback address, and it was sent as " +
+			*requested.PeerListen + "; to serve that address, send allowLan true in the same write: " +
+			err.Error()
 	}
 	return err.Error()
+}
+
+// withdrawalStands reports whether what this start withdrew is still what the
+// database holds.
+//
+// The withdrawal is a fact about this process, but the sentence it justifies is
+// about the stored configuration — "…and 127.0.0.1:7463 was stored in its
+// place" — and that stays true only until somebody writes. An owner who turns
+// allowLan back on and saves a LAN listener has undone the withdrawal, in this
+// same process, through this same endpoint; going on saying the default was
+// stored would contradict the `saved` block of the very response carrying it.
+//
+// So the fact expires with its subject: either of the two halves moving away
+// from what the withdrawal left behind ends it, and the boolean goes with the
+// sentence, because a desktop rendering its own wording from the flag would
+// print the same stale claim.
+func (s *Server) withdrawalStands(next nodeconfig.Settings) bool {
+	return s.peerListenWithdrawn && !next.AllowLAN && next.PeerListen == nodeconfig.DefaultPeerListen
 }
 
 // withdrawnAtStart is the sentence a reader gets when nothing else was said.
@@ -223,10 +264,7 @@ func explainRefusal(requested nodeconfig.Partial, err error) string {
 // Only on a read: after a write, the message is about the write, and the
 // boolean beside it still carries this fact for anything that wants to render
 // it itself.
-func (s *Server) withdrawnAtStart() string {
-	if !s.peerListenWithdrawn {
-		return ""
-	}
+func withdrawnAtStart() string {
 	return "peerListen reads as a default because it was withdrawn at start-up: allowLan is off, so the " +
 		"address this node had remembered could not be served, and " + nodeconfig.DefaultPeerListen +
 		" was stored in its place"
@@ -239,15 +277,16 @@ func (s *Server) settingsView(saved nodeconfig.Partial, message string) settings
 	// prediction of the node's own behaviour rather than a second opinion.
 	next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, saved, nodeconfig.DefaultSettings())
 	running := s.settings.settings
-	if message == "" {
-		message = s.withdrawnAtStart()
+	withdrawn := s.withdrawalStands(next)
+	if message == "" && withdrawn {
+		message = withdrawnAtStart()
 	}
 	return settingsResponse{
 		Settings:            withRanges(running),
 		Sources:             s.settings.sources,
 		Saved:               withRanges(next),
 		RestartRequired:     !sameSettings(running, next),
-		PeerListenWithdrawn: s.peerListenWithdrawn,
+		PeerListenWithdrawn: withdrawn,
 		Message:             message,
 	}
 }
