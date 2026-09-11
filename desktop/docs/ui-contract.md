@@ -299,17 +299,24 @@
 若新設計把 modal 改成抽屜，`.modal-card .warning` 這條選擇器仍要存在（可以是共用規則），
 或同步修改 `frontend_test.go` 並在 PR 說明寫出理由。
 
-### 7.6 #116 設定端點（#129、#134 已合併，main `daff181`；對方轉述，實作前對照 internal/api 原始碼）
+### 7.6 #116 設定端點（#129、#134、#138 已合併，main `1fc4ad5`；對方轉述，實作前對照 internal/api 原始碼）
 
 - `GET /v1/node/settings` → `{settings:{peerListen, allowLan, discover, treatAsPrivate[], autoWake}, sources:{欄位→"flag"|"remembered"|"default"}, saved:{同 settings 形狀，DB 值}, restartRequired, peerListenWithdrawn?}`。
 - `PUT /v1/node/settings` 收任意子集；`treatAsPrivate` 一律陣列，`[]` 代表撤回。回同形狀加 `message`，`restartRequired: true`（設定只在啟動時生效）。
-  錯誤：`400 INVALID_REQUEST`（帶 node 的啟動訊息）、`409 SETTINGS_UNAVAILABLE`、`500 REGISTRY_ERROR`。
+  錯誤：`400 INVALID_REQUEST`、`409 SETTINGS_UNAVAILABLE`、`500 REGISTRY_ERROR`。
+  400 的訊息是單句、無旗標用語，**可直接呈現給使用者**：
+  「allowLan is off, so peerListen has to be a loopback address, and it was sent as \<addr\>;
+  to serve that address, send allowLan true in the same write」。
 - **UI 規則（三條，都會咬人）**：
   1. **提交後一律用回應刷新整個表單**，不要只更新送出的欄位。撤回判斷用的是「合併後生效」的 allowLan：
      stored 已是 `allowLan:false` 而 peerListen 仍是 LAN 位址時，**任何一次 PUT（即使只改 discover）**都會順手把
      peerListen 收回 `127.0.0.1:7463`，`message` 會講。
-  2. `peerListenWithdrawn: true` 是可選欄位（`omitempty`），只在「這次啟動或這次 PUT 把 LAN listener 收回 loopback」
-     之後、下一次啟動之前出現。**不出現就是沒有撤回**，不要當成 false 以外的意思。
+  2. `peerListenWithdrawn: true` 是可選欄位（`omitempty`）。**不出現就是沒有撤回**，不要當成 false 以外的意思。
+     存續規則（#138 定案）：只要啟動時撤回過、且 `saved.peerListen` 仍是預設 `127.0.0.1:7463`，就一直帶著，
+     **包含 owner 之後把 `allowLan` 開回 true**。那時 `message` 換成第二種措辭
+     （「peerListen still reads as a default: the address this node had remembered was withdrawn at start-up
+     and is not recoverable — send it again」），可直接顯示給使用者，這正是提醒重填位址的時機。
+     owner 把 peerListen 改成任何別的 loopback 位址（含 `localhost:7463`）→ 旗標與句子都消失。
   3. `sources.peerListen === "default"` 不代表「尚未設定」（撤回後是 default，下次啟動變 remembered）。
 - 已知待修（#135，不擋前端）：同一 process 內 owner 又把 LAN 寫回去時，GET 的 `message` 說明字串會過期。
   **顯示 `message` 時以 `saved` 欄位為準**，不要單看字串。
@@ -327,3 +334,5 @@
   客端過濾與自動往前讀已移除，空清單直接顯示「這個 session 還沒有送出過訊息」。
 - 邊角（#127 待修）：`session` 只給空白會被 trim 成空、退回全節點清單（`/v1/wakes` 同）；前端送參數前自己 trim，空就不要帶。
   `outbound_test.go` 的 `TestOutboundForwardsTheSessionFilterAndDropsABlankOne` 釘住這個行為。
+- `session` 給兩次是 `400`（「session was given more than once」，#139）。本機 client 用 `url.Values.Set`，
+  一個鍵只會有一個值，碰不到這個錯；改成 `Add` 才會。
