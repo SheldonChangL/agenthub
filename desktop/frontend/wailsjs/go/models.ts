@@ -229,6 +229,7 @@ export namespace main {
 	    createdAt: any;
 	    publicKey?: string;
 	    fingerprint?: string;
+	    autoWake: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new NodeIdentity(source);
@@ -242,6 +243,7 @@ export namespace main {
 	        this.createdAt = this.convertValues(source["createdAt"], null);
 	        this.publicKey = source["publicKey"];
 	        this.fingerprint = source["fingerprint"];
+	        this.autoWake = source["autoWake"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
