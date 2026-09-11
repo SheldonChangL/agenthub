@@ -408,6 +408,88 @@ func (c *client) clearInbox(ctx context.Context, sessionID string) (int, error) 
 	return removed.Removed, nil
 }
 
+// OutboundRecord is one message this node has queued for a peer.
+//
+// No body: the listing answers "where did my messages go", and a page of
+// bodies is both more than that needs and enough to pass this app's response
+// cap — which is how the answer becomes unreadable exactly when the outbox is
+// the thing being diagnosed. `To` and `From` are session labels somebody chose
+// and are rendered as text, like every other label from off this machine.
+type OutboundRecord struct {
+	ID                string    `json:"id"`
+	DestinationNodeID string    `json:"destinationNodeId"`
+	To                string    `json:"to"`
+	From              string    `json:"from,omitempty"`
+	State             string    `json:"state"`
+	Attempts          int       `json:"attempts"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	// LastError is the node's own words for why the last attempt did not
+	// settle it. Carried whole rather than summarised here: "nowhere to
+	// deliver to" and "the peer refused" send an owner to different places.
+	LastError string `json:"lastError,omitempty"`
+}
+
+// listOutbound reads what this node has queued for peers, newest first.
+func (c *client) listOutbound(ctx context.Context, limit int) ([]OutboundRecord, error) {
+	body, err := c.request(ctx, http.MethodGet, fmt.Sprintf("/v1/outbound?limit=%d", limit), nil)
+	if err != nil {
+		return nil, err
+	}
+	var page struct {
+		Messages []OutboundRecord `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, fmt.Errorf("decode outbound list: %w", err)
+	}
+	if page.Messages == nil {
+		page.Messages = []OutboundRecord{}
+	}
+	return page.Messages, nil
+}
+
+// WakeRecord is one time a message could have started a turn on this node,
+// including the times a limit stopped it.
+//
+// The refusals are the reason this is worth showing at all: an owner seeing
+// nothing cannot otherwise tell a quiet node from a limit doing its job.
+type WakeRecord struct {
+	ID           string `json:"id"`
+	MessageID    string `json:"messageId"`
+	SourceNodeID string `json:"sourceNodeId,omitempty"`
+	// SourceSession is the label the sender chose for itself. Only the node id
+	// was proven.
+	SourceSession      string    `json:"sourceSession,omitempty"`
+	DestinationSession string    `json:"destinationSession"`
+	Hops               int       `json:"hops"`
+	Outcome            string    `json:"outcome"`
+	Detail             string    `json:"detail,omitempty"`
+	At                 time.Time `json:"at"`
+}
+
+// listWakes reads the wake trail, newest first. An empty session means every
+// session on this node.
+func (c *client) listWakes(ctx context.Context, limit int, session string) ([]WakeRecord, error) {
+	path := fmt.Sprintf("/v1/wakes?limit=%d", limit)
+	if session != "" {
+		path += "&session=" + url.QueryEscape(session)
+	}
+	body, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Wakes []WakeRecord `json:"wakes"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode wake trail: %w", err)
+	}
+	if decoded.Wakes == nil {
+		decoded.Wakes = []WakeRecord{}
+	}
+	return decoded.Wakes, nil
+}
+
 func (c *client) node(ctx context.Context) (NodeIdentity, error) {
 	body, err := c.request(ctx, http.MethodGet, "/v1/node", nil)
 	if err != nil {

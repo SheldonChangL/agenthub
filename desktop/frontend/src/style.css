@@ -621,6 +621,94 @@ table.peer-sessions td.mono {
   unicode-bidi: isolate;
 }
 
+/* ---------- records: sent, and woken ---------- */
+
+/* Rows of what left this machine and what it was made to do. Each one carries
+   a state and, when there is one, the node's own words for the last failure —
+   which is a string from somewhere else and so gets the same wrapping and the
+   same cap a message body gets. */
+#records-body {
+  max-height: 52vh;
+  overflow-y: auto;
+  margin: 10px 0;
+}
+
+.recrow {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+/* A session label inside the line may be right-to-left and would otherwise
+   reorder the words around it. */
+.recline span {
+  unicode-bidi: isolate;
+}
+
+.recrow .sender {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.recrow .sender span {
+  unicode-bidi: isolate;
+}
+
+.recrow .sender .fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text);
+}
+
+/* The outcome, coloured. This is the whole reason the dialog exists: a refused
+   message and a delivered one must not read the same at a glance. Only a fixed
+   set of values reaches these class names. */
+.recstate {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+.recstate.pending { color: var(--muted); }
+.recstate.delivered { color: var(--green); border-color: rgba(53, 192, 122, 0.4); }
+.recstate.refused { color: var(--red); border-color: rgba(229, 84, 75, 0.4); }
+.recstate.unknown { color: var(--amber); border-color: rgba(224, 163, 62, 0.4); }
+
+/* The failure verbatim. Long, arbitrary, and from off this machine. */
+.recerror {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--red);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 20vh;
+  overflow-y: auto;
+}
+
+/* A button that reads as the link it is: it navigates between two dialogs
+   rather than changing anything. */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #58a6ff);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
 /* ---------- background service ---------- */
 
 /* Sits under the banner, above the toolbar: it answers the banner's "請先啟動

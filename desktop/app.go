@@ -353,6 +353,66 @@ func (a *App) ClearInbox(sessionID string) ClearedInbox {
 	return ClearedInbox{Removed: removed}
 }
 
+// OutboundView is what this node has queued for peers, for the records dialog.
+//
+// Its own answer, separate from the wake trail's, because they are two reads
+// of two endpoints and one failing must not blank the other. The error is
+// carried rather than thrown: the dialog is fixed over the window, so a
+// failure reported in a banner is one nobody sees.
+type OutboundView struct {
+	Messages []OutboundRecord `json:"messages"`
+	Error    string           `json:"error,omitempty"`
+}
+
+// WakesView is the wake trail, optionally for one session.
+type WakesView struct {
+	SessionID string       `json:"sessionId,omitempty"`
+	Wakes     []WakeRecord `json:"wakes"`
+	Error     string       `json:"error,omitempty"`
+}
+
+// recordsPageSize is how many rows one read asks for. Fifty, the node's own
+// default: these rows carry no message bodies, so the reason the inbox reads
+// ten at a time does not apply.
+const recordsPageSize = 50
+
+// Outbound reads what this node has queued for peers.
+//
+// The GUI could see sessions and inboxes and nothing about what left this
+// machine: pending, delivered or refused was `ah outbound` only, and a message
+// sitting refused is the failure an owner most needs to see and least likely
+// to go looking for.
+func (a *App) Outbound() OutboundView {
+	view := OutboundView{Messages: []OutboundRecord{}}
+	activeClient, _ := a.current()
+	messages, err := activeClient.listOutbound(a.ctx, recordsPageSize)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.Messages = messages
+	return view
+}
+
+// Wakes reads what has started a turn on this node with nobody watching. An
+// empty sessionID means every session.
+//
+// The refusals come with it. An owner who sees nothing needs to know whether
+// the node was quiet or a rate limit held something back, and those call for
+// different actions.
+func (a *App) Wakes(sessionID string) WakesView {
+	sessionID = strings.TrimSpace(sessionID)
+	view := WakesView{SessionID: sessionID, Wakes: []WakeRecord{}}
+	activeClient, _ := a.current()
+	wakes, err := activeClient.listWakes(a.ctx, recordsPageSize, sessionID)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.Wakes = wakes
+	return view
+}
+
 // Discover triggers a provider rescan on the node.
 func (a *App) Discover() (map[string]int, error) {
 	activeClient, _ := a.current()
