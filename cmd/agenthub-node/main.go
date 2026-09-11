@@ -512,12 +512,20 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	// typed -peer-listen 192.168.1.10:7463 -allow-lan=false gave two halves that
 	// contradict each other, and guessing which half they meant is not this
 	// function's decision to make: that start is still refused.
+	withdrew := false
 	if address, withdrawn := nodeconfig.WithdrawPeerListen(
 		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
-		logf("withdrawing peer-listen: allow-lan is off, so the remembered LAN listener %q was not bound; "+
-			"using %s and remembering it", settings.PeerListen, address)
+		// Not called a LAN listener. WithdrawPeerListen also withdraws an
+		// address it cannot parse at all — which is the right call, since an
+		// unusable listener must not be bound and must not refuse every start
+		// forever — and only a hand-edited database gets there. Naming it a LAN
+		// address would put a second untruth in the log on top of the first.
+		logf("withdrawing peer-listen: allow-lan is off, so the remembered peer listener %q "+
+			"is not one this node can serve; it was not bound, and %s is used instead",
+			settings.PeerListen, address)
 		settings.PeerListen = address
 		given.PeerListen = &address
+		withdrew = true
 		// Not "remembered": the remembered address is the one just withdrawn.
 		// Of the three provenances this map can carry, the value now in effect
 		// is the default, and saying so keeps the owner's API from reporting a
@@ -535,6 +543,15 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	}
 	if err := store.SaveNodeSettings(ctx, given); err != nil {
 		return startupSettings{}, fmt.Errorf("remember node settings: %w", err)
+	}
+	if withdrew {
+		// On its own line, and only now. The withdrawal has to be announced
+		// before the validation that can end this start, so the owner reads it
+		// beside the values it is about — but a start refused over some other
+		// field saves nothing, and a line that had already said "and
+		// remembering it" would be describing a write that never happened.
+		logf("peer-listen %s is now what this node remembers, so the next start has nothing to withdraw",
+			settings.PeerListen)
 	}
 	// The owner's word about which networks are private, recorded next to
 	// whatever it later allows.
