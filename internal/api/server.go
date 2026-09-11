@@ -181,6 +181,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
+	// The list and the single lookup sit together: an owner who no longer has
+	// the id — because the terminal that printed it is gone, or because they
+	// are looking at a window — otherwise cannot ask the question at all.
+	mux.HandleFunc("GET /v1/outbound", s.outboundList)
 	mux.HandleFunc("GET /v1/outbound/{id}", s.outboundStatus)
 	return securityBoundary(mux)
 }

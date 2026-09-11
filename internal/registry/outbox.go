@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_pending
     ON outbound_messages(state, created_at_ms ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_outbound_recent
+    ON outbound_messages(created_at_ms DESC, id DESC);
 `
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate outbound messages: %w", err)
@@ -148,6 +150,67 @@ WHERE destination_node_id = ? AND state = 'pending'
 ORDER BY created_at_ms ASC, id ASC LIMIT ?`, nodeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("read outbound queue: %w", err)
+	}
+	defer rows.Close()
+	return scanOutbound(rows)
+}
+
+// OutboundCursor marks where a page of the outbound list ended.
+//
+// The same shape and the same wire form as an inbox cursor — a time and an id,
+// which is all either needs — so one encoding is parsed and rendered in one
+// place. What differs is the direction it is walked: this list is newest first,
+// so the page after a cursor is what sorts *before* it.
+type OutboundCursor = InboxCursor
+
+// OutboundStart is the cursor before the newest message.
+var OutboundStart = InboxStart
+
+// OutboundCursorAfter is the cursor that continues past message.
+func OutboundCursorAfter(message OutboundMessage) OutboundCursor {
+	return OutboundCursor{CreatedAtMS: message.CreatedAt.UTC().UnixMilli(), ID: message.ID}
+}
+
+// ParseOutboundCursor reads back what OutboundCursorAfter rendered; "" is the
+// start.
+func ParseOutboundCursor(value string) (OutboundCursor, error) {
+	return ParseInboxCursor(value)
+}
+
+// ListOutbound returns the messages this node has queued for peers, newest
+// first, in pages.
+//
+// Newest first because the question an owner arrives with is "what happened to
+// what I just sent", the same reason the wake trail is ordered that way. Paged
+// by cursor rather than offset: rows are pruned once they have been settled a
+// while, so an offset would skip or repeat rows between two pages.
+//
+// Bodies are not read here. The list answers "where did my messages go", and a
+// page of fifty 32KB bodies is both far more than that question needs and
+// enough to pass a reader's response limit — which is how the answer to
+// "what is jamming my outbox" becomes unreadable exactly when it is wanted.
+func (r *Registry) ListOutbound(ctx context.Context, limit int, after OutboundCursor) ([]OutboundMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := `
+SELECT id, destination_node_id, recipient_session, sender_label, '', state, attempts,
+       created_at_ms, updated_at_ms, last_error, wake_hops
+FROM outbound_messages`
+	arguments := []any{}
+	if after != OutboundStart {
+		// Strictly before the cursor in the listing's own order, which is
+		// descending. The start cursor is zero and names no row, so it is not
+		// a bound at all — applied as one it would exclude everything.
+		query += ` WHERE (created_at_ms < ? OR (created_at_ms = ? AND id < ?))`
+		arguments = append(arguments, after.CreatedAtMS, after.CreatedAtMS, after.ID)
+	}
+	query += ` ORDER BY created_at_ms DESC, id DESC LIMIT ?`
+	arguments = append(arguments, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("list outbound messages: %w", err)
 	}
 	defer rows.Close()
 	return scanOutbound(rows)
