@@ -518,6 +518,12 @@ func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *test
 	if startup.settings.PeerListen != nodeconfig.DefaultPeerListen || startup.settings.AllowLAN {
 		t.Fatalf("this start ran with %+v", startup.settings)
 	}
+	// Carried out, because the owner's API cannot work it out later: by then
+	// the withdrawn address is gone from the database and the default sitting
+	// there is indistinguishable from one nobody ever chose.
+	if !startup.peerListenWithdrawn {
+		t.Error("the start did not report the withdrawal, so no reader of the API can explain it")
+	}
 
 	// Said out loud. The owner asked about one switch and the listener moved,
 	// and a listener moving is the one thing about this node that is visible
@@ -620,6 +626,9 @@ func TestTheStartupWithdrawalDoesNotGuessAtAContradictionOrMoveALoopbackPort(t *
 	}
 	if startup.settings.PeerListen != chosen {
 		t.Errorf("a chosen loopback port was moved to %q for no reason", startup.settings.PeerListen)
+	}
+	if startup.peerListenWithdrawn {
+		t.Error("a start that withdrew nothing reported a withdrawal")
 	}
 }
 
