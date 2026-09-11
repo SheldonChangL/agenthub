@@ -103,11 +103,13 @@ const closedWindow = () => ({
 
 state.view = "network";
 
-// 1. The wiring registered both intervals, and the fast one only ticks the
-//    countdown. If it redrew the panel, the candidate rows would be replaced
-//    every second — including the row under the pointer.
-if (ticks.length !== 2) {
-  failures.push(`the module registered ${ticks.length} intervals, want 2`);
+// 1. The wiring registered its intervals — the 5s pairing poll, the 1s
+//    countdown and the 15s main-list refresh (list-refresh.mjs covers that
+//    one) — and the fast one only ticks the countdown. If it redrew the panel,
+//    the candidate rows would be replaced every second, including the row under
+//    the pointer.
+if (ticks.length !== 3) {
+  failures.push(`the module registered ${ticks.length} intervals, want 3`);
 }
 const countdownTick = ticks.find((tick) => tick.ms === 1000);
 if (!countdownTick) failures.push("no one-second interval was registered");
