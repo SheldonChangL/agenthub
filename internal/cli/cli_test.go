@@ -982,3 +982,108 @@ func TestOutboundWithAnIDStillAsksAboutThatMessage(t *testing.T) {
 		t.Fatal("two message ids were accepted")
 	}
 }
+
+// `/agenthub-watch` deletes a message every tick, and until this existed the
+// skill told the agent to run `curl -X DELETE`: the CLI could already do it,
+// under a name nobody looks for. The path is the thing to hold — a wrong one
+// deletes somebody else's message or nothing at all.
+func TestInboxDeleteDropsOneMessage(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "delete", "claude:abc", "msg_01"},
+		&stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if method != http.MethodDelete || path != "/v1/inbox/claude:abc/msg_01" {
+		t.Errorf("request = %s %s, want DELETE /v1/inbox/claude:abc/msg_01", method, path)
+	}
+}
+
+// Both arguments are path segments. A message id is chosen by whatever wrote
+// the message, so it is escaped rather than pasted in.
+func TestInboxDeleteEscapesBothSegments(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "delete", "codex:a/b", "m/../x"},
+		&stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if path != "/v1/inbox/codex:a%2Fb/m%2F..%2Fx" {
+		t.Errorf("path = %s; a segment was not escaped", path)
+	}
+}
+
+// Wrong arity, or a second argument that is not a session id, must fail before
+// any request: `ah inbox delete claude:abc` with the message id forgotten must
+// not become "empty this whole inbox".
+func TestInboxDeleteRejectsIncoherentInput(t *testing.T) {
+	cases := map[string][]string{
+		"no arguments":           {"inbox", "delete"},
+		"session but no message": {"inbox", "delete", "claude:abc"},
+		"a spare word":           {"inbox", "delete", "claude:abc", "msg_01", "extra"},
+		"no provider prefix":     {"inbox", "delete", "abc", "msg_01"},
+		"arguments reversed":     {"inbox", "delete", "msg_01", "claude:abc"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			// Unreachable on purpose: these must fail before a request.
+			code := Run(context.Background(), append([]string{"--url", "http://127.0.0.1:1"}, args...), &stdout, &stderr)
+			if code == 0 {
+				t.Errorf("Run(%v) = 0; want a non-zero exit", args)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("Run(%v) wrote to stdout: %s", args, stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "ah inbox delete") {
+				t.Errorf("Run(%v) did not name the command in its usage: %q", args, stderr.String())
+			}
+		})
+	}
+}
+
+// The subcommand must not have eaten the command it was added to: `ah inbox
+// <session-id>` still reads, and reads the session it was given.
+func TestInboxStillReadsWithASessionID(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"count":0}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "claude:abc"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if method != http.MethodGet || path != "/v1/inbox/claude:abc" {
+		t.Errorf("request = %s %s, want GET /v1/inbox/claude:abc", method, path)
+	}
+}
+
+// The usage has to name the subcommand, or it is a command nobody finds — the
+// failure that made the skill reach for curl in the first place.
+func TestUsageNamesInboxDelete(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	usage := stdout.String() + stderr.String()
+	if !strings.Contains(usage, "ah inbox delete <session-id> <message-id>") {
+		t.Errorf("usage does not describe `ah inbox delete`: %q", usage)
+	}
+}
