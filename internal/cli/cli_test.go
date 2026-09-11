@@ -1160,3 +1160,29 @@ func TestUsageNamesTheOutboundSessionFlag(t *testing.T) {
 		t.Errorf("usage does not describe the filter: %q", usage)
 	}
 }
+
+// TestWakesRefusesABlankSessionWithoutAsking covers the argument that trims to
+// nothing. Sent on, it became `?session=++` and came back with the node's
+// refusal — "omit the parameter", advice a CLI user cannot take, since there is
+// no parameter here to omit, only an argument to leave off.
+func TestWakesRefusesABlankSessionWithoutAsking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a request was sent: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	for _, args := range [][]string{
+		{"wakes", ""},
+		{"wakes", "   "},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr)
+		if code == 0 {
+			t.Errorf("%v was accepted", args)
+		}
+		if !strings.Contains(stderr.String(), "usage: ah wakes [session-id]") {
+			t.Errorf("%v: stderr = %q; want the usage a caller can act on", args, stderr.String())
+		}
+	}
+}
