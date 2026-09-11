@@ -945,3 +945,69 @@ func TestOutboundListPagesAndBoundsItself(t *testing.T) {
 		t.Errorf("a forged cursor = %d; want 400", code)
 	}
 }
+
+// TestOutboundListNarrowsToOneSession is the parameter the desktop needs. The
+// window is opened from one session's row, but the list is the whole node's,
+// so without this the front end filters client-side and pages for rows it
+// throws away.
+func TestOutboundListNarrowsToOneSession(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	mine := openOutbound(t, store, owner, "mine")
+	theirs := openOutbound(t, store, owner, "theirs")
+
+	first := queueForPeerViaAPI(t, owner, mine, "one")
+	queueForPeerViaAPI(t, owner, theirs, "not mine")
+	second := queueForPeerViaAPI(t, owner, mine, "two")
+
+	page := readOutboundPage(t, owner, "?session="+url.QueryEscape(mine))
+	if len(page.Messages) != 2 {
+		t.Fatalf("listed %d rows for one session; want its 2: %#v", len(page.Messages), page.Messages)
+	}
+	if page.Messages[0].ID != second || page.Messages[1].ID != first {
+		t.Fatalf("ids = %q, %q; want this session's two, newest first",
+			page.Messages[0].ID, page.Messages[1].ID)
+	}
+	// The qualified form of the same address is the same session, as it is
+	// everywhere else a session is addressed.
+	qualified := readOutboundPage(t, owner, "?session="+url.QueryEscape(testNodeID+"/"+mine))
+	if len(qualified.Messages) != 2 {
+		t.Errorf("the qualified address listed %d rows; want the same 2", len(qualified.Messages))
+	}
+
+	// Paging under the filter walks the filtered list, not the node's.
+	firstPage := readOutboundPage(t, owner, "?limit=1&session="+url.QueryEscape(mine))
+	if len(firstPage.Messages) != 1 || firstPage.Messages[0].ID != second || firstPage.Next == "" {
+		t.Fatalf("first filtered page = %#v (next %q)", firstPage.Messages, firstPage.Next)
+	}
+	next := readOutboundPage(t, owner,
+		"?limit=1&session="+url.QueryEscape(mine)+"&after="+url.QueryEscape(firstPage.Next))
+	if len(next.Messages) != 1 || next.Messages[0].ID != first {
+		t.Fatalf("second filtered page = %#v; want this session's older row, not the other session's",
+			next.Messages)
+	}
+	end := readOutboundPage(t, owner,
+		"?limit=1&session="+url.QueryEscape(mine)+"&after="+url.QueryEscape(next.Next))
+	if len(end.Messages) != 0 {
+		t.Fatalf("page past the end of the filtered list = %#v; want nothing", end.Messages)
+	}
+}
+
+// TestOutboundListRefusesASessionThatIsNotLocal keeps the filter from
+// answering an empty page for an address this node cannot own. An empty list
+// reads as "this session sent nothing", which is a different fact.
+func TestOutboundListRefusesASessionThatIsNotLocal(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	remote := perform(t, owner, http.MethodGet,
+		"/v1/outbound?session="+url.QueryEscape("node_somewhere_else/codex:theirs"), nil)
+	if remote.Code != http.StatusNotFound || !strings.Contains(remote.Body.String(), "UNKNOWN_NODE") {
+		t.Fatalf("another node's session = %d %s; want 404 UNKNOWN_NODE, the answer /v1/wakes gives",
+			remote.Code, remote.Body.String())
+	}
+	malformed := perform(t, owner, http.MethodGet, "/v1/outbound?session=nonsense", nil)
+	if malformed.Code != http.StatusBadRequest {
+		t.Fatalf("a malformed session = %d %s; want 400", malformed.Code, malformed.Body.String())
+	}
+}
