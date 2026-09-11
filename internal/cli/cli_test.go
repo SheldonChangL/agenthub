@@ -1186,3 +1186,50 @@ func TestWakesRefusesABlankSessionWithoutAsking(t *testing.T) {
 		}
 	}
 }
+
+// TestWakesSendsTheSessionItWasGiven is the positive half of the blank-argument
+// test above: that one only proves nothing is sent when the argument is empty.
+//
+// Surviving mutation: deleting `?session=` from the wakes path left every test
+// green, and `ah wakes codex:x` would then have listed the whole node's trail
+// under a heading naming one session — the answer to a question nobody asked,
+// and indistinguishable from a busy session.
+func TestWakesSendsTheSessionItWasGiven(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		args     []string
+		rawQuery string
+	}{
+		{"a session id", []string{"wakes", "codex:x"}, "session=codex%3Ax"},
+		// Padding a shell left behind is trimmed off the value, not sent as
+		// part of it: `codex:x` and ` codex:x ` are the same session.
+		{"padded", []string{"wakes", " codex:x "}, "session=codex%3Ax"},
+		// No argument is not a filter of nothing; it is no filter.
+		{"no argument", []string{"wakes"}, ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var asked int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked++
+				if r.URL.Path != "/v1/wakes" {
+					t.Errorf("path = %q; want /v1/wakes", r.URL.Path)
+				}
+				if r.URL.RawQuery != testCase.rawQuery {
+					t.Errorf("query = %q; want %q", r.URL.RawQuery, testCase.rawQuery)
+				}
+				_, _ = w.Write([]byte(`{"wakes":[],"limits":{}}`))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(),
+				append([]string{"--url", server.URL}, testCase.args...), &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
+			}
+			if asked != 1 {
+				t.Errorf("the node was asked %d times; want once", asked)
+			}
+		})
+	}
+}
