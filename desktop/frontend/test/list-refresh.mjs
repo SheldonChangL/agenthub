@@ -70,8 +70,16 @@ const unreachableOverview = () => ({
 
 let overviewAnswer = reachableOverview(["claude:one", "codex:two"], ["node_alice"]);
 let overviewCalls = 0;
+// When set, the next call parks instead of answering, so a read can be left in
+// flight while a later one overtakes it.
+let overviewPark = null;
 const Overview = async () => {
   overviewCalls++;
+  if (overviewPark) {
+    const park = overviewPark;
+    overviewPark = null;
+    return new Promise((resolve) => park(resolve));
+  }
   return overviewAnswer;
 };
 
@@ -222,6 +230,65 @@ if (state.selected.has("claude:gone")) {
 }
 if (!state.selected.has("claude:three")) {
   failures.push("a load dropped a selection for a session that is still there");
+}
+
+// 7. A read that started earlier but answers later does not overwrite the newer
+//    one. state.busy is only checked before a periodic read starts, so a read
+//    already awaiting Overview() when the owner changes an audience or revokes
+//    a node still comes back — after the mutation's own load() has landed, with
+//    the node list and sessions from before the change.
+{
+  let release;
+  overviewPark = (resolve) => { release = resolve; };
+  const slow = scope.load();
+  await settle();
+
+  overviewAnswer = reachableOverview(["claude:newest"], ["node_alice", "node_bob"]);
+  await scope.load();
+  await settle();
+
+  // The older read finally answers, describing the moment before the change.
+  release(reachableOverview(["claude:stale"], ["node_alice"]));
+  await slow;
+  await settle();
+
+  if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:newest") {
+    failures.push(`a late read overwrote the newer session list: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
+  }
+  if (state.nodes.length !== 2) {
+    failures.push(`a late read overwrote the newer node list (${state.nodes.length} nodes, want 2)`);
+  }
+  if (drawnRows() !== 1) {
+    failures.push(`the table shows ${drawnRows()} rows after a late read, want the newer read's 1`);
+  }
+}
+
+// And the same for the banner and the connection dot: a late read that could
+// not reach the node must not report the window as disconnected when the newer
+// read reached it.
+{
+  let release;
+  overviewPark = (resolve) => { release = resolve; };
+  const slow = scope.load();
+  await settle();
+
+  overviewAnswer = reachableOverview(["claude:newest"], ["node_alice", "node_bob"]);
+  await scope.load();
+  await settle();
+
+  release(unreachableOverview());
+  await slow;
+  await settle();
+
+  if (el("conn-dot").className !== "dot ok") {
+    failures.push(`a late failed read set the connection dot to ${el("conn-dot").className} over a newer read that reached the node`);
+  }
+  if (!el("banner").classList.contains("hidden")) {
+    failures.push(`a late failed read raised the unreachable banner over a newer successful read: ${el("banner").textContent}`);
+  }
+  if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:newest") {
+    failures.push(`a late failed read disturbed the newer session list: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
+  }
 }
 
 if (failures.length > 0) {
