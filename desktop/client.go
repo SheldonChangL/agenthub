@@ -540,7 +540,7 @@ type WakeLimits struct {
 }
 
 type WakesPage struct {
-	Wakes  []WakeEvent `json:"wakes"`
+	Wakes []WakeEvent `json:"wakes"`
 	// A pointer, so a node that answers without limits yields null rather than
 	// an all-zero rule set the UI would print as real numbers.
 	Limits *WakeLimits `json:"limits,omitempty"`
@@ -566,10 +566,24 @@ func clampPageLimit(limit int) int {
 	return limit
 }
 
-// outbound reads what this node has queued for peers, newest first.
-func (c *client) outbound(ctx context.Context, limit int, after string) (OutboundPage, error) {
+// outbound reads what this node has queued for peers, newest first, optionally
+// for one local session.
+//
+// The session id goes to the node rather than being filtered here: the node
+// resolves it and refuses one that is not local, and a page it narrowed is a
+// page whose `next` cursor still means something. Filtering a node-wide page in
+// this process instead would make an empty page ambiguous — nothing sent, or
+// nothing of this session's among the newest fifty.
+//
+// Trimmed, and omitted when empty: a `session` of only spaces is trimmed to
+// empty by the node too and silently answers with the node-wide list, which
+// would read here as "this session sent all of that" (agenthub#127).
+func (c *client) outbound(ctx context.Context, session string, limit int, after string) (OutboundPage, error) {
 	query := url.Values{}
 	query.Set("limit", fmt.Sprintf("%d", clampPageLimit(limit)))
+	if session = strings.TrimSpace(session); session != "" {
+		query.Set("session", session)
+	}
 	if after = strings.TrimSpace(after); after != "" {
 		query.Set("after", after)
 	}
