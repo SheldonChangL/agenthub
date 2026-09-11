@@ -542,3 +542,57 @@ func TestTheListenCheckStandsWithoutTheParseCheck(t *testing.T) {
 		t.Fatalf("the constructed declaration refuses everything: %v", err)
 	}
 }
+
+// The withdrawal rule, stated once because two callers apply it: the owner's
+// PUT and the node's own start-up. Each row is a question both of them get
+// asked, and the answer they have to agree on.
+func TestWithdrawPeerListenTakesALANListenerOffTheNetworkOnlyWhenNobodyNamedIt(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		allowLAN    bool
+		named       bool
+		peerListen  string
+		wantAddress string
+		wantOK      bool
+	}{{
+		// The case the whole function exists for: allowLan off, nothing said
+		// about the listener, and a LAN address that would refuse to start.
+		name: "a LAN listener nobody mentioned is withdrawn",
+		// allowLAN false, not named
+		peerListen: "192.168.1.10:7463", wantAddress: DefaultPeerListen, wantOK: true,
+	}, {
+		// Both halves in one breath is the owner contradicting themselves, and
+		// only they can say which half they meant. Refused, not guessed at.
+		name:  "a LAN listener named alongside the switch is left to be refused",
+		named: true, peerListen: "192.168.1.10:7463",
+	}, {
+		name:     "nothing is withdrawn while allowLan is on",
+		allowLAN: true, peerListen: "192.168.1.10:7463",
+	}, {
+		// Already off the network. A port an owner chose is a choice.
+		name:       "a chosen loopback port is left alone",
+		peerListen: "127.0.0.1:9463",
+	}, {
+		name:       "the default is left alone",
+		peerListen: DefaultPeerListen,
+	}, {
+		name:       "an IPv6 loopback is left alone",
+		peerListen: "[::1]:7463",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			address, ok := WithdrawPeerListen(tc.allowLAN, tc.named, tc.peerListen)
+			if ok != tc.wantOK || address != tc.wantAddress {
+				t.Fatalf("WithdrawPeerListen(%t, %t, %q) = %q, %t; want %q, %t",
+					tc.allowLAN, tc.named, tc.peerListen, address, ok, tc.wantAddress, tc.wantOK)
+			}
+			// Whatever it returns has to be startable, or the withdrawal has
+			// only moved the crash somewhere else.
+			if ok {
+				settings := Settings{PeerListen: address, AllowLAN: tc.allowLAN}
+				if _, err := settings.Validate(); err != nil {
+					t.Fatalf("the withdrawn configuration still will not start: %v", err)
+				}
+			}
+		})
+	}
+}

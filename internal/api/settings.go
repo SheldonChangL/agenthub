@@ -149,15 +149,19 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 // Both fields are written in the same transaction, so no start can see the
 // half of this that serves a network address with allowLan off.
 func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, bool) {
-	if requested.AllowLAN == nil || *requested.AllowLAN || requested.PeerListen != nil {
+	// Only a write that turns the switch off withdraws anything. A request that
+	// says nothing about allowLan is not the owner closing it, and inferring a
+	// withdrawal from stored state would move a listener nobody mentioned.
+	if requested.AllowLAN == nil || *requested.AllowLAN {
 		return requested, false
 	}
-	// A loopback listener is already off the network, whatever its port, and
-	// an owner who chose that port did not ask for it to move.
-	if nodeconfig.ValidateLoopback(next.PeerListen) == nil {
+	// The rule itself lives in nodeconfig, because the node's own start-up
+	// applies the same one: see nodeconfig.WithdrawPeerListen.
+	address, withdrawn := nodeconfig.WithdrawPeerListen(
+		*requested.AllowLAN, requested.PeerListen != nil, next.PeerListen)
+	if !withdrawn {
 		return requested, false
 	}
-	address := nodeconfig.DefaultPeerListen
 	requested.PeerListen = &address
 	return requested, true
 }

@@ -502,6 +502,28 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 		return startupSettings{}, err
 	}
 	settings, sources := nodeconfig.Resolve(given, remembered, nodeconfig.DefaultSettings())
+	// The same rule the owner's PUT applies, applied here before anything is
+	// validated: a remembered LAN listener plus -allow-lan=false is a refusal
+	// that repeats on every restart, and the API that could undo it belongs to
+	// the node that is not starting. The withdrawal is recorded below in the
+	// same save as the flags, so the next start does not have to redo it.
+	//
+	// Only when this command line said nothing about the listener. An owner who
+	// typed -peer-listen 192.168.1.10:7463 -allow-lan=false gave two halves that
+	// contradict each other, and guessing which half they meant is not this
+	// function's decision to make: that start is still refused.
+	if address, withdrawn := nodeconfig.WithdrawPeerListen(
+		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
+		logf("withdrawing peer-listen: allow-lan is off, so the remembered LAN listener %q was not bound; "+
+			"using %s and remembering it", settings.PeerListen, address)
+		settings.PeerListen = address
+		given.PeerListen = &address
+		// Not "remembered": the remembered address is the one just withdrawn.
+		// Of the three provenances this map can carry, the value now in effect
+		// is the default, and saying so keeps the owner's API from reporting a
+		// value nobody stored.
+		sources[nodeconfig.SettingPeerListen] = nodeconfig.SourceDefault
+	}
 	// Printed before the validation that may end this start, so the refusal
 	// below is read next to the values it is about.
 	for _, line := range nodeconfig.Describe(settings, sources) {
