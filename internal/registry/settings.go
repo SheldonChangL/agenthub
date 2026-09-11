@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -42,7 +43,17 @@ CREATE TABLE IF NOT EXISTS node_settings (
 // which is how a node upgraded from an earlier build keeps the behaviour it
 // had: the defaults are the flag defaults those builds used.
 func (r *Registry) GetNodeSettings(ctx context.Context) (nodeconfig.Partial, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT key, value FROM node_settings`)
+	return readNodeSettings(ctx, r.db)
+}
+
+// querier is whatever can run the read: the database, or a transaction that
+// will also do the write. (The write side is the package's existing execer.)
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func readNodeSettings(ctx context.Context, db querier) (nodeconfig.Partial, error) {
+	rows, err := db.QueryContext(ctx, `SELECT key, value FROM node_settings`)
 	if err != nil {
 		return nodeconfig.Partial{}, fmt.Errorf("read node settings: %w", err)
 	}
@@ -81,6 +92,71 @@ func (r *Registry) GetNodeSettings(ctx context.Context) (nodeconfig.Partial, err
 // SaveNodeSettings records the fields that are present and leaves the rest
 // alone, so a caller changing one switch does not pin the other four.
 func (r *Registry) SaveNodeSettings(ctx context.Context, settings nodeconfig.Partial) error {
+	r.settingsWrite.Lock()
+	defer r.settingsWrite.Unlock()
+	// One transaction: a half-written set is a configuration nobody chose, and
+	// the node would start with it after the next restart.
+	return r.inSettingsTransaction(ctx, func(transaction *sql.Tx) error {
+		return writeNodeSettings(ctx, transaction, settings)
+	})
+}
+
+// UpdateNodeSettings reads, decides and writes without letting go in between.
+//
+// The decision is made inside the transaction because it is made *about* what
+// is stored: decide is handed the current settings and returns the fields to
+// write, so a validation that passed cannot be committed against a
+// configuration it never saw. Two concurrent writes on the owner's API — one
+// closing allowLan, one moving the peer listener — could otherwise each
+// validate against the state before the other and store a combination nobody
+// validated, which the next start would refuse.
+//
+// The mutex is not redundant with the transaction: it keeps this process's own
+// writers in line so they queue rather than collide, and only one process is
+// meant to hold the database at a time.
+func (r *Registry) UpdateNodeSettings(ctx context.Context,
+	decide func(stored nodeconfig.Partial) (nodeconfig.Partial, error)) (nodeconfig.Partial, error) {
+	r.settingsWrite.Lock()
+	defer r.settingsWrite.Unlock()
+	var saved nodeconfig.Partial
+	err := r.inSettingsTransaction(ctx, func(transaction *sql.Tx) error {
+		stored, err := readNodeSettings(ctx, transaction)
+		if err != nil {
+			return err
+		}
+		settings, err := decide(stored)
+		if err != nil {
+			return err
+		}
+		if err := writeNodeSettings(ctx, transaction, settings); err != nil {
+			return err
+		}
+		saved, err = readNodeSettings(ctx, transaction)
+		return err
+	})
+	if err != nil {
+		return nodeconfig.Partial{}, err
+	}
+	return saved, nil
+}
+
+// inSettingsTransaction runs body in a transaction and commits if it returns.
+func (r *Registry) inSettingsTransaction(ctx context.Context, body func(*sql.Tx) error) error {
+	transaction, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("save node settings: %w", err)
+	}
+	defer func() { _ = transaction.Rollback() }()
+	if err := body(transaction); err != nil {
+		return err
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("save node settings: %w", err)
+	}
+	return nil
+}
+
+func writeNodeSettings(ctx context.Context, db execer, settings nodeconfig.Partial) error {
 	if settings.Empty() {
 		return nil
 	}
@@ -112,24 +188,14 @@ func (r *Registry) SaveNodeSettings(ctx context.Context, settings nodeconfig.Par
 		writes = append(writes, [2]string{nodeconfig.SettingTreatAsPrivate, string(encoded)})
 	}
 
-	// One transaction: a half-written set is a configuration nobody chose, and
-	// the node would start with it after the next restart.
-	transaction, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("save node settings: %w", err)
-	}
-	defer func() { _ = transaction.Rollback() }()
 	now := time.Now().UTC().UnixMilli()
 	for _, write := range writes {
-		if _, err := transaction.ExecContext(ctx, `
+		if _, err := db.ExecContext(ctx, `
 INSERT INTO node_settings (key, value, updated_at_ms) VALUES (?, ?, ?)
 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_ms = excluded.updated_at_ms`,
 			write[0], write[1], now); err != nil {
 			return fmt.Errorf("save node setting %q: %w", write[0], err)
 		}
-	}
-	if err := transaction.Commit(); err != nil {
-		return fmt.Errorf("save node settings: %w", err)
 	}
 	return nil
 }

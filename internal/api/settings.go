@@ -90,32 +90,38 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 			"no settings given; send at least one of peerListen, allowLan, discover, treatAsPrivate, autoWake")
 		return
 	}
-	stored, err := s.store.GetNodeSettings(r.Context())
-	if err != nil {
-		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+	// Read, validated and written inside one transaction, so what was
+	// validated is what gets stored: two writes arriving together would
+	// otherwise each check against the state before the other and commit a
+	// combination nobody validated, which the next start refuses.
+	var withdrawn bool
+	var invalid error
+	saved, err := s.store.UpdateNodeSettings(r.Context(),
+		func(stored nodeconfig.Partial) (nodeconfig.Partial, error) {
+			// Validated as a whole, and against what the next start will use
+			// rather than against what is running now. These two differ, and
+			// the saved one is the configuration this write is part of:
+			// withdrawing a declared range while a saved peer listener depends
+			// on it is exactly the combination that starts nothing, and
+			// checking it against a running loopback listener would wave it
+			// through.
+			//
+			// As a whole, because a peer listener and the ranges that make it
+			// private are one decision: a field checked on its own accepts a
+			// LAN address while allowLan stays false.
+			next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
+			writing, closed := withdrawLANListener(requested, next)
+			if _, err := writing.Apply(next).Validate(); err != nil {
+				invalid = err
+				return nodeconfig.Partial{}, err
+			}
+			withdrawn = closed
+			return writing, nil
+		})
+	if invalid != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", invalid.Error())
 		return
 	}
-	// Validated as a whole, and against what the next start will use rather
-	// than against what is running now. These two differ, and the saved one is
-	// the configuration this write is part of: withdrawing a declared range
-	// while a saved peer listener depends on it is exactly the combination
-	// that starts nothing, and checking it against a running loopback listener
-	// would wave it through.
-	//
-	// As a whole, because a peer listener and the ranges that make it private
-	// are one decision: a field checked on its own accepts a LAN address while
-	// allowLan stays false.
-	next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
-	requested, withdrawn := withdrawLANListener(requested, next)
-	if _, err := requested.Apply(next).Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
-		return
-	}
-	if err := s.store.SaveNodeSettings(r.Context(), requested); err != nil {
-		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
-		return
-	}
-	saved, err := s.store.GetNodeSettings(r.Context())
 	if err != nil {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return

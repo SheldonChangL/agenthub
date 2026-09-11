@@ -3,8 +3,11 @@ package registry
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
 )
@@ -142,5 +145,126 @@ INSERT INTO node_identity VALUES (1, 'node_1234567890123456', 'desk', 'darwin', 
 	}
 	if again.Discover == nil || !*again.Discover {
 		t.Fatalf("discover did not survive a reopen: %v", again.Discover)
+	}
+}
+
+// The decision belongs inside the write. A caller that validates what it read
+// and then writes has let go in between, and two of them together can store a
+// combination neither one validated — a peer listener on a LAN address with
+// allowLan off, which the next start refuses over.
+func TestUpdateNodeSettingsDecidesInsideTheWrite(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	address := "192.168.1.10:7463"
+	on := true
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{PeerListen: &address, AllowLAN: &on}); err != nil {
+		t.Fatal(err)
+	}
+
+	// What decide is handed is what is stored, not what it was told.
+	saw := nodeconfig.Partial{}
+	off := false
+	loopback := nodeconfig.DefaultPeerListen
+	saved, err := store.UpdateNodeSettings(ctx, func(stored nodeconfig.Partial) (nodeconfig.Partial, error) {
+		saw = stored
+		return nodeconfig.Partial{PeerListen: &loopback, AllowLAN: &off}, nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateNodeSettings() error = %v", err)
+	}
+	if saw.PeerListen == nil || *saw.PeerListen != address || saw.AllowLAN == nil || !*saw.AllowLAN {
+		t.Fatalf("decide was handed %+v, not what was stored", saw)
+	}
+	// And the answer it returns is read back inside the same transaction.
+	if saved.PeerListen == nil || *saved.PeerListen != loopback || saved.AllowLAN == nil || *saved.AllowLAN {
+		t.Fatalf("UpdateNodeSettings returned %+v", saved)
+	}
+
+	// A refusal writes nothing, including the fields that would have been fine.
+	refused := errors.New("no")
+	other := "10.0.0.5:7463"
+	if _, err := store.UpdateNodeSettings(ctx, func(nodeconfig.Partial) (nodeconfig.Partial, error) {
+		return nodeconfig.Partial{PeerListen: &other, AllowLAN: &on}, refused
+	}); !errors.Is(err, refused) {
+		t.Fatalf("UpdateNodeSettings() error = %v, want %v", err, refused)
+	}
+	stored, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != loopback || stored.AllowLAN == nil || *stored.AllowLAN {
+		t.Fatalf("a refused update left %+v", stored)
+	}
+}
+
+// Two writers that overlap must not be able to store a combination neither of
+// them validated.
+//
+// The interleave is forced rather than hoped for: the first writer is held
+// inside its decision until the second has finished. Read-then-validate-
+// then-write as three separate statements stores peerListen on a public
+// address with the range that made it private withdrawn — a node that refuses
+// to start, saved by two requests that were each individually fine.
+func TestUpdateNodeSettingsCannotStoreAnUnvalidatedCombination(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	off, on := false, true
+	loopback := nodeconfig.DefaultPeerListen
+	declared := []string{"122.122.0.0/16"}
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{
+		PeerListen: &loopback, AllowLAN: &off, TreatAsPrivate: &declared,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Each writer validates the whole configuration it would leave behind, and
+	// writes only if that configuration starts.
+	validating := func(change nodeconfig.Partial, hold func()) error {
+		_, err := store.UpdateNodeSettings(ctx, func(stored nodeconfig.Partial) (nodeconfig.Partial, error) {
+			if hold != nil {
+				hold()
+			}
+			next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
+			if _, err := change.Apply(next).Validate(); err != nil {
+				return nodeconfig.Partial{}, err
+			}
+			return change, nil
+		})
+		return err
+	}
+
+	reading := make(chan struct{})
+	written := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		// Opening the listener on the declared range: fine against what is
+		// stored now.
+		address := "122.122.0.1:7463"
+		_ = validating(nodeconfig.Partial{PeerListen: &address, AllowLAN: &on}, func() {
+			close(reading)
+			select {
+			case <-written:
+			case <-time.After(2 * time.Second):
+				// Serialised, as intended: the other writer cannot start until
+				// this transaction ends.
+			}
+		})
+	}()
+	<-reading
+	// Withdrawing the declaration: fine against what is stored now, and fatal
+	// beside the write above.
+	empty := []string{}
+	_ = validating(nodeconfig.Partial{TreatAsPrivate: &empty}, nil)
+	close(written)
+	wait.Wait()
+
+	stored, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
+	if _, err := settings.Validate(); err != nil {
+		t.Fatalf("stored %+v, which no writer validated and no start accepts: %v", settings, err)
 	}
 }
