@@ -271,7 +271,7 @@ export function boot({ start = true } = {}) {
       idCell.append(element("span", "providertag", session.provider), element("b", "", rest));
       idCell.title = session.id;
 
-      const cwdCell = element("td", "mono muted", session.cwd || "—");
+      const cwdCell = element("td", "mono muted cwd", session.cwd || "—");
       if (session.cwd) cwdCell.title = session.cwd;
 
       // The four audience flags, readable without opening the dialog. Only
@@ -312,7 +312,7 @@ export function boot({ start = true } = {}) {
         checkCell,
         idCell,
         cell(element("td"), pill(session.status, statusPillClass(session.status))),
-        element("td", "muted", session.management),
+        element("td", "muted mgmt", session.management),
         cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
         flags,
         cwdCell,

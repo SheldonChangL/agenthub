@@ -82,7 +82,7 @@ body {
 .backdrop .shade {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, rgba(11, 15, 18, 0.72) 0%, rgba(11, 15, 18, 0.5) 55%, rgba(11, 15, 18, 0.22) 100%);
+  background: linear-gradient(90deg, rgba(11, 15, 18, 0.6) 0%, rgba(11, 15, 18, 0.4) 55%, rgba(11, 15, 18, 0.12) 100%);
 }
 .rain .col {
   position: absolute;
@@ -105,7 +105,7 @@ body.no-motion .rain { display: none; }
 body.no-backdrop .backdrop img,
 body.no-backdrop .backdrop .rain { display: none; }
 
-#app > * { position: relative; z-index: 1; }
+#app > :not(.backdrop) { position: relative; z-index: 1; }
 
 /* ---------- title bar ---------- */
 
@@ -278,6 +278,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   min-height: 0;
   position: relative;
   margin: 12px 16px;
+  width: calc(100% - 32px);
+  max-width: 1120px;
   display: flex;
   flex-direction: column;
   border-radius: var(--radius);
@@ -290,7 +292,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .tablescroll { flex: 1; min-height: 0; overflow: auto; }
 
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+col.c-check { width: 36px; }
+col.c-status { width: 84px; }
+col.c-mgmt { width: 128px; }
+col.c-audience { width: 112px; }
+col.c-flags { width: 138px; }
+col.c-last { width: 92px; }
+col.c-actions { width: 214px; }
 
 thead th {
   position: sticky; top: 0; z-index: 1;
@@ -323,7 +332,7 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 tbody tr.sel { background: var(--accent-dim); }
 
 .col-check { width: 36px; text-align: center; }
-.col-actions { width: 104px; text-align: right; }
+.col-actions { text-align: right; }
 
 .sid { color: var(--muted); }
 .sid .providertag {
@@ -457,7 +466,16 @@ tbody tr.sel { background: var(--accent-dim); }
   flex: 1; min-width: 0;
   overflow: auto;
   padding: 22px 26px;
+  margin: 12px 16px;
+  max-width: 900px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
+.nodedetail > .empty { padding-top: 120px; }
 .nodedetail h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
 .nodedetail h3 { font-size: 13px; margin: 18px 0 8px; font-weight: 600; }
 .nodedetail .fingerprint {
@@ -602,7 +620,16 @@ tbody tr.sel { background: var(--accent-dim); }
 }
 .settingsnav a:hover { color: var(--text); }
 .settingsnav a.on { background: var(--panel-2); color: var(--text); font-weight: 500; }
-.settingsbody { flex: 1; min-width: 0; overflow: auto; padding: 24px 32px; }
+.settingsbody {
+  flex: 1; min-width: 0;
+  overflow: auto;
+  padding: 24px 32px;
+  max-width: 860px;
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-right: 1px solid var(--line);
+}
 .settingsbody section { max-width: 760px; margin-bottom: 28px; }
 .settingsbody h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
 .settingsbody h2 + p { margin: 0 0 16px; font-size: 12px; }
