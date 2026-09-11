@@ -1030,6 +1030,34 @@ func TestOutboundListRefusesASessionThatIsNotLocal(t *testing.T) {
 	}
 }
 
+// TestABlankSessionFilterIsRefusedNotIgnored covers the value that used to be
+// trimmed away: a caller that asked to narrow the list was handed the whole
+// node's, which reads as the session's own traffic and is not. The two
+// listings answer alike, because they are the same mistake.
+func TestABlankSessionFilterIsRefusedNotIgnored(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	for _, path := range []string{
+		"/v1/outbound?session=",
+		"/v1/outbound?session=%20%20",
+		"/v1/wakes?session=",
+		"/v1/wakes?session=%20%20",
+	} {
+		response := perform(t, owner, http.MethodGet, path, nil)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_REQUEST") {
+			t.Errorf("GET %s = %d %s; want 400 INVALID_REQUEST rather than the whole node's list",
+				path, response.Code, response.Body.String())
+		}
+	}
+	// Absent still means everything: nobody asked to narrow anything.
+	for _, path := range []string{"/v1/outbound", "/v1/wakes"} {
+		if code := perform(t, owner, http.MethodGet, path, nil).Code; code != http.StatusOK {
+			t.Errorf("GET %s = %d; want 200 when no filter was asked for", path, code)
+		}
+	}
+}
+
 // TestTheListRowCarriesEveryFieldTheSingleLookupDoes pins the promise
 // outboundSummary makes in its own comment. The summary is written out by
 // hand, so a field added to registry.OutboundMessage reaches GET

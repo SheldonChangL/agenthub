@@ -365,6 +365,7 @@ bin/ah peers                                           # what they published, an
 bin/ah send --from <your-session-id> <node-id>/<their-session-id> -- "hi"
 bin/ah outbound <message-id>                           # queued, delivered, or refused
 bin/ah outbound                                        # ...or the last 50, newest first
+bin/ah outbound --session <your-session-id>            # ...or just what one session sent
 ```
 
 A remote session is addressed `<node-id>/<session-id>`; `ah peers` prints that

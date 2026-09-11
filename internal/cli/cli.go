@@ -856,20 +856,41 @@ func (r runner) wakes(ctx context.Context, path string) error {
 // has a positional and the two mean opposite things: one message, or many
 // narrowed to a sender. A caller that passes both is told so rather than
 // having one of them quietly win.
+//
+// Both spellings are accepted, as `--from` accepts both. `--session=<id>` is
+// the form a person who writes flags reaches for, and reading it as a
+// positional made `ah outbound --session=codex:mine` ask for a message whose
+// id is the flag — answered 404 UNKNOWN_MESSAGE, which says nothing about the
+// real mistake.
 func takeSessionFlag(args []string) (rest []string, session string, err error) {
+	seen := false
 	for index := 0; index < len(args); index++ {
-		if args[index] != "--session" {
-			rest = append(rest, args[index])
+		argument := args[index]
+		joined := strings.HasPrefix(argument, "--session=")
+		if argument != "--session" && !joined {
+			rest = append(rest, argument)
 			continue
 		}
-		if index+1 >= len(args) || args[index+1] == "" {
-			return nil, "", errors.New("--session needs a session id")
-		}
-		if session != "" {
+		if seen {
 			return nil, "", errors.New("--session was given twice")
 		}
-		session = args[index+1]
-		index++
+		seen = true
+		switch {
+		case joined:
+			session = strings.TrimPrefix(argument, "--session=")
+		case index+1 < len(args):
+			session = args[index+1]
+			index++
+		default:
+			return nil, "", errors.New("--session needs a session id")
+		}
+		// Trimmed here rather than left to the node: a value of spaces is
+		// otherwise trimmed away at the far end and answered with the whole
+		// node's listing, which reads as one session's and is not.
+		session = strings.TrimSpace(session)
+		if session == "" {
+			return nil, "", errors.New("--session needs a session id")
+		}
 	}
 	return rest, session, nil
 }
