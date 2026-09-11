@@ -65,39 +65,37 @@ func TestMCPConfigNamesTheBinaryAndTheSession(t *testing.T) {
 	if entry.Command != binary || result.Command != binary {
 		t.Errorf("command = %q / %q, want %q", entry.Command, result.Command, binary)
 	}
-	// Order matters: -as takes the next argument.
-	if strings.Join(entry.Args, " ") != "-as claude:74d8025b" {
-		t.Errorf("args = %v, want [-as claude:74d8025b] with the id trimmed", entry.Args)
+	// Order matters: -as and -url each take the next argument.
+	if strings.Join(entry.Args, " ") != "-as claude:74d8025b -url "+defaultNodeURL {
+		t.Errorf("args = %v, want [-as claude:74d8025b -url %s] with the id trimmed", entry.Args, defaultNodeURL)
 	}
 	if !strings.Contains(result.Text, "\n  \"mcpServers\"") {
 		t.Errorf("the snippet is not indented two spaces:\n%s", result.Text)
 	}
-	if !result.Copied || len(*written) != 1 || (*written)[0] != result.Text {
-		t.Errorf("copied = %v, clipboard got %d writes; want the snippet written once", result.Copied, len(*written))
+	// Building the snippet must not touch the clipboard: the window copies,
+	// after it has decided the reply still belongs to the dialog on screen.
+	if len(*written) != 0 {
+		t.Errorf("MCPConfig wrote the clipboard %d times; copying is CopyText's", len(*written))
 	}
 }
 
-func TestMCPConfigCarriesANonDefaultNodeURL(t *testing.T) {
+// The default is pinned too. `agenthub-mcp` reads AGENTHUB_URL before falling
+// back to its own default, so a snippet with no -url does not say "the default
+// node" — it says "whichever node the environment Claude Code inherited names",
+// which is how a config for a session on this node ends up dialling another.
+func TestMCPConfigAlwaysPinsTheNodeURL(t *testing.T) {
 	t.Setenv("AGENTHUB_MCP", fakeMCPBinary(t))
 	watchClipboard(t, nil)
 
-	const other = "http://127.0.0.1:7999"
-	app := &App{ctx: context.Background(), client: newClient(other), url: other}
-	result, err := app.MCPConfig("codex:thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(result.Text, `"-url"`) || !strings.Contains(result.Text, other) {
-		t.Errorf("a node somewhere other than the default was not passed to the server:\n%s", result.Text)
-	}
-
-	app = &App{ctx: context.Background(), client: newClient(defaultNodeURL), url: defaultNodeURL}
-	result, err = app.MCPConfig("codex:thread")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(result.Text, "-url") {
-		t.Errorf("the default node was written as a setting the owner now has to maintain:\n%s", result.Text)
+	for _, nodeURL := range []string{"http://127.0.0.1:7999", defaultNodeURL} {
+		app := &App{ctx: context.Background(), client: newClient(nodeURL), url: nodeURL}
+		result, err := app.MCPConfig("codex:thread")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result.Text, `"-url"`) || !strings.Contains(result.Text, nodeURL) {
+			t.Errorf("the node the window is talking to (%s) was not pinned:\n%s", nodeURL, result.Text)
+		}
 	}
 }
 
@@ -118,22 +116,26 @@ func TestMCPConfigSaysWhereItLookedForTheServer(t *testing.T) {
 	}
 }
 
-// A clipboard that refuses is not a failure: the snippet is on screen and can
-// be selected by hand. Returning an error here would take that away as well.
-func TestMCPConfigStillReturnsTheSnippetWhenTheClipboardRefuses(t *testing.T) {
-	t.Setenv("AGENTHUB_MCP", fakeMCPBinary(t))
+func TestCopyTextWritesWhatItWasGiven(t *testing.T) {
+	written := watchClipboard(t, nil)
+
+	app := &App{ctx: context.Background()}
+	if err := app.CopyText("{\"mcpServers\":{}}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*written) != 1 || (*written)[0] != "{\"mcpServers\":{}}\n" {
+		t.Errorf("clipboard got %v, want the one string it was handed", *written)
+	}
+}
+
+// A clipboard that refuses must be reported, not swallowed: the dialog says
+// "已複製" or "please copy it by hand" from this answer, and the wrong one
+// sends someone to paste whatever they had copied before into a config file.
+func TestCopyTextReportsAClipboardThatRefuses(t *testing.T) {
 	watchClipboard(t, errors.New("no clipboard on this display"))
 
-	app := &App{ctx: context.Background(), client: newClient(defaultNodeURL), url: defaultNodeURL}
-	result, err := app.MCPConfig("claude:x")
-	if err != nil {
-		t.Fatalf("a clipboard failure was reported as a failed call: %v", err)
-	}
-	if result.Copied {
-		t.Error("copied = true after the clipboard refused; the dialog would tell the owner to paste nothing")
-	}
-	if !strings.Contains(result.Text, "claude:x") {
-		t.Errorf("the snippet was not returned:\n%s", result.Text)
+	if err := (&App{ctx: context.Background()}).CopyText("anything"); err == nil {
+		t.Error("a refused clipboard was reported as a successful copy")
 	}
 }
 

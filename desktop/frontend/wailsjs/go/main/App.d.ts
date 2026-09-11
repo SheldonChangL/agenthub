@@ -6,6 +6,8 @@ export function ClearInbox(arg1:string):Promise<main.ClearedInbox>;
 
 export function ClosePairing():Promise<main.PairingState>;
 
+export function CopyText(arg1:string):Promise<void>;
+
 export function Discover():Promise<Record<string, number>>;
 
 export function Heartbeat():Promise<string>;
