@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/address"
@@ -244,6 +245,11 @@ type outboundSummary struct {
 // only way to find out what became of a message is to still have its id. An
 // owner who has closed that terminal — or who is looking at a window rather
 // than a terminal — had no way to ask at all.
+//
+// `session` narrows the list to one local sender. The desktop opens this from
+// a session's row, so the question it is really asking is "what did this
+// session send" — and without the parameter a client can only page the whole
+// node and discard most of what it fetched.
 func (s *Server) outboundList(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	if value := r.URL.Query().Get("limit"); value != "" {
@@ -260,7 +266,19 @@ func (s *Server) outboundList(w http.ResponseWriter, r *http.Request) {
 			"after is not a cursor this node issued; pass the `next` value from the previous page, or omit it to start over")
 		return
 	}
-	messages, err := s.store.ListOutbound(r.Context(), limit, after)
+	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	if session != "" {
+		// The same resolution /v1/wakes uses, for the same reason: a window
+		// opened from one session's row asks about that session, and an
+		// address naming another node is answered as a routing error rather
+		// than as an empty list that reads as "this session sent nothing".
+		resolved, ok := s.localSession(w, session)
+		if !ok {
+			return
+		}
+		session = resolved
+	}
+	messages, err := s.store.ListOutbound(r.Context(), session, limit, after)
 	if err != nil {
 		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
 		return
@@ -277,6 +295,9 @@ func (s *Server) outboundList(w http.ResponseWriter, r *http.Request) {
 	page := map[string]any{"messages": rows}
 	// A full page may not be the last; `next` says where the following one
 	// begins. Absent on a short page, which is the end.
+	// The cursor is the last row of this page, which is a row that passed the
+	// filter — so the next page resumes inside the same filtered list rather
+	// than at whatever happened to be queued next.
 	if len(messages) == limit {
 		page["next"] = registry.OutboundCursorAfter(messages[len(messages)-1]).String()
 	}

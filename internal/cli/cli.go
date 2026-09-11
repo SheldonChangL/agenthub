@@ -300,13 +300,26 @@ func (r runner) command(ctx context.Context, args []string) error {
 		// Without an id it lists, newest first. An owner who has lost the id —
 		// the terminal that printed it is closed, or the send came from an
 		// agent rather than from them — otherwise could not ask at all.
-		if len(args) > 2 {
-			return errors.New("usage: ah outbound [message-id]")
+		//
+		// --session narrows the listing to one local sender. It only means
+		// anything while listing: with a message id the answer is that one
+		// message, and silently ignoring the flag would let a caller believe
+		// a filter was applied.
+		rest, session, err := takeSessionFlag(args[1:])
+		if err != nil {
+			return err
 		}
-		if len(args) == 1 {
-			return r.simple(ctx, http.MethodGet, "/v1/outbound", nil)
+		if len(rest) > 1 || (len(rest) == 1 && session != "") {
+			return errors.New("usage: ah outbound [message-id] | ah outbound [--session <session-id>]")
 		}
-		return r.simple(ctx, http.MethodGet, "/v1/outbound/"+url.PathEscape(args[1]), nil)
+		if len(rest) == 0 {
+			path := "/v1/outbound"
+			if session != "" {
+				path += "?session=" + url.QueryEscape(session)
+			}
+			return r.simple(ctx, http.MethodGet, path, nil)
+		}
+		return r.simple(ctx, http.MethodGet, "/v1/outbound/"+url.PathEscape(rest[0]), nil)
 	case "node":
 		return r.simple(ctx, http.MethodGet, "/v1/node", nil)
 	case "heartbeat":
@@ -745,6 +758,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
 	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
+	_, _ = fmt.Fprintln(output, "  ah outbound [--session <session-id>]         the listing, narrowed to what one local session sent")
 	_, _ = fmt.Fprintln(output, "  ah inbox <session-id>                        read a session's inbox")
 	_, _ = fmt.Fprintln(output, "  ah inbox delete <session-id> <message-id>    drop one message, once it has been handled")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
@@ -833,4 +847,29 @@ func (r runner) wakes(ctx context.Context, path string) error {
 		decoded.Limits.Node, decoded.Limits.NodeWindow)
 	_, _ = fmt.Fprintln(r.stdout, "A message held back by a limit is still in the inbox; `ah inbox <session-id>` reads it.")
 	return nil
+}
+
+// takeSessionFlag pulls an optional `--session <id>` out of a command's
+// arguments and returns what is left.
+//
+// Written as a flag rather than a positional, because `ah outbound` already
+// has a positional and the two mean opposite things: one message, or many
+// narrowed to a sender. A caller that passes both is told so rather than
+// having one of them quietly win.
+func takeSessionFlag(args []string) (rest []string, session string, err error) {
+	for index := 0; index < len(args); index++ {
+		if args[index] != "--session" {
+			rest = append(rest, args[index])
+			continue
+		}
+		if index+1 >= len(args) || args[index+1] == "" {
+			return nil, "", errors.New("--session needs a session id")
+		}
+		if session != "" {
+			return nil, "", errors.New("--session was given twice")
+		}
+		session = args[index+1]
+		index++
+	}
+	return rest, session, nil
 }
