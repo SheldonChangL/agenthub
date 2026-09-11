@@ -86,9 +86,9 @@ func TestServiceInstallCarriesTheNodesFlagsByTheNodesNames(t *testing.T) {
 		node,
 		"--db", filepath.Join(wd, "data", "agenthub.db"),
 		"--peer-listen", "122.122.122.1:7463",
-		"--allow-lan", "--discover",
+		"--allow-lan=true", "--discover=true",
 		"--treat-as-private", "122.122.0.0/16", "--treat-as-private", "10.9.0.0/16",
-		"--auto-wake",
+		"--auto-wake=true",
 	}
 	text := string(plist)
 	position := 0
@@ -105,6 +105,56 @@ func TestServiceInstallCarriesTheNodesFlagsByTheNodesNames(t *testing.T) {
 	}
 	if len(runner.calls) != 3 || !strings.HasPrefix(runner.calls[2], "launchctl bootstrap gui/501 ") {
 		t.Errorf("manager calls = %v", runner.calls)
+	}
+}
+
+// An owner who installs with --allow-lan=false is closing a switch, and the
+// unit has to carry that. A bare --allow-lan can only turn something on, so
+// writing nothing left the remembered value in force while the install said
+// the opposite — the one combination where the note and the file disagree, on
+// the setting that decides whether this machine serves the network.
+func TestServiceInstallWritesABooleanTurnedOff(t *testing.T) {
+	home, _ := useFakeManager(t, "linux")
+	node := fakeNodeBinary(t)
+	server := nodeThatAnswers(t)
+	var stdout, stderr bytes.Buffer
+	args := []string{"--url", server.URL, "service", "install", "--node-binary", node,
+		"--allow-lan=false", "--discover=false", "--auto-wake=false"}
+	if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	unit, err := os.ReadFile(filepath.Join(home, ".config", "systemd", "user", service.UnitName+".service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"--allow-lan=false", "--discover=false", "--auto-wake=false"} {
+		if !strings.Contains(string(unit), want) {
+			t.Errorf("the unit does not carry %q, so the remembered value stays in force:\n%s", want, unit)
+		}
+	}
+	// And the note describes that same file rather than the command line.
+	if !strings.Contains(stdout.String(), "--allow-lan") {
+		t.Errorf("the install should say the unit passes --allow-lan:\n%s", stdout.String())
+	}
+}
+
+// The note is a promise about the unit on disk. A flag given here that reaches
+// no unit must not be named in it, or an owner whose setting will not change
+// is sent to the wrong explanation.
+func TestTheInstallNoteNamesOnlyWhatTheUnitCarries(t *testing.T) {
+	if baked := bakedInSettings([]string{"--db", "/tmp/a.db", "--listen", "127.0.0.1:7462"}); len(baked) != 0 {
+		t.Errorf("bakedInSettings named %v for a unit carrying no remembered flag", baked)
+	}
+	baked := bakedInSettings([]string{"--db", "/tmp/a.db", "--peer-listen", "192.168.1.10:7463",
+		"--allow-lan=false", "--treat-as-private", "10.9.0.0/16", "--treat-as-private", "10.10.0.0/16"})
+	want := []string{"--peer-listen", "--allow-lan", "--treat-as-private"}
+	if len(baked) != len(want) {
+		t.Fatalf("bakedInSettings = %v, want %v", baked, want)
+	}
+	for index, name := range want {
+		if baked[index] != name {
+			t.Fatalf("bakedInSettings = %v, want %v", baked, want)
+		}
 	}
 }
 
@@ -233,10 +283,66 @@ func TestServiceStatusSeparatesTheServiceFromTheNode(t *testing.T) {
 func TestServiceUnknownSubcommandIsRefused(t *testing.T) {
 	useFakeManager(t, "darwin")
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"service", "restart"}, &stdout, &stderr); code == 0 {
+	// `restart` used to be the unknown one here and is now a command, so the
+	// case needs a word that is still not one.
+	if code := Run(context.Background(), []string{"service", "reload"}, &stdout, &stderr); code == 0 {
 		t.Fatal("accepted an unknown service command")
 	}
-	if !strings.Contains(stderr.String(), "install, uninstall or status") {
+	if !strings.Contains(stderr.String(), "install, restart, uninstall or status") {
 		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// `ah service restart` is the step between saving a setting and it being in
+// effect, so it has to exist as a word the owner types.
+func TestServiceRestartRestartsWithoutTouchingTheRegistration(t *testing.T) {
+	_, runner := useFakeManager(t, "linux")
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"service", "restart"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != "systemctl --user restart "+service.UnitName {
+		t.Fatalf("calls = %v", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "restarted") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+	// An argument means the owner meant something this command does not do;
+	// answering it by restarting anyway would be the wrong kind of helpful.
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"service", "restart", "now"}, &out, &errOut); code == 0 {
+		t.Fatal("ah service restart accepted an argument")
+	}
+}
+
+// The flags still work — units out there were installed with them — but the
+// install has to say that a flag in the unit overrides anything saved later,
+// or a setting changed from the desktop appears to do nothing.
+func TestServiceInstallSaysBakedInFlagsOverrideSavedSettings(t *testing.T) {
+	useFakeManager(t, "linux")
+	node := nodeThatAnswers(t)
+	binary := fakeNodeBinary(t)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--url", node.URL, "service", "install",
+		"--db", filepath.Join(t.TempDir(), "agenthub.db"), "--node-binary", binary, "--discover"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"--discover", "overrides anything saved later", "ah settings set"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+
+	// And an install that bakes in nothing says nothing about it: a note on
+	// every install is a note nobody reads.
+	var plain, plainErr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", node.URL, "service", "install",
+		"--db", filepath.Join(t.TempDir(), "agenthub.db"), "--node-binary", binary}, &plain, &plainErr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, plainErr.String())
+	}
+	if strings.Contains(plain.String(), "overrides anything saved later") {
+		t.Errorf("a --db-only install still warned about baked-in flags:\n%s", plain.String())
 	}
 }

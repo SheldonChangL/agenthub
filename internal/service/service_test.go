@@ -489,3 +489,68 @@ func TestInstallTightensAnExistingUnitsMode(t *testing.T) {
 		t.Errorf("unit mode after reinstall = %o, want 600", info.Mode().Perm())
 	}
 }
+
+// A restart is how a setting written into the database takes effect. It must
+// be one command that actually replaces the process: `launchctl stop` would
+// lean on KeepAlive, which is a restart only by side effect.
+func TestRestartDrivesThePlatformsOwnRestart(t *testing.T) {
+	for goos, want := range map[string]string{
+		"darwin": "launchctl kickstart -k gui/501/" + Label,
+		"linux":  "systemctl --user restart " + UnitName,
+	} {
+		runner := &fakeRunner{}
+		manager := Manager{GOOS: goos, Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+		report, err := manager.Restart(context.Background())
+		if err != nil {
+			t.Fatalf("%s: Restart() error = %v", goos, err)
+		}
+		if len(runner.calls) != 1 || runner.calls[0] != want {
+			t.Fatalf("%s: calls = %v, want exactly [%q]", goos, runner.calls, want)
+		}
+		if len(report.Steps) != 1 || !strings.Contains(report.Steps[0], "restarted") {
+			t.Fatalf("%s: steps = %v", goos, report.Steps)
+		}
+		// Nothing about the registration, the unit, the key or the database is
+		// touched: an owner changing one switch must not risk the identity
+		// every pairing is keyed on.
+		for _, call := range runner.calls {
+			for _, forbidden := range []string{"bootout", "bootstrap", "disable", "enable", "daemon-reload"} {
+				if strings.Contains(call, forbidden) {
+					t.Fatalf("%s: restart ran %q", goos, call)
+				}
+			}
+		}
+	}
+}
+
+// Restarting something that was never installed has to say that, not report a
+// launchctl exit status the owner cannot act on.
+func TestRestartSaysWhenThereIsNothingRegistered(t *testing.T) {
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		"launchctl kickstart -k gui/501/" + Label: {out: "Could not find service", err: errors.New("exit status 3")},
+	}}
+	manager := Manager{GOOS: "darwin", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+	_, err := manager.Restart(context.Background())
+	if err == nil {
+		t.Fatal("restarting an unregistered job succeeded")
+	}
+	if !strings.Contains(err.Error(), "ah service install") {
+		t.Fatalf("error = %v; it has to say how to register it", err)
+	}
+}
+
+// Windows has no manager this package drives, and restart must say so rather
+// than running nothing and reporting success.
+func TestRestartRefusesAnUnsupportedPlatform(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := Manager{GOOS: "windows", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+	if _, err := manager.Restart(context.Background()); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("error = %v, want ErrUnsupported", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("calls = %v", runner.calls)
+	}
+}

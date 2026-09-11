@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
@@ -33,6 +34,9 @@ const MaxDisplayName = 128
 
 type Registry struct {
 	db *sql.DB
+	// settingsWrite keeps this process's own writers of the node settings in
+	// line, so a read-decide-write cycle is not interleaved with another one.
+	settingsWrite sync.Mutex
 }
 
 type ListOptions struct {
@@ -170,6 +174,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_audience_updated
 		return err
 	}
 	if err := r.migratePresence(ctx); err != nil {
+		return err
+	}
+	if err := r.migrateNodeSettings(ctx); err != nil {
 		return err
 	}
 	return r.migrateWakeEvents(ctx)

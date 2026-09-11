@@ -3,8 +3,12 @@ package main
 import (
 	"agenthub.local/agenthub/internal/api"
 	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/protocol"
+	"agenthub.local/agenthub/internal/registry"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -12,12 +16,14 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"agenthub.local/agenthub/internal/discovery"
+	"agenthub.local/agenthub/internal/nodeconfig"
 	"agenthub.local/agenthub/internal/wake"
 )
 
@@ -286,4 +292,362 @@ func functionBody(t *testing.T, file, opener string) string {
 		t.Fatalf("no closing brace at column zero after %q in %s", opener, file)
 	}
 	return rest[:end]
+}
+
+// A flag given now decides this start and is recorded; a flag left off means
+// whatever the node remembered. The distinction is "was it passed", not "does
+// it differ from the default": -allow-lan=false is an owner turning something
+// off, and reading that as absence would make a remembered switch impossible
+// to close.
+func TestFlagSettingsCollectsOnlyWhatTheCommandLineGave(t *testing.T) {
+	parse := func(args ...string) nodeconfig.Partial {
+		t.Helper()
+		flags := flag.NewFlagSet("agenthub-node", flag.ContinueOnError)
+		peerListen := flags.String("peer-listen", nodeconfig.DefaultPeerListen, "")
+		allowLAN := flags.Bool("allow-lan", false, "")
+		discover := flags.Bool("discover", false, "")
+		autoWake := flags.Bool("auto-wake", false, "")
+		flags.String("db", "", "")
+		var declaredPrivate nodeconfig.StringList
+		flags.Var(&declaredPrivate, "treat-as-private", "")
+		if err := flags.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return flagSettings(flags, peerListen, allowLAN, discover, autoWake, declaredPrivate)
+	}
+
+	if given := parse("-db", "/tmp/x.db"); !given.Empty() {
+		t.Fatalf("a command line with no remembered flag collected %+v", given)
+	}
+
+	off := parse("-allow-lan=false")
+	if off.AllowLAN == nil || *off.AllowLAN {
+		t.Fatalf("-allow-lan=false collected %v; a switch has to be closable", off.AllowLAN)
+	}
+	if off.Discover != nil || off.PeerListen != nil || off.TreatAsPrivate != nil {
+		t.Fatalf("one flag collected others: %+v", off)
+	}
+
+	// Given at all, -treat-as-private replaces the whole declaration — empty
+	// included, which is how the last range is withdrawn.
+	both := parse("-treat-as-private", "10.9.0.0/16", "-treat-as-private", "122.122.0.0/16")
+	if both.TreatAsPrivate == nil || len(*both.TreatAsPrivate) != 2 {
+		t.Fatalf("treatAsPrivate = %v", both.TreatAsPrivate)
+	}
+	settings, sources := nodeconfig.Resolve(both, nodeconfig.Partial{
+		TreatAsPrivate: func() *[]string { old := []string{"172.20.0.0/16"}; return &old }(),
+	}, nodeconfig.DefaultSettings())
+	if len(settings.TreatAsPrivate) != 2 || sources[nodeconfig.SettingTreatAsPrivate] != nodeconfig.SourceFlag {
+		t.Fatalf("settings = %+v, sources = %v", settings, sources)
+	}
+}
+
+// A remembered value can stop being valid with nothing changing on this
+// command line — a renumbered network, a range that no longer covers the
+// address. The refusal has to say where the value came from and how to replace
+// it, or the owner reads an error about an address they never typed.
+func TestARefusalOverARememberedValueSaysSo(t *testing.T) {
+	settings := nodeconfig.Settings{PeerListen: "192.168.1.10:7463"}
+	_, err := settings.Validate()
+	if err == nil {
+		t.Fatal("a LAN listener without -allow-lan was accepted")
+	}
+	explained := rememberedRefusal(err, map[string]string{
+		nodeconfig.SettingPeerListen: nodeconfig.SourceRemembered,
+	})
+	// It has to name a route that works from where the owner is standing. The
+	// node is refusing to start, so every `ah settings` suggestion points at an
+	// API this node is not serving; the only thing that reaches a dead node is
+	// its own command line.
+	for _, want := range []string{"remembering", "-peer-listen", "agenthub-node", nodeconfig.DefaultPeerListen} {
+		if !strings.Contains(explained.Error(), want) {
+			t.Errorf("the refusal lacks %q: %v", want, explained)
+		}
+	}
+	// And where it does mention the API, it says why that route is shut.
+	if !strings.Contains(explained.Error(), "only answers once the node starts") {
+		t.Errorf("the refusal offers `ah settings` without saying it cannot answer: %v", explained)
+	}
+	// Nothing was remembered, so nothing is added: the flag the owner typed is
+	// right there on their command line.
+	plain := rememberedRefusal(err, map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceFlag})
+	if plain.Error() != err.Error() {
+		t.Errorf("a refusal over a typed flag was decorated: %v", plain)
+	}
+}
+
+// rememberingStore is a settingsStore that keeps what it was told, so a test
+// can ask what actually reached the database rather than what was returned.
+type rememberingStore struct {
+	stored nodeconfig.Partial
+	saves  int
+	getErr error
+}
+
+func (s *rememberingStore) GetNodeSettings(context.Context) (nodeconfig.Partial, error) {
+	return s.stored, s.getErr
+}
+
+func (s *rememberingStore) SaveNodeSettings(_ context.Context, settings nodeconfig.Partial) error {
+	s.saves++
+	s.stored = s.stored.Overlay(settings)
+	return nil
+}
+
+func boolFlag(value bool) *bool       { return &value }
+func stringFlag(value string) *string { return &value }
+
+// A flag that cannot start this node must not be remembered, because a
+// remembered one cannot be taken back: the next start refuses over a value
+// that is on no command line, the service restarts forever, and the
+// `ah settings set ...` the refusal names goes through an API a node that will
+// not start is not serving.
+func TestAnInvalidFlagIsNotRemembered(t *testing.T) {
+	store := &rememberingStore{}
+	given := nodeconfig.Partial{PeerListen: stringFlag("8.8.8.8:7463"), AllowLAN: boolFlag(true)}
+
+	if _, err := applyStartupSettings(context.Background(), store, given, func(string, ...any) {}); err == nil {
+		t.Fatal("a public peer listener was accepted")
+	}
+	if store.saves != 0 {
+		t.Errorf("a refused configuration was written to the store %d time(s)", store.saves)
+	}
+	if !store.stored.Empty() {
+		t.Fatalf("the store holds %+v after a refusal; the next start would refuse over it too", store.stored)
+	}
+	// The proof that this is about order and not about the error: the same
+	// start with nothing given now succeeds, which is exactly what a service
+	// restart does.
+	after, err := applyStartupSettings(context.Background(), store, nodeconfig.Partial{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("the next start was still blocked: %v", err)
+	}
+	if after.settings.PeerListen != nodeconfig.DefaultPeerListen || after.settings.AllowLAN {
+		t.Errorf("the next start ran with %+v, not the defaults", after.settings)
+	}
+}
+
+// A valid flag is remembered, which is the whole reason these settings exist:
+// `ah service install` needs only --db because the value given once is read
+// back on every later start.
+func TestAValidFlagIsRemembered(t *testing.T) {
+	store := &rememberingStore{}
+	given := nodeconfig.Partial{PeerListen: stringFlag("192.168.1.10:7463"), AllowLAN: boolFlag(true)}
+
+	if _, err := applyStartupSettings(context.Background(), store, given, func(string, ...any) {}); err != nil {
+		t.Fatalf("applyStartupSettings: %v", err)
+	}
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != "192.168.1.10:7463" {
+		t.Errorf("peerListen read back as %v; nothing was remembered", stored.PeerListen)
+	}
+	if stored.AllowLAN == nil || !*stored.AllowLAN {
+		t.Errorf("allowLan read back as %v; nothing was remembered", stored.AllowLAN)
+	}
+
+	// And it applies on a later start with no flags at all.
+	next, err := applyStartupSettings(context.Background(), store, nodeconfig.Partial{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("the remembered configuration did not start: %v", err)
+	}
+	if next.settings.PeerListen != "192.168.1.10:7463" || !next.settings.AllowLAN {
+		t.Errorf("the next start ran with %+v", next.settings)
+	}
+	if next.sources[nodeconfig.SettingPeerListen] != nodeconfig.SourceRemembered {
+		t.Errorf("peerListen came from %q, not %q", next.sources[nodeconfig.SettingPeerListen], nodeconfig.SourceRemembered)
+	}
+}
+
+// Every setting, every start. A remembered -allow-lan appears on no command
+// line, so these lines are the only place an owner can see that this machine
+// is serving the network — which the README promises they are.
+func TestTheStartupLogSaysEverySettingAndWhereItCameFrom(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"),
+		AllowLAN:   boolFlag(true),
+	}}
+	var lines []string
+	startup, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{Discover: boolFlag(true)},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatalf("applyStartupSettings: %v", err)
+	}
+	logged := strings.Join(lines, "\n")
+	for _, want := range nodeconfig.Describe(startup.settings, startup.sources) {
+		if !strings.Contains(logged, "setting "+want) {
+			t.Errorf("the start-up log never said %q:\n%s", want, logged)
+		}
+	}
+	// Named, so that "remembered" and "typed just now" stay distinguishable in
+	// the one place a remembered switch is visible at all.
+	for _, want := range []string{
+		"setting allow-lan = true (remembered)",
+		"setting discover = true (flag)",
+	} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the start-up log lacks %q:\n%s", want, logged)
+		}
+	}
+}
+
+// The crash loop this withdrawal exists to end.
+//
+// `ah service install --allow-lan=false` writes that flag into the service
+// unit. On a node that remembered 192.168.1.10:7463 the resolved configuration
+// is a LAN listener with the switch off, which Validate refuses — so the start
+// fails, the supervisor restarts it, and it fails again with nothing on the
+// command line to blame. The owner's API never comes up, so the `ah settings`
+// rescue is behind a listener this node is not serving, and reinstalling walks
+// back into the same remembered address.
+func TestClosingAllowLANWithdrawsARememberedLANListenerInsteadOfRefusing(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"),
+		AllowLAN:   boolFlag(true),
+	}}
+	var lines []string
+	startup, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{AllowLAN: boolFlag(false)},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatalf("-allow-lan=false still refuses to start: %v", err)
+	}
+	if startup.settings.PeerListen != nodeconfig.DefaultPeerListen || startup.settings.AllowLAN {
+		t.Fatalf("this start ran with %+v", startup.settings)
+	}
+
+	// Said out loud. The owner asked about one switch and the listener moved,
+	// and a listener moving is the one thing about this node that is visible
+	// from another machine.
+	logged := strings.Join(lines, "\n")
+	for _, want := range []string{"192.168.1.10:7463", nodeconfig.DefaultPeerListen, "allow-lan is off"} {
+		if !strings.Contains(logged, want) {
+			t.Errorf("the start-up log never says %q:\n%s", want, logged)
+		}
+	}
+
+	// Persisted in the same save, so the next start does not rediscover this —
+	// and so a start with no flags at all, which is what a restart without the
+	// unit file is, stays on loopback.
+	stored, err := store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListen == nil || *stored.PeerListen != nodeconfig.DefaultPeerListen {
+		t.Fatalf("peerListen was left as %v; the withdrawal did not survive this start", stored.PeerListen)
+	}
+	next, err := applyStartupSettings(context.Background(), store, nodeconfig.Partial{}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("the following start was blocked: %v", err)
+	}
+	if next.settings.PeerListen != nodeconfig.DefaultPeerListen {
+		t.Fatalf("the following start ran with %+v", next.settings)
+	}
+}
+
+// The withdrawal is narrow in both directions.
+//
+// An owner who types both halves has contradicted themselves, and guessing
+// which half they meant would quietly ignore an address they explicitly asked
+// for. And a listener already off the network is not moved: a loopback port
+// somebody chose is a choice, not a consequence of allow-lan.
+func TestTheStartupWithdrawalDoesNotGuessAtAContradictionOrMoveALoopbackPort(t *testing.T) {
+	contradictory := &rememberingStore{}
+	_, err := applyStartupSettings(context.Background(), contradictory, nodeconfig.Partial{
+		PeerListen: stringFlag("192.168.1.10:7463"), AllowLAN: boolFlag(false),
+	}, func(string, ...any) {})
+	if err == nil {
+		t.Fatal("a LAN -peer-listen typed beside -allow-lan=false was silently withdrawn")
+	}
+	if contradictory.saves != 0 {
+		t.Errorf("a refused start wrote to the store %d time(s)", contradictory.saves)
+	}
+
+	const chosen = "127.0.0.1:9463"
+	kept := &rememberingStore{stored: nodeconfig.Partial{PeerListen: stringFlag(chosen)}}
+	startup, err := applyStartupSettings(context.Background(), kept,
+		nodeconfig.Partial{AllowLAN: boolFlag(false)}, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("applyStartupSettings: %v", err)
+	}
+	if startup.settings.PeerListen != chosen {
+		t.Errorf("a chosen loopback port was moved to %q for no reason", startup.settings.PeerListen)
+	}
+}
+
+// settingsTestSigner signs heartbeats with a throwaway key, so an owner API can
+// be stood up next to the start-up path and asked the same question.
+type settingsTestSigner struct{}
+
+func (settingsTestSigner) Sign([]byte) []byte { return make([]byte, ed25519.SignatureSize) }
+
+// The two routes that can close allow-lan have to reach the same node.
+//
+// One is the owner's PUT, which predicts what the next start will do; the other
+// is that start itself. They were separate implementations, and only the PUT had
+// the withdrawal: the desktop would report a node saved on loopback while the
+// service crash-looped over a LAN address, or — the way round that shipped —
+// `ah service install --allow-lan=false` bricked a node the API would have
+// rescued. Both now call nodeconfig.WithdrawPeerListen, and this is the
+// assertion that says so in terms of what each route leaves in a database.
+func TestTheOwnerAPIAndTheNodeItselfWithdrawTheSameListener(t *testing.T) {
+	ctx := context.Background()
+	const lan = "192.168.1.10:7463"
+	opened := nodeconfig.Partial{PeerListen: stringFlag(lan), AllowLAN: boolFlag(true)}
+
+	// Route one: the owner PUTs {"allowLan": false} to a running node.
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveNodeSettings(ctx, opened); err != nil {
+		t.Fatal(err)
+	}
+	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"}
+	handler := api.NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, settingsTestSigner{}), node,
+		api.WithNodeSettings(nodeconfig.Settings{PeerListen: lan, AllowLAN: true},
+			map[string]string{})).Handler()
+
+	body, err := json.Marshal(map[string]any{"allowLan": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPut, "/v1/node/settings", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorded := httptest.NewRecorder()
+	handler.ServeHTTP(recorded, request)
+	if recorded.Code != http.StatusOK {
+		t.Fatalf("the owner's write = %d %s", recorded.Code, recorded.Body.String())
+	}
+	viaAPI, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Route two: the same node started with -allow-lan=false and nothing else,
+	// which is what `ah service install --allow-lan=false` writes into the unit.
+	direct := &rememberingStore{stored: opened}
+	if _, err := applyStartupSettings(ctx, direct,
+		nodeconfig.Partial{AllowLAN: boolFlag(false)}, func(string, ...any) {}); err != nil {
+		t.Fatalf("the node refused to start where the API accepted the same change: %v", err)
+	}
+	viaStart := direct.stored
+
+	if viaAPI.PeerListen == nil || viaStart.PeerListen == nil ||
+		*viaAPI.PeerListen != *viaStart.PeerListen {
+		t.Fatalf("the two routes stored different listeners: api %v, start %v",
+			viaAPI.PeerListen, viaStart.PeerListen)
+	}
+	if *viaAPI.PeerListen != nodeconfig.DefaultPeerListen {
+		t.Fatalf("both routes agreed on %q, which still serves the network", *viaAPI.PeerListen)
+	}
+	if viaAPI.AllowLAN == nil || viaStart.AllowLAN == nil ||
+		*viaAPI.AllowLAN != *viaStart.AllowLAN || *viaAPI.AllowLAN {
+		t.Fatalf("the two routes stored different switches: api %v, start %v",
+			viaAPI.AllowLAN, viaStart.AllowLAN)
+	}
 }
