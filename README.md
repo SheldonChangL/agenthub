@@ -272,6 +272,14 @@ That is deliberate for `--allow-lan`, which is the only switch here that lets
 anything leave this machine: remembered, it appears on no command line, so the
 log is the one place it is visible.
 
+If a start finds `allow-lan` off beside a remembered peer listener it cannot
+serve, it moves that listener back to `127.0.0.1:7463` and stores it, rather
+than refusing to start over a value on no command line. The `FROM` column then
+reads `default (withdrawn)` and `GET /v1/node/settings` answers
+`peerListenWithdrawn: true`, because the default is now a value in the database
+and `default` alone would read as "nothing is saved". The next start finds it
+remembered like any other.
+
 A remembered value is validated on every start, with the same rules a flag gets.
 If it has stopped being valid — the network was renumbered, a declared range no
 longer covers the address — the node refuses to start, says the value was
@@ -682,7 +690,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. `ah nodes address <node-id> <host:port>` is this call |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
-| `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ |
+| `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ. Adds `peerListenWithdrawn: true` while this start is running on a peer listener it withdrew |
 | `PUT` | `/v1/node/settings` | Remember some or all of `peerListen`, `allowLan`, `discover`, `treatAsPrivate`, `autoWake`. Validated with the node's own start-up rules; answers `restartRequired: true`, because these are read only at startup |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
