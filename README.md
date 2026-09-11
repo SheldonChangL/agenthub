@@ -126,6 +126,45 @@ signature and recipient binding on all of them, plus expiry and a strictly
 advancing sequence on heartbeats, and message-id deduplication on messages.
 Session list responses are paginated; `ah list` follows every page automatically.
 
+## Run the node as a background service
+
+A node started from a terminal lives as long as that terminal — or as long as
+the agent session that started it. Messages sent to this machine while the node
+is down are not delivered, and the sender's `ah send` still says `queued`. So
+the node should belong to the operating system, not to a window:
+
+```sh
+bin/ah service install --db ./data/agenthub.db \
+  --peer-listen 192.168.1.10:7463 --allow-lan --discover
+```
+
+`install` takes the node's own flags by the node's own names, validates the
+peer listener with the node's rule before writing anything, and registers the
+node with launchd (macOS) or `systemd --user` (Linux): it starts at login and
+is restarted if it exits. `agenthub-node` is looked for beside `ah`, then on
+`PATH`; pass `--node-binary` to name it. A relative `--db` is made absolute,
+because a service has no working directory of yours. The command ends by
+asking the node whether it answers, and says so either way.
+
+```sh
+bin/ah service status      # installed? running? is the node answering?
+bin/ah service uninstall   # stop it and remove the registration
+```
+
+Uninstall removes the service and nothing else: `node.key` and the database
+stay where they are, so installing again brings the same node back and every
+pairing holds. To change a flag, run `install` again; the registration is
+replaced.
+
+On Linux a user service starts when you log in. For a machine that should run
+the node with nobody logged in, `loginctl enable-linger <user>` is the one
+extra step, and `install` prints it. Logs: `~/Library/Logs/agenthub/node.log`
+on macOS, `journalctl --user -u agenthub-node` on Linux. Windows is not
+supported yet; `install` says so rather than guessing.
+
+The desktop app offers the same three actions as buttons, so nobody has to
+know what launchd is.
+
 ## Two machines
 
 This is the walkthrough that was actually run between a MacBook and an Ubuntu

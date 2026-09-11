@@ -255,6 +255,8 @@ func (r runner) command(ctx context.Context, args []string) error {
 		return r.simple(ctx, http.MethodGet, "/v1/node", nil)
 	case "heartbeat":
 		return r.simple(ctx, http.MethodGet, "/v1/heartbeat", nil)
+	case "service":
+		return r.service(ctx, args)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -658,7 +660,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound,")
-	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates")
+	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, service")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
@@ -671,6 +673,11 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")
+	_, _ = fmt.Fprintln(output, "  ah service install [node flags] [--node-binary PATH]")
+	_, _ = fmt.Fprintln(output, "                                               run the node as a background service that starts at login")
+	_, _ = fmt.Fprintln(output, "                                               and is restarted if it exits; node flags are the node's own")
+	_, _ = fmt.Fprintln(output, "  ah service uninstall                         stop it and remove the registration; identity and data stay")
+	_, _ = fmt.Fprintln(output, "  ah service status                            is it installed, running, and is the node answering")
 }
 
 // wakes renders the trail of what has started a turn with nobody watching.
