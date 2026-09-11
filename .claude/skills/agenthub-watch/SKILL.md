@@ -60,7 +60,7 @@ For each message, in order:
    ```
 5. **Delete what you handled**, or the next tick reads it again:
    ```sh
-   curl -s -X DELETE http://127.0.0.1:7462/v1/inbox/SELF/<messageId>
+   ah inbox delete SELF <messageId>
    ```
    Delete only after the reply's `ah send` returned an id. A message you could not handle
    stays, and you say why.
