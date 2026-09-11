@@ -185,9 +185,12 @@ func TestInstallOnLinuxWritesUnitReloadsThenEnables(t *testing.T) {
 	if !strings.Contains(string(content), "ExecStart="+node+" --discover") {
 		t.Errorf("unit ExecStart wrong:\n%s", content)
 	}
+	// enable then restart, never `enable --now`: an already-active unit would
+	// keep the previous binary and flags.
 	wantCalls := []string{
 		"systemctl --user daemon-reload",
-		"systemctl --user enable --now " + UnitName,
+		"systemctl --user enable " + UnitName,
+		"systemctl --user restart " + UnitName,
 	}
 	if strings.Join(runner.calls, "\n") != strings.Join(wantCalls, "\n") {
 		t.Errorf("calls:\n%s\nwant:\n%s", strings.Join(runner.calls, "\n"), strings.Join(wantCalls, "\n"))

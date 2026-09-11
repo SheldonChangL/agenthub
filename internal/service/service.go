@@ -187,10 +187,16 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return report, fmt.Errorf("systemctl daemon-reload: %w: %s", err, strings.TrimSpace(out))
 		}
-		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "enable", "--now", UnitName); err != nil {
-			return report, fmt.Errorf("systemctl enable --now: %w: %s", err, strings.TrimSpace(out))
+		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "enable", UnitName); err != nil {
+			return report, fmt.Errorf("systemctl enable: %w: %s", err, strings.TrimSpace(out))
 		}
-		report.Steps = append(report.Steps, "enabled and started "+UnitName+" (systemd --user; restarted if it exits)")
+		// restart, not start: a unit that is already active keeps running the
+		// old binary and the old flags under `enable --now`, which is how a
+		// reinstall on Ubuntu left the previous build in place.
+		if out, err := m.Runner.Run(ctx, "systemctl", "--user", "restart", UnitName); err != nil {
+			return report, fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "enabled and (re)started "+UnitName+" (systemd --user; restarted if it exits)")
 		report.Notes = append(report.Notes,
 			"log: journalctl --user -u "+UnitName,
 			"a user service starts when you log in; to have it start at boot with nobody logged in, run: loginctl enable-linger "+userName())
