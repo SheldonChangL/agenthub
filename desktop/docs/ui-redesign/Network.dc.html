@@ -95,6 +95,15 @@
         <div style="padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38; background: #161920;"><div class="muted" style="font-size: 10px; letter-spacing: .08em; font-weight: 600;">我公開給它的 session</div><div style="margin-top: 4px;">3 個 <span style="color: #4f8cff; font-size: 12px; margin-left: 6px;">在本機頁篩選</span></div></div>
       </div>
 
+      <div style="border-left: 3px solid #e5544b; background: rgba(229,84,75,.12); padding: 10px 12px; border-radius: 6px; font-size: 12.5px;">
+        這個節點沒有記錄位址，送給它的訊息會被靜默跳過，而寄件端只會看到 <span class="mono">queued</span>。
+        <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+          <input class="field mono" style="flex: 1;" placeholder="192.168.50.22:7463">
+          <span class="btn primary">記錄位址</span>
+        </div>
+      </div>
+      <p class="muted" style="margin: 0; font-size: 11px;">背景每 15 秒重畫；欄位有焦點時不會被覆蓋。</p>
+
       <div style="display: flex; flex-direction: column; gap: 8px; flex: 1;">
         <div style="display: flex; align-items: baseline; gap: 10px;"><span style="font-size: 13px; font-weight: 600;">這個節點公開給我的 session</span><span class="muted" style="font-size: 11.5px;">線上 · 心跳 8 秒前</span></div>
         <div style="border: 1px solid #272c38; border-radius: 6px; overflow: hidden;">

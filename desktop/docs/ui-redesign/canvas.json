@@ -38,7 +38,7 @@
       "x": 740,
       "y": 1960,
       "w": 560,
-      "h": 760
+      "h": 900
     },
     {
       "file": "AltLight.dc.html",
@@ -54,6 +54,22 @@
       "x": 0,
       "y": 1000,
       "w": 1280,
+      "h": 800
+    },
+    {
+      "file": "InboxDrawer.dc.html",
+      "title": "抽屜 · 收件匣",
+      "x": 2400,
+      "y": 2920,
+      "w": 520,
+      "h": 800
+    },
+    {
+      "file": "OutboundDrawer.dc.html",
+      "title": "抽屜 · 送出紀錄",
+      "x": 3000,
+      "y": 2920,
+      "w": 520,
       "h": 800
     }
   ],
@@ -78,6 +94,13 @@
       "y": 1000,
       "w": 520,
       "text": "駭客背景版：底圖 + 往下流的 0/1 數字雨（純 CSS 動畫）+ 半透明毛玻璃面板。\n\n底圖檔案位置：desktop/docs/ui-redesign/hacker-bg.jpg。檔案還沒到之前先用深綠色漸層當底。\n\n取捨：數字雨會跟表格文字搶注意力，面板透明度（目前 .66）是可調的主要旋鈕；正式實作要提供「關閉動畫」選項，並在使用者系統設定 reduce-motion 時停用。"
+    },
+    {
+      "id": "row-actions",
+      "x": 0,
+      "y": 2860,
+      "w": 520,
+      "text": "列動作三個：收件匣（帶未讀）、MCP 設定（複製 .mcp.json，永遠帶 -url）、複製 resume 指令（claude --resume <id> / codex resume <id>，回饋帶工作目錄）。剪貼簿寫入走 CopyText，遲到回應不寫。"
     }
   ],
   "launch": {
