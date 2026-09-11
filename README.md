@@ -282,6 +282,18 @@ only because reaching it means being on this machine, so it stays a flag,
 checked on every start. Neither are `--db`, `--claude-root`, `--codex-root` or
 the interval flags.
 
+Remembering these does widen what that unauthenticated loopback API can do, and
+it is worth being explicit about it: `PUT /v1/node/settings` — what `ah settings
+set` calls — can save `--peer-listen` and `--allow-lan`, so anything able to
+reach `127.0.0.1:7462` can arrange for every later start of this node to bind a
+LAN address. Before, that took a flag on every start or a reinstalled service.
+The bound is the same as it was: the address must still be private or declared
+private, the peer surface still refuses anything not signed by a node in the
+trust store, and nothing takes effect until the node restarts — `ah settings`
+and the API both say when a saved value is not the running one. Whoever can
+reach that port can already restart the process and read every session's
+metadata; this makes that reach outlive the process.
+
 These settings are read when the node starts and are wired into listeners built
 once, so nothing is reloaded live: saving one and restarting are two steps, and
 both `ah settings` and the API say when a saved value is not the running one.
