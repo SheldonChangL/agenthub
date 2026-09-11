@@ -1069,6 +1069,11 @@ func TestASessionFilterGivenTwiceIsRefused(t *testing.T) {
 	for _, path := range []string{
 		"/v1/outbound?session=codex:a&session=codex:b",
 		"/v1/wakes?session=codex:a&session=codex:b",
+		// The same value twice is refused too. It is not ambiguous, so a
+		// reading that only rejected disagreement would let it through — and
+		// then a caller who built the query wrong would be told nothing.
+		"/v1/outbound?session=codex:a&session=codex:a",
+		"/v1/wakes?session=codex:a&session=codex:a",
 	} {
 		response := perform(t, owner, http.MethodGet, path, nil)
 		if response.Code != http.StatusBadRequest ||
@@ -1147,7 +1152,7 @@ func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
 	// The single lookup is checked against the struct itself rather than
 	// against the fixture: an omitempty field added later and left zero here
 	// would drop out of both answers and the two would still agree.
-	declared := jsonFieldsOf(registry.OutboundMessage{})
+	declared := jsonFieldsOf(t, registry.OutboundMessage{})
 	sort.Strings(declared)
 	lookupKeys := keysOf(one)
 	sort.Strings(lookupKeys)
@@ -1171,16 +1176,34 @@ func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
 	}
 }
 
-// jsonFieldsOf is the field set a struct declares through its json tags — the
-// names its answers can carry, whatever a given value happens to fill in.
-func jsonFieldsOf(value any) []string {
+// jsonFieldsOf is the field set a struct declares — the names its answers can
+// carry, whatever a given value happens to fill in.
+//
+// Called with anything but a struct, NumField panics with a message about
+// reflection rather than about the test, so the kind is checked here.
+func jsonFieldsOf(t *testing.T, value any) []string {
+	t.Helper()
 	structType := reflect.TypeOf(value)
+	if structType == nil || structType.Kind() != reflect.Struct {
+		t.Fatalf("jsonFieldsOf wants a struct, got %T", value)
+	}
 	fields := make([]string, 0, structType.NumField())
 	for i := range structType.NumField() {
-		tag := structType.Field(i).Tag.Get("json")
-		name, _, _ := strings.Cut(tag, ",")
-		if name == "" || name == "-" {
+		field := structType.Field(i)
+		if !field.IsExported() {
 			continue
+		}
+		tag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			// encoding/json falls back to the Go field name for an exported
+			// field with no name in its tag, so that is the name the answer
+			// would carry. Naming it here keeps a newly added untagged field
+			// failing as a missing field rather than as one nobody declared.
+			name = field.Name
 		}
 		fields = append(fields, name)
 	}
