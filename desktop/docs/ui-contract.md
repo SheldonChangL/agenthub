@@ -311,3 +311,10 @@
 - `GET /v1/outbound?session=` 對方正在加；到位後 `loadOutbound` 的客端過濾與自動往前讀可以拿掉。
 
 以上兩項是 PR #131 之後的接續 PR，不併入 #131。
+
+### 7.7 `GET /v1/outbound?session=`（PR #132，review 中）
+
+- `?session=<id>&limit=1..200&after=<cursor>`；`session` 收 `codex:abc` 或 `<本機節點>/codex:abc`，都正規化成本機 session。
+- 回應結構不變（`messages`／`next`，最新在前、無 body）；`next` 只在滿頁出現；**續頁要同時帶 `session` 與 `after`**。
+- 錯誤：非本機節點位址 → `404 UNKNOWN_NODE`；格式錯 → `400 INVALID_REQUEST`；本機但沒送過 → 空清單，不是錯。
+- 合併後接續 PR 要做：desktop `client.outbound` 加 `session` 參數、`App.Outbound(session, limit, after)`；`loadOutbound` 拿掉客端 `fromSession` 過濾與自動往前讀，空清單直接顯示「這個 session 還沒有送出過訊息」。`test/inbox-drawer.mjs` 第 1–3 段改成驗證參數有帶上、續頁帶 session。
