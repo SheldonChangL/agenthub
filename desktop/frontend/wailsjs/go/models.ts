@@ -221,6 +221,22 @@ export namespace main {
 	        this.private = source["private"];
 	    }
 	}
+	export class MCPConfigResult {
+	    text: string;
+	    command: string;
+	    copied: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPConfigResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	        this.command = source["command"];
+	        this.copied = source["copied"];
+	    }
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;

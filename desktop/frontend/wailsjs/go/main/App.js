@@ -30,6 +30,10 @@ export function LocalAddresses() {
   return window['go']['main']['App']['LocalAddresses']();
 }
 
+export function MCPConfig(arg1) {
+  return window['go']['main']['App']['MCPConfig'](arg1);
+}
+
 export function NodeURL() {
   return window['go']['main']['App']['NodeURL']();
 }

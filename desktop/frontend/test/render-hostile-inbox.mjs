@@ -251,13 +251,18 @@ renderRows([row("claude:not-this-one"), row("claude:the-one-clicked")]);
 // Walked rather than indexed: the shim keeps a document fragment as a single
 // child rather than flattening it, so the rows sit one level deeper than they
 // would in a browser.
-function findButtons(node, found = []) {
+// Selected by class, not by position: the row carries other buttons now (the
+// MCP config one), and indexing into every button in the table would follow
+// whichever happened to come first.
+function findButtons(node, className, found = []) {
   if (!node || typeof node !== "object") return found;
-  if (node.tagName === "button") found.push(node);
-  for (const child of node.children ?? []) findButtons(child, found);
+  if (node.tagName === "button" && (node.className ?? "").split(" ").includes(className)) {
+    found.push(node);
+  }
+  for (const child of node.children ?? []) findButtons(child, className, found);
   return found;
 }
-const buttons = findButtons(document.getElementById("rows"));
+const buttons = findButtons(document.getElementById("rows"), "inbox");
 if (buttons.length !== 2) {
   failures.push(`rendered ${buttons.length} inbox buttons for two rows, want 2`);
 }

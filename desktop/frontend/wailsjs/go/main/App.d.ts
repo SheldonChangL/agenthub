@@ -16,6 +16,8 @@ export function InstallService(arg1:main.ServiceForm):Promise<main.ServiceResult
 
 export function LocalAddresses():Promise<Array<main.LocalAddress>>;
 
+export function MCPConfig(arg1:string):Promise<main.MCPConfigResult>;
+
 export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
