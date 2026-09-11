@@ -54,8 +54,9 @@
           <label>視為私有網段（--treat-as-private，直連網路線常需要，逗號分隔）
             <input id="service-private" type="text" placeholder="例如 122.122.0.0/16" autocomplete="off" />
           </label>
+          <p id="service-private-note" class="muted hidden"></p>
           <label class="checkline"><input type="checkbox" id="service-autowake" /> 允許訊息自動喚醒 agent（--auto-wake；每個 session 仍要各自打開）</label>
-          <label>顯示名稱（--display-name，留空＝用這台機器的名字）<input id="service-name" type="text" autocomplete="off" /></label>
+          <p class="muted">節點的顯示名稱不在這裡設：它會記住上次用 <code>--display-name</code> 給的名字，服務不該每次啟動都把它蓋回去。</p>
           <div class="modal-actions">
             <span class="muted">安裝會取代已有的登記；要改旗標就再安裝一次。</span>
             <button id="service-cancel" class="ghost">取消</button>

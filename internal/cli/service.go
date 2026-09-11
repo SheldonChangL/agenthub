@@ -13,7 +13,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
@@ -34,12 +33,6 @@ var newServiceManager = func() (service.Manager, error) {
 	return service.Manager{GOOS: runtime.GOOS, Home: home, UID: current.Uid, Runner: service.ExecRunner{}}, nil
 }
 
-// stringList collects a repeatable flag.
-type stringList []string
-
-func (s *stringList) String() string     { return strings.Join(*s, ",") }
-func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
-
 // service installs, removes or inspects the node as a background service.
 //
 //	ah service install [node flags...] [--node-binary PATH]
@@ -52,7 +45,7 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 // address would otherwise become a service that crashes on every restart.
 func (r runner) service(ctx context.Context, args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: ah service install [--db PATH] [--peer-listen ADDR] [--allow-lan] [--discover] [--treat-as-private CIDR]... [--auto-wake] [--display-name NAME] [--node-binary PATH] | uninstall | status")
+		return errors.New("usage: ah service install [--db PATH] [--listen ADDR] [--peer-listen ADDR] [--allow-lan] [--discover] [--treat-as-private CIDR]... [--auto-wake] [--node-binary PATH] | uninstall | status")
 	}
 	manager, err := newServiceManager()
 	if err != nil {
@@ -86,11 +79,13 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	allowLAN := flags.Bool("allow-lan", false, "permit a non-loopback peer listener")
 	discover := flags.Bool("discover", false, "learn paired peers' addresses from the local network")
 	autoWake := flags.Bool("auto-wake", false, "let an arriving message start a turn")
-	displayName := flags.String("display-name", "", "the name announced while pairing")
 	claudeRoot := flags.String("claude-root", "", "Claude data root")
 	codexRoot := flags.String("codex-root", "", "Codex data root")
-	var declaredPrivate stringList
+	var declaredPrivate nodeconfig.StringList
 	flags.Var(&declaredPrivate, "treat-as-private", "CIDR block to treat as a private network, repeatable")
+	// --display-name is deliberately not here. The node persists a chosen
+	// name, and a flag on every start would pin the installed name over any
+	// later rename; set it once with `agenthub-node --display-name`.
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("ah service install: %w", err)
 	}
@@ -98,20 +93,26 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 		return fmt.Errorf("ah service install: unexpected argument %q", flags.Arg(0))
 	}
 
-	// Validated with the node's own rule, so the answer here is the answer
-	// the node would give — before a unit is written, not after it crashes.
-	if *peerListen != "" || *allowLAN || len(declaredPrivate) > 0 {
-		ranges, err := nodeconfig.ParsePrivateRanges(declaredPrivate)
-		if err != nil {
-			return err
-		}
-		address := *peerListen
-		if address == "" {
-			address = "127.0.0.1:7463"
-		}
-		if err := nodeconfig.ValidatePeerListen(address, *allowLAN, ranges); err != nil {
-			return err
-		}
+	// Validated with the node's own rules, defaults included, so the answer
+	// here is the answer the node would give at startup — before a unit is
+	// written, not after a service that restarts on failure crashes forever.
+	listenAddress := *listen
+	if listenAddress == "" {
+		listenAddress = "127.0.0.1:7462"
+	}
+	if err := nodeconfig.ValidateLoopback(listenAddress); err != nil {
+		return err
+	}
+	ranges, err := nodeconfig.ParsePrivateRanges(declaredPrivate)
+	if err != nil {
+		return err
+	}
+	peerAddress := *peerListen
+	if peerAddress == "" {
+		peerAddress = "127.0.0.1:7463"
+	}
+	if err := nodeconfig.ValidatePeerListen(peerAddress, *allowLAN, ranges); err != nil {
+		return err
 	}
 
 	nodeArgs := make([]string, 0, 16)
@@ -127,7 +128,7 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	for _, pair := range []struct {
 		name  string
 		value *string
-	}{{"listen", listen}, {"peer-listen", peerListen}, {"display-name", displayName}, {"claude-root", claudeRoot}, {"codex-root", codexRoot}} {
+	}{{"listen", listen}, {"peer-listen", peerListen}, {"claude-root", claudeRoot}, {"codex-root", codexRoot}} {
 		if *pair.value != "" {
 			nodeArgs = append(nodeArgs, "--"+pair.name, *pair.value)
 		}
@@ -226,7 +227,7 @@ func (r runner) serviceStatus(ctx context.Context, manager service.Manager) erro
 	}
 	answer := r.waitForNode(ctx, 0)
 	if r.json {
-		return json.NewEncoder(r.stdout).Encode(map[string]any{
+		return r.printJSONValue(map[string]any{
 			"service":       status,
 			"nodeAnswering": answer != "",
 			"node":          answer,
@@ -260,7 +261,7 @@ func (r runner) serviceStatus(ctx context.Context, manager service.Manager) erro
 
 func (r runner) printReport(verb string, report service.Report) error {
 	if r.json {
-		return json.NewEncoder(r.stdout).Encode(map[string]any{"result": verb, "report": report})
+		return r.printJSONValue(map[string]any{"result": verb, "report": report})
 	}
 	for _, step := range report.Steps {
 		fmt.Fprintln(r.stdout, step)
@@ -269,4 +270,13 @@ func (r runner) printReport(verb string, report service.Report) error {
 		fmt.Fprintln(r.stdout, "note:", note)
 	}
 	return nil
+}
+
+// printJSONValue prints one value the way every other --json path does.
+func (r runner) printJSONValue(value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return writePrettyJSON(r.stdout, data)
 }

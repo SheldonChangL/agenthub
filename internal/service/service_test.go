@@ -393,11 +393,14 @@ func (s *sequencedRunner) Run(_ context.Context, name string, args ...string) (s
 	switch {
 	case strings.HasPrefix(line, "launchctl print "):
 		if len(s.print) == 0 {
-			return "", errors.New("exit status 113")
+			return "Could not find service", errors.New("exit status 113")
 		}
 		err := s.print[0]
 		s.print = s.print[1:]
-		return "", err
+		if err != nil {
+			return "Could not find service", err
+		}
+		return "state = running", nil
 	case strings.HasPrefix(line, "launchctl bootstrap "):
 		if len(s.bootstrap) == 0 {
 			return "", nil
@@ -411,4 +414,55 @@ func (s *sequencedRunner) Run(_ context.Context, name string, args ...string) (s
 		return out, err
 	}
 	return "", nil
+}
+
+// A print that fails for a reason other than "not loaded" says nothing about
+// the job, so the wait runs its course instead of ending early.
+func TestWaitUntilUnloadedDoesNotTrustAnUnrelatedPrintFailure(t *testing.T) {
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		"launchctl print gui/501/" + Label: {out: "Bootstrap failed: 125: Domain does not support specified action", err: errors.New("exit status 125")},
+	}}
+	manager := Manager{GOOS: "darwin", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+	manager.waitUntilUnloaded(context.Background(), "gui/501")
+	if len(runner.calls) != 20 {
+		t.Errorf("wait ended after %d probes; an unrelated failure should not count as unloaded", len(runner.calls))
+	}
+}
+
+// When bootout failed for a real reason and the bootstrap then fails too, the
+// bootout's words reach the owner rather than being discarded.
+func TestInstallOnDarwinKeepsTheBootoutErrorWhenBootstrapFails(t *testing.T) {
+	home := t.TempDir()
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", Label+".plist")
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		"launchctl bootout gui/501/" + Label:      {out: "Boot-out failed: 1: Operation not permitted", err: errors.New("exit status 1")},
+		"launchctl bootstrap gui/501 " + unitPath: {out: "Bootstrap failed: 37: Operation already in progress", err: errors.New("exit status 37")},
+	}}
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: runner, Sleep: noSleep}
+	_, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)})
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("err = %v, want both the bootout and the bootstrap messages", err)
+	}
+}
+
+// The unit and the log directory are the owner's alone.
+func TestInstallWritesPrivateFiles(t *testing.T) {
+	home := t.TempDir()
+	manager := Manager{GOOS: "darwin", Home: home, UID: "501", Runner: &fakeRunner{}, Sleep: noSleep}
+	report, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, _ := os.Stat(report.UnitPath); info.Mode().Perm() != 0o600 {
+		t.Errorf("unit mode = %o, want 600", info.Mode().Perm())
+	}
+	if info, _ := os.Stat(filepath.Join(home, "Library", "Logs", "agenthub")); info.Mode().Perm() != 0o700 {
+		t.Errorf("log dir mode = %o, want 700", info.Mode().Perm())
+	}
 }

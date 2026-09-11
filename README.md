@@ -139,9 +139,11 @@ bin/ah service install --db ./data/agenthub.db \
 ```
 
 `install` takes the node's own flags by the node's own names, validates the
-peer listener with the node's rule before writing anything, and registers the
-node with launchd (macOS) or `systemd --user` (Linux): it starts at login and
-is restarted if it exits. `agenthub-node` is looked for beside `ah`, then on
+listen addresses with the node's rules — defaults included — before writing
+anything, and registers the node with launchd (macOS) or `systemd --user`
+(Linux): it starts at login and is restarted if it exits. `--display-name` is
+the one flag it does not take: the node remembers a chosen name, and a flag on
+every start would pin the installed name over any later rename. `agenthub-node` is looked for beside `ah`, then on
 `PATH`; pass `--node-binary` to name it. A relative `--db` is made absolute,
 because a service has no working directory of yours. The command ends by
 asking the node whether it answers, and says so either way.
@@ -521,7 +523,8 @@ as a background service, with the node's flags as form fields: the address other
 machines connect to is picked from this machine's interfaces, `--allow-lan` is
 ticked when that address is not loopback and explained as the one switch that
 lets anything leave the machine, and a non-private address pre-fills
-`--treat-as-private`. When the node is running, the same panel says whether it
+`--treat-as-private` with that interface's own subnet — the range the cable
+carries, not a wider guess. When the node is running, the same panel says whether it
 is a service and offers to remove it. Both buttons run `ah service`, so the
 app and the CLI cannot disagree; the app looks for `ah` beside itself, in the
 source tree, then on `PATH`, and `AGENTHUB_AH` names it explicitly.

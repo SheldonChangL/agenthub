@@ -18,12 +18,12 @@ func TestInstallArgsCarryOnlyWhatTheOwnerSet(t *testing.T) {
 
 	args, err = installArgs(ServiceForm{
 		DBPath: " /Users/me/data/agenthub.db ", PeerListen: "122.122.122.1:7463", AllowLAN: true, Discover: true,
-		TreatAsPrivate: []string{"122.122.0.0/16", " ", "10.9.0.0/16"}, AutoWake: true, DisplayName: "the machine on my desk",
+		TreatAsPrivate: []string{"122.122.0.0/16", " ", "10.9.0.0/16"}, AutoWake: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "service install --db /Users/me/data/agenthub.db --peer-listen 122.122.122.1:7463 --display-name the machine on my desk --allow-lan --discover --treat-as-private 122.122.0.0/16 --treat-as-private 10.9.0.0/16 --auto-wake"
+	want := "service install --db /Users/me/data/agenthub.db --peer-listen 122.122.122.1:7463 --allow-lan --discover --treat-as-private 122.122.0.0/16 --treat-as-private 10.9.0.0/16 --auto-wake"
 	if got := strings.Join(args, " "); got != want {
 		t.Errorf("args:\n%s\nwant:\n%s", got, want)
 	}
@@ -36,6 +36,23 @@ func TestInstallArgsRefuseWhatAhCouldOnlyRefuseLater(t *testing.T) {
 	if _, err := installArgs(ServiceForm{TreatAsPrivate: []string{"122.122.0.0"}}); err == nil || !strings.Contains(err.Error(), "CIDR") {
 		t.Errorf("range without prefix length: err = %v", err)
 	}
+	if _, err := installArgs(ServiceForm{TreatAsPrivate: []string{"999.1.1.1/40"}}); err == nil {
+		t.Error("an out-of-range CIDR was accepted")
+	}
+}
+
+func TestFindToolRemembersWhereAhIs(t *testing.T) {
+	previous := findTool
+	toolPath = ""
+	t.Cleanup(func() { findTool = previous; toolPath = "" })
+	t.Setenv("AGENTHUB_AH", "/definitely/not/here")
+	t.Setenv("PATH", t.TempDir())
+	if _, err := findTool(); err == nil {
+		t.Fatal("found an ah that does not exist")
+	}
+	if toolPath != "" {
+		t.Errorf("a failed lookup was cached as %q", toolPath)
+	}
 }
 
 func withFakeTool(t *testing.T, output string, runErr error) *[]string {
@@ -47,7 +64,8 @@ func withFakeTool(t *testing.T, output string, runErr error) *[]string {
 		return output, runErr
 	}
 	t.Setenv("AGENTHUB_AH", "/fake/ah")
-	t.Cleanup(func() { runTool = previousRun; findTool = previousFind })
+	toolPath = ""
+	t.Cleanup(func() { runTool = previousRun; findTool = previousFind; toolPath = "" })
 	return calls
 }
 
