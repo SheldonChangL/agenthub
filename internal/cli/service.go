@@ -13,6 +13,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
@@ -35,17 +36,23 @@ var newServiceManager = func() (service.Manager, error) {
 
 // service installs, removes or inspects the node as a background service.
 //
-//	ah service install [node flags...] [--node-binary PATH]
+//	ah service install [--db PATH] [--listen ADDR] [--node-binary PATH]
+//	ah service restart
 //	ah service uninstall
 //	ah service status
 //
-// Install takes the node's own flags by the node's own names and carries them
-// into the service, so the owner learns one vocabulary. The peer listener is
-// validated here with the node's rule before anything is written: a bad
-// address would otherwise become a service that crashes on every restart.
+// Install still takes the node's own network flags by the node's own names,
+// and still writes them into the unit, because installations out there were
+// made that way. It is no longer the recommended route: the node remembers
+// those settings in its database, so `ah settings set ...` records them once
+// and the unit needs only --db. The peer listener is validated here with the
+// node's rule before anything is written: a bad address would otherwise become
+// a service that crashes on every restart.
 func (r runner) service(ctx context.Context, args []string) error {
 	if len(args) < 2 {
-		return errors.New("usage: ah service install [--db PATH] [--listen ADDR] [--peer-listen ADDR] [--allow-lan] [--discover] [--treat-as-private CIDR]... [--auto-wake] [--node-binary PATH] | uninstall | status")
+		return errors.New("usage: ah service install [--db PATH] [--listen ADDR] [--node-binary PATH] | restart | uninstall | status\n" +
+			"the node's network settings are remembered in its database: `ah settings set ...` records them, " +
+			"`ah service restart` applies them")
 	}
 	manager, err := newServiceManager()
 	if err != nil {
@@ -60,10 +67,19 @@ func (r runner) service(ctx context.Context, args []string) error {
 			return err
 		}
 		return r.printReport("uninstalled", report)
+	case "restart":
+		if len(args) > 2 {
+			return fmt.Errorf("ah service restart takes no arguments, got %s", strings.Join(args[2:], " "))
+		}
+		report, err := manager.Restart(ctx)
+		if err != nil {
+			return err
+		}
+		return r.printReport("restarted", report)
 	case "status":
 		return r.serviceStatus(ctx, manager)
 	default:
-		return fmt.Errorf("unknown service command %q; want install, uninstall or status", args[1])
+		return fmt.Errorf("unknown service command %q; want install, restart, uninstall or status", args[1])
 	}
 }
 
@@ -154,6 +170,15 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	if err != nil {
 		return err
 	}
+	// Said here rather than refused, because units installed by earlier builds
+	// carry these flags and still work. A flag in the unit wins over what the
+	// node remembered — it is given on every start — so an owner who changes a
+	// setting from the desktop and sees nothing happen needs to know why.
+	if baked := bakedInSettings(flags); len(baked) > 0 {
+		report.Notes = append(report.Notes,
+			"this unit passes "+strings.Join(baked, ", ")+" on every start, which overrides anything saved later. "+
+				"`ah settings set ...` remembers them instead, and then the service needs only --db")
+	}
 	// Installed is not the same as answering. Ask the node, briefly, so the
 	// owner leaves knowing which of the two they have.
 	if answer := r.waitForNode(ctx, 10*time.Second); answer != "" {
@@ -162,6 +187,22 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 		report.Notes = append(report.Notes, "the node has not answered on "+r.baseURL+" yet; ah service status, and the log, say why")
 	}
 	return r.printReport("installed", report)
+}
+
+// bakedInSettings names the remembered settings this install wrote into the
+// unit file, which is the second source of truth these settings exist to end.
+func bakedInSettings(flags *flag.FlagSet) []string {
+	remembered := map[string]bool{
+		"peer-listen": true, "allow-lan": true, "discover": true,
+		"treat-as-private": true, "auto-wake": true,
+	}
+	given := make([]string, 0, len(remembered))
+	flags.Visit(func(f *flag.Flag) {
+		if remembered[f.Name] {
+			given = append(given, "--"+f.Name)
+		}
+	})
+	return given
 }
 
 // resolveNodeBinary finds agenthub-node: the path given, else beside this

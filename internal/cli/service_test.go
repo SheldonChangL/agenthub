@@ -233,10 +233,66 @@ func TestServiceStatusSeparatesTheServiceFromTheNode(t *testing.T) {
 func TestServiceUnknownSubcommandIsRefused(t *testing.T) {
 	useFakeManager(t, "darwin")
 	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(), []string{"service", "restart"}, &stdout, &stderr); code == 0 {
+	// `restart` used to be the unknown one here and is now a command, so the
+	// case needs a word that is still not one.
+	if code := Run(context.Background(), []string{"service", "reload"}, &stdout, &stderr); code == 0 {
 		t.Fatal("accepted an unknown service command")
 	}
-	if !strings.Contains(stderr.String(), "install, uninstall or status") {
+	if !strings.Contains(stderr.String(), "install, restart, uninstall or status") {
 		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// `ah service restart` is the step between saving a setting and it being in
+// effect, so it has to exist as a word the owner types.
+func TestServiceRestartRestartsWithoutTouchingTheRegistration(t *testing.T) {
+	_, runner := useFakeManager(t, "linux")
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"service", "restart"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(runner.calls) != 1 || runner.calls[0] != "systemctl --user restart "+service.UnitName {
+		t.Fatalf("calls = %v", runner.calls)
+	}
+	if !strings.Contains(stdout.String(), "restarted") {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+	// An argument means the owner meant something this command does not do;
+	// answering it by restarting anyway would be the wrong kind of helpful.
+	var out, errOut bytes.Buffer
+	if code := Run(context.Background(), []string{"service", "restart", "now"}, &out, &errOut); code == 0 {
+		t.Fatal("ah service restart accepted an argument")
+	}
+}
+
+// The flags still work — units out there were installed with them — but the
+// install has to say that a flag in the unit overrides anything saved later,
+// or a setting changed from the desktop appears to do nothing.
+func TestServiceInstallSaysBakedInFlagsOverrideSavedSettings(t *testing.T) {
+	useFakeManager(t, "linux")
+	node := nodeThatAnswers(t)
+	binary := fakeNodeBinary(t)
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{"--url", node.URL, "service", "install",
+		"--db", filepath.Join(t.TempDir(), "agenthub.db"), "--node-binary", binary, "--discover"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"--discover", "overrides anything saved later", "ah settings set"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+
+	// And an install that bakes in nothing says nothing about it: a note on
+	// every install is a note nobody reads.
+	var plain, plainErr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", node.URL, "service", "install",
+		"--db", filepath.Join(t.TempDir(), "agenthub.db"), "--node-binary", binary}, &plain, &plainErr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, plainErr.String())
+	}
+	if strings.Contains(plain.String(), "overrides anything saved later") {
+		t.Errorf("a --db-only install still warned about baked-in flags:\n%s", plain.String())
 	}
 }
