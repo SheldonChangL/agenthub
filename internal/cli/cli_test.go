@@ -1100,13 +1100,26 @@ func TestOutboundSessionFlagReachesTheQuery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	var stdout, stderr bytes.Buffer
-	if code := Run(context.Background(),
-		[]string{"--url", server.URL, "outbound", "--session", "codex:mine"}, &stdout, &stderr); code != 0 {
-		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	// Both spellings, as `--from` takes both. `--session=<id>` was read as a
+	// message id and asked GET /v1/outbound/--session=codex:mine, answered 404
+	// UNKNOWN_MESSAGE — an error about the wrong thing entirely.
+	for _, args := range [][]string{
+		{"outbound", "--session", "codex:mine"},
+		{"outbound", "--session=codex:mine"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr); code != 0 {
+			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr.String())
+		}
 	}
-	if len(asked) != 1 || asked[0] != "GET /v1/outbound?session=codex%3Amine" {
-		t.Fatalf("requests = %v; want the session on the listing query", asked)
+	if len(asked) != 2 {
+		t.Fatalf("requests = %v; want one per spelling", asked)
+	}
+	for _, request := range asked {
+		if request != "GET /v1/outbound?session=codex%3Amine" {
+			t.Fatalf("requests = %v; want both spellings on the same listing query", asked)
+		}
 	}
 }
 
@@ -1123,6 +1136,13 @@ func TestOutboundSessionAndMessageIDAreExclusive(t *testing.T) {
 		{"outbound", "msg_1", "--session", "codex:mine"},
 		{"outbound", "--session", "codex:mine", "msg_1"},
 		{"outbound", "--session"},
+		{"outbound", "msg_1", "--session=codex:mine"},
+		{"outbound", "--session", "codex:mine", "--session=codex:other"},
+		// A value of spaces trims to nothing. Sent on, it would be dropped at
+		// the node and answered with the whole node's listing — which is the
+		// one answer this filter exists to keep a reader from mistaking.
+		{"outbound", "--session", "   "},
+		{"outbound", "--session=  "},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(context.Background(),
