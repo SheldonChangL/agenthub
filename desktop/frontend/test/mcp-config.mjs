@@ -27,20 +27,29 @@ if (wiring > 0) source = source.slice(0, wiring);
 const noop = async () => ({});
 const calls = [];
 let answer = async (sessionId) => ({
-  text: `{\n  "mcpServers": {\n    "agenthub": {\n      "command": "/abs/bin/agenthub-mcp",\n      "args": ["-as", ${JSON.stringify(sessionId)}]\n    }\n  }\n}\n`,
+  text: `{\n  "mcpServers": {\n    "agenthub": {\n      "command": "/abs/bin/agenthub-mcp",\n      "args": ["-as", ${JSON.stringify(sessionId)}, "-url", "http://127.0.0.1:7462"]\n    }\n  }\n}\n`,
   command: "/abs/bin/agenthub-mcp",
-  copied: true,
 });
 const mcpStub = async (sessionId) => {
   calls.push(sessionId);
   return answer(sessionId);
 };
 
+// The clipboard is its own binding now, so the window decides what lands there
+// and when. Every write is recorded, because a write for the wrong row is the
+// half of the bug that leaves the window.
+const copied = [];
+let copyFails = false;
+const copyStub = async (text) => {
+  copied.push(text);
+  if (copyFails) throw new Error("no clipboard on this display");
+};
+
 const scope = new Function(
   "document", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode", "Heartbeat",
-  "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "MCPConfig",
+  "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "MCPConfig", "CopyText",
   source + "\nreturn { renderRows, openMCPConfig, closeMCPConfig, state };"
-)(document, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, mcpStub);
+)(document, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, mcpStub, copyStub);
 
 const { renderRows, openMCPConfig, closeMCPConfig } = scope;
 const failures = [];
@@ -101,6 +110,12 @@ if (!el("mcp-title").textContent.includes("claude:the-one-clicked")) {
 if (!el("mcp-status").textContent.includes("已複製到剪貼簿")) {
   failures.push(`a successful copy was not reported: ${el("mcp-status").textContent}`);
 }
+if (copied.length !== 1 || !copied[0].includes("claude:the-one-clicked")) {
+  failures.push(`the clipboard got ${copied.length} writes: ${JSON.stringify(copied)}`);
+}
+if (!shown.includes("-url")) {
+  failures.push(`the snippet does not pin the node URL: ${shown}`);
+}
 
 // 3. A session id is provider metadata. It reaches the snippet through Go's
 //    json encoder and the DOM through textContent; neither may produce markup.
@@ -117,8 +132,10 @@ if (!hostile.includes("&lt;img")) {
 
 // 4. A clipboard that refused must say so. Reporting "已複製" here sends
 //    someone to paste whatever they had copied before into a config file.
-answer = async () => ({ text: "{}\n", command: "/abs/bin/agenthub-mcp", copied: false });
+answer = async () => ({ text: "{}\n", command: "/abs/bin/agenthub-mcp" });
+copyFails = true;
 await openMCPConfig("claude:x");
+copyFails = false;
 const refused = el("mcp-status").textContent;
 if (refused.includes("已複製到剪貼簿")) {
   failures.push("a refused clipboard was reported as a successful copy");
@@ -144,7 +161,7 @@ if (el("mcp-text").textContent !== "") {
 }
 
 // 6. Closing clears it, so the next row does not open onto the last one's.
-answer = async (sessionId) => ({ text: `{"as":"${sessionId}"}`, command: "/abs/bin/agenthub-mcp", copied: true });
+answer = async (sessionId) => ({ text: `{"as":"${sessionId}"}`, command: "/abs/bin/agenthub-mcp" });
 await openMCPConfig("claude:first");
 closeMCPConfig();
 if (!el("mcp-modal").classList.contains("hidden")) {
@@ -152,6 +169,40 @@ if (!el("mcp-modal").classList.contains("hidden")) {
 }
 if (el("mcp-text").textContent !== "") {
   failures.push("closing left a session's snippet behind");
+}
+
+// 8. A reply that arrives late belongs to nobody. Closing the dialog and
+//    opening another row while the first call is still in flight used to let
+//    the first answer paint its snippet under the second row's title — and,
+//    because the copy happened inside the call, hand the owner the other
+//    session's config on the clipboard as well.
+let releaseFirst;
+answer = (sessionId) =>
+  sessionId === "claude:slow"
+    ? new Promise((resolve) => {
+        releaseFirst = () => resolve({ text: `{"as":"claude:slow"}`, command: "/abs/bin/agenthub-mcp" });
+      })
+    : Promise.resolve({ text: `{"as":"${sessionId}"}`, command: "/abs/bin/agenthub-mcp" });
+copied.length = 0;
+const slow = openMCPConfig("claude:slow");
+closeMCPConfig();
+await openMCPConfig("claude:second");
+releaseFirst();
+await slow;
+
+if (!el("mcp-title").textContent.includes("claude:second")) {
+  failures.push(`a late reply took the title: ${el("mcp-title").textContent}`);
+}
+if (!el("mcp-text").textContent.includes("claude:second")) {
+  failures.push(`the dialog shows ${el("mcp-text").textContent}, not the row that is open`);
+}
+if (el("mcp-text").textContent.includes("claude:slow")) {
+  failures.push("a closed row's snippet was painted under another session's name");
+}
+if (copied.length !== 1) {
+  failures.push(`the clipboard got ${copied.length} writes for one open dialog: ${JSON.stringify(copied)}`);
+} else if (!copied[0].includes("claude:second")) {
+  failures.push(`the clipboard holds ${copied[0]}, not the config the dialog is showing`);
 }
 
 // 7. The warnings are in the markup. The snippet is correct and still

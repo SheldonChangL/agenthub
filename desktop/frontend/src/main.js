@@ -12,6 +12,7 @@ import {
   Inbox,
   ClearInbox,
   MCPConfig,
+  CopyText,
   ServiceStatus,
   InstallService,
   UninstallService,
@@ -1239,37 +1240,80 @@ function closeInbox() {
 
 /* ---------------- MCP config ---------------- */
 
+// Numbered like the inbox and the pairing read, and for a sharper reason: this
+// dialog's title is painted before the call and its body after it, so a reply
+// that arrives once the owner has closed it and opened another row would put
+// one session's snippet under the other session's name. The copy hangs off the
+// same check — the window writes the clipboard, and only for the reply it
+// decided to show, so a retired reply takes it from nobody.
+let mcpRequest = 0;
+let mcpApplied = 0;
+
+// True while this call is still the one the dialog belongs to: nothing newer
+// was asked for, and nothing has retired it. Checked again after every await,
+// because each one is a moment the owner can click elsewhere.
+function mcpIsCurrent(sequence) {
+  return sequence === mcpRequest && sequence > mcpApplied;
+}
+
 // The snippet is Go's, built with encoding/json from a path this process found
 // and the id of the row that was clicked, and it reaches the DOM through
 // textContent like everything else a provider had a hand in.
 async function openMCPConfig(sessionId) {
+  const sequence = ++mcpRequest;
   el("mcp-title").textContent = `MCP 設定 · ${sessionId}`;
   el("mcp-text").textContent = "";
   el("mcp-status").textContent = "正在產生…";
   el("mcp-modal").classList.remove("hidden");
 
   let result;
+  let failure = null;
   try {
     result = await MCPConfig(sessionId);
   } catch (error) {
+    failure = error;
+  }
+  if (!mcpIsCurrent(sequence)) {
+    // This reply is for a row nobody is looking at any more. Do not show it,
+    // and above all do not copy it: the clipboard is the part that travels out
+    // of the window and into a file.
+    return;
+  }
+  if (failure !== null) {
+    mcpApplied = sequence;
     // Shown here rather than in a banner: this dialog covers the banner, so an
     // error there is an error nobody reads. The most likely one is that
     // agenthub-mcp was not found, and the message says where it looked.
     el("mcp-status").replaceChildren(
       element("div", "stale", "產生不出這個 session 的設定，所以上面是空的。"),
-      element("div", "muted", String(error))
+      element("div", "muted", String(failure))
     );
     return;
   }
+  // Title and body come from the same answer: this is the reply to the call
+  // this line's id was asked for, and no other reply reaches here.
+  el("mcp-title").textContent = `MCP 設定 · ${sessionId}`;
   el("mcp-text").textContent = result.text;
+
+  let copied = true;
+  try {
+    await CopyText(result.text);
+  } catch {
+    copied = false;
+  }
+  if (!mcpIsCurrent(sequence)) return;
+  mcpApplied = sequence;
   // Whether the clipboard took it. Saying "已複製" when it did not is the one
   // outcome that sends someone to paste nothing into a file.
-  el("mcp-status").textContent = result.copied
+  el("mcp-status").textContent = copied
     ? "已複製到剪貼簿"
     : "無法寫入剪貼簿，請手動複製上面的內容";
 }
 
 function closeMCPConfig() {
+  // Retire whatever is in flight, so its answer cannot paint a hidden dialog
+  // or take the clipboard from whatever the owner copied next.
+  mcpApplied = mcpRequest;
   el("mcp-modal").classList.add("hidden");
   el("mcp-text").textContent = "";
   el("mcp-status").textContent = "";

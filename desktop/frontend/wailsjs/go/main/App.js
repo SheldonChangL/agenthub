@@ -10,6 +10,10 @@ export function ClosePairing() {
   return window['go']['main']['App']['ClosePairing']();
 }
 
+export function CopyText(arg1) {
+  return window['go']['main']['App']['CopyText'](arg1);
+}
+
 export function Discover() {
   return window['go']['main']['App']['Discover']();
 }
