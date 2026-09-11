@@ -802,7 +802,7 @@ export namespace main {
 	export class WakesView {
 	    wakes: WakeEvent[];
 	    // Go type: WakeLimits
-	    limits: any;
+	    limits?: any;
 	    error?: string;
 	
 	    static createFrom(source: any = {}) {

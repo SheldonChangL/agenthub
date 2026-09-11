@@ -24,7 +24,7 @@ export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
 
-export function Outbound(arg1:number,arg2:string):Promise<main.OutboundView>;
+export function Outbound(arg1:string,arg2:number,arg3:string):Promise<main.OutboundView>;
 
 export function Overview():Promise<main.Overview>;
 

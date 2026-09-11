@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -25,7 +26,7 @@ func TestOutboundCarriesTheCursorToTheNextPage(t *testing.T) {
 	defer server.Close()
 
 	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
-	view := app.Outbound(1, "")
+	view := app.Outbound("", 1, "")
 	if view.Error != "" {
 		t.Fatalf("Outbound: %s", view.Error)
 	}
@@ -65,7 +66,7 @@ func TestOutboundForwardsTheCursorItWasGiven(t *testing.T) {
 	defer server.Close()
 
 	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
-	if view := app.Outbound(50, "  cursor_2  "); view.Error != "" {
+	if view := app.Outbound("", 50, "  cursor_2  "); view.Error != "" {
 		t.Fatalf("Outbound: %s", view.Error)
 	}
 	if after != "cursor_2" {
@@ -83,7 +84,7 @@ func TestOutboundEmptyPageIsNeitherAnErrorNorMore(t *testing.T) {
 	defer server.Close()
 
 	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
-	view := app.Outbound(0, "")
+	view := app.Outbound("", 0, "")
 	if view.Error != "" {
 		t.Errorf("an empty log reported an error: %q", view.Error)
 	}
@@ -111,7 +112,7 @@ func TestOutboundAndWakesReportAFailedReadRatherThanAnEmptyList(t *testing.T) {
 	defer failing.Close()
 
 	app := &App{client: newClient(failing.URL), url: failing.URL, ctx: context.Background()}
-	outbound := app.Outbound(50, "")
+	outbound := app.Outbound("", 50, "")
 	if outbound.Error == "" {
 		t.Error("a refused outbound read reported no error")
 	}
@@ -133,7 +134,7 @@ func TestOutboundAndWakesReportAFailedReadRatherThanAnEmptyList(t *testing.T) {
 	unreachable.Close()
 
 	app = &App{client: newClient(gone), url: gone, ctx: context.Background()}
-	if view := app.Outbound(50, ""); view.Error == "" || len(view.Messages) != 0 {
+	if view := app.Outbound("", 50, ""); view.Error == "" || len(view.Messages) != 0 {
 		t.Errorf("an unreachable node gave %+v, want an error and no messages", view)
 	}
 	if view := app.Wakes("", 50); view.Error == "" || len(view.Wakes) != 0 {
@@ -237,7 +238,7 @@ func TestPageLimitsAreClampedBeforeTheyReachTheNode(t *testing.T) {
 		want  string
 	}{{0, "50"}, {-1, "50"}, {500, "200"}, {200, "200"}, {1, "1"}, {50, "50"}} {
 		limit = ""
-		if view := app.Outbound(testCase.asked, ""); view.Error != "" {
+		if view := app.Outbound("", testCase.asked, ""); view.Error != "" {
 			t.Fatalf("Outbound(%d): %s", testCase.asked, view.Error)
 		}
 		if limit != testCase.want {
@@ -250,5 +251,59 @@ func TestPageLimitsAreClampedBeforeTheyReachTheNode(t *testing.T) {
 		if limit != testCase.want {
 			t.Errorf("Wakes(%d) asked for limit=%s, want %s", testCase.asked, limit, testCase.want)
 		}
+	}
+}
+
+// The session filter reaches the node, and a blank one never does.
+//
+// `/v1/outbound?session=` trims what it is given, so a session of only spaces
+// is indistinguishable at the node from no filter and answers with every
+// session's messages (agenthub#127). Sent from here that would be read as one
+// session's trail, so a blank is dropped before the request is built.
+func TestOutboundForwardsTheSessionFilterAndDropsABlankOne(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Query().Get("session"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[]}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	for _, session := range []string{"claude:9f2e", "   ", ""} {
+		if view := app.Outbound(session, 50, ""); view.Error != "" {
+			t.Fatalf("Outbound(%q): %s", session, view.Error)
+		}
+	}
+	want := []string{"claude:9f2e", "", ""}
+	if len(asked) != len(want) {
+		t.Fatalf("the node was asked %d times, want %d", len(asked), len(want))
+	}
+	for i := range want {
+		if asked[i] != want[i] {
+			t.Errorf("request %d asked session=%q, want %q", i, asked[i], want[i])
+		}
+	}
+}
+
+// A continuation repeats the session, or the second page is the node-wide one.
+func TestOutboundRepeatsTheSessionOnAContinuation(t *testing.T) {
+	var query url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[]}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	if view := app.Outbound("claude:9f2e", 50, "cursor_2"); view.Error != "" {
+		t.Fatalf("continuation: %s", view.Error)
+	}
+	if got := query.Get("session"); got != "claude:9f2e" {
+		t.Errorf("continuation asked session=%q, want the same session", got)
+	}
+	if got := query.Get("after"); got != "cursor_2" {
+		t.Errorf("continuation asked after=%q, want cursor_2", got)
 	}
 }

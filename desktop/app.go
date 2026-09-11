@@ -504,17 +504,20 @@ type OutboundView struct {
 // Outbound reads what this node has queued for peers, newest first.
 //
 // `ah send` answers "queued" and nothing more, so without this an owner who has
-// closed that terminal has no way to ask what became of a message. A limit of
-// zero asks for the node's page size; after is the `next` cursor from the
-// previous page, empty to start at the newest.
+// closed that terminal has no way to ask what became of a message. A session
+// narrows the list to what that local session sent; empty asks for every
+// session on this node. A limit of zero asks for the node's page size; after is
+// the `next` cursor from the previous page, empty to start at the newest — and
+// a continuation must repeat the same session, or the second page is the
+// node-wide one.
 //
 // A failure is returned in Error rather than thrown, because a thrown error
 // reaches a banner while the table below it keeps showing the last good page as
 // though it were current.
-func (a *App) Outbound(limit int, after string) OutboundView {
+func (a *App) Outbound(session string, limit int, after string) OutboundView {
 	view := OutboundView{OutboundPage: OutboundPage{Messages: []OutboundMessage{}}}
 	activeClient, _ := a.current()
-	page, err := activeClient.outbound(a.ctx, limit, after)
+	page, err := activeClient.outbound(a.ctx, session, limit, after)
 	if err != nil {
 		view.Error = err.Error()
 		return view

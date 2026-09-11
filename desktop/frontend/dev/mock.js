@@ -74,11 +74,19 @@ configure({
   InstallService: async () => ({ command: "ah service install --peer-listen 192.168.50.10:7463 --allow-lan", output: "installed (pid 41872)" }),
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }, { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
-  Outbound: async (limit, after) => ({ messages: after ? [] : [
-    { id: "o1", to: "codex:77ab-serial-bench", destinationNodeId: "node_a91c3e7b2d5f8046c0e1", from: "node_7f2e9c41a0b3d8e6f1c2/claude:8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", state: "delivered", attempts: 1, createdAt: ago(400), updatedAt: ago(390) },
-    { id: "o2", to: "claude:remote-x", destinationNodeId: "node_c30d8e2f4a6b19d571fa", from: "node_7f2e9c41a0b3d8e6f1c2/claude:41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", state: "pending", attempts: 4, createdAt: ago(900), updatedAt: ago(30), wakeHops: 1 },
-    { id: "o3", to: "codex:77ab-serial-bench", destinationNodeId: "node_a91c3e7b2d5f8046c0e1", from: "node_7f2e9c41a0b3d8e6f1c2/claude:8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", state: "refused", attempts: 2, createdAt: ago(3000), updatedAt: ago(2900), lastError: "peer refused: session not authorised for messages ".repeat(8) },
-  ], next: after ? "" : "cursor-2" }),
+  // The node filters by session (agenthub#132); the fake does the same, so the
+  // preview shows what the window will really show.
+  Outbound: async (session, limit, after) => {
+    const all = [
+      { id: "o1", to: "codex:77ab-serial-bench", destinationNodeId: "node_a91c3e7b2d5f8046c0e1", from: "node_7f2e9c41a0b3d8e6f1c2/claude:8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", state: "delivered", attempts: 1, createdAt: ago(400), updatedAt: ago(390) },
+      { id: "o2", to: "claude:remote-x", destinationNodeId: "node_c30d8e2f4a6b19d571fa", from: "node_7f2e9c41a0b3d8e6f1c2/claude:41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", state: "pending", attempts: 4, createdAt: ago(900), updatedAt: ago(30), wakeHops: 1 },
+      { id: "o3", to: "codex:77ab-serial-bench", destinationNodeId: "node_a91c3e7b2d5f8046c0e1", from: "node_7f2e9c41a0b3d8e6f1c2/claude:8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", state: "refused", attempts: 2, createdAt: ago(3000), updatedAt: ago(2900), lastError: "peer refused: session not authorised for messages ".repeat(8) },
+    ];
+    const want = String(session ?? "").trim();
+    const mine = want === "" ? all : all.filter((m) => m.from.endsWith(`/${want}`));
+    log("Outbound", { session: want, limit, after, rows: mine.length });
+    return { messages: after ? [] : mine, next: "" };
+  },
   Wakes: async (session) => ({ wakes: [
     { id: "w1", messageId: "m1", sourceNodeId: "node_a91c3e7b2d5f8046c0e1", sourceSession: "codex:77ab-serial-bench", destinationSession: session, hops: 1, outcome: "woken", at: ago(290) },
     { id: "w2", messageId: "m9", sourceNodeId: "node_a91c3e7b2d5f8046c0e1", sourceSession: "codex:77ab-serial-bench", destinationSession: session, hops: 1, outcome: "refused_session_rate", detail: "3 wakes in 10m", at: ago(200) },

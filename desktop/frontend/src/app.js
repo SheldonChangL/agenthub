@@ -1818,48 +1818,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function loadOutbound({ reset = false } = {}) {
     const session = state.inboxSessionAsked;
     const sequence = ++outboundRequest;
-    if (reset) state.outbound = { messages: [], next: "", scanned: 0, loading: true, error: "", session };
+    if (reset) state.outbound = { messages: [], next: "", loading: true, error: "", session };
     else state.outbound.loading = true;
     renderOutbound();
     let page;
     try {
-      page = await api.Outbound(50, reset ? "" : state.outbound.next);
+      // The node narrows the list (agenthub#132), so an empty page means this
+      // session sent nothing — not that the newest fifty belonged to someone
+      // else. A continuation repeats the session: without it the second page
+      // would be the node-wide one, appended under this session's name.
+      page = await api.Outbound(session ?? "", 50, reset ? "" : state.outbound.next);
     } catch (error) {
       page = { messages: [], error: String(error) };
     }
     if (sequence <= outboundApplied) return;
     outboundApplied = sequence;
-    // /v1/outbound is node-wide and has no session filter, so the page is
-    // narrowed here. `from` is what the node stored: `<node id>/<session>`
-    // (address.QualifiedID), so the session half is compared, never the whole.
-    const mine = (page.messages ?? []).filter((m) => !session || fromSession(m.from) === session);
-    const scanned = (reset ? 0 : state.outbound.scanned ?? 0) + (page.messages ?? []).length;
+    const rows = page.messages ?? [];
     state.outbound = {
       session,
-      messages: reset ? mine : [...state.outbound.messages, ...mine],
+      messages: reset ? rows : [...state.outbound.messages, ...rows],
       next: page.next ?? "",
-      scanned,
       loading: false,
       error: page.error ?? "",
     };
     renderOutbound();
-    // A page with nothing for this session is not an answer yet: keep reading
-    // while the node has more, up to a bounded number of rows, so the owner
-    // is not shown "nothing" because the newest 50 belonged to someone else.
-    if (mine.length === 0 && state.outbound.next && scanned < OUTBOUND_SCAN_LIMIT && sequence === outboundRequest) {
-      await loadOutbound();
-    }
-  }
-
-  const OUTBOUND_SCAN_LIMIT = 200;
-
-  // fromSession returns the session half of a stored sender. A bare value
-  // (no separator) is returned whole, so a message queued without a node
-  // prefix still compares against a session id.
-  function fromSession(from) {
-    const value = String(from ?? "");
-    const slash = value.indexOf("/");
-    return slash >= 0 ? value.slice(slash + 1) : value;
   }
 
   // lastError is text the peer chose, with no length limit on the node yet
@@ -1882,16 +1864,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     if (o.messages.length === 0) {
-      // Two different facts: the node has no more to show, or it has more and
-      // none of what was read so far was this session's. Only the first may
-      // claim the session never sent anything, and the second keeps the
-      // button that leads onward.
-      body.append(element("div", "empty", o.next
-        ? `最新的 ${o.scanned ?? 0} 筆送出紀錄裡沒有這個 session 的；節點還有更早的，按下面繼續往前找。`
-        : "這個 session 還沒有送出過訊息。"));
-      more.classList.toggle("hidden", !o.next);
-      more.disabled = o.loading;
-      more.textContent = o.loading ? "讀取中…" : "往前找更多";
+      // The node filtered to this session, so empty is an answer, not a page
+      // that happened to hold someone else's messages.
+      body.append(element("div", "empty", "這個 session 還沒有送出過訊息。"));
+      more.classList.add("hidden");
       return;
     }
     for (const m of o.messages) {

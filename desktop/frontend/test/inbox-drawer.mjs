@@ -1,13 +1,12 @@
 // The inbox drawer's two log tabs, and the dialog states the review found.
 //
-// /v1/outbound is node-wide and stores the sender as `<node id>/<session>`
-// (address.QualifiedID), so the drawer has to compare the session half — the
-// first version compared the whole string and showed every session an empty
-// log. A page with nothing for this session must not be reported as "never
-// sent anything" while the node still has older pages. Wake limits a node did
-// not send must not be quoted as zeros. The audience dialog's mode radio, like
-// its flags, starts at 不公開 every time. A clear that succeeded is reported
-// even when the re-read that follows it fails.
+// The node narrows /v1/outbound to one session (agenthub#132), so the drawer
+// has to pass the session it was opened for — and pass it again on every
+// continuation, or the second page is the node-wide list appended under this
+// session's name. Wake limits a node did not send must not be quoted as zeros.
+// The audience dialog's mode radio, like its flags, starts at 不公開 every
+// time. A clear that succeeded is reported even when the re-read that follows
+// it fails.
 //
 //   node frontend/test/inbox-drawer.mjs
 
@@ -37,8 +36,8 @@ configure({
   CopyText: noop, MCPConfig: noop,
   Inbox: (...a) => inboxAnswer(...a),
   ClearInbox: (...a) => clearAnswer(...a),
-  Outbound: async (limit, after) => {
-    outboundCalls.push({ limit, after });
+  Outbound: async (session, limit, after) => {
+    outboundCalls.push({ session, limit, after });
     return outboundPages[after ?? ""] ?? { messages: [] };
   },
   Wakes: (...a) => wakesAnswer(...a),
@@ -46,43 +45,43 @@ configure({
 const app = boot({ start: false });
 app.state.localNodeId = LOCAL;
 
-const row = (id, from) => ({ id, to: "codex:peer", destinationNodeId: "node_peer", from, state: "delivered", attempts: 1, createdAt: "2026-09-11T00:00:00Z", updatedAt: "2026-09-11T00:00:00Z" });
+const row = (id) => ({ id, to: "codex:peer", destinationNodeId: "node_peer", from: `${LOCAL}/${MINE}`, state: "delivered", attempts: 1, createdAt: "2026-09-11T00:00:00Z", updatedAt: "2026-09-11T00:00:00Z" });
 
-// 1. Qualified senders match on their session half.
-outboundPages = { "": { messages: [row("o1", `${LOCAL}/${MINE}`), row("o2", `${LOCAL}/claude:other`), row("o3", MINE)] } };
+// 1. The session the drawer was opened for reaches the node, and the rows it
+//    answers with are shown as they came: no second filter in here.
+outboundPages = { "": { messages: [row("o1"), row("o2")] } };
 app.state.inboxSessionAsked = MINE;
 await app.loadOutbound({ reset: true });
-let shown = el("outbound-body").serialize();
-if (!shown.includes("o1") && !shown.includes("codex:peer")) failures.push("a qualified sender for this session was not shown");
-if (app.state.outbound.messages.length !== 2) {
-  failures.push(`want the qualified row and the bare row (2), got ${app.state.outbound.messages.length}`);
+if (outboundCalls.length !== 1 || outboundCalls[0].session !== MINE) {
+  failures.push(`the node was asked ${JSON.stringify(outboundCalls)}, want one call carrying ${MINE}`);
 }
-if (app.state.outbound.messages.some((m) => m.id === "o2")) failures.push("another session's row was shown under this session");
+if (app.state.outbound.messages.length !== 2) {
+  failures.push(`want both rows the node answered with, got ${app.state.outbound.messages.length}`);
+}
 
-// 2. A full page with nothing for this session keeps reading, and when the
-//    bound is reached with more still available it says so and keeps the button.
+// 2. A continuation repeats the session alongside the cursor.
 outboundCalls = [];
-const others = (n, prefix) => Array.from({ length: n }, (_, i) => row(`${prefix}${i}`, `${LOCAL}/claude:other`));
-outboundPages = {
-  "": { messages: others(50, "a"), next: "c1" },
-  c1: { messages: others(50, "b"), next: "c2" },
-  c2: { messages: others(50, "c"), next: "c3" },
-  c3: { messages: others(50, "d"), next: "c4" },
-  c4: { messages: others(50, "e"), next: "c5" },
-};
+outboundPages = { "": { messages: [row("a")], next: "c1" }, c1: { messages: [row("b")] } };
 await app.loadOutbound({ reset: true });
-if (outboundCalls.length < 2) failures.push(`a zero-match page did not read on: ${outboundCalls.length} call(s)`);
-if (outboundCalls.length > 4) failures.push(`reading on is unbounded: ${outboundCalls.length} calls`);
-shown = el("outbound-body").serialize();
-if (shown.includes("還沒有送出過訊息")) failures.push("a zero-match scan with more pages claimed the session never sent anything");
-if (el("outbound-more").classList.contains("hidden")) failures.push("the button to read further is hidden while the node has more");
+await app.loadOutbound();
+if (outboundCalls.length !== 2) {
+  failures.push(`want two reads, got ${outboundCalls.length}`);
+} else if (outboundCalls[1].session !== MINE || outboundCalls[1].after !== "c1") {
+  failures.push(`the continuation asked ${JSON.stringify(outboundCalls[1])}, want session ${MINE} and after c1`);
+}
+if (app.state.outbound.messages.length !== 2) {
+  failures.push("a continuation did not append to what was already shown");
+}
 
-// 3. No more pages and nothing found: only then is "never sent" true.
-outboundPages = { "": { messages: others(5, "z") } };
+// 3. An empty answer is an answer now: the node filtered, so there is nothing
+//    to read on for, and nothing to promise behind a button.
+outboundCalls = [];
+outboundPages = { "": { messages: [] } };
 await app.loadOutbound({ reset: true });
-shown = el("outbound-body").serialize();
-if (!shown.includes("還沒有送出過訊息")) failures.push("an exhausted log for this session was not described as empty");
-if (!el("outbound-more").classList.contains("hidden")) failures.push("the read-further button is shown when the node has no more");
+if (outboundCalls.length !== 1) failures.push(`an empty page read on ${outboundCalls.length} times, want 1`);
+let shown = el("outbound-body").serialize();
+if (!shown.includes("還沒有送出過訊息")) failures.push("an empty log for this session was not described as empty");
+if (!el("outbound-more").classList.contains("hidden")) failures.push("the read-further button is shown with nothing to read");
 
 // 4. Wake limits the node did not send are not quoted as zeros.
 wakesAnswer = async () => ({ wakes: [{ id: "w1", messageId: "m", destinationSession: MINE, hops: 1, outcome: "refused_hops", at: "2026-09-11T00:00:00Z" }], limits: { hops: 0, pair: 0, pairWindow: "", session: 0, sessionWindow: "", node: 0, nodeWindow: "" } });
@@ -110,4 +109,4 @@ if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("inbox drawer: qualified senders match, zero-match pages read on, absent limits stay absent");
+console.log("inbox drawer: the session filter reaches the node on every page, absent limits stay absent");
