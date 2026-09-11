@@ -526,14 +526,14 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	withdrew := false
 	if address, withdrawn := nodeconfig.WithdrawPeerListen(
 		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
-		// Not called a LAN listener. WithdrawPeerListen also withdraws an
-		// address it cannot parse at all — which is the right call, since an
-		// unusable listener must not be bound and must not refuse every start
-		// forever — and only a hand-edited database gets there. Naming it a LAN
-		// address would put a second untruth in the log on top of the first.
-		logf("withdrawing peer-listen: allow-lan is off, so the remembered peer listener %q "+
-			"is not one this node can serve; it was not bound, and %s is used instead",
-			settings.PeerListen, address)
+		// The reason itself comes from nodeconfig, because the owner's API says
+		// the same thing about the same withdrawal: two copies of this sentence
+		// is how a log and a settings page come to describe one event
+		// differently. Only the spelling of the switch differs — a log is read
+		// beside a command line, so it names the flag.
+		logf("withdrawing peer-listen: %s; it was not bound, and %s is used instead",
+			nodeconfig.WithdrawalReason(nodeconfig.FlagName(nodeconfig.SettingAllowLAN), settings.PeerListen),
+			address)
 		settings.PeerListen = address
 		given.PeerListen = &address
 		withdrew = true
