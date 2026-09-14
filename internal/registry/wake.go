@@ -218,10 +218,18 @@ func DefaultWakeLimits() WakeLimits {
 // the first.
 //
 // A reserved wake is written as WakeWoken before the provider is called,
-// because the count has to include it while the turn is running — that is
-// exactly when a second message must not start another. SettleWake flips it
-// afterwards if the provider refused, and it stops being counted then,
-// which is right: nothing ran, so nothing was spent.
+// because the count has to include it while the turn is running. SettleWake
+// flips it afterwards if the provider refused, and it stops being counted
+// then, which is right: nothing ran, so nothing was spent.
+//
+// What that does not do is stop a second message reaching a busy agent. This
+// comment used to say it did, and that was wrong (#101): these are rate
+// limits — how many in a window — not a concurrency limit, so with a limit of
+// three per pair the row written here is what refuses the fourth message in
+// the window, not the second one arriving while the first is still running.
+// Three messages landing together all reserve, all pass, and all drive.
+// Whether they may run at once is the provider driver's question, and the
+// Codex driver answers it by holding each thread to one turn at a time.
 func (r *Registry) ReserveWake(ctx context.Context, event WakeEvent, limits WakeLimits) (WakeEvent, error) {
 	if event.DestinationSession == "" {
 		return WakeEvent{}, fmt.Errorf("%w: wake event needs a destination session", ErrInvalidSession)

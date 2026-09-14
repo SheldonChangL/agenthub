@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"agenthub.local/agenthub/internal/codexapp"
@@ -72,30 +73,112 @@ func TestASendersLabelCannotForgeALineOfThePrompt(t *testing.T) {
 
 // recordingConversation remembers the calls in the order they were made.
 type recordingConversation struct {
+	mu      sync.Mutex
 	calls   []string
 	resumed []string
 	turns   []codexapp.StartTurnParams
 	failOn  string
+	// turnIDs are handed out in order, one per StartTurn, so a test can say
+	// which turn app-server claims to have started.
+	turnIDs []string
+	// over is closed per turn id by finish(); WaitForTurn blocks on it.
+	over map[string]chan struct{}
+	// waitErr makes WaitForTurn fail at once, standing in for a connection
+	// that died under a turn.
+	waitErr error
+}
+
+// waiter returns the channel a turn ends on, making it if this is the first
+// mention of that turn. Either side may get there first — the driver waiting,
+// or the test finishing — and neither may be made to depend on the other.
+func (c *recordingConversation) waiter(turnID string) chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.over == nil {
+		c.over = map[string]chan struct{}{}
+	}
+	if existing, ok := c.over[turnID]; ok {
+		return existing
+	}
+	made := make(chan struct{})
+	c.over[turnID] = made
+	return made
+}
+
+// finish is what a test uses to say a turn ended, standing in for the
+// turn/completed notification app-server sends.
+func (c *recordingConversation) finish(turnID string) {
+	select {
+	case <-c.waiter(turnID):
+	default:
+		close(c.waiter(turnID))
+	}
+}
+
+func (c *recordingConversation) WaitForTurn(ctx context.Context, turnID string) error {
+	c.mu.Lock()
+	failure := c.waitErr
+	c.mu.Unlock()
+	if failure != nil {
+		return failure
+	}
+	select {
+	case <-c.waiter(turnID):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *recordingConversation) record(call string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls = append(c.calls, call)
+}
+
+// order returns the calls made so far, joined.
+func (c *recordingConversation) order() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return strings.Join(c.calls, ",")
+}
+
+func (c *recordingConversation) started() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.turns)
 }
 
 func (c *recordingConversation) Conversation(context.Context) (Conversation, error) { return c, nil }
 
 func (c *recordingConversation) ResumeThread(_ context.Context, threadID string) (codexapp.ResumeResult, error) {
+	c.mu.Lock()
 	c.calls = append(c.calls, "resume")
 	c.resumed = append(c.resumed, threadID)
-	if c.failOn == "resume" {
+	failing := c.failOn == "resume"
+	c.mu.Unlock()
+	if failing {
 		return codexapp.ResumeResult{}, errors.New("no rollout found")
 	}
 	return codexapp.ResumeResult{}, nil
 }
 
 func (c *recordingConversation) StartTurn(_ context.Context, params codexapp.StartTurnParams) (codexapp.TurnResult, error) {
+	c.mu.Lock()
 	c.calls = append(c.calls, "start")
 	c.turns = append(c.turns, params)
-	if c.failOn == "start" {
+	failing := c.failOn == "start"
+	turnID := ""
+	if index := len(c.turns) - 1; index < len(c.turnIDs) {
+		turnID = c.turnIDs[index]
+	}
+	c.mu.Unlock()
+	if failing {
 		return codexapp.TurnResult{}, errors.New("turn refused")
 	}
-	return codexapp.TurnResult{}, nil
+	var result codexapp.TurnResult
+	result.Turn.ID = turnID
+	return result, nil
 }
 
 func codexSession() model.Session {
@@ -120,7 +203,7 @@ func TestDriveResumesBeforeStartingATurn(t *testing.T) {
 		t.Fatalf("Drive() error = %v", err)
 	}
 
-	if got := strings.Join(conversation.calls, ","); got != "resume,start" {
+	if got := conversation.order(); got != "resume,start" {
 		t.Errorf("calls = %q, want resume before start", got)
 	}
 	if len(conversation.resumed) != 1 || conversation.resumed[0] != "thread-1" {
