@@ -68,7 +68,17 @@ await tick();
 if (el("node-peerlisten").value !== "192.168.50.10:7463") {
   failures.push(`the address field shows ${el("node-peerlisten").value}, want the node's`);
 }
-if (!el("node-allow-lan").checked || !el("node-discover").checked) failures.push("a true flag did not reach its box");
+// The form shows what the NEXT start will use. This fixture has discover
+// pinned true by a command-line flag over a stored false, so the box is
+// unticked and the tag says what is running instead — a form that showed the
+// running value could never write the stored one.
+if (!el("node-allow-lan").checked) failures.push("a saved true did not reach its box");
+if (el("node-discover").checked) {
+  failures.push("the box shows the running value, not the one a save would write");
+}
+if (!el("node-discover-source").textContent.includes("目前執行中的是 開")) {
+  failures.push(`the running value was not named: ${el("node-discover-source").textContent}`);
+}
 if (el("node-private").value !== "192.168.50.0/24") failures.push(`ranges = ${el("node-private").value}`);
 if (!el("node-discover-source").textContent.includes("命令列")) {
   failures.push(`a flag-sourced value is not marked as such: ${el("node-discover-source").textContent}`);
@@ -76,11 +86,18 @@ if (!el("node-discover-source").textContent.includes("命令列")) {
 if (!el("node-peerlisten-source").textContent.includes("記住")) failures.push("a remembered value is not marked as such");
 if (el("node-settings-notice").serialize().includes("收回")) failures.push("a withdrawal was announced when none stands");
 
-// 2. Only what changed is sent.
-el("node-discover").checked = false;
+// 2. Only what changed is sent, measured against what is saved. Ticking the
+//    box that a flag is already forcing on is still a change to the stored
+//    configuration, and has to reach the node — otherwise a value pinned by
+//    this start-up can never be made permanent from this window.
+el("node-discover").checked = true;
 let patch = app.readNodeSettingsPatch();
-if (Object.keys(patch).length !== 1 || patch.discover !== false) {
-  failures.push(`patch = ${JSON.stringify(patch)}, want only discover:false`);
+if (Object.keys(patch).length !== 1 || patch.discover !== true) {
+  failures.push(`patch = ${JSON.stringify(patch)}, want only discover:true`);
+}
+el("node-discover").checked = false;
+if (Object.keys(app.readNodeSettingsPatch()).length !== 0) {
+  failures.push("a box matching the saved value was still sent");
 }
 
 // 3. Clearing the ranges sends an empty array, not an omitted key: an omitted
@@ -131,7 +148,7 @@ if (!el("banner").textContent.includes("回應中")) {
 serviceStatus = { supported: true, installed: true, running: false, pid: 0, unitPath: "/u", logHint: "/var/log/agenthub-node.log" };
 app.state.service = serviceStatus;
 el("node-autowake").checked = true;
-saveAnswer = async () => ({ settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: {}, restartRequired: true });
+saveAnswer = async () => ({ settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, restartRequired: true });
 await app.saveNodeSettings();
 await tick();
 const afterFailedRestart = el("banner").textContent;
@@ -172,7 +189,7 @@ if (restartCalls !== 0) failures.push("a refused write restarted the service any
 // 6. Saving on a node that is not a service does not claim to have restarted it.
 app.state.service = { supported: true, installed: false };
 el("node-allow-lan").checked = true;
-saveAnswer = async () => ({ settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: {}, restartRequired: true });
+saveAnswer = async () => ({ settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true }, restartRequired: true });
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
@@ -189,7 +206,7 @@ if (!el("banner").textContent.includes("自己重新啟動")) {
 //     listener is withdrawn) unreachable from this window.
 settingsAnswer = async () => ({
   settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
 });
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
@@ -220,7 +237,7 @@ for (const address of ["192.168.50.10:7463", "10.0.0.5:7463", "122.122.0.7:7463"
 }
 settingsAnswer = async () => ({
   settings: { peerListen: "127.0.0.1:9999", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "127.0.0.1:9999", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
 });
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
@@ -244,7 +261,7 @@ if (el("node-peerlisten").value !== "127.0.0.1:9999") {
 //     ones they did.
 settingsAnswer = async () => ({
   settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false,
 });
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
@@ -281,11 +298,11 @@ saveAnswer = async () => {
   // A reload lands while the write is in flight.
   await app.loadNodeSettings();
   return { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
-    sources: {}, saved: {}, restartRequired: true };
+    sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true }, restartRequired: true };
 };
 settingsAnswer = async () => ({
   settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false,
 });
 await app.saveNodeSettings();
 await tick();
@@ -309,8 +326,13 @@ await app.loadNodeSettings();
 await tick();
 const tag = el("node-peerlisten-source").textContent;
 if (!tag.includes("命令列")) failures.push(`a flag-sourced value is not marked: ${tag}`);
-if (!tag.includes("127.0.0.1:7463")) {
-  failures.push(`the stored value the next start will use was not named: ${tag}`);
+if (!tag.includes("192.168.1.10:7463")) {
+  failures.push(`the address actually running was not named: ${tag}`);
+}
+// And the field itself holds the stored address, because that is what a save
+// writes and what the next start uses.
+if (el("node-peerlisten").value !== "") {
+  failures.push(`the field shows ${el("node-peerlisten").value}, want the stored loopback`);
 }
 
 // R6/R7. The address list is filled before the form is explained, and a failure
@@ -338,7 +360,7 @@ configure({
 });
 settingsAnswer = async () => ({
   settings: { peerListen: "122.122.0.7:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "122.122.0.7:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
 });
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
@@ -426,8 +448,8 @@ configure({
   },
 });
 let answers = [
-  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, sources: {}, saved: {}, restartRequired: false },
-  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, sources: {}, saved: {}, restartRequired: false },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false },
 ];
 settingsAnswer = async () => answers.shift() ?? answers[0];
 app.state.nodeSettings = null;
@@ -461,7 +483,7 @@ configure({
 });
 settingsAnswer = async () => ({
   settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
-  sources: {}, saved: {}, restartRequired: false,
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
 });
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
@@ -469,7 +491,7 @@ await tick();
 el("node-autowake").checked = true;
 saveAnswer = async () => ({
   settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true },
-  sources: {}, saved: {}, restartRequired: true,
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true }, restartRequired: true,
 });
 await app.saveNodeSettings();
 await tick();

@@ -2422,16 +2422,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     state.nodeSettings = view;
-    const settings = view.settings ?? {};
+    // The form edits what the NEXT start will use, which is `saved`, not what
+    // is running. The node merges a write onto the saved configuration and
+    // judges it there — its own comment in internal/api/settings.go says so —
+    // so a form painted from the running values disagrees with the node
+    // wherever a command-line flag pinned something: it would show allowLan
+    // ticked over a stored false, never be able to send allowLan:true (the box
+    // already matches what is on screen), and let an unrelated save withdraw a
+    // remembered LAN address without a word.
+    const running = view.settings ?? {};
     const sources = view.sources ?? {};
     const saved = view.saved ?? {};
     el("node-settings-state").textContent = "";
 
-    fillPeerListenOptions(settings.peerListen ?? "", addresses.list);
-    el("node-allow-lan").checked = Boolean(settings.allowLan);
-    el("node-discover").checked = Boolean(settings.discover);
-    el("node-autowake").checked = Boolean(settings.autoWake);
-    el("node-private").value = (settings.treatAsPrivate ?? []).join(", ");
+    fillPeerListenOptions(saved.peerListen ?? "", addresses.list);
+    el("node-allow-lan").checked = Boolean(saved.allowLan);
+    el("node-discover").checked = Boolean(saved.discover);
+    el("node-autowake").checked = Boolean(saved.autoWake);
+    el("node-private").value = (saved.treatAsPrivate ?? []).join(", ");
     // Whatever the node holds is the owner's, not a suggestion of ours.
     state.nodePrivateSuggested = "";
 
@@ -2442,7 +2450,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       ["node-private-source", "treatAsPrivate"],
       ["node-autowake-source", "autoWake"],
     ]) {
-      el(id).textContent = describeSource(sources[key], settings[key], saved[key]);
+      el(id).textContent = describeSource(sources[key], running[key], saved[key]);
     }
 
     // The node's own sentence about what the write did, verbatim: it names the
@@ -2472,30 +2480,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     syncNodeSettingsForm();
   }
 
-  // describeSource says where a value came from, in words rather than the
-  // node's three tokens.
+  // describeSource relates what is running to what the form is editing.
   //
-  // "flag" is the one that misleads if left alone: the value on screen came
-  // from this start-up's command line, the database still holds something else,
-  // and the next start will use that instead. The stored value is named, so an
-  // owner does not save an unrelated field and find the address changed after a
-  // restart they thought was unrelated.
-  function describeSource(source, effective, stored) {
+  // The form shows the saved configuration — what the next start uses. The
+  // node's `sources` describes the RUNNING one, so the only case that needs
+  // saying is "flag": the value on screen is not what this process is using,
+  // and an owner who does not know that reads the form as a description of
+  // right now.
+  function describeSource(source, running, savedValue) {
     if (source === "flag") {
-      const differs = stored !== undefined && String(stored) !== String(effective);
+      const differs = running !== undefined && describeStored(running) !== describeStored(savedValue);
       return differs
-        ? `· 這次啟動的命令列指定，記住的是 ${describeStored(stored)}，下次啟動會用它`
-        : "· 這次啟動的命令列指定";
+        ? `· 目前執行中的是 ${describeStored(running)}（這次啟動的命令列指定）；上面是下次啟動會用的值`
+        : "· 這次啟動的命令列也指定了同樣的值";
     }
     if (source === "remembered") return "· 記住的值";
     if (source === "default") return "· 預設值";
     return "";
   }
 
-  function describeStored(stored) {
-    if (Array.isArray(stored)) return stored.length > 0 ? stored.join(", ") : "（空）";
-    if (typeof stored === "boolean") return stored ? "開" : "關";
-    return String(stored === "" || stored === undefined ? LOOPBACK_LISTEN : stored);
+  function describeStored(value) {
+    if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "（空）";
+    if (typeof value === "boolean") return value ? "開" : "關";
+    return String(value === "" || value === undefined ? LOOPBACK_LISTEN : value);
   }
 
   // fillPeerListenOptions rebuilds the list from scratch, placeholder included.
@@ -2579,7 +2586,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // refused" for the second would send the owner looking for a mistake that
     // is not there, and saying "will be withdrawn" for the first would promise
     // a save that does not happen.
-    const stored = state.nodeSettings?.settings?.peerListen ?? "";
+    const stored = state.nodeSettings?.saved?.peerListen ?? "";
     const naming = address !== (stored || LOOPBACK_LISTEN);
     const warning = el("node-settings-combination");
     warning.replaceChildren();
@@ -2652,7 +2659,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // from. Diffing against `saved` instead would make a value pinned by this
   // start-up's command line look changed on every save.
   function readNodeSettingsPatch() {
-    const before = state.nodeSettings?.settings ?? {};
+    // The saved configuration, because that is what the node merges a write
+    // onto — see applyNodeSettings.
+    const before = state.nodeSettings?.saved ?? {};
     const patch = {};
     const peerListen = el("node-peerlisten").value || LOOPBACK_LISTEN;
     if (peerListen !== (before.peerListen || LOOPBACK_LISTEN)) patch.peerListen = peerListen;
