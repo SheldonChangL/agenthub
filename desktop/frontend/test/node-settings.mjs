@@ -454,11 +454,12 @@ configure({
   },
 });
 let answers = [
-  // running and saved deliberately differ, so an assertion that reads the wrong
-  // one fails instead of passing by coincidence.
+  // In BOTH fixtures every field differs between running and saved, so an
+  // assertion that reads the running block fails whichever read wins rather
+  // than passing by coincidence.
   { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, sources: { allowLan: "flag" },
     saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: true },
-  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, sources: { allowLan: "flag" },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: true }, sources: { allowLan: "flag" },
     saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: true },
 ];
 settingsAnswer = async () => answers.shift() ?? answers[0];
@@ -793,6 +794,27 @@ if (app.canJudgePrivacy("203.0.113.9:7463", ["2001:db8::/32"]) !== false) {
 }
 if (app.canJudgePrivacy("203.0.113.9:7463", ["10.0.0.0/8"]) !== true) {
   failures.push("an all-IPv4 case was not judged");
+}
+
+// R19. A prediction this window cannot make is not shown. An IPv6 peer listener
+//      is legitimate and its ranges are judged by the node, not here, so the
+//      form says nothing about privacy rather than guessing 「會拒絕」.
+settingsAnswer = async () => ({
+  settings: { peerListen: "[2001:db8::5]:7463", allowLan: true, discover: false, treatAsPrivate: ["2001:db8::/32"], autoWake: false },
+  sources: {},
+  saved: { peerListen: "[2001:db8::5]:7463", allowLan: true, discover: false, treatAsPrivate: ["2001:db8::/32"], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("an IPv6 listener with a declared IPv6 range was wrongly flagged as public");
+}
+el("node-peerlisten").value = "";
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a loopback address was flagged as public");
 }
 
 if (failures.length > 0) {
