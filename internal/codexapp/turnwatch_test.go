@@ -61,7 +61,7 @@ func TestACompletionSeenBeforeTheWaitStillReleasesIt(t *testing.T) {
 	var tracker turnTracker
 	tracker.complete("turn-early")
 	select {
-	case <-tracker.wait("turn-early"):
+	case <-tracker.wait("turn-early").ready:
 	default:
 		t.Fatal("a turn that completed before anyone waited on it left the waiter parked; " +
 			"nothing will ever send that completion again")
@@ -154,3 +154,94 @@ func TestFinishedTurnsAreForgottenEventually(t *testing.T) {
 }
 
 func turnID(n int) string { return "turn-" + strconv.Itoa(n) }
+
+// waiterCount reports how many turns have somebody waiting on them.
+func (t *turnTracker) waiterCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.waiters)
+}
+
+// A wait that gives up is forgotten.
+//
+// The two ways out of WaitForTurn that are not a completion — the caller's
+// context ending, the connection dying — have as their premise that the
+// completion is never coming, so complete() will never remove these entries.
+// Before this was handled, 500 timed-out waits left 500 channels in the map
+// for the life of the connection, and a busy thread produces one of those per
+// message it refuses. The bound on finished turns does not cover it: that
+// caps `finished` and `order`, which is the other half of the tracker.
+func TestGivingUpOnATurnForgetsTheWait(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClient(server.transport)
+	t.Cleanup(func() { _ = client.Close() })
+
+	const abandoned = 50
+	for turn := 0; turn < abandoned; turn++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Millisecond)
+		err := client.WaitForTurn(ctx, turnID(turn))
+		cancel()
+		if err == nil {
+			t.Fatalf("waiting for turn %d reported a completion nobody sent", turn)
+		}
+	}
+	if got := client.turns.waiterCount(); got != 0 {
+		t.Errorf("%d waits gave up and left %d waiters behind; nothing will ever remove "+
+			"them, so this grows for as long as the connection lives", abandoned, got)
+	}
+}
+
+// A wait released by the connection dying is forgotten too.
+//
+// Same premise, the other exit: nobody will send that turn's completion now,
+// so nothing else would ever take the entry out.
+func TestAWaitEndedByADeadConnectionIsForgotten(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClient(server.transport)
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done <- client.WaitForTurn(ctx, "turn-1")
+	}()
+	// Waiting is registered before the connection dies, so what is being
+	// measured is the waiter being removed rather than never being added.
+	deadline := time.Now().Add(2 * time.Second)
+	for client.turns.waiterCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := client.turns.waiterCount(); got != 1 {
+		t.Fatalf("%d waiters registered before the connection died, want 1", got)
+	}
+	server.hangUp()
+	if err := <-done; err == nil {
+		t.Fatal("a dead connection reported the turn as completed")
+	}
+	if got := client.turns.waiterCount(); got != 0 {
+		t.Errorf("the connection died and %d waiters stayed in the map", got)
+	}
+}
+
+// One caller giving up does not strand another waiting on the same turn.
+//
+// Waiters for one turn id share a channel, so forgetting the entry as soon as
+// the first of them walks away would leave the rest for complete() to find
+// nothing to close — released only by their own deadlines, each holding a
+// thread's turn slot until then.
+func TestGivingUpDoesNotStrandAnotherWaiterOnTheSameTurn(t *testing.T) {
+	var tracker turnTracker
+	staying := tracker.wait("turn-1")
+	leaving := tracker.wait("turn-1")
+	tracker.abandon("turn-1", leaving)
+
+	if got := tracker.waiterCount(); got != 1 {
+		t.Fatalf("%d waiters left after one of two gave up, want the one still waiting", got)
+	}
+	tracker.complete("turn-1")
+	select {
+	case <-staying.ready:
+	default:
+		t.Fatal("the turn completed and the caller still waiting on it was never released")
+	}
+}
