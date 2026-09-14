@@ -383,6 +383,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       renderNodes();
       renderPairing();
     }
+    if (state.view !== "settings") {
+      // Away from the panel, the one-read-per-visit latch clears, so a panel
+      // that could not reach the node tries again next time it is opened
+      // rather than staying on 讀不到 until the button is pressed.
+      state.nodeSettingsTried = false;
+    }
     if (state.view === "settings") {
       renderSettings();
       // Read once when the view first opens, then only when asked: these
@@ -413,11 +419,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("selection-count").textContent = count ? `已選取 ${count} 個 session` : "未選取";
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
-    // The settings panel's own read and write follow state.busy wherever the
-    // window happens to be showing. A read started during a save answers from
-    // before the restart but carries a higher sequence number, so it would win
-    // the guard and repaint the form with pre-restart values under a success
-    // banner; the button is what stops it.
+    // The settings panel's own read and write are held off while ANY write is
+    // in flight, not only a settings one: state.busy is the window's single
+    // "something is being changed" flag. The case that matters is a reload
+    // clicked during a save — it answers from before the restart but carries a
+    // higher sequence number, so it would win the guard and repaint the form
+    // with pre-restart values under a success banner.
     el("node-settings-reload").disabled = state.busy;
     el("node-settings-save").disabled = state.busy;
 
@@ -2437,7 +2444,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (sequence <= nodeSettingsApplied) return;
     nodeSettingsApplied = sequence;
     applyNodeSettings(view, addresses);
-    state.nodeSettingsTried = true;
   }
 
   // fetchLocalAddresses never throws: a failure is a thing to say, not a thing
@@ -2826,13 +2832,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
       if (!status.installed) {
         await paintAfterSave(sequence, view);
-        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。", true);
+        // Not marked successful: like the unknown-status case, the node is
+        // still running the old settings until the owner does something.
+        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。");
         return;
       }
       try {
         const restarted = await api.RestartService();
         showNodeSettingsOutput(restarted);
-        await loadService();
       } catch (error) {
         await paintAfterSave(sequence, view);
         banner(
@@ -2841,6 +2848,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         );
         return;
       }
+      // Outside the try: the restart already succeeded, so a status read that
+      // fails here is not a failed restart. Reporting it as one would tell the
+      // owner the node is still on the old settings when it is not.
+      const live = await serviceStatusOrUnknown();
 
       // Read the node again now that it has restarted, rather than painting the
       // answer the write gave: that answer describes the process that has since
@@ -2856,6 +2867,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         : { ...after.view, message: after.view.message || view.message });
 
       if (after.view.error) {
+        // The tags beside each field name what is RUNNING, and after a restart
+        // this window could not read, that is a process that no longer exists.
+        // Cleared rather than left to describe the dead one.
+        for (const id of ["node-peerlisten-source", "node-allowlan-source", "node-discover-source",
+          "node-private-source", "node-autowake-source"]) {
+          el(id).textContent = "";
+        }
+        el("node-settings-hint").textContent = "節點只在啟動時讀這些值。";
         // Without the re-read there is no way to tell whether what was asked
         // for is what the node now holds, and the most common reason it would
         // not be — a flag in the service unit — looks exactly like success.
@@ -2891,19 +2910,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // set to restart on failure will crash-loop on a combination it refuses.
       // Announcing "restarted" because the restart command returned would be a
       // claim about the one thing this window can actually check and did not.
-      const live = state.service ?? {};
-      if (live.running && live.nodeAnswering) {
+      if (live.unknown) {
+        banner(
+          `設定已儲存，服務也重新啟動了，但重啟後讀不到服務狀態（${live.reason}），` +
+          "所以無法確認節點是否正常回來。請看上面的背景服務區。",
+        );
+        return;
+      }
+      const back = state.service ?? {};
+      if (back.running && back.nodeAnswering) {
         banner("設定已儲存，背景服務已重新啟動並回應中。", true);
         return;
       }
       // Not marked successful, so it stays on screen: the settings just saved
       // are the first thing to suspect, and they are still on the form above.
       banner(
-        live.running
+        back.running
           ? "設定已儲存，服務在跑但節點還沒有回應。剛改的設定是第一個要懷疑的地方；" +
-            `看 log：${live.logHint || "（節點沒有給路徑）"}`
+            `看 log：${back.logHint || "（節點沒有給路徑）"}`
           : "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；" +
-            `看 log：${live.logHint || "（節點沒有給路徑）"}`,
+            `看 log：${back.logHint || "（節點沒有給路徑）"}`,
       );
     });
   }
