@@ -64,19 +64,27 @@ type Candidates struct {
 	// could never deliver to is not a candidate.
 	policy AddressPolicy
 	now    func() time.Time
+	// pairedRecently is why a replayed paired id does not cost a read per
+	// packet. A paired node deliberately never gets a row here, so the row is
+	// not able to stop the asking; this is. See pairedCache.
+	pairedRecently *pairedCache
 
 	mu   sync.Mutex
 	seen map[string]Candidate
 }
 
 func NewCandidates(localNodeID string, paired func(ctx context.Context, nodeID string) (bool, error), policy AddressPolicy) *Candidates {
-	return &Candidates{
+	c := &Candidates{
 		localNodeID: localNodeID,
 		paired:      paired,
 		policy:      policy,
 		now:         func() time.Time { return time.Now().UTC() },
 		seen:        map[string]Candidate{},
 	}
+	// Through the field rather than the value, so a caller that replaces the
+	// clock — which is how the TTL is tested — moves both clocks at once.
+	c.pairedRecently = newPairedCache(func() time.Time { return c.now() })
+	return c
 }
 
 // ObserveAll records every offer in one packet.
@@ -222,11 +230,21 @@ func (c *Candidates) observe(ctx context.Context, source netip.Addr, announcemen
 	// asking again on every refresh would be one database read per packet per
 	// row, which is the amplification this file exists to avoid.
 	if !known {
+		// A paired id is the one case that never ends up with a row, so without
+		// this it is asked about on every packet forever — the amplification
+		// the rest of this file is arranged to avoid, arriving through the only
+		// id that cannot be listed. The answer is reused for trustCacheTTL and
+		// no longer, so a node the owner has just unpaired starts appearing
+		// within seconds.
+		if c.pairedRecently.excluded(announcement.NodeID) {
+			return false, nil
+		}
 		paired, err := c.paired(ctx, announcement.NodeID)
 		if err != nil {
 			return false, err
 		}
 		if paired {
+			c.pairedRecently.remember(announcement.NodeID)
 			return false, nil
 		}
 	}
