@@ -52,6 +52,9 @@ const app = boot({ start: false });
 app.state.service = serviceStatus;
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// The form only offers a range when the owner changes the address; the tests
+// below drive that moment directly, so they clear the remembered offer first.
+const state_nodePrivateReset = () => { app.state.nodePrivateSuggested = ""; };
 
 // 1. A read fills the form, and each field says where its value came from.
 settingsAnswer = async () => ({
@@ -340,11 +343,45 @@ settingsAnswer = async () => ({
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
 await tick();
-if (el("node-private").value.trim() === "") {
-  failures.push("a non-private address on load did not bring in its own subnet, so the next save is refused");
+// A repaint never edits the ranges the node holds — they are the owner's. What
+// the form owes them is the warning that this address will be refused without
+// one, and the subnet to use.
+if (el("node-private").value.trim() !== "") {
+  failures.push(`a repaint wrote into the ranges field: ${el("node-private").value}`);
+}
+const publicWarn = el("node-settings-combination").serialize();
+if (!publicWarn.includes("不在私有網段") || !publicWarn.includes("122.122.0.0/16")) {
+  failures.push(`a non-private address was not flagged with its subnet: ${publicWarn}`);
+}
+// Changing the address is the one moment a suggestion is offered, and only
+// into a field the owner has not filled.
+el("node-private").value = "";
+state_nodePrivateReset();
+app.suggestPrivateRange();
+app.syncNodeSettingsForm();
+if (el("node-private").value.trim() !== "122.122.0.0/16") {
+  failures.push(`picking the address did not offer its subnet: ${el("node-private").value}`);
 }
 if (el("node-private-note").classList.contains("hidden")) {
-  failures.push("the range suggestion was not explained on load");
+  failures.push("the offered range was not explained");
+}
+// Clearing it stays cleared: that is how a declared range is withdrawn.
+el("node-private").value = "";
+el("node-private").oninput?.();
+if (el("node-private").value.trim() !== "") {
+  failures.push(`clearing the ranges field was undone: ${el("node-private").value}`);
+}
+// And a range offered for one address does not outlive it.
+el("node-private").value = "";
+state_nodePrivateReset();
+app.suggestPrivateRange();
+const offered = el("node-private").value.trim();
+el("node-peerlisten").value = "";
+app.suggestPrivateRange();
+app.syncNodeSettingsForm();
+if (offered !== "122.122.0.0/16") failures.push("the suggestion was not offered before switching away");
+if (el("node-private").value.trim() !== "") {
+  failures.push(`a public range outlived the address that justified it: ${el("node-private").value}`);
 }
 addressesThrow = true;
 app.state.nodeSettings = null;
