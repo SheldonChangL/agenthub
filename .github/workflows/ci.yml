@@ -121,6 +121,19 @@ jobs:
         run: |
           go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
           govulncheck ./...
+      # gosec too, and for the same reason: the security-scan job runs ./... in
+      # the root module, which does not reach a second module, so nothing had
+      # ever looked at this one. It is the code that locates and executes ah,
+      # agenthub-node and agenthub-mcp on the owner's machine — the subject of
+      # these rules, not an afterthought. It runs here rather than in
+      # security-scan because main.go embeds all:frontend/dist and this is the
+      # job that has already built it. Any finding fails the job; reviewed false
+      # positives carry a reasoned #nosec at the exact line.
+      - name: gosec (desktop module)
+        working-directory: desktop
+        run: |
+          go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+          gosec -fmt=text ./...
 
   frontend:
     name: frontend (install, build, audit)
