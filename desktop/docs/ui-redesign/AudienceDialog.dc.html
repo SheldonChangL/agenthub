@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #0f1115; color: #e6e9ef; font: 13px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang TC", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #4f8cff; } a:hover { color: #3f7bef; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; }
+    .muted { color: #8b93a5; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font-size: 12.5px; white-space: nowrap; }
+    .btn.primary { background: #4f8cff; border-color: #4f8cff; color: #fff; }
+    .btn.ghost { background: transparent; }
+    .btn.danger { background: transparent; border-color: #5a3330; color: #f0908a; }
+    .pill { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 999px; font-size: 11px; border: 1px solid #272c38; color: #8b93a5; }
+    .pill.active { color: #35c07a; border-color: rgba(53,192,122,.4); }
+    .pill.idle { color: #e0a33e; border-color: rgba(224,163,62,.4); }
+    .pill.public { color: #4f8cff; border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.1); }
+    .pill.bad { color: #f0908a; border-color: rgba(229,84,75,.45); }
+    .titlebar { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 16px; border-bottom: 1px solid #272c38; background: #161920; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #35c07a; box-shadow: 0 0 0 3px rgba(53,192,122,.15); }
+    .tabs { display: flex; gap: 2px; margin-left: 18px; }
+    .tab { padding: 0 12px; height: 30px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; color: #8b93a5; font-size: 12.5px; }
+    .tab.on { background: #1c202a; color: #e6e9ef; }
+    .tab .n { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: #272c38; color: #8b93a5; }
+    .statusbar { height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid #272c38; font-size: 11px; color: #8b93a5; background: #161920; }
+    .stale { padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(224,163,62,.35); background: rgba(224,163,62,.07); color: #e6e9ef; font-size: 12px; }
+    .fingerprint { font-family: "SF Mono", ui-monospace, Menlo, monospace; letter-spacing: .06em; }
+    .claimed { font-family: "SF Mono", ui-monospace, Menlo, monospace; color: #e0a33e; }
+    input.field, .field { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font: inherit; font-size: 12.5px; }
+    .check { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .check.on { background: #4f8cff; border-color: #4f8cff; }
+    .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .radio.on { border: 4px solid #4f8cff; background: #fff; }
+    .kbd { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid #272c38; color: #8b93a5; }
+  </style>
+</helmet>
+<div style="width: 620px; height: 680px; display: flex; flex-direction: column; background: #161920; border: 1px solid #272c38; border-radius: 10px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.5);">
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #272c38;">
+    <div><div style="font-size: 14px; font-weight: 600;">設定公開對象</div><div class="muted" style="font-size: 11.5px;">套用到已選取的 2 個 session。公開只會送出中繼資料，不含任何對話內容。</div></div>
+    <span class="btn ghost" style="height: 24px; padding: 0 8px;">取消</span>
+  </div>
+
+  <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 16px; flex: 1;">
+    <div style="display: flex; gap: 8px; padding: 8px 10px; border-radius: 6px; background: #0f1115; border: 1px solid #272c38;">
+      <span class="pill" style="height: 16px; font-size: 10px;">CLAUDE</span><span class="mono">8f3a2c1e-agenthub</span>
+      <span class="muted">·</span>
+      <span class="pill" style="height: 16px; font-size: 10px;">CLAUDE</span><span class="mono">41d9e7b0-prm-flow</span>
+    </div>
+
+    <div>
+      <div style="font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600; margin-bottom: 8px;">誰看得到</div>
+      <div style="border: 1px solid #272c38; border-radius: 8px; overflow: hidden;">
+        <div style="display: flex; gap: 10px; padding: 11px 13px; border-bottom: 1px solid #272c38;"><span class="radio" style="margin-top: 3px;"></span><div><div style="font-weight: 500;">不公開</div><div class="muted" style="font-size: 11.5px;">僅本機可見，不會出現在任何 heartbeat。</div></div></div>
+        <div style="display: flex; gap: 10px; padding: 11px 13px; border-bottom: 1px solid #272c38;"><span class="radio" style="margin-top: 3px;"></span><div><div style="font-weight: 500;">所有已配對節點</div><div class="muted" style="font-size: 11.5px;">日後新配對的節點會自動看得到。</div></div></div>
+        <div style="display: flex; gap: 10px; padding: 11px 13px; background: rgba(79,140,255,.06);"><span class="radio on" style="margin-top: 3px;"></span><div style="flex: 1;"><div style="font-weight: 500;">指定節點</div><div class="muted" style="font-size: 11.5px;">只有勾選的節點看得到；新節點預設看不到。</div>
+          <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid #4f8cff; background: rgba(79,140,255,.1);"><span class="check on"></span><span style="width: 7px; height: 7px; border-radius: 50%; background: #3fb950;"></span><span style="font-weight: 500;">ubuntu-lab</span><span class="mono muted" style="margin-left: auto;">node_a91c3e7b2d5f8046c0e1</span></div>
+            <div style="display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 6px; border: 1px solid #272c38;"><span class="check"></span><span style="width: 7px; height: 7px; border-radius: 50%; border: 1px solid #6e7681;"></span><span style="font-weight: 500;">win-bench</span><span class="muted" style="font-size: 11px;">尚未收到心跳</span><span class="mono muted" style="margin-left: auto;">node_c30d8e2f4a6b19d571fa</span></div>
+          </div>
+        </div></div>
+      </div>
+    </div>
+
+    <div>
+      <div style="font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600; margin-bottom: 8px;">他們可以做什麼 <span style="font-weight: 400; letter-spacing: 0; text-transform: none;">— 每次開啟都從全關開始</span></div>
+      <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;">
+        <div style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38;"><span class="check" style="margin-top: 2px;"></span><div><div style="font-weight: 500;">包含工作目錄路徑</div><div class="muted" style="font-size: 11px;">對方會看到 cwd</div></div></div>
+        <div style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38;"><span class="check" style="margin-top: 2px;"></span><div><div style="font-weight: 500;">允許對方排入訊息</div><div class="muted" style="font-size: 11px;">進收件匣，不會自動交給 agent</div></div></div>
+        <div style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 6px; border: 1px solid #272c38;"><span class="check" style="margin-top: 2px;"></span><div><div style="font-weight: 500;">允許主動送出訊息</div><div class="muted" style="font-size: 11px;">這個 session 可以寄給對方</div></div></div>
+        <div style="display: flex; gap: 10px; padding: 10px 12px; border-radius: 6px; border: 1px solid rgba(224,163,62,.4); background: rgba(224,163,62,.05);"><span class="check" style="margin-top: 2px;"></span><div><div style="font-weight: 500;">訊息抵達時自動喚醒 agent</div><div style="font-size: 11px; color: #e0a33e;">無人在場也會動作</div></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-top: 1px solid #272c38;">
+    <span class="muted" style="font-size: 11.5px;">重新掃描不會改變這裡的設定。</span>
+    <span class="btn primary">公開給 1 個節點</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

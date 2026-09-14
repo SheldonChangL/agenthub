@@ -7,7 +7,7 @@
 // somebody else's session. So the row-to-id path is followed all the way to
 // the call, with more than one row on screen.
 //
-//   node frontend/test/mcp-config.mjs [path-to-main.js]
+//   node frontend/test/mcp-config.mjs
 
 import fs from "node:fs";
 import path from "node:path";
@@ -15,14 +15,9 @@ import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
 
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
-const wiring = source.indexOf("/* ---------------- wiring ---------------- */");
-if (wiring > 0) source = source.slice(0, wiring);
+globalThis.document = document;
+globalThis.setInterval = () => 0;
 
 const noop = async () => ({});
 const calls = [];
@@ -45,11 +40,13 @@ const copyStub = async (text) => {
   if (copyFails) throw new Error("no clipboard on this display");
 };
 
-const scope = new Function(
-  "document", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode", "Heartbeat",
-  "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "MCPConfig", "CopyText",
-  source + "\nreturn { renderRows, openMCPConfig, closeMCPConfig, state };"
-)(document, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, noop, mcpStub, copyStub);
+const { configure, boot } = await import("../src/app.js");
+configure({
+  Overview: noop, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+  Heartbeat: noop, Pairing: noop, OpenPairing: noop, ClosePairing: noop, Inbox: noop,
+  ClearInbox: noop, MCPConfig: (sessionId) => mcpStub(sessionId), CopyText: (text) => copyStub(text),
+});
+const scope = boot({ start: false });
 
 const { renderRows, openMCPConfig, closeMCPConfig } = scope;
 const failures = [];

@@ -22,7 +22,7 @@
 // three are button paths, and the third is a string that has to survive a real
 // render rather than exist in a source file.
 //
-//   node frontend/test/pairing-completeness.mjs [path-to-main.js]
+//   node frontend/test/pairing-completeness.mjs
 
 import fs from "node:fs";
 import path from "node:path";
@@ -30,20 +30,14 @@ import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
 
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+globalThis.confirm = () => true;
 
 const failures = [];
 const el = (id) => document.getElementById(id);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
-
-// Intervals are captured rather than run: nothing here needs a tick, and a live
-// one would re-render underneath an assertion.
-const fakeSetInterval = () => 0;
 
 const PUBLIC_KEY = "cS2bH1mQ9pR4tV7xZ0aD3fG6jK9nQ2sU5wY8bE1hL4o=";
 
@@ -102,14 +96,14 @@ const TrustNode = async (nodeId, displayName) => {
 const noop = async () => ({});
 const Pairing = async () => ({ availability: "unknown", candidates: [] });
 
-const scope = new Function(
-  "document", "setInterval", "confirm", "Overview", "Discover", "SetAudience", "TrustNode",
-  "RevokeNode", "SetNodeAddress", "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  "Inbox", "ClearInbox", "MCPConfig", "CopyText", "ServiceStatus", "InstallService",
-  "UninstallService", "LocalAddresses",
-  source + "\nreturn { state, load, render, nodeDetail, presenceLabel, nodeSessions };"
-)(document, fakeSetInterval, () => true, Overview, noop, noop, TrustNode, noop, SetNodeAddress,
-  noop, Pairing, noop, noop, noop, noop, noop, CopyText, noop, noop, noop, noop);
+const { configure, boot } = await import("../src/app.js");
+configure({
+  Overview, Discover: noop, SetAudience: noop, TrustNode, RevokeNode: noop,
+  SetNodeAddress, Heartbeat: noop, Pairing, OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText, ServiceStatus: noop,
+  InstallService: noop, UninstallService: noop, LocalAddresses: noop,
+});
+const scope = boot();
 
 const { state, nodeDetail, presenceLabel, nodeSessions } = scope;
 

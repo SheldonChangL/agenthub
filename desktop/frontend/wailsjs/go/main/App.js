@@ -46,6 +46,10 @@ export function OpenPairing(arg1) {
   return window['go']['main']['App']['OpenPairing'](arg1);
 }
 
+export function Outbound(arg1, arg2, arg3) {
+  return window['go']['main']['App']['Outbound'](arg1, arg2, arg3);
+}
+
 export function Overview() {
   return window['go']['main']['App']['Overview']();
 }
@@ -84,4 +88,8 @@ export function TrustNode(arg1, arg2, arg3, arg4, arg5) {
 
 export function UninstallService() {
   return window['go']['main']['App']['UninstallService']();
+}
+
+export function Wakes(arg1, arg2) {
+  return window['go']['main']['App']['Wakes'](arg1, arg2);
 }

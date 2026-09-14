@@ -15,6 +15,8 @@ let focused = null;
 
 class Node {
   constructor(tag) {
+    // Inline style writes land here, as on a real element; nothing reads it.
+    this.style = {};
     this.tagName = tag;
     this.children = [];
     this.attrs = {};
