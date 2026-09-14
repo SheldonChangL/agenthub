@@ -57,6 +57,9 @@ ManifestDPIAware true
 !define MUI_ABORTWARNING # This will warn the user if they exit from the installer.
 
 !insertmacro MUI_PAGE_WELCOME # Welcome to the installer page.
+# The skill section below writes into the user's own ~/.claude, which is not
+# this application's to change. A components page is how that gets asked.
+!insertmacro MUI_PAGE_COMPONENTS
 # !insertmacro MUI_PAGE_LICENSE "resources\eula.txt" # Adds a EULA page to the installer
 !insertmacro MUI_PAGE_DIRECTORY # In which folder install page.
 !insertmacro MUI_PAGE_INSTFILES # Installing page.
@@ -87,7 +90,8 @@ Function .onInit
    !insertmacro wails.checkArchitecture
 FunctionEnd
 
-Section
+Section "AgentHub" SecCore
+    SectionIn RO
     !insertmacro wails.setShellContext
 
     !insertmacro wails.webview2runtime
@@ -118,6 +122,14 @@ Section
     File "/oname=ah.exe" "..\..\bin\ah.exe"
     File "/oname=agenthub-node.exe" "..\..\bin\agenthub-node.exe"
     File "/oname=agenthub-mcp.exe" "..\..\bin\agenthub-mcp.exe"
+
+    # The agenthub-watch skill, kept beside the app rather than installed into
+    # Claude's configuration: this location belongs to this application, so
+    # writing it needs nobody's permission. Copying it into ~/.claude is the
+    # optional section below, because that directory is the user's.
+    SetOutPath "$INSTDIR\skills\agenthub-watch"
+    File "..\..\..\..\.claude\skills\agenthub-watch\SKILL.md"
+    SetOutPath $INSTDIR
 
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
@@ -157,6 +169,27 @@ Section
     !insertmacro wails.writeUninstaller
 SectionEnd
 
+# Unchecked by default, and deliberately: ~/.claude holds the user's own skills,
+# and an installer that adds to it without being asked is indistinguishable from
+# one that overwrites something they wrote. The marker file is what lets the
+# uninstaller tell its own copy from theirs.
+Section /o "agenthub-watch skill for Claude Code" SecSkill
+    SetShellVarContext current
+    SetOutPath "$PROFILE\.claude\skills\agenthub-watch"
+    File "..\..\..\..\.claude\skills\agenthub-watch\SKILL.md"
+    FileOpen $0 "$PROFILE\.claude\skills\agenthub-watch\.installed-by-agenthub" w
+    FileWrite $0 "Written by the AgentHub installer. Delete this file to keep the skill$\r$\n"
+    FileWrite $0 "when AgentHub is uninstalled.$\r$\n"
+    FileClose $0
+    SetOutPath $INSTDIR
+    !insertmacro wails.setShellContext
+SectionEnd
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+    !insertmacro MUI_DESCRIPTION_TEXT ${SecCore} "The AgentHub desktop app, the node that keeps running, and the ah and agenthub-mcp command line tools."
+    !insertmacro MUI_DESCRIPTION_TEXT ${SecSkill} "Copies the agenthub-watch skill into $PROFILE\.claude\skills so Claude Code can use it anywhere on this machine. Leave this unticked to keep your own .claude directory untouched; a copy is always installed beside the app either way."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
 Section "uninstall"
     !insertmacro wails.setShellContext
 
@@ -179,6 +212,13 @@ Section "uninstall"
     # pointing at a directory that no longer exists.
     SetShellVarContext current
     Delete "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk"
+
+    # Only the copy this installer wrote, identified by the marker it left. A
+    # skill directory without the marker is the user's own — possibly a newer
+    # one they cloned or edited — and removing it would be deleting their work
+    # to tidy up after ours.
+    IfFileExists "$PROFILE\.claude\skills\agenthub-watch\.installed-by-agenthub" 0 +2
+        RMDir /r "$PROFILE\.claude\skills\agenthub-watch"
     !insertmacro wails.setShellContext
 
     !insertmacro wails.unassociateFiles
