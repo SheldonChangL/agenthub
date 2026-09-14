@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -112,5 +114,121 @@ func TestInstallServiceCarriesAhsWordsBackOnFailure(t *testing.T) {
 	}
 	if !strings.Contains(result.Command, "--peer-listen 122.122.122.1:7463 --allow-lan") {
 		t.Errorf("command = %q", result.Command)
+	}
+}
+
+// executable puts a file where an executable would be and returns the directory
+// it landed in, which is what locateBinaryNear is given.
+func executable(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Dir(path)
+}
+
+// checkout writes the one file that tells the search a directory is this
+// project's tree rather than a stranger's.
+func checkout(t *testing.T, root string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+modulePath+"\n\ngo 1.27.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The whole point of taking PATH out. What this finds installs a launchd job or
+// a systemd unit, so an ah that is merely first on PATH must not be it: not
+// found, and not run, even though it is sitting right there.
+func TestLocateBinaryNeverRunsAnAhFromPATH(t *testing.T) {
+	onPath := t.TempDir()
+	executable(t, filepath.Join(onPath, "ah"))
+	t.Setenv("PATH", onPath)
+	t.Setenv("AGENTHUB_AH", "")
+
+	// An app installed somewhere with nothing beside it — the case a colleague
+	// hits, and the one where PATH used to answer.
+	installed := filepath.Join(t.TempDir(), "Applications", "AgentHub.app", "Contents", "MacOS")
+	dir := executable(t, filepath.Join(installed, "desktop"))
+
+	found, err := locateBinaryNear(dir, "ah", "AGENTHUB_AH")
+	if err == nil {
+		t.Fatalf("ah was found at %q; the only ah anywhere is the one on PATH", found)
+	}
+	// The list of places tried is shown to the owner, so it must not advertise
+	// a search that no longer happens. ", PATH)" is how the old list ended.
+	if strings.Contains(err.Error(), onPath) || strings.Contains(err.Error(), ", PATH)") {
+		t.Errorf("PATH is still one of the places searched: %v", err)
+	}
+}
+
+// What the packaging step produces: ah beside the app executable, inside the
+// bundle. This is the path a released .app has to take.
+func TestLocateBinaryFindsWhatWasBundledBesideTheApp(t *testing.T) {
+	t.Setenv("AGENTHUB_AH", "")
+	macOS := filepath.Join(t.TempDir(), "AgentHub.app", "Contents", "MacOS")
+	dir := executable(t, filepath.Join(macOS, "desktop"))
+	bundled := filepath.Join(macOS, "ah")
+	executable(t, bundled)
+
+	found, err := locateBinaryNear(dir, "ah", "AGENTHUB_AH")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != bundled {
+		t.Errorf("found %q, want the bundled %q", found, bundled)
+	}
+}
+
+// The source-tree fallback still serves a developer running the app out of
+// desktop/build/bin — and only there. The same offsets under a directory that
+// is not this project's checkout are a stranger's bin/ah, and are refused.
+func TestLocateBinaryTakesTheSourceTreeOnlyFromThisProjectsCheckout(t *testing.T) {
+	t.Setenv("AGENTHUB_AH", "")
+	for _, layout := range []struct {
+		name   string
+		within string
+	}{
+		{"macOS", filepath.Join("desktop", "build", "bin", "agenthub-desktop.app", "Contents", "MacOS")},
+		{"linux", filepath.Join("desktop", "build", "bin")},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := executable(t, filepath.Join(root, layout.within, "desktop"))
+			built := filepath.Join(root, "bin", "ah")
+			executable(t, built)
+
+			if found, err := locateBinaryNear(dir, "ah", "AGENTHUB_AH"); err == nil {
+				t.Fatalf("found %q under a directory with no go.mod of ours", found)
+			}
+
+			checkout(t, root)
+			found, err := locateBinaryNear(dir, "ah", "AGENTHUB_AH")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found != built {
+				t.Errorf("found %q, want the checkout's %q", found, built)
+			}
+		})
+	}
+}
+
+// A go.mod is not enough on its own: it has to be ours.
+func TestSomeoneElsesCheckoutIsNotOurs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/not/us\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if isProjectCheckout(root) {
+		t.Error("another project's go.mod was accepted as this project's checkout")
+	}
+	if isProjectCheckout(filepath.Join(root, "nowhere")) {
+		t.Error("a directory with no go.mod at all was accepted")
 	}
 }

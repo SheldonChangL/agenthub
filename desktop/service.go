@@ -70,8 +70,9 @@ var runTool = func(ctx context.Context, tool string, args ...string) (string, er
 var toolPath string
 
 // findTool locates ah: named by the owner, beside this executable, inside the
-// bundle, in the source tree, then on PATH. Reported in that order when none
-// of them has it. A variable so tests can stand in for the lookup.
+// bundle, then in the source tree this app was built from. Reported in that
+// order when none of them has it. A variable so tests can stand in for the
+// lookup.
 //
 // Shelling out at all is forced by the module split: desktop/ is its own Go
 // module and cannot import internal/service. Running the same ah the owner
@@ -96,10 +97,28 @@ func locateTool() (string, error) {
 // side and are found the same way, and a second copy of this list would be a
 // second thing to keep in step with how the app is packaged.
 //
+// PATH is deliberately not one of the places. What this finds is run to install
+// a launchd job or a systemd unit; anything named ah that happened to come
+// first on the owner's PATH would be run to do that, and the window would
+// report its output as the app's own. Every place left is either named by the
+// owner or sits at a fixed offset from this executable — which is what the
+// packaging step fills in (desktop/build/bundle-binaries.sh).
+//
 // The answer is always absolute. A relative path works for exec, which resolves
 // it against this process's working directory, but the caller may be writing it
 // into a config file that another program will read from somewhere else.
 func locateBinary(name, envName string) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("find %s: locating this executable: %w", name, err)
+	}
+	return locateBinaryNear(filepath.Dir(self), name, envName)
+}
+
+// locateBinaryNear is that search with the executable's directory given rather
+// than asked for, so a test can lay out a bundle or a checkout in a temporary
+// directory and watch which of them the search will and will not accept.
+func locateBinaryNear(dir, name, envName string) (string, error) {
 	looked := make([]string, 0, 6)
 	if given := os.Getenv(envName); given != "" {
 		if _, err := os.Stat(given); err == nil {
@@ -107,29 +126,59 @@ func locateBinary(name, envName string) (string, error) {
 		}
 		looked = append(looked, "$"+envName+"="+given)
 	}
-	if self, err := os.Executable(); err == nil {
-		dir := filepath.Dir(self)
-		for _, candidate := range []string{
-			filepath.Join(dir, name),
-			filepath.Join(dir, "..", "Resources", name),
-			// The source tree: <repo>/desktop/build/bin/<app>.app/Contents/MacOS
-			// on macOS (six levels up), <repo>/desktop/build/bin on Linux
-			// (three), with the binaries at <repo>/bin/<name>.
-			filepath.Join(dir, "..", "..", "..", "..", "..", "..", "bin", name),
-			filepath.Join(dir, "..", "..", "..", "bin", name),
-		} {
-			if _, err := os.Stat(candidate); err == nil {
-				return absolute(filepath.Clean(candidate))
-			}
-			looked = append(looked, candidate)
+	// Where the packaging step puts them: beside this executable, which is
+	// Contents/MacOS in a bundle and the unpacked directory on Linux, and
+	// Contents/Resources for a bundle laid out the other way.
+	for _, candidate := range []string{
+		filepath.Join(dir, name),
+		filepath.Join(dir, "..", "Resources", name),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return absolute(filepath.Clean(candidate))
 		}
+		looked = append(looked, candidate)
 	}
-	if found, err := exec.LookPath(name); err == nil {
-		return absolute(found)
+	// The source tree, for a developer running the app out of desktop/build/bin:
+	// <repo>/desktop/build/bin/<app>.app/Contents/MacOS on macOS (six levels
+	// up), <repo>/desktop/build/bin on Linux (three), binaries at <repo>/bin.
+	// Taken only when that directory really is this project's checkout: the
+	// offsets on their own would also match an app someone unpacked six levels
+	// deep inside a tree they do not control.
+	for _, root := range []string{
+		filepath.Join(dir, "..", "..", "..", "..", "..", ".."),
+		filepath.Join(dir, "..", "..", ".."),
+	} {
+		if !isProjectCheckout(root) {
+			continue
+		}
+		candidate := filepath.Clean(filepath.Join(root, "bin", name))
+		if _, err := os.Stat(candidate); err == nil {
+			return absolute(candidate)
+		}
+		looked = append(looked, candidate)
 	}
-	looked = append(looked, "PATH")
 	return "", fmt.Errorf("%s was not found (looked: %s); set %s to its path",
 		name, strings.Join(looked, ", "), envName)
+}
+
+// modulePath is this project's Go module. A directory whose go.mod declares it
+// is the checkout this app was built from, rather than a stranger's directory
+// that happens to sit at the same offset from where the app was unpacked.
+const modulePath = "agenthub.local/agenthub"
+
+func isProjectCheckout(root string) bool {
+	// #nosec G304 -- the path is derived from this executable's own location,
+	// never from anything the window or the network supplied.
+	content, err := os.ReadFile(filepath.Clean(filepath.Join(root, "go.mod")))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) == "module "+modulePath {
+			return true
+		}
+	}
+	return false
 }
 
 func absolute(path string) (string, error) {
