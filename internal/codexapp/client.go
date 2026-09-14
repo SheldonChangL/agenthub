@@ -44,6 +44,10 @@ type Client struct {
 	// onNotify observes the stream. Nil ignores it.
 	onNotify func(method string, params json.RawMessage)
 
+	// turns remembers which turns the server has said are over, so a caller
+	// holding a thread's turn slot can learn when to let go of it.
+	turns turnTracker
+
 	done           chan struct{}
 	closeOnce      sync.Once
 	closeTransport sync.Once
@@ -159,6 +163,11 @@ func (c *Client) read() {
 		case hasID:
 			c.deliver(frame.ID, frame)
 		case frame.Method != "":
+			// Observed first, and unconditionally. A turn's completion is
+			// this client's own business — it is what frees the thread for
+			// the next message — and must not depend on whoever constructed
+			// the client having asked for notifications.
+			c.observe(frame.Method, frame.Params)
 			if c.onNotify != nil {
 				c.onNotify(frame.Method, frame.Params)
 			}
