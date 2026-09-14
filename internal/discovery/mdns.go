@@ -707,14 +707,51 @@ type membership struct {
 
 	mu sync.Mutex
 	// held maps the interface index of every membership this socket took to
-	// the name it had, so a vanished index can be handed to LeaveGroup and its
-	// slot returned. Indexes rather than names because that is what the kernel
-	// matches a membership on, and what survives a rename.
-	held map[int]string
+	// what is known about it, so a vanished index can be handed to LeaveGroup
+	// and its slot returned. Indexes rather than names because that is what the
+	// kernel matches a membership on: measured on this machine, LeaveGroup on a
+	// live interface's index succeeds when the net.Interface carries a name
+	// that interface has never had, so the name reaches the kernel not at all.
+	held map[int]*heldMembership
 	// reported is the set of failures already logged, so a condition that
 	// recurs every tick is one line rather than one line a tick.
 	reported map[string]struct{}
 }
+
+// heldMembership is one membership this socket took, and the evidence for
+// deciding whether the interface under it has gone.
+type heldMembership struct {
+	// name is a label for the log and nothing else — LeaveGroup is keyed on the
+	// index, so a stale name cannot release the wrong membership. It is
+	// best-effort: refresh updates it whenever it sees the index again, but an
+	// interface renamed between two ticks is refused as a duplicate join rather
+	// than re-recorded, so a message may name the interface by the name it had
+	// when the membership was taken.
+	name string
+	// misses counts *consecutive* successful enumerations this index was absent
+	// from, and is reset to zero the moment it is listed again. One absence is
+	// not evidence the interface is gone: see reclaim.
+	misses int
+}
+
+// missesBeforeRelease is how many successive successful enumerations must omit
+// an index before its membership is released.
+//
+// Two rather than one because a successful enumeration is not a complete one.
+// net.Interfaces answers from syscall.NetlinkRIB, which dumps RTM_GETLINK and
+// never inspects NLM_F_DUMP_INTR (go1.27: the constant is defined in the
+// zerrors_linux_* files and read nowhere in src/syscall or src/net). The kernel
+// sets that flag when the link table changes underneath a dump, and the dump it
+// returns may then be short — and Go reports no error for it. A host whose
+// container runtime tears the whole network down and rebuilds it, which is the
+// host this code exists for, is exactly where a dump gets interrupted. A live
+// interface missing from one such dump would be left before the join loop below
+// could re-add it, leaving the socket deaf on it until the next tick.
+//
+// The cost of the second opinion is one extra tick of leak for an interface
+// that really is gone, against a slot budget of twenty. The cost of doing
+// without it is lost delivery on an interface that never went anywhere.
+const missesBeforeRelease = 2
 
 func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 	packet := ipv4.NewPacketConn(connection)
@@ -729,7 +766,7 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 			return packet.LeaveGroup(iface, group)
 		},
 		interfaces: net.Interfaces,
-		held:       map[int]string{},
+		held:       map[int]*heldMembership{},
 	}
 	m.rejoin = m.refresh
 	return m
@@ -750,21 +787,31 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 // unprivileged netns and recorded on #93:
 //
 //   - An address coming and going needs nothing. Removing an interface's last
-//     IPv4 address does *not* tear down its device-level group: `ip maddr` and
-//     /proc/net/igmp both still list 224.0.0.251, and delivery to this socket
-//     never stops. Address flap, link down/up, and a full DHCP-shaped cycle
-//     (down, addr flush, up, address back) were all tried; a datagram arrived
-//     throughout every one. An earlier version of this comment guessed the
-//     opposite — that a lapsed lease would leave the socket permanently deaf on
-//     that interface — and the measurement disproves it. Keeping no state was
-//     the right call for this case, and still is.
+//     IPv4 address does *not* tear down its device-level group: throughout an
+//     address flap, a link down/up, and a full DHCP-shaped cycle (down, addr
+//     flush, up, address back), `ip maddr` and /proc/net/igmp went on listing
+//     224.0.0.251 on the device at every step, including while it had no
+//     address and while it was down. What was probed with a datagram is each
+//     cycle's far side — the address back, the link up — and delivery had
+//     survived every one without a re-join. The runs hold no probe from inside
+//     the address-less or down window, so what they show for that window is the
+//     membership standing, not a delivery measurement. An earlier version of
+//     this comment guessed the opposite outcome — that a lapsed lease would
+//     leave the socket permanently deaf on that interface — and the measurement
+//     disproves that. Keeping no state was the right call for this case.
 //
 //   - Destroying the device and re-creating it is the case that needs the
 //     join. The new device is a new index, JoinGroup returns nil, and delivery
-//     resumes on the next tick. Observed indexes climb monotonically (4, 6, …,
-//     52), so the re-use of an index that the old comment worried about does
-//     not happen in practice, and would be joined anyway per the paragraph
-//     above.
+//     resumes on the next tick. An index is not re-used under this: Linux
+//     allocates one from a per-netns counter in dev_new_index that only ever
+//     climbs, wrapping at INT_MAX. That, rather than the two dozen indexes one
+//     run happened to observe climbing, is why the re-use the old comment
+//     worried about can be set aside — and it has to be set aside on the strong
+//     reason, because the weak claim it replaces ("would be joined anyway") is
+//     false. A re-used index would still carry the old ip_mc_socklist entry, so
+//     ip_mc_join_group would answer EADDRINUSE, which the loop below swallows
+//     as "already joined": the new device would never be joined and never be
+//     reported, and would go unheard for the life of the process.
 //
 //   - What that same case breaks is the quota, which is why the index record
 //     exists. A membership on the destroyed index is never released, and Linux
@@ -816,9 +863,14 @@ func (m *membership) refresh() []string {
 			if hasIPv4(iface) {
 				added = append(added, iface.Name)
 			}
-		case errors.Is(err, syscall.EADDRINUSE), errors.Is(err, syscall.EAFNOSUPPORT),
+		case errors.Is(err, syscall.EADDRINUSE):
+			// Expected: already joined. No record is taken from this — see
+			// record — but if the membership is one of ours the interface may
+			// have been renamed since, so refresh the label a message uses.
+			m.relabel(iface)
+		case errors.Is(err, syscall.EAFNOSUPPORT),
 			errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ENODEV):
-			// Expected: already joined, or no IPv4 on this device.
+			// Expected: no IPv4 on this device.
 		default:
 			m.reportOnce(iface.Name,
 				fmt.Sprintf("could not listen for announcements on %s: %v", iface.Name, err))
@@ -840,9 +892,30 @@ func (m *membership) record(iface *net.Interface) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.held == nil {
-		m.held = map[int]string{}
+		m.held = map[int]*heldMembership{}
 	}
-	m.held[iface.Index] = iface.Name
+	if entry, already := m.held[iface.Index]; already {
+		entry.name = iface.Name
+		entry.misses = 0
+		return
+	}
+	m.held[iface.Index] = &heldMembership{name: iface.Name}
+}
+
+// relabel refreshes the log label of a membership already recorded on this
+// index, for the interface that was renamed while joined.
+//
+// It never creates an entry, which is the whole difference between it and
+// record: the join it is called for returned EADDRINUSE, and that membership
+// may be one something else took. Renaming an interface does not disturb its
+// membership — the index is unchanged and the kernel matches on the index — so
+// the only thing that goes stale is the name a message would print.
+func (m *membership) relabel(iface *net.Interface) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if entry, ours := m.held[iface.Index]; ours {
+		entry.name = iface.Name
+	}
 }
 
 // reclaim leaves the group on every membership whose interface is no longer in
@@ -851,25 +924,49 @@ func (m *membership) record(iface *net.Interface) {
 // "No longer in the table" is the whole test, and it is deliberately the
 // narrowest one available. An interface that is merely down, or has lost its
 // addresses, or has been renamed, still holds its index and is still listed —
-// so none of those reclaim anything, which is right: #93 measured that delivery
-// survives all three, and leaving the group would throw away a working
-// membership to gain a slot that is not scarce yet. Only a destroyed device
-// drops its index, and a destroyed device's membership can never deliver again.
+// so none of those reclaim anything, which is right. #93 measured the first two
+// keeping their device-level group across a link flap and a full DHCP-shaped
+// cycle; the rename case was not exercised in those runs, and is inferred from
+// the same fact the rest of this code rests on — that a membership is matched
+// on the index, which a rename does not change. Either way leaving the group
+// would throw away a working membership to gain a slot that is not scarce yet.
+// Only a destroyed device drops its index, and a destroyed device's membership
+// can never deliver again.
 //
 // Getting it wrong in each direction costs something different. Reclaiming too
 // eagerly loses delivery on a live interface until the next tick re-joins it,
 // bounded by RejoinInterval. Reclaiming too reluctantly leaks the slot, which
 // is #143 and is not self-healing. So the evidence has to be positive absence
-// from a list that was read successfully, never an inference from an error.
+// from a list that was read successfully — twice over, see missesBeforeRelease
+// — and never an inference from an error.
 //
-// The entry is dropped whatever LeaveGroup answers. On Linux the call succeeds
-// even with the device gone — the socket's membership list is keyed on the
-// index and the entry is freed regardless — and EADDRNOTAVAIL means the slot
-// was already not held, which is the outcome wanted. On macOS the leave is
-// expressed with the interface's address rather than its index, so a vanished
-// interface cannot be named at all and the call fails; retrying it every tick
-// would buy nothing and would grow this map with every veth the host has ever
-// churned.
+// The entry is dropped whatever LeaveGroup answers, and the release is
+// attempted once. Both platforms express a leave the same way, so this is not a
+// Linux rule with a macOS exception: x/net v0.58.0 registers ssoLeaveGroup as
+// MCAST_LEAVE_GROUP with typ ssoTypeGroupReq on darwin exactly as on linux, and
+// that path fills in only gr.Interface = ifi.Index. The address-bearing ip_mreq
+// path is a different option type that neither platform's join or leave uses.
+// Measured here (darwin/arm64, go1.27, x/net v0.58.0): LeaveGroup on a live
+// interface's index succeeds even when the net.Interface is handed a name that
+// interface has never had, and LeaveGroup on index 9999 reaches the kernel and
+// answers EADDRNOTAVAIL — the same answer as leaving a group twice, which is
+// the "there was nothing left to release" case already treated as success
+// below.
+//
+// So the one attempt is not because a second is known to fail. It is because a
+// second cannot answer anything the first did not: the input is an index that
+// is gone, it will still be gone next tick, and the call is a pure function of
+// it. Keeping the entry to retry would only make this map grow with every veth
+// the host has ever churned, without buying an outcome.
+//
+// What is genuinely unknown is whether xnu frees the inp_moptions slot when
+// ifindex2ifnet[idx] is already NULL. If it does not, a destroyed interface
+// leaks a slot on macOS despite all of this. That is left as an accepted
+// platform limit rather than chased, because macOS caps a socket at
+// IP_MAX_MEMBERSHIPS = 4095 (netinet/in.h in the macOS SDK) against Linux's
+// default of twenty, so the same churn that makes this fatal on Linux is two
+// orders of magnitude from mattering there. Confirming it needs a synthetic
+// interface (feth), which needs root, and it has not been done.
 func (m *membership) reclaim(present []net.Interface) {
 	live := make(map[int]struct{}, len(present))
 	for i := range present {
@@ -877,11 +974,18 @@ func (m *membership) reclaim(present []net.Interface) {
 	}
 	m.mu.Lock()
 	var gone []*net.Interface
-	for index, name := range m.held {
+	for index, entry := range m.held {
 		if _, still := live[index]; still {
+			// Listed again, so any earlier absence was the incomplete dump and
+			// not a departure. The count has to start over, or two unrelated
+			// short dumps a week apart would add up to a release.
+			entry.misses = 0
 			continue
 		}
-		gone = append(gone, &net.Interface{Index: index, Name: name})
+		if entry.misses++; entry.misses < missesBeforeRelease {
+			continue
+		}
+		gone = append(gone, &net.Interface{Index: index, Name: entry.name})
 		delete(m.held, index)
 	}
 	m.mu.Unlock()
@@ -894,7 +998,14 @@ func (m *membership) reclaim(present []net.Interface) {
 			errors.Is(err, syscall.EINVAL), errors.Is(err, syscall.ENXIO):
 			// Released, or there was nothing left to release.
 		default:
-			m.reportOnce("leave:"+iface.Name, fmt.Sprintf(
+			// One key for the whole family, not one per interface name. A
+			// release is attempted once per vanished interface, so a per-name
+			// key could never suppress a repeat — it would only add a permanent
+			// entry for every name the host has ever destroyed, which on a
+			// machine churning randomly-named veths is unbounded. The message
+			// still names the interface; the first one is the one that matters,
+			// because what it reports is the quota shrinking.
+			m.reportOnce("leave", fmt.Sprintf(
 				"could not release the announcement group held for %s, which no longer exists; "+
 					"this machine's multicast membership quota is that much smaller until "+
 					"restart: %v", iface.Name, err))
@@ -982,10 +1093,13 @@ func hasIPv4(iface *net.Interface) bool {
 
 // reportOnce logs a message the first time it is seen, so a condition that
 // recurs on every refresh does not become a line every RejoinInterval.
-// Keyed on the interface rather than on the message, so the set is bounded by
-// the interfaces this machine has had rather than growing with every distinct
-// errno text. A host churning veths or ppp units would otherwise accumulate one
-// entry per name per error for the process's life.
+// Keyed by the caller rather than on the message, so a changing errno text does
+// not multiply entries. The key is not free of that problem: the join loop
+// passes iface.Name, so a host churning randomly-named veths accumulates one
+// entry per name for the process's life and this map is not bounded. That is a
+// pre-existing leak, smaller than the one #143 is about — a map entry rather
+// than a kernel slot, and it costs no delivery — and it is left alone here. The
+// release path deliberately does not add a second family of the same shape.
 func (m *membership) reportOnce(key, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
