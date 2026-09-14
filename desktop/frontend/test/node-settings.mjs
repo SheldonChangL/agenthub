@@ -55,6 +55,10 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 // The form only offers a range when the owner changes the address; the tests
 // below drive that moment directly, so they clear the remembered offer first.
 const state_nodePrivateReset = () => { app.state.nodePrivateSuggested = ""; };
+// After a save the window restarts the service and reads the node again, so a
+// test that saves has to say what that fresh read answers. Without this the
+// re-read would hand back the pre-save fixture and contradict the write.
+const afterRestart = (view) => { settingsAnswer = async () => view; };
 
 // 1. A read fills the form, and each field says where its value came from.
 settingsAnswer = async () => ({
@@ -114,14 +118,16 @@ saveCalls = [];
 restartCalls = 0;
 el("node-private").value = "192.168.50.0/24";
 el("node-allow-lan").checked = false;
-saveAnswer = async () => ({
+const withdrawnView = {
   settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
   sources: { peerListen: "default", allowLan: "remembered", discover: "remembered", treatAsPrivate: "remembered", autoWake: "default" },
   saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
   restartRequired: true,
   peerListenWithdrawn: true,
   message: "allowLan is off, so peerListen was pulled back to 127.0.0.1:7463",
-});
+};
+saveAnswer = async () => withdrawnView;
+afterRestart(withdrawnView);
 await app.saveNodeSettings();
 await tick();
 if (saveCalls.length !== 1 || saveCalls[0].peerListen !== undefined) {
@@ -448,8 +454,12 @@ configure({
   },
 });
 let answers = [
-  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false },
-  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false },
+  // running and saved deliberately differ, so an assertion that reads the wrong
+  // one fails instead of passing by coincidence.
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, sources: { allowLan: "flag" },
+    saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: true },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, sources: { allowLan: "flag" },
+    saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: true },
 ];
 settingsAnswer = async () => answers.shift() ?? answers[0];
 app.state.nodeSettings = null;
@@ -458,7 +468,10 @@ const second = app.loadNodeSettings();
 await Promise.all([first, second]);
 await tick();
 // Whichever read won, the baseline and the form must be the same read.
-const baseline = app.state.nodeSettings?.settings ?? {};
+// Against `saved`: that is what the form paints from and what a write is
+// merged onto. Asserting the running block here passed against a form painted
+// from it, which is exactly the defect round three removed.
+const baseline = app.state.nodeSettings?.saved ?? {};
 if (el("node-discover").checked !== Boolean(baseline.discover) ||
     el("node-autowake").checked !== Boolean(baseline.autoWake)) {
   failures.push("the form and the baseline came from different reads");
@@ -678,6 +691,109 @@ for (const address of ["[::ffff:7f00:1]:7463", "[::ffff:127.0.0.1]:7463", "[::1]
 if (app.coversAddress("10.0.0.0/8", "10.1.2.3:7463") !== true) failures.push("a covering range was not recognised");
 if (app.coversAddress("10.0.0.0/8", "11.1.2.3:7463") !== false) failures.push("a range that does not cover was accepted");
 if (app.coversAddress("not-a-range", "10.1.2.3:7463") !== false) failures.push("a malformed range was accepted");
+
+/* ---- round four ---- */
+
+// R16. A flag baked into the service unit is given on EVERY start, so it
+//      overrides whatever was saved — `ah service install` says so in its own
+//      report. After the window restarts the service itself, a value still
+//      arriving as a flag AND still differing from what is stored is one the
+//      unit is pinning: the save changed nothing about the running node, and
+//      saying "restarted and answering" would be a claim about a
+//      security-relevant setting that provably did not take effect.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [],
+});
+const pinnedView = {
+  // The unit still supplies --allow-lan=true, so the restarted node is LAN-open
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { allowLan: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: true,
+};
+settingsAnswer = async () => pinnedView;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (app.pinnedByUnit(pinnedView).length !== 1) {
+  failures.push(`pinnedByUnit saw ${JSON.stringify(app.pinnedByUnit(pinnedView))}, want the one flag-pinned field`);
+}
+el("node-autowake").checked = true;
+saveAnswer = async () => pinnedView;
+afterRestart(pinnedView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const pinnedBanner = el("banner").textContent;
+if (pinnedBanner.includes("回應中")) {
+  failures.push("a setting the unit overrides was reported as having taken effect");
+}
+if (!pinnedBanner.includes("允許區網連線") || !pinnedBanner.includes("啟動旗標")) {
+  failures.push(`the owner was not told which settings the unit pins: ${pinnedBanner}`);
+}
+if (!pinnedBanner.includes("重裝")) failures.push("the owner was not told how to clear it");
+if (el("banner").className.includes("ok")) failures.push("a save that did not take effect was marked successful");
+
+// R17. The node is read again after the restart, so the form stops describing
+//      the process that has been replaced.
+let reads = 0;
+const freshView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
+  sources: { discover: "remembered" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+};
+settingsAnswer = async () => { reads += 1; return freshView; };
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+const readsBefore = reads;
+el("node-discover").checked = false;
+saveAnswer = async () => ({
+  ...freshView,
+  saved: { ...freshView.saved, discover: false },
+  restartRequired: true,
+  message: "saved; these take effect when the node next starts",
+});
+await app.saveNodeSettings();
+await tick();
+if (reads <= readsBefore) {
+  failures.push("the node was not read again after the restart, so the form still describes the dead process");
+}
+if (el("node-settings-hint").textContent.includes("存檔後要重新啟動")) {
+  failures.push("the form still asks for a restart that already happened");
+}
+
+// R18. A range the node refuses never counts as covering an address, and a
+//      prediction this window cannot make is not shown at all.
+if (app.coversAddress("0.0.0.0/0", "203.0.113.9:7463") !== false) {
+  failures.push("0.0.0.0/0 was accepted as a declared range; the node refuses it outright");
+}
+if (app.coversAddress("255.255.255.0/24", "255.255.255.9:7463") !== false) {
+  failures.push("a range containing the broadcast address was accepted");
+}
+if (app.coversAddress("224.0.0.0/4", "224.0.0.9:7463") !== false) {
+  failures.push("a multicast range was accepted");
+}
+if (app.canJudgePrivacy("[2001:db8::5]:7463", []) !== false) {
+  failures.push("an IPv6 address was judged, which this window cannot do");
+}
+if (app.canJudgePrivacy("203.0.113.9:7463", ["2001:db8::/32"]) !== false) {
+  failures.push("an IPv6 declared range was judged, which this window cannot do");
+}
+if (app.canJudgePrivacy("203.0.113.9:7463", ["10.0.0.0/8"]) !== true) {
+  failures.push("an all-IPv4 case was not judged");
+}
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));

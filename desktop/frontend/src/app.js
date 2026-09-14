@@ -2648,7 +2648,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Judged from the address, not from the interface entry: a stored address
     // whose cable is unplugged has no entry, and one marked private by an
     // entry is still refused if the range it needs was never declared.
-    if (lanAddress && !isPrivateByDefinition(address) && !declared.some((range) => coversAddress(range, address))) {
+    if (lanAddress && canJudgePrivacy(address, declared) && !isPrivateByDefinition(address) &&
+        !declared.some((range) => coversAddress(range, address))) {
       const subnet = option?.dataset?.subnet ?? "";
       warning.append(element("div", "stale",
         `「${address}」不在私有網段，節點會拒絕它，除非「視為私有網段」裡有涵蓋它的範圍。` +
@@ -2691,20 +2692,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.nodePrivateSuggested = field.value.trim() === suggestion ? suggestion : "";
   }
 
-  // coversAddress answers whether a declared CIDR contains an address. IPv4
-  // only, deliberately: a wrong "yes" would suppress a warning the node will
-  // act on, so anything else is answered "no" and the warning stands.
+  // coversAddress answers whether a declared CIDR contains an address, for the
+  // IPv4 case this can decide. Anything else is answered "no" so the warning
+  // stands: a wrong "yes" would hide a refusal the node is about to make.
+  //
+  // A range the node itself rejects never counts as covering, or the form would
+  // wave through a write the node 400s — 0.0.0.0/0 and anything containing the
+  // unspecified, broadcast or multicast addresses (internal/nodeconfig/
+  // privateranges.go).
   function coversAddress(range, address) {
     const parts = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(String(range).trim());
     const host = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostOf(address));
     if (!parts || !host) return false;
     const bits = Number(parts[5]);
-    if (bits < 0 || bits > 32) return false;
-    const pack = (a, b, c, d) => ((a << 24) >>> 0) + (b << 16) + (c << 8) + d;
+    if (bits <= 0 || bits > 32) return false;
+    const pack = (a, b, c, d) => (((a << 24) >>> 0) + (b << 16) + (c << 8) + d) >>> 0;
     const network = pack(Number(parts[1]), Number(parts[2]), Number(parts[3]), Number(parts[4]));
-    const value = pack(Number(host[1]), Number(host[2]), Number(host[3]), Number(host[4]));
-    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
-    return (network & mask) === (value & mask);
+    const mask = (0xffffffff << (32 - bits)) >>> 0;
+    const covers = (value) => ((network & mask) >>> 0) === ((value & mask) >>> 0);
+    // The three the node names by hand.
+    if (covers(0) || covers(pack(255, 255, 255, 255)) || covers(pack(224, 0, 0, 1))) return false;
+    return covers(pack(Number(host[1]), Number(host[2]), Number(host[3]), Number(host[4])));
+  }
+
+  // canJudgePrivacy says whether this window can predict the node's private-range
+  // decision at all. It cannot for IPv6 — neither the address nor the ranges —
+  // and a prediction it cannot make is one it must not show.
+  function canJudgePrivacy(address, declared) {
+    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostOf(address))) return false;
+    return declared.every((range) => /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(range).trim()));
   }
 
   // readNodeSettingsPatch sends only what the owner changed.
@@ -2713,9 +2729,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // make an unchanged LAN peerListen part of a write that turns allowLan off —
   // which the node refuses, naming an address the owner never touched.
   //
-  // The baseline is the EFFECTIVE settings, which is what the form was painted
-  // from. Diffing against `saved` instead would make a value pinned by this
-  // start-up's command line look changed on every save.
+  // The baseline is the SAVED configuration, which is what the form is painted
+  // from and what the node merges a write onto. Diffing against the running
+  // values instead is what let an unrelated save withdraw a remembered address,
+  // and made a flag-pinned switch impossible to write.
   function readNodeSettingsPatch() {
     // The saved configuration, because that is what the node merges a write
     // onto — see applyNodeSettings.
@@ -2785,16 +2802,50 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         await loadService();
       }
 
-      if (sequence > nodeSettingsApplied) {
-        nodeSettingsApplied = sequence;
-        // With the address list: applyNodeSettings rebuilds the whole select,
-        // so painting without it would leave the owner with only 「只在本機」
-        // after every successful save.
-        applyNodeSettings(view, await fetchLocalAddresses());
+      if (!installed) {
+        if (sequence > nodeSettingsApplied) {
+          nodeSettingsApplied = sequence;
+          // With the address list: applyNodeSettings rebuilds the whole select,
+          // so painting without it would leave the owner with only 「只在本機」
+          // after every successful save.
+          applyNodeSettings(view, await fetchLocalAddresses());
+        }
+        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。", true);
+        return;
       }
 
-      if (!installed) {
-        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。", true);
+      // Read the node again now that it has restarted, rather than painting the
+      // answer the write gave: that answer describes the process that has since
+      // been replaced, so its `settings`, `sources` and `restartRequired` are
+      // all about a dead node — the form would still say "restart to apply"
+      // after the restart, and name a command line that is gone.
+      //
+      // The re-read is also the only way to see the case below.
+      const after = await readNodeSettingsAfterRestart();
+      if (sequence > nodeSettingsApplied) {
+        nodeSettingsApplied = sequence;
+        // The re-read is the fresher truth about the node, but only the write's
+        // own answer carries `message` — what this write did, including the
+        // address it pulled back. Merged, so neither is lost.
+        const painted = after.view.error
+          ? view
+          : { ...after.view, message: after.view.message || view.message };
+        applyNodeSettings(painted, await fetchLocalAddresses());
+      }
+
+      // A flag in the service unit is given on EVERY start, so it overrides
+      // whatever was saved — `ah service install` says so in its own report
+      // (internal/cli/service.go). The node has just been restarted by this
+      // window, so a value still arriving as a flag and still differing from
+      // what is stored is one the unit is pinning: the save went in and changed
+      // nothing about the running node.
+      const pinned = after.view.error ? [] : pinnedByUnit(after.view);
+      if (pinned.length > 0) {
+        banner(
+          `設定已儲存，服務也重新啟動了，但 ${pinned.join("、")} 仍然被背景服務的啟動旗標蓋過去——` +
+          "單元檔每次啟動都會帶那些旗標，所以這幾項存了也不會生效。" +
+          "要讓它們生效，請在上面「安裝為背景服務」重裝一次（重裝只會帶資料庫路徑）。",
+        );
         return;
       }
       // What `ah service status` says afterwards, not what was sent.
@@ -2819,6 +2870,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
             `看 log：${status.logHint || "（節點沒有給路徑）"}`,
       );
     });
+  }
+
+  // readNodeSettingsAfterRestart re-reads the node once it has been restarted.
+  // A failure is not fatal: the write landed, and the form falls back to the
+  // answer the write gave rather than showing nothing.
+  async function readNodeSettingsAfterRestart() {
+    try {
+      return { view: await api.NodeSettings() };
+    } catch (error) {
+      return { view: { error: String(error) } };
+    }
+  }
+
+  // pinnedByUnit names the settings a freshly restarted node is still taking
+  // from a command line rather than from its own store.
+  function pinnedByUnit(view) {
+    const running = view.settings ?? {};
+    const saved = view.saved ?? {};
+    const sources = view.sources ?? {};
+    const labels = {
+      peerListen: "對外位址",
+      allowLan: "允許區網連線",
+      discover: "在區網上尋找位址",
+      treatAsPrivate: "視為私有網段",
+      autoWake: "自動喚醒",
+    };
+    return Object.keys(labels)
+      .filter((key) => sources[key] === "flag" && describeStored(running[key]) !== describeStored(saved[key]))
+      .map((key) => labels[key]);
   }
 
   function showNodeSettingsOutput(result) {
@@ -2913,9 +2993,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer, pinnedByUnit,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
-    isLoopbackListen, isPrivateByDefinition, coversAddress, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
+    isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
