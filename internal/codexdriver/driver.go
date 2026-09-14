@@ -74,7 +74,7 @@ type Driver struct {
 	lanes map[string]*lane
 }
 
-// defaultMaxWait is how long a message waits for the thread ahead of it.
+// MaxWait is how long a message waits for the thread ahead of it.
 //
 // Under the two minutes the API layer gives a whole wake, so the reason an
 // owner reads is this driver's — "waited 90s for the turn in flight" — rather
@@ -82,7 +82,12 @@ type Driver struct {
 // turn longer than this is a turn whose queue belongs in the inbox: the
 // message is still there to read, and a reader who has been busy for two
 // minutes is not served by a wake queued behind a wake.
-const defaultMaxWait = 90 * time.Second
+//
+// Exported because that "under" is a coupling between two packages and not a
+// coincidence: what is left of the wake's budget after this wait is what
+// thread/resume and turn/start have to finish in. internal/api pins the
+// arithmetic, the way it already pins the channel driver's.
+const MaxWait = 90 * time.Second
 
 // defaultMaxTurn is the backstop on holding a thread for a turn that never
 // reports completing. A turn really can run for a long time; this is not a
@@ -105,7 +110,7 @@ func New(supervisor *codexapp.Supervisor) *Driver {
 func NewWith(connector Connector) *Driver {
 	return &Driver{
 		connect:    connector,
-		maxWait:    defaultMaxWait,
+		maxWait:    MaxWait,
 		maxTurn:    defaultMaxTurn,
 		queueDepth: defaultQueueDepth,
 		lanes:      map[string]*lane{},
