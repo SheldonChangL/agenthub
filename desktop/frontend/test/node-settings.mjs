@@ -1113,7 +1113,15 @@ if (!el("node-allowlan-source").textContent.includes("目前執行中的是")) {
   failures.push("the running value was not named before the save");
 }
 el("node-autowake").checked = true;
-saveAnswer = async () => wokeView;
+// The write's own answer still carries the flag provenance — it was computed
+// before the restart — so painting it would put the tag back. Clearing has to
+// happen after the paint, not instead of it.
+saveAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: { allowLan: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  restartRequired: true,
+});
 settingsAnswer = async () => ({ error: "connection refused" });
 await app.saveNodeSettings();
 await tick();
