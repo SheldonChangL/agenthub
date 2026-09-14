@@ -3,7 +3,6 @@ package codexdriver
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 
@@ -72,8 +71,13 @@ func TestASecondMessageWaitsForTheTurnInFlight(t *testing.T) {
 
 	// The turn ends; now the second message goes.
 	conversation.finish("turn-1")
-	if err := <-second; err != nil {
-		t.Fatalf("the second message: %v", err)
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the second message: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn completed and the message waiting behind it was never let through")
 	}
 	if got := conversation.started(); got != 2 {
 		t.Fatalf("after the first turn completed, %d turns had been started", got)
@@ -136,9 +140,18 @@ func TestTheQueueBehindARunningTurnIsBounded(t *testing.T) {
 	go func() { _ = driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
 	eventually(t, "the second message to queue", func() bool { return driver.queued() == 1 })
 
-	err := driver.Drive(context.Background(), codexSession(), envelope("msg_3"))
-	if !errors.Is(err, ErrThreadBusy) {
-		t.Fatalf("a third message past the queue depth returned %v, want ErrThreadBusy", err)
+	// In a goroutine with a deadline, because the failure this is looking for
+	// is a message that queues instead of being refused — and that message
+	// would otherwise sit here for the whole of maxWait.
+	third := make(chan error, 1)
+	go func() { third <- driver.Drive(context.Background(), codexSession(), envelope("msg_3")) }()
+	select {
+	case err := <-third:
+		if !errors.Is(err, ErrThreadBusy) {
+			t.Fatalf("a third message past the queue depth returned %v, want ErrThreadBusy", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a third message past the queue depth queued up instead of being refused")
 	}
 	if got := conversation.started(); got != 1 {
 		t.Errorf("%d turns were started; the refused message went to the thread anyway", got)
@@ -160,9 +173,16 @@ func TestWaitingForABusyThreadIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	err := driver.Drive(context.Background(), codexSession(), envelope("msg_2"))
-	if !errors.Is(err, ErrThreadBusy) {
-		t.Fatalf("the second message returned %v, want ErrThreadBusy after the wait ran out", err)
+	second := make(chan error, 1)
+	go func() { second <- driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrThreadBusy) {
+			t.Fatalf("the second message returned %v, want ErrThreadBusy after the wait ran out", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the second message was still waiting for a turn that has not ended, "+
+			"well past the %s bound", driver.maxWait)
 	}
 	if waited := time.Since(start); waited > settle {
 		t.Errorf("it waited %s, well past the %s bound", waited, driver.maxWait)
@@ -178,34 +198,43 @@ func TestWaitingForABusyThreadIsBounded(t *testing.T) {
 	conversation.finish("turn-1")
 }
 
-// A message that gives up while the thread is being handed to it hands it on.
+// A message that gives up in the instant the thread is handed to it hands it
+// on rather than keeping it.
 //
-// The race is real: leave() closes the next ticket while that waiter may be
-// in the same instant returning on its own deadline. Dropping the lane there
-// would leave a thread held by nobody, and nothing would ever wake that
-// session again.
+// The race is real and it is not rare on a busy node: leave() pops the next
+// ticket and closes it while that waiter may, in the same instant, be
+// returning on its own deadline. Whoever was handed the lane owns it whether
+// they wanted it or not. A waiter that walks away from it leaves the thread
+// held by nobody — and nothing would ever wake that session again, silently,
+// for the life of the process.
+//
+// Written as the state rather than as a stress loop: two hundred attempts at
+// hitting the window by timing never entered it once, and a race test that
+// does not reach the race is a test that passes with the handling deleted.
 func TestGivingUpInTheHandoverDoesNotStrandTheThread(t *testing.T) {
-	for attempt := 0; attempt < 200; attempt++ {
-		held := &lane{}
-		if err := held.enter(context.Background(), 1, time.Second); err != nil {
-			t.Fatal(err)
-		}
-		var group sync.WaitGroup
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), time.Microsecond)
-			defer cancel()
-			if err := held.enter(ctx, 1, time.Second); err == nil {
-				// It won the handover; it owns the lane and must give it up.
-				held.leave()
-			}
-		}()
-		held.leave()
-		group.Wait()
-		if !held.idle() {
-			t.Fatalf("attempt %d left the thread held by nobody", attempt)
-		}
+	held := &lane{}
+	if err := held.enter(context.Background(), 1, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// A waiter queued behind the turn in flight.
+	ticket := make(chan struct{})
+	held.mu.Lock()
+	held.queue = append(held.queue, ticket)
+	held.mu.Unlock()
+
+	// The turn ends and the lane is handed to that waiter...
+	held.leave()
+	select {
+	case <-ticket:
+	default:
+		t.Fatal("leave() did not hand the lane to the waiting message")
+	}
+	// ...which, in the same instant, gave up on its own deadline.
+	held.abandon(ticket)
+
+	if !held.idle() {
+		t.Fatal("a message that gave up in the handover kept the thread; it is now held " +
+			"by nobody and no later message can ever take it")
 	}
 }
 
@@ -225,8 +254,18 @@ func TestAFailedWaitReleasesTheThread(t *testing.T) {
 	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err != nil {
 		t.Fatal(err)
 	}
-	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_2")); err != nil {
-		t.Fatalf("the next message never got the thread back: %v", err)
+	// Bounded, because the failure this is looking for is a thread that stays
+	// held: without a deadline that failure looks like a test that never ends.
+	second := make(chan error, 1)
+	go func() { second <- driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the next message never got the thread back: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the connection died under the turn and the thread stayed held; " +
+			"this session would never be woken again")
 	}
 	if got := conversation.started(); got != 2 {
 		t.Errorf("%d turns started", got)
