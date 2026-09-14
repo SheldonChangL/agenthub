@@ -17,6 +17,11 @@ class Node {
   constructor(tag) {
     // Inline style writes land here, as on a real element; nothing reads it.
     this.style = {};
+    // What a <select> carries. Kept on every node rather than only on selects,
+    // because the shim never learns an element's tag from the markup — the code
+    // under test builds options with createElement("option") and appends them,
+    // and `options` has to be the same list `append` wrote to.
+    this.dataset = {};
     this.tagName = tag;
     this.children = [];
     this.attrs = {};
@@ -64,6 +69,37 @@ class Node {
     this._text = "";
     this._raw = undefined;
     this.append(...kids);
+  }
+
+  // A <select>'s own view of its children. Reading it, rather than storing a
+  // second list, keeps append/remove and options from drifting apart.
+  get options() {
+    return this.children.filter((child) => child && child.tagName === "option");
+  }
+
+  get selectedIndex() {
+    const options = this.options;
+    const found = options.findIndex((option) => option.value === this._value);
+    // A real select with nothing matching shows its first option; -1 is only
+    // right when there are none at all.
+    return found >= 0 ? found : (options.length > 0 ? 0 : -1);
+  }
+
+  // remove(index) drops one option, as HTMLSelectElement does.
+  remove(index) {
+    const option = this.options[index];
+    if (!option) return;
+    this.children = this.children.filter((child) => child !== option);
+  }
+
+  get value() {
+    if (this._value !== undefined) return this._value;
+    const options = this.options;
+    return options.length > 0 ? options[0].value ?? "" : "";
+  }
+
+  set value(next) {
+    this._value = String(next);
   }
 
   querySelector() {

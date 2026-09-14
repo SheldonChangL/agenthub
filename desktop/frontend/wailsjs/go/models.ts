@@ -278,6 +278,90 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class NodeSettingsPatch {
+	    peerListen?: string;
+	    allowLan?: boolean;
+	    discover?: boolean;
+	    treatAsPrivate?: string[];
+	    autoWake?: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeSettingsPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.peerListen = source["peerListen"];
+	        this.allowLan = source["allowLan"];
+	        this.discover = source["discover"];
+	        this.treatAsPrivate = source["treatAsPrivate"];
+	        this.autoWake = source["autoWake"];
+	    }
+	}
+	export class NodeSettingValues {
+	    peerListen: string;
+	    allowLan: boolean;
+	    discover: boolean;
+	    treatAsPrivate: string[];
+	    autoWake: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeSettingValues(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.peerListen = source["peerListen"];
+	        this.allowLan = source["allowLan"];
+	        this.discover = source["discover"];
+	        this.treatAsPrivate = source["treatAsPrivate"];
+	        this.autoWake = source["autoWake"];
+	    }
+	}
+	export class NodeSettingsView {
+	    // Go type: NodeSettingValues
+	    settings: any;
+	    sources: Record<string, string>;
+	    // Go type: NodeSettingValues
+	    saved: any;
+	    restartRequired: boolean;
+	    peerListenWithdrawn?: boolean;
+	    message?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeSettingsView(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.settings = this.convertValues(source["settings"], null);
+	        this.sources = source["sources"];
+	        this.saved = this.convertValues(source["saved"], null);
+	        this.restartRequired = source["restartRequired"];
+	        this.peerListenWithdrawn = source["peerListenWithdrawn"];
+	        this.message = source["message"];
+	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class OutboundMessage {
 	    id: string;
 	    destinationNodeId: string;
