@@ -18,16 +18,29 @@ import (
 var ErrThreadBusy = errors.New("the thread already has a turn running and a full queue behind it")
 
 // ErrTurnCoalesced is returned when app-server answered turn/start with the id
-// of a turn that was already running.
+// of a turn this lane had already recorded.
 //
 // Measured against codex-cli 0.153.4: a turn/start into a busy thread does not
 // open a second turn and does not fail. The input is appended to the running
 // turn's queue, and when several land together they are merged into one model
 // call that answers only the last of them — one of three probe messages got no
 // reply at all. So a repeated turn id means this message may have been
-// swallowed, and saying so is the only honest thing to record. It happens when
-// something outside this node — the owner's own Codex window — is driving the
-// same thread, which this node's serialisation cannot see.
+// swallowed, and saying so is the only honest thing to record.
+//
+// What it catches is this node's own turn, let go of too early: the backstop
+// expiring on a turn that never reported completing, or WaitForTurn failing
+// while the turn was still running. The lane is free again, the turn is not
+// over, and the next message goes into it — which is precisely the case the
+// lane exists to prevent and cannot prevent once the thread has been released
+// on a guess.
+//
+// A turn started outside this node — the owner's own Codex window driving the
+// same thread — is invisible to it, and saying otherwise would be claiming a
+// reach this check does not have: app-server answers with an id this lane
+// never recorded, so it differs from lastTurn and reports nothing. The same
+// blindness follows a turn/start whose answer was lost, for the same reason:
+// an id that was never seen cannot be seen to repeat. Holding the thread, not
+// this error, is what covers that case.
 var ErrTurnCoalesced = errors.New("app-server merged this message into a turn that was already running")
 
 // lane is one Codex thread's turn-at-a-time discipline.

@@ -312,10 +312,12 @@ func TestATurnThatNeverCompletesDoesNotHoldTheThreadForEver(t *testing.T) {
 // app-server answering with a turn that was already running is reported, not
 // reported as a success.
 //
-// It means the message was appended to somebody else's turn — the owner's own
-// Codex window driving the same thread is the way this happens — and a message
-// appended to a running turn may get no answer of its own at all. Recording
-// that as a delivered wake is recording something this node cannot see.
+// It means the message was appended to a turn that was already running — this
+// node's own previous turn, which it let go of before the turn was over — and a
+// message appended to a running turn may get no answer of its own at all.
+// Recording that as a delivered wake is recording something this node cannot
+// see. (A turn started outside this node is not what this catches: its id was
+// never recorded here, so it cannot be seen to repeat.)
 func TestATurnIdThatRepeatsIsReportedAsCoalesced(t *testing.T) {
 	conversation := &recordingConversation{turnIDs: []string{"turn-1", "turn-1"}}
 	driver := NewWith(conversation)
