@@ -9,6 +9,7 @@ package codexdriver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -160,9 +161,9 @@ func (d *Driver) Drive(ctx context.Context, session model.Session, envelope wake
 		return fmt.Errorf("thread %q: %w", threadID, err)
 	}
 
-	client, turnID, err := d.start(ctx, threadID, envelope)
+	client, turnID, sent, err := d.start(ctx, threadID, envelope)
 	if err != nil {
-		held.leave()
+		d.releaseAfterFailure(threadID, held, sent, err)
 		return err
 	}
 	repeated := held.recordTurn(turnID)
@@ -181,17 +182,63 @@ func (d *Driver) Drive(ctx context.Context, session model.Session, envelope wake
 	return nil
 }
 
+// releaseAfterFailure gives the lane back after a turn that did not start —
+// at once when it is known no turn started, at the backstop when it is not.
+//
+// The two costs are not the same size. Holding a thread that has no turn in it
+// costs one message left in the inbox, where it is readable and where an audit
+// row says why it stayed: waking was only ever an extra push. Releasing a
+// thread that does have a turn in it costs a message app-server merges into
+// that turn and may never answer — and the merge is invisible from here,
+// because the turn id that would have shown it as repeated is the very thing
+// the failure lost. So the ambiguous case holds.
+//
+// Ambiguous is the default, not the exception. Only two answers rule a turn
+// out: the server refusing the call (it answered, so it took nothing) and the
+// call never leaving this process. A deadline, a connection that went away
+// mid-call, a reply this node could not read — each of those is a turn that
+// may be running in a thread nobody here is watching.
+func (d *Driver) releaseAfterFailure(threadID string, held *lane, sent bool, err error) {
+	if !sent || !answerLost(err) {
+		held.leave()
+		return
+	}
+	log.Printf("codexdriver: turn/start into thread %q failed without an answer (%v); "+
+		"holding the thread for up to %s in case app-server took the turn anyway",
+		threadID, err, d.maxTurn)
+	// The same bound as a turn whose completion never comes, for the same
+	// reason: this node believes a turn may be running and has nothing to read
+	// that would end that belief. time.AfterFunc rather than a goroutine —
+	// there is nothing to wait on, only a deadline to reach.
+	time.AfterFunc(d.maxTurn, held.leave)
+}
+
+// answerLost reports whether a failed turn/start leaves it unknown what
+// app-server did with it.
+func answerLost(err error) bool {
+	var refused codexapp.ServerError
+	if errors.As(err, &refused) {
+		// The server answered, and its answer was no.
+		return false
+	}
+	// Never written, so there is nothing for the server to have acted on.
+	return !errors.Is(err, codexapp.ErrNotSent)
+}
+
 // start does the two calls, and reports the turn app-server says they made.
-func (d *Driver) start(ctx context.Context, threadID string, envelope wake.Envelope) (Conversation, string, error) {
-	client, err := d.connect.Conversation(ctx)
+//
+// sent says whether turn/start was dispatched at all, which is what separates
+// "no turn can exist" from "a turn may exist and its id was lost".
+func (d *Driver) start(ctx context.Context, threadID string, envelope wake.Envelope) (client Conversation, turnID string, sent bool, err error) {
+	client, err = d.connect.Conversation(ctx)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	// Resume first, always, even for a thread that looks running. It is how a
 	// running thread is rejoined rather than a second one being started beside
 	// the conversation the owner is actually watching.
 	if _, err := client.ResumeThread(ctx, threadID); err != nil {
-		return nil, "", fmt.Errorf("resume thread %q: %w", threadID, err)
+		return nil, "", false, fmt.Errorf("resume thread %q: %w", threadID, err)
 	}
 	// The turn id is kept, where it used to be dropped. It is the only handle
 	// on "this turn is over", and the only way to notice app-server answering
@@ -205,12 +252,14 @@ func (d *Driver) start(ctx context.Context, threadID string, envelope wake.Envel
 		},
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("start a turn in thread %q: %w", threadID, err)
+		// sent: the request went out, and whether a turn came of it is exactly
+		// what this error is unable to say.
+		return nil, "", true, fmt.Errorf("start a turn in thread %q: %w", threadID, err)
 	}
 	// The connection is returned with the turn id, not looked up again later:
 	// the wait belongs to the client the turn was started on, and by the time
 	// it ends the supervisor may be handing out a different one.
-	return client, result.Turn.ID, nil
+	return client, result.Turn.ID, true, nil
 }
 
 // holdUntilOver keeps the thread's lane until its turn reports completing.

@@ -3,9 +3,11 @@ package codexdriver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/codexapp"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/wake"
 )
@@ -391,4 +393,112 @@ func (d *Driver) idleLanes() bool {
 		}
 	}
 	return true
+}
+
+// A turn/start whose answer was lost keeps the thread held.
+//
+// The failure that matters is not the server saying no; it is the server
+// having said yes to a call this node did not survive to hear — a deadline
+// part-way through, a connection that went away between the request and its
+// answer. A turn is then running in the thread and the lane is empty, so the
+// next message is merged into it; and recordTurn cannot notice, because the id
+// that would have shown the turn as repeated is exactly what was lost. The
+// message is swallowed and the audit row reads as a clean wake.
+func TestAStartThatLostItsAnswerKeepsTheThreadHeld(t *testing.T) {
+	conversation := &recordingConversation{failOn: "start", failWith: context.DeadlineExceeded}
+	driver := NewWith(conversation)
+	driver.maxWait = 20 * time.Millisecond
+	driver.maxTurn = 300 * time.Millisecond
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err == nil {
+		t.Fatal("a turn/start that never got an answer was reported as a started turn")
+	}
+	conversation.stopFailing()
+
+	// Still held, so the next message waits rather than being pushed into a
+	// turn that may be running.
+	second := make(chan error, 1)
+	go func() { second <- driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
+	select {
+	case err := <-second:
+		if !errors.Is(err, ErrThreadBusy) {
+			t.Fatalf("the next message returned %v; the thread was freed by a failure that "+
+				"cannot say whether a turn is running in it", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the next message neither went nor gave up")
+	}
+	if got := conversation.started(); got != 1 {
+		t.Errorf("%d turn/starts were sent; the second went into a thread that may have "+
+			"had a turn in it", got)
+	}
+
+	// And the hold is a hold, not a leak: at the backstop the thread comes back.
+	eventually(t, "the thread to come back at the backstop", func() bool { return driver.idleLanes() })
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_3")); err != nil {
+		t.Fatalf("after the backstop: %v", err)
+	}
+}
+
+// A turn/start the server refused frees the thread at once.
+//
+// The server answered, and its answer was that it took no turn — so there is
+// nothing in the thread to protect the next message from, and holding it would
+// be this node refusing wakes over a turn it knows does not exist.
+func TestAServerRefusalFreesTheThreadAtOnce(t *testing.T) {
+	conversation := &recordingConversation{failOn: "start"}
+	driver := NewWith(conversation)
+	driver.maxTurn = time.Hour
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err == nil {
+		t.Fatal("a refused turn/start was reported as a started turn")
+	}
+	if !driver.idleLanes() {
+		t.Fatal("the server said it took no turn and the thread stayed held; nothing would " +
+			"wake this session until the backstop")
+	}
+	conversation.stopFailing()
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_2")); err != nil {
+		t.Fatalf("the next message after a refusal: %v", err)
+	}
+}
+
+// A resume that failed frees the thread at once, however it failed.
+//
+// turn/start was never sent, so no answer about it can have been lost: there
+// is no turn, whatever the reason resume gave.
+func TestAResumeFailureFreesTheThreadAtOnce(t *testing.T) {
+	conversation := &recordingConversation{failOn: "resume", failWith: context.DeadlineExceeded}
+	driver := NewWith(conversation)
+	driver.maxTurn = time.Hour
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err == nil {
+		t.Fatal("a thread that could not be resumed was reported as driven")
+	}
+	if !driver.idleLanes() {
+		t.Fatal("a resume that timed out held the thread, although no turn/start was ever sent")
+	}
+	if got := conversation.started(); got != 0 {
+		t.Errorf("%d turns were started after a failed resume", got)
+	}
+}
+
+// A call that never left this node frees the thread at once too.
+//
+// ErrNotSent is the other answer that rules a turn out: app-server cannot have
+// acted on a request that was never written to it.
+func TestAStartThatWasNeverSentFreesTheThread(t *testing.T) {
+	conversation := &recordingConversation{
+		failOn:   "start",
+		failWith: fmt.Errorf("%w: write Codex App Server turn/start request: broken pipe", codexapp.ErrNotSent),
+	}
+	driver := NewWith(conversation)
+	driver.maxTurn = time.Hour
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err == nil {
+		t.Fatal("a turn/start that was never written was reported as a started turn")
+	}
+	if !driver.idleLanes() {
+		t.Fatal("a request that never left this node held the thread")
+	}
 }

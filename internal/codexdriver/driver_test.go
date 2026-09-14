@@ -2,7 +2,6 @@ package codexdriver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -80,6 +79,11 @@ type recordingConversation struct {
 	resumed []string
 	turns   []codexapp.StartTurnParams
 	failOn  string
+	// failWith is what the failing step returns. The default stands for the
+	// server refusing the call, which is the answer that rules a turn out; a
+	// test that wants the ambiguous failures — a deadline, a connection that
+	// went away between the request and its answer — names one here.
+	failWith error
 	// turnIDs are handed out in order, one per StartTurn, so a test can say
 	// which turn app-server claims to have started. Past the end of it — or
 	// with none given at all — an id is minted, because the empty id is not a
@@ -162,6 +166,15 @@ func (c *recordingConversation) WaitForTurn(ctx context.Context, turnID string) 
 	}
 }
 
+// stopFailing lets the calls through again, for a test that needs the thread
+// driven after the failure it was testing.
+func (c *recordingConversation) stopFailing() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.failOn = ""
+	c.failWith = nil
+}
+
 func (c *recordingConversation) record(call string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -188,9 +201,13 @@ func (c *recordingConversation) ResumeThread(_ context.Context, threadID string)
 	c.calls = append(c.calls, "resume")
 	c.resumed = append(c.resumed, threadID)
 	failing := c.failOn == "resume"
+	failure := c.failWith
 	c.mu.Unlock()
 	if failing {
-		return codexapp.ResumeResult{}, errors.New("no rollout found")
+		if failure == nil {
+			failure = codexapp.ServerError{Code: -32602, Message: "no rollout found"}
+		}
+		return codexapp.ResumeResult{}, failure
 	}
 	return codexapp.ResumeResult{}, nil
 }
@@ -200,6 +217,7 @@ func (c *recordingConversation) StartTurn(_ context.Context, params codexapp.Sta
 	c.calls = append(c.calls, "start")
 	c.turns = append(c.turns, params)
 	failing := c.failOn == "start"
+	failure := c.failWith
 	turnID := ""
 	switch index := len(c.turns) - 1; {
 	case index < len(c.turnIDs):
@@ -209,7 +227,10 @@ func (c *recordingConversation) StartTurn(_ context.Context, params codexapp.Sta
 	}
 	c.mu.Unlock()
 	if failing {
-		return codexapp.TurnResult{}, errors.New("turn refused")
+		if failure == nil {
+			failure = codexapp.ServerError{Code: -32602, Message: "turn refused"}
+		}
+		return codexapp.TurnResult{}, failure
 	}
 	var result codexapp.TurnResult
 	result.Turn.ID = turnID
