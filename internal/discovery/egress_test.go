@@ -3,6 +3,7 @@ package discovery
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
@@ -961,4 +962,521 @@ func TestHasIPv4AgreesWithAnIndependentReading(t *testing.T) {
 		t.Skip("every interface here has an IPv4 address, so a false answer is never required")
 	}
 	t.Logf("%d interfaces with an IPv4 address, %d without", withAddress, without)
+}
+
+// fakeQuota is the part of the kernel these tests are about: a socket may hold
+// a fixed number of multicast memberships, each keyed on an interface index,
+// and a membership on a destroyed interface goes on occupying its slot until
+// something leaves the group for it.
+//
+// Twenty because that is net.ipv4.igmp_max_memberships out of the box, which is
+// the number measured against on Linux 6.8 (#143): the twentieth
+// destroy-and-rebuild cycle is where JoinGroup starts answering ENOBUFS for
+// every interface, and stops answering anything else for the process's life.
+// macOS is the same shape with a far higher ceiling — IP_MAX_MEMBERSHIPS is
+// 4095 in the SDK's netinet/in.h — so twenty is the hostile case to model.
+type fakeQuota struct {
+	limit  int
+	slots  map[int]bool
+	joins  int
+	leaves []int
+	// retainsOnLeave makes a leave answer EADDRNOTAVAIL while *keeping* the
+	// slot, which is the one thing about a vanished interface that is not
+	// known: whether xnu frees the inp_moptions entry once ifindex2ifnet[idx]
+	// is NULL. Off by default, because the measured behaviour on both platforms
+	// is that the call reaches the kernel keyed on the index.
+	//
+	// It exists because without it this fake defines EADDRNOTAVAIL to mean "the
+	// slot is free" — it frees the slot whenever one is held and returns that
+	// errno only when one is not — so a kernel that answered EADDRNOTAVAIL and
+	// leaked would be indistinguishable here from one that released. That is
+	// the shape of omission #142 and #145 were about: the fake left out the
+	// thing production might do.
+	retainsOnLeave bool
+}
+
+func newFakeQuota() *fakeQuota {
+	return &fakeQuota{limit: 20, slots: map[int]bool{}}
+}
+
+func (q *fakeQuota) join(iface *net.Interface, _ *net.UDPAddr) error {
+	q.joins++
+	if q.slots[iface.Index] {
+		return syscall.EADDRINUSE
+	}
+	if len(q.slots) >= q.limit {
+		return syscall.ENOBUFS
+	}
+	q.slots[iface.Index] = true
+	return nil
+}
+
+func (q *fakeQuota) leaveGroup(iface *net.Interface, _ *net.UDPAddr) error {
+	q.leaves = append(q.leaves, iface.Index)
+	if !q.slots[iface.Index] {
+		return syscall.EADDRNOTAVAIL
+	}
+	if q.retainsOnLeave {
+		return syscall.EADDRNOTAVAIL
+	}
+	delete(q.slots, iface.Index)
+	return nil
+}
+
+// offline builds a membership with no socket behind it, so the quota, the
+// interface table and the clock are all the test's to choose.
+func offline(t *testing.T) (*membership, *fakeQuota) {
+	t.Helper()
+	quota := newFakeQuota()
+	joins := &membership{
+		group:      &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: 5353},
+		every:      RejoinInterval,
+		join:       quota.join,
+		leave:      quota.leaveGroup,
+		interfaces: func() ([]net.Interface, error) { return nil, nil },
+		held:       map[int]*heldMembership{},
+	}
+	joins.rejoin = joins.refresh
+	return joins, quota
+}
+
+func usableInterface(name string, index int) net.Interface {
+	return net.Interface{
+		Index: index,
+		Name:  name,
+		Flags: net.FlagUp | net.FlagMulticast | net.FlagBroadcast | net.FlagRunning,
+	}
+}
+
+// The bug this fixes, at the scale that makes it fatal: an interface destroyed
+// and re-created leaves its membership behind, and after twenty cycles the
+// socket can join nothing at all — not the new interface, not a USB adapter
+// plugged in afterwards, nothing — until the process restarts. A node that has
+// been up for a week behind a container runtime or a reconnecting VPN is
+// exactly the node this happens to, and from the owner's side it looks like
+// pairing having quietly stopped working.
+//
+// Forty cycles, twice the quota, so a fix that merely delays the wall fails
+// here too.
+func TestAVanishedInterfaceGivesItsMembershipSlotBack(t *testing.T) {
+	joins, quota := offline(t)
+
+	index := 4
+	for cycle := 1; cycle <= 40; cycle++ {
+		// Each rebuild is a new device at a new index, which is what was
+		// measured: indexes climbed 4, 6, 8 … and never came back round.
+		index += 2
+		current := []net.Interface{usableInterface("veth0", index)}
+		joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+
+		joins.refresh()
+
+		if !quota.slots[index] {
+			t.Fatalf("cycle %d: the interface at index %d was not joined; the socket ran out "+
+				"of membership slots after %d cycles and cannot recover", cycle, index, cycle-1)
+		}
+		// Two, not one: an index is released on the second successive
+		// enumeration that omits it, so the interface destroyed on the previous
+		// cycle is still held for exactly one more tick. That grace is the
+		// price of not acting on a single short netlink dump, and what matters
+		// is that it is a constant — the held set does not grow with cycles.
+		if len(quota.slots) > 2 {
+			t.Fatalf("cycle %d: the socket holds %d memberships where at most the live one and "+
+				"one tick's grace are expected: %v", cycle, len(quota.slots), quota.slots)
+		}
+	}
+	if len(quota.leaves) == 0 {
+		t.Error("no membership was ever released, yet the quota never filled; the fake is not " +
+			"charging for slots and this test proves nothing")
+	}
+}
+
+// The counterpart, and the reason the test for "gone" is absence from the
+// interface table and nothing softer. Measured on #93: an interface that goes
+// down or loses every address keeps its device-level group — `ip maddr` and
+// /proc/net/igmp go on listing 224.0.0.251 at every step of a link flap and of
+// a full DHCP-shaped cycle — and delivery was confirmed on the far side of each
+// without a re-join. The rename case below is *not* from those runs, which
+// never renamed anything; it is inferred from the index being the key, and is
+// here because this code must not release on it either. Releasing a membership
+// in any of these cases would trade a working subscription for a slot that is
+// not scarce, and cost delivery until the next tick re-joined it.
+func TestAMembershipSurvivesAnInterfaceGoingDownOrLosingItsName(t *testing.T) {
+	for name, changed := range map[string]net.Interface{
+		"goes down":                             {Index: 7, Name: "en5", Flags: net.FlagMulticast},
+		"loses its addresses":                   usableInterface("en5", 7),
+		"is renamed (inferred, never measured)": usableInterface("enx0023", 7),
+		"stops doing multicast": {
+			Index: 7, Name: "en5", Flags: net.FlagUp | net.FlagBroadcast,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			joins, quota := offline(t)
+			current := []net.Interface{usableInterface("en5", 7)}
+			joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+			joins.refresh()
+			if !quota.slots[7] {
+				t.Fatal("the interface was not joined to begin with")
+			}
+
+			current = []net.Interface{changed}
+			joins.refresh()
+
+			if len(quota.leaves) != 0 {
+				t.Errorf("the membership on index 7 was released when the interface %s; it is "+
+					"still there and still delivering, and the socket is now deaf on it "+
+					"until the next tick", name)
+			}
+			if !quota.slots[7] {
+				t.Errorf("the socket no longer holds the membership on index 7 after it %s", name)
+			}
+		})
+	}
+}
+
+// A membership this code did not take is not this code's to release. The join
+// on the default interface belongs to ListenMulticastUDP — it is the one
+// discovery ran on before any of this existed, and refresh sees it as an
+// EADDRINUSE every tick. Recording it would mean that the day that interface is
+// unplugged, the socket leaves a group it did not join here, which is a way to
+// lose delivery rather than to gain a slot.
+func TestAMembershipTakenElsewhereIsNeverReleasedHere(t *testing.T) {
+	joins, quota := offline(t)
+	// Already held, exactly as the socket's own join leaves it.
+	quota.slots[3] = true
+	current := []net.Interface{usableInterface("en0", 3)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+
+	current = nil
+	joins.refresh()
+
+	if len(quota.leaves) != 0 {
+		t.Errorf("left the group on %v, but that membership was taken by the socket itself "+
+			"and refused this code's join as a duplicate", quota.leaves)
+	}
+}
+
+// Absence has to be positive evidence from a list that was actually read. When
+// the enumeration fails there is no list, and every membership would look gone
+// — which would turn one transient failure into the socket dropping every
+// interface it has.
+func TestAFailedEnumerationReleasesNothing(t *testing.T) {
+	log.SetOutput(&bytes.Buffer{})
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	joins, quota := offline(t)
+	current := []net.Interface{usableInterface("en5", 7), usableInterface("en6", 9)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+	if len(quota.slots) != 2 {
+		t.Fatalf("expected both interfaces joined, got %v", quota.slots)
+	}
+
+	joins.interfaces = func() ([]net.Interface, error) { return nil, syscall.EMFILE }
+	joins.refresh()
+
+	if len(quota.leaves) != 0 {
+		t.Errorf("a failed interface enumeration released %v; nothing was observed to be gone",
+			quota.leaves)
+	}
+	if len(quota.slots) != 2 {
+		t.Errorf("the socket holds %d memberships after a failed enumeration, not 2", len(quota.slots))
+	}
+}
+
+// The release is attempted once, and the reason is not that a second attempt is
+// known to fail. Both platforms leave by index — x/net registers ssoLeaveGroup
+// as MCAST_LEAVE_GROUP on darwin exactly as on linux, and the measurement here
+// is that LeaveGroup on a vanished index reaches the kernel and answers
+// EADDRNOTAVAIL, the same answer as leaving a group twice. The reason is that
+// the call is a pure function of an index that is gone and will still be gone
+// next tick, so a second attempt can answer nothing the first did not. Retrying
+// each tick would be a syscall every ten seconds per interface the host has
+// ever destroyed, and a map that grows with them.
+func TestAReleaseIsAttemptedOncePerVanishedInterface(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	joins, quota := offline(t)
+	current := []net.Interface{usableInterface("veth0", 12)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+
+	// EADDRNOTAVAIL, which is what a vanished index answers on darwin and what
+	// leaving an already-left group answers on both. The slot is released
+	// underneath it, which is the case this test is about; the case where it is
+	// not is TestALeaveThatKeepsTheSlotIsStillOnlyAttemptedOnce.
+	joins.leave = func(iface *net.Interface, group *net.UDPAddr) error {
+		quota.leaveGroup(iface, group)
+		return syscall.EADDRNOTAVAIL
+	}
+	current = nil
+	for tick := 0; tick < 5; tick++ {
+		joins.refresh()
+	}
+
+	if got := len(quota.leaves); got != 1 {
+		t.Errorf("five refreshes attempted %d releases for one vanished interface", got)
+	}
+	joins.mu.Lock()
+	remembered := len(joins.held)
+	joins.mu.Unlock()
+	if remembered != 0 {
+		t.Errorf("the vanished interface is still remembered %d times over; the record grows "+
+			"with every interface this host destroys", remembered)
+	}
+	if strings.Contains(logged.String(), "could not release") {
+		t.Errorf("EADDRNOTAVAIL was reported as a problem, but it means the slot was already "+
+			"not held, which is the outcome wanted: %s", logged.String())
+	}
+}
+
+// A release that fails for a reason nothing here understands is worth one line,
+// for the same reason an unexpected join failure is: the quota is that much
+// smaller for the rest of the process's life, and the next interface plugged in
+// is the one that pays.
+func TestAnUnexplainedReleaseFailureIsReportedOnce(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	joins, _ := offline(t)
+	current := []net.Interface{usableInterface("veth0", 12), usableInterface("veth1", 14)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+
+	joins.leave = func(*net.Interface, *net.UDPAddr) error { return syscall.EPERM }
+	current = nil
+	for tick := 0; tick < 3; tick++ {
+		joins.refresh()
+	}
+
+	// One line for the family, not one per interface. A release is attempted
+	// once per vanished interface, so a per-name key would suppress nothing and
+	// would leave a permanent entry behind for every name a host churning
+	// veths has ever destroyed. The line still names an interface.
+	if got := strings.Count(logged.String(), "could not release"); got != 1 {
+		t.Errorf("two interfaces failing to release over three ticks logged %d lines, want 1: %q",
+			got, logged.String())
+	}
+	if !strings.Contains(logged.String(), "veth") {
+		t.Errorf("the report does not name the interface whose slot was lost: %q", logged.String())
+	}
+	joins.mu.Lock()
+	keys := len(joins.reported)
+	joins.mu.Unlock()
+	if keys != 1 {
+		t.Errorf("the release path left %d entries in the reported set for two interfaces; it "+
+			"grows with every name this host destroys", keys)
+	}
+}
+
+// Releasing happens before joining, not after, and the difference is only
+// visible when a whole set of interfaces goes at once — a container runtime
+// tearing its network down and building a new one, which is the shape of host
+// this bug was found on. With the quota full, a release that ran after the
+// joins would let the replacement interface fail with ENOBUFS and pick it up
+// only on the next tick: ten seconds of a peer announcing into a socket that
+// cannot hear it, for no reason except the order of two loops.
+func TestASlotFreedOnThisTickIsUsableOnThisTick(t *testing.T) {
+	joins, quota := offline(t)
+
+	full := make([]net.Interface, 0, quota.limit)
+	for i := 0; i < quota.limit; i++ {
+		full = append(full, usableInterface(fmt.Sprintf("veth%d", i), 100+i))
+	}
+	current := full
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+	if len(quota.slots) != quota.limit {
+		t.Fatalf("the quota is not full to begin with: %d of %d slots", len(quota.slots), quota.limit)
+	}
+
+	// The whole set is destroyed and one interface takes their place. The first
+	// tick only records the absence — one short enumeration is not evidence —
+	// so the tick under test is the one that releases.
+	current = []net.Interface{usableInterface("br0", 200)}
+	joins.refresh()
+	quota.leaves = nil
+
+	joins.refresh()
+
+	if len(quota.leaves) == 0 {
+		t.Fatal("the second tick released nothing, so this proves nothing about the order")
+	}
+	if !quota.slots[200] {
+		t.Error("the replacement interface was not joined on the tick its predecessors' slots " +
+			"were released; the slots were released only after the join had already been refused")
+	}
+}
+
+// A successful enumeration is not a complete one, and this is the case that
+// distinguishes them. net.Interfaces answers from syscall.NetlinkRIB, which
+// dumps RTM_GETLINK and never looks at NLM_F_DUMP_INTR — the flag the kernel
+// sets when the link table changes underneath the dump. A dump interrupted that
+// way can come back short, with no error, and the host that does the
+// interrupting is the container-runtime host this whole change is for.
+//
+// So one absence must buy nothing. The interface here never went anywhere; it
+// is simply missing from one dump and back in the next, and releasing on the
+// strength of the first would leave the socket deaf on a live interface until
+// the following tick re-joined it.
+func TestOneShortEnumerationDoesNotReleaseALiveInterface(t *testing.T) {
+	joins, quota := offline(t)
+	live := usableInterface("eth0", 11)
+	current := []net.Interface{live}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+	if !quota.slots[11] {
+		t.Fatal("the interface was not joined to begin with")
+	}
+
+	// One dump comes back short. The interface is still there.
+	current = nil
+	joins.refresh()
+
+	if len(quota.leaves) != 0 {
+		t.Fatalf("a single short enumeration released %v; one interrupted netlink dump is not "+
+			"evidence that an interface is gone, and the socket is now deaf on it", quota.leaves)
+	}
+	if !quota.slots[11] {
+		t.Fatal("the membership on the live interface was dropped after one short enumeration")
+	}
+
+	// It is listed again, which has to clear the count outright — otherwise two
+	// unrelated short dumps, however far apart, would add up to a release.
+	current = []net.Interface{live}
+	joins.refresh()
+	current = nil
+	joins.refresh()
+	if len(quota.leaves) != 0 {
+		t.Fatalf("released %v after two *non-consecutive* absences; being listed again did not "+
+			"reset the count", quota.leaves)
+	}
+
+	// Two in a row is the evidence, and now it must act — a leak that is never
+	// collected is #143 again.
+	current = nil
+	joins.refresh()
+	if len(quota.leaves) != 1 {
+		t.Fatalf("two consecutive successful enumerations omitted index 11 and %d releases were "+
+			"attempted; the slot is leaked for the life of the process", len(quota.leaves))
+	}
+	if quota.slots[11] {
+		t.Error("the slot was never given back")
+	}
+}
+
+// The one thing about a vanished interface that is not known: whether xnu frees
+// the inp_moptions entry once ifindex2ifnet[idx] is NULL. If it does not, macOS
+// answers EADDRNOTAVAIL and keeps the slot.
+//
+// This does not resolve that — it needs a synthetic interface and root, and has
+// not been done. What it pins is that the fake can now *express* it, so the
+// question is visible rather than defined out of existence: with the leak on,
+// the slots stay held, which is exactly what the default fake cannot show,
+// because there EADDRNOTAVAIL is only ever returned when the slot is already
+// free. It also pins that the code's own behaviour does not change — still one
+// attempt, still no entry kept — because a retry cannot free a slot the kernel
+// has decided not to free.
+//
+// The residual leak is accepted rather than chased: macOS caps a socket at
+// IP_MAX_MEMBERSHIPS = 4095 against Linux's default of twenty, so the churn
+// that makes this fatal on Linux is two orders of magnitude from mattering.
+func TestALeaveThatKeepsTheSlotIsStillOnlyAttemptedOnce(t *testing.T) {
+	log.SetOutput(&bytes.Buffer{})
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	joins, quota := offline(t)
+	quota.retainsOnLeave = true
+	current := []net.Interface{usableInterface("veth0", 12)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+	if !quota.slots[12] {
+		t.Fatal("the interface was not joined to begin with")
+	}
+
+	current = nil
+	for tick := 0; tick < 5; tick++ {
+		joins.refresh()
+	}
+
+	if !quota.slots[12] {
+		t.Fatal("the fake released the slot even with retainsOnLeave set, so it still cannot " +
+			"tell a kernel that leaks from one that does not, and this test proves nothing")
+	}
+	if got := len(quota.leaves); got != 1 {
+		t.Errorf("five refreshes attempted %d releases against a kernel that keeps the slot; a "+
+			"retry cannot free what the kernel has decided not to free", got)
+	}
+	joins.mu.Lock()
+	remembered := len(joins.held)
+	joins.mu.Unlock()
+	if remembered != 0 {
+		t.Errorf("the vanished interface is still remembered %d times over", remembered)
+	}
+}
+
+// The name in the record is a log label, and it goes stale. record runs only
+// when a join returns nil, and an interface already joined answers EADDRINUSE,
+// so a rename between two ticks is never re-recorded by that path. The
+// membership is unharmed either way — the kernel matches on the index — but a
+// message about a lost slot that names an interface by a name it shed days ago
+// sends the reader looking for the wrong thing.
+func TestARenamedInterfaceIsReportedByItsCurrentName(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		log.SetFlags(log.LstdFlags)
+	})
+
+	joins, _ := offline(t)
+	current := []net.Interface{usableInterface("eth0", 13)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+
+	// udev renames it. Same index, so the join is refused as a duplicate.
+	current = []net.Interface{usableInterface("enp3s0", 13)}
+	joins.refresh()
+
+	joins.leave = func(*net.Interface, *net.UDPAddr) error { return syscall.EPERM }
+	current = nil
+	joins.refresh()
+	joins.refresh()
+
+	if !strings.Contains(logged.String(), "enp3s0") {
+		t.Errorf("the report names the interface by a name it no longer had: %q", logged.String())
+	}
+}
+
+// A membership this code did not take stays untouched by the relabelling too.
+// EADDRINUSE is how the socket's own join on the default interface shows up on
+// every tick, and if seeing it were enough to put an index in the record, the
+// day that interface went away this code would leave a group it never joined.
+func TestADuplicateJoinStillRecordsNothing(t *testing.T) {
+	joins, quota := offline(t)
+	quota.slots[3] = true
+	current := []net.Interface{usableInterface("en0", 3)}
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+
+	joins.mu.Lock()
+	_, recorded := joins.held[3]
+	joins.mu.Unlock()
+	if recorded {
+		t.Fatal("a join refused as a duplicate put index 3 in the record; the membership " +
+			"belongs to the socket's own join and releasing it would cost delivery")
+	}
 }
