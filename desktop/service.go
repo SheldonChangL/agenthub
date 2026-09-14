@@ -185,6 +185,13 @@ func (a *App) InstallService(form ServiceForm) (ServiceResult, error) {
 	return a.runService(args...)
 }
 
+// RestartService restarts the installed service so new node settings take
+// effect. The node reads them at start-up and has no hot reload, so a write
+// that is not followed by this changes nothing about the running process.
+func (a *App) RestartService() (ServiceResult, error) {
+	return a.runService("service", "restart")
+}
+
 // UninstallService stops the service and removes its registration; ah says
 // what it left alone.
 func (a *App) UninstallService() (ServiceResult, error) {

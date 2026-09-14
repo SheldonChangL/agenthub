@@ -20,6 +20,8 @@ export function LocalAddresses():Promise<Array<main.LocalAddress>>;
 
 export function MCPConfig(arg1:string):Promise<main.MCPConfigResult>;
 
+export function NodeSettings():Promise<main.NodeSettingsView>;
+
 export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
@@ -30,7 +32,11 @@ export function Overview():Promise<main.Overview>;
 
 export function Pairing():Promise<main.Pairing>;
 
+export function RestartService():Promise<main.ServiceResult>;
+
 export function RevokeNode(arg1:string):Promise<void>;
+
+export function SaveNodeSettings(arg1:main.NodeSettingsPatch):Promise<main.NodeSettingsView>;
 
 export function ServiceStatus():Promise<main.ServiceStatus>;
 

@@ -67,6 +67,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
+    // The node's remembered start-up settings, as the node last answered.
+    nodeSettings: null,
+    nodePrivateSuggested: "",
     nodeReachable: false,
     serviceFormTouched: false,
     // The session the inbox drawer was opened for, set before the read; the
@@ -376,7 +379,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       renderNodes();
       renderPairing();
     }
-    if (state.view === "settings") renderSettings();
+    if (state.view === "settings") {
+      renderSettings();
+      // Read once when the view first opens, then only when asked: these
+      // change when the owner changes them, not on their own.
+      if (!state.nodeSettings) loadNodeSettings().catch(() => {});
+    }
 
     const rows = visible();
     renderChips();
@@ -2098,53 +2106,31 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   async function openServiceForm() {
     state.serviceFormTouched = true;
-    const form = el("service-form");
-    form.classList.remove("hidden");
+    el("service-form").classList.remove("hidden");
     el("service-output").classList.add("hidden");
-    const select = el("service-address");
-    // Rebuilt each time: an adapter plugged in since the last open should be
-    // offered, and a stale one should not.
-    while (select.options.length > 1) select.remove(1);
-    let addresses = [];
-    try {
-      addresses = (await api.LocalAddresses()) ?? [];
-    } catch (error) {
-      banner(`讀取本機位址失敗：${error}`);
-    }
-    for (const item of addresses) {
-      const option = document.createElement("option");
-      option.value = `${item.address}:7463`;
-      option.textContent = `${item.address}:7463 · ${item.interface} · ${item.subnet}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
-      option.dataset.private = item.private ? "1" : "";
-      option.dataset.subnet = item.subnet;
-      select.append(option);
-    }
-    state.servicePrivateSuggested = "";
-    el("service-private").value = "";
-    syncServiceForm();
   }
 
-  // A non-loopback address needs --allow-lan, and a non-private one needs the
+  // A non-loopback address needs allowLan, and a non-private one needs the
   // range declared: filled in for the owner, and said out loud, rather than
-  // left for ah to refuse.
+  // left for the node to refuse.
   //
   // The suggestion is the interface's own subnet, never a wider guess: the
   // range governs who the node will deliver to, so it should be what the cable
   // actually carries. It is remembered, so switching addresses replaces a
   // suggestion the owner did not touch and leaves alone one they edited.
-  function syncServiceForm() {
-    const select = el("service-address");
+  function syncNodeSettingsForm() {
+    const select = el("node-peerlisten");
     const option = select.options[select.selectedIndex];
     const lan = Boolean(option && option.value);
-    el("service-allow-lan").checked = lan;
-    el("service-lan-note").classList.toggle("hidden", !lan);
-    const privateField = el("service-private");
-    const note = el("service-private-note");
-    const untouched = privateField.value.trim() === "" || privateField.value.trim() === state.servicePrivateSuggested;
+    if (lan) el("node-allow-lan").checked = true;
+    el("node-lan-note").classList.toggle("hidden", !el("node-allow-lan").checked);
+    const privateField = el("node-private");
+    const note = el("node-private-note");
+    const untouched = privateField.value.trim() === "" || privateField.value.trim() === state.nodePrivateSuggested;
     const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
-    if (untouched) {
+    if (untouched && suggestion) {
       privateField.value = suggestion;
-      state.servicePrivateSuggested = suggestion;
+      state.nodePrivateSuggested = suggestion;
     }
     note.textContent = suggestion
       ? `已帶入這個介面自己的網段 ${suggestion}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
@@ -2155,11 +2141,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function readServiceForm() {
     return {
       dbPath: el("service-db").value.trim(),
-      peerListen: el("service-address").value,
-      allowLan: el("service-allow-lan").checked,
-      discover: el("service-discover").checked,
-      treatAsPrivate: el("service-private").value.split(/[\s,]+/).map((v) => v.trim()).filter(Boolean),
-      autoWake: el("service-autowake").checked,
+      peerListen: "",
+      allowLan: false,
+      discover: false,
+      treatAsPrivate: [],
+      autoWake: false,
     };
   }
 
@@ -2373,6 +2359,211 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
 
 
+  /* ---------------- node settings ---------------- */
+
+  // The node's own start-up settings (#116). They live in the node's database,
+  // not in the service unit, so changing one does not mean reinstalling the
+  // service — but the node only reads them when it starts, so a write that is
+  // not followed by a restart changes nothing about the running process.
+  //
+  // Reads and writes are numbered like every other read here: a slow answer
+  // must not repaint a form the owner has since edited or saved.
+  let nodeSettingsRequest = 0;
+  let nodeSettingsApplied = 0;
+
+  async function loadNodeSettings() {
+    const sequence = ++nodeSettingsRequest;
+    el("node-settings-state").textContent = "讀取中…";
+    let view;
+    try {
+      view = await api.NodeSettings();
+    } catch (error) {
+      view = { error: String(error) };
+    }
+    if (sequence <= nodeSettingsApplied) return;
+    nodeSettingsApplied = sequence;
+    applyNodeSettings(view);
+  }
+
+  // applyNodeSettings paints the WHOLE form from the node's answer.
+  //
+  // Never a merge of just what was sent: turning allowLan off pulls peerListen
+  // back to loopback in the same write, and since #134 any write does it when
+  // the stored allowLan is already false. A form that kept its own idea of the
+  // fields it did not send would show a LAN address the node no longer has.
+  function applyNodeSettings(view) {
+    state.nodeSettings = view;
+    const state_ = el("node-settings-state");
+    const notice = el("node-settings-notice");
+    notice.replaceChildren();
+
+    if (view.error) {
+      state_.textContent = "讀不到";
+      notice.append(
+        element("div", "stale", "讀不到節點設定，所以下面的欄位不是節點目前的值。"),
+        element("div", "muted", view.error),
+      );
+      return;
+    }
+
+    const settings = view.settings ?? {};
+    const sources = view.sources ?? {};
+    state_.textContent = "";
+
+    fillPeerListenOptions(settings.peerListen ?? "");
+    el("node-allow-lan").checked = Boolean(settings.allowLan);
+    el("node-discover").checked = Boolean(settings.discover);
+    el("node-autowake").checked = Boolean(settings.autoWake);
+    el("node-private").value = (settings.treatAsPrivate ?? []).join(", ");
+    state.nodePrivateSuggested = "";
+
+    for (const [id, key] of [
+      ["node-peerlisten-source", "peerListen"],
+      ["node-allowlan-source", "allowLan"],
+      ["node-discover-source", "discover"],
+      ["node-private-source", "treatAsPrivate"],
+      ["node-autowake-source", "autoWake"],
+    ]) {
+      el(id).textContent = describeSource(sources[key]);
+    }
+
+    // The node's own sentence about what the write did, verbatim: it names the
+    // address it pulled back and what to send to keep it.
+    if (view.message) notice.append(element("div", "muted", view.message));
+    // Only while a withdrawal stands. Absent is not false-with-a-reason, it is
+    // "no withdrawal" — so nothing is said unless the node says it.
+    if (view.peerListenWithdrawn) {
+      notice.append(element("div", "stale",
+        "這台機器啟動時把記住的區網位址收回了本機，那個位址救不回來。" +
+        "要再對外服務，請在上面重新選一個位址並把「允許區網連線」打開。"));
+    }
+    el("node-settings-hint").textContent = view.restartRequired
+      ? "節點只在啟動時讀這些值，存檔後要重新啟動才生效。"
+      : "節點只在啟動時讀這些值。";
+    syncNodeSettingsForm();
+  }
+
+  // describeSource says where a value came from, in words rather than the
+  // node's three tokens. "default" is not "unset": a withdrawn peerListen reads
+  // as default until the next start-up, and the withdrawal notice above is what
+  // explains that, not this tag.
+  function describeSource(source) {
+    if (source === "flag") return "· 這次啟動的命令列指定";
+    if (source === "remembered") return "· 記住的值";
+    if (source === "default") return "· 預設值";
+    return "";
+  }
+
+  // fillPeerListenOptions rebuilds the address list and keeps whatever the node
+  // currently has selectable even when no interface offers it any more — an
+  // address from a cable that is unplugged right now is still the node's.
+  async function fillPeerListenOptions(current) {
+    const select = el("node-peerlisten");
+    while (select.options.length > 1) select.remove(1);
+    let addresses = [];
+    try {
+      addresses = (await api.LocalAddresses()) ?? [];
+    } catch {
+      addresses = [];
+    }
+    const offered = new Set();
+    for (const item of addresses) {
+      const value = `${item.address}:7463`;
+      offered.add(value);
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = `${value} · ${item.interface} · ${item.subnet}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
+      option.dataset.private = item.private ? "1" : "";
+      option.dataset.subnet = item.subnet;
+      select.append(option);
+    }
+    const loopback = current === "" || current === LOOPBACK_LISTEN;
+    if (!loopback && !offered.has(current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = `${current} · 目前設定，這台機器現在沒有這個位址`;
+      option.dataset.private = "1";
+      select.append(option);
+    }
+    select.value = loopback ? "" : current;
+  }
+
+  const LOOPBACK_LISTEN = "127.0.0.1:7463";
+
+  // readNodeSettingsPatch sends only what the owner changed.
+  //
+  // A partial write is what the endpoint takes, and sending everything would
+  // make an unchanged LAN peerListen part of a write that turns allowLan off —
+  // which the node refuses, naming an address the owner never touched.
+  function readNodeSettingsPatch() {
+    const saved = state.nodeSettings?.settings ?? {};
+    const patch = {};
+    const peerListen = el("node-peerlisten").value || LOOPBACK_LISTEN;
+    if (peerListen !== (saved.peerListen || LOOPBACK_LISTEN)) patch.peerListen = peerListen;
+    if (el("node-allow-lan").checked !== Boolean(saved.allowLan)) patch.allowLan = el("node-allow-lan").checked;
+    if (el("node-discover").checked !== Boolean(saved.discover)) patch.discover = el("node-discover").checked;
+    if (el("node-autowake").checked !== Boolean(saved.autoWake)) patch.autoWake = el("node-autowake").checked;
+    const ranges = el("node-private").value.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+    const before = saved.treatAsPrivate ?? [];
+    if (ranges.length !== before.length || ranges.some((value, index) => value !== before[index])) {
+      // Always an array, never omitted: an empty one is how a declared range is
+      // withdrawn, and leaving the key out would mean "leave it alone".
+      patch.treatAsPrivate = ranges;
+    }
+    return patch;
+  }
+
+  async function saveNodeSettings() {
+    const patch = readNodeSettingsPatch();
+    if (Object.keys(patch).length === 0) {
+      banner("沒有改動任何設定。");
+      return;
+    }
+    await withBusy("儲存節點設定", async () => {
+      const sequence = ++nodeSettingsRequest;
+      let view;
+      try {
+        view = await api.SaveNodeSettings(patch);
+      } catch (error) {
+        view = { error: String(error) };
+      }
+      if (sequence <= nodeSettingsApplied) return;
+      nodeSettingsApplied = sequence;
+
+      if (view.error) {
+        // The node's refusal names the address that was sent and what to send
+        // with it, so it is shown as it came. The form is left as the owner
+        // typed it: nothing was saved, and repainting it would throw away what
+        // they were in the middle of fixing.
+        el("node-settings-notice").replaceChildren(
+          element("div", "stale", "節點拒絕了這次儲存，設定沒有變動。"),
+          element("div", "muted", view.error),
+        );
+        return;
+      }
+
+      applyNodeSettings(view);
+      // Saved. Whether it takes effect now is a different question, and the
+      // answer depends on how the node was started: only a service can be
+      // restarted from here.
+      const installed = Boolean(state.service?.installed);
+      if (!installed) {
+        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。", true);
+        return;
+      }
+      const result = await api.RestartService();
+      showNodeSettingsOutput(result);
+      await loadService();
+      banner("設定已儲存，背景服務已重新啟動。", true);
+    });
+  }
+
+  function showNodeSettingsOutput(result) {
+    const output = el("node-settings-output");
+    output.textContent = `$ ${result.command}\n${result.output}`;
+    output.classList.remove("hidden");
+  }
+
   /* ---------------- redesign wiring ---------------- */
 
   el("select-all-visible").onchange = setSelectionForVisible;
@@ -2410,6 +2601,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
     };
   }
+  el("node-settings-reload").onclick = () => loadNodeSettings().catch((error) => banner(`讀取節點設定失敗：${error}`));
+  el("node-settings-save").onclick = () => saveNodeSettings().catch((error) => banner(`儲存節點設定失敗：${error}`));
+  el("node-peerlisten").onchange = syncNodeSettingsForm;
+  el("node-allow-lan").onchange = syncNodeSettingsForm;
+
   el("service-pill").onclick = () => {
     state.view = "settings";
     state.settingsSection = "settings-service";
@@ -2449,6 +2645,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer,
+    loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
@@ -2499,7 +2696,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("service-refresh").onclick = () => loadService().catch((error) => banner(`讀取背景服務狀態失敗：${error}`));
   el("service-open").onclick = () => openServiceForm().catch((error) => banner(`開啟表單失敗：${error}`));
   el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
-  el("service-address").onchange = syncServiceForm;
   el("service-install").onclick = installService;
   el("service-uninstall").onclick = uninstallService;
 
