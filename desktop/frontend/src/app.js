@@ -293,8 +293,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       idCell.append(element("span", "providertag", session.provider), element("b", "", rest));
       idCell.title = session.id;
 
-      const cwdCell = element("td", "mono muted cwd", session.cwd || "—");
-      if (session.cwd) cwdCell.title = session.cwd;
+      // The path goes in a <bdi> because the cell is laid out right-to-left so
+      // that a path too long for the column loses its head rather than its
+      // tail — the project name is the part worth keeping. The isolate stops
+      // that direction from reordering the path's own slashes.
+      const cwdCell = element("td", "mono muted cwd");
+      if (session.cwd) {
+        cwdCell.append(element("bdi", "", session.cwd));
+        cwdCell.title = session.cwd;
+      } else {
+        cwdCell.append(element("bdi", "", "—"));
+      }
 
       // The four audience flags, readable without opening the dialog. Only
       // meaningful when something is published; a private row shows them dim.

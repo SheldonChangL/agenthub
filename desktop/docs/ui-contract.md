@@ -311,7 +311,9 @@
 - **可捲動容器要有對應屬性**：`.nodelist {` 含 `overflow-y`；`#candidate-rows {`、`#inbox-body {`、
   `.inboxrow .inboxbody {` 含 `max-height`。
 - index.html 至少一個 `<p class="warning">`。
-- **版面（#153，實機才看得到）**：`col.c-actions` 寬度至少 250px（三顆列動作量到 241px，
+- **版面（#153／#155，實機才看得到）**：清單卡片**不設 `max-width`**（填滿視窗；原本的 1120px 讓背景只露一條、
+  又壓縮了最長的欄）；工作目錄欄 `td.cwd` 用 `direction: rtl` 從左邊裁，路徑本身包在 `<bdi>` 裡隔離方向，
+  因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 250px（三顆列動作量到 241px，
   儲存格 `overflow: hidden` 會把裝不下的裁掉，**任何視窗寬度都一樣**）；`table` 要有 `min-width`
   （沒有的話 `width: 100%` 讓它永遠等於容器寬，窄視窗只會壓縮欄位而不會捲動）；`.col-actions`
   要 `position: sticky`；`style.css` 要有 `body.mac .titlebar` 的左內縮，因為 `main.go` 用

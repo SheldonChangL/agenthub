@@ -282,8 +282,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   min-height: 0;
   position: relative;
   margin: 12px 16px;
-  width: calc(100% - 32px);
-  max-width: 1120px;
+  /* No max-width: the list is what the window is for. It used to stop at
+     1120px to leave the backdrop visible down the right-hand side, but on a
+     wide screen that showed a strip too narrow to make out and cost the table
+     the width its longest column needed. */
   display: flex;
   flex-direction: column;
   border-radius: var(--radius);
@@ -300,7 +302,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    always exactly as wide as the card, so a narrow window squeezes the columns
    until the last one is cut off at the card's edge with no way to reach it —
    the resume button was half outside the window and unclickable. */
-table { width: 100%; min-width: 1090px; border-collapse: collapse; table-layout: fixed; }
+table { width: 100%; min-width: 1200px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 36px; }
 col.c-session { width: 210px; }
 col.c-status { width: 84px; }
@@ -360,6 +362,15 @@ tbody tr:hover td.col-actions { background: #1a2027; }
 tbody tr.sel td.col-actions { background: #16261d; }
 
 .sid { color: var(--muted); }
+
+/* The working directory answers one question — which project is this session
+   in — and the answer is at the END of the path. Clipped from the left so the
+   last segments survive: 「…/others/agenthub」 rather than 「/Us…」, which is
+   what a column this narrow showed before. `direction: rtl` moves the ellipsis
+   to the start; the <bdi> inside keeps the path itself reading left to right,
+   so the slashes do not migrate. */
+td.cwd { direction: rtl; text-align: left; }
+td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .sid .providertag {
   display: inline-flex; align-items: center;
   height: 16px; padding: 0 6px; margin-right: 8px;
