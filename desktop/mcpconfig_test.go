@@ -14,7 +14,7 @@ import (
 func fakeMCPBinary(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "agenthub-mcp")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -150,7 +150,7 @@ func TestMCPConfigRefusesAnEmptySession(t *testing.T) {
 func TestLocateBinaryAnswersAbsolutely(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "agenthub-mcp")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	working, err := os.Getwd()

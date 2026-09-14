@@ -6,6 +6,9 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
+  "postBuildHooks": {
+    "*/*": "../bundle-binaries.sh ${platform} ${bin}"
+  },
   "author": {
     "name": "SheldonChang",
     "email": "sheldon.chang@jet-opto.com.tw"
