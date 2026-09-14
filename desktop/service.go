@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -58,6 +59,11 @@ type ServiceResult struct {
 // runTool executes ah. A variable so tests can stand in for the binary.
 var runTool = func(ctx context.Context, tool string, args ...string) (string, error) {
 	var output bytes.Buffer
+	// #nosec G204 -- running a variable program is the point of this file, and
+	// which program is the question locateBinary answers: a path the owner named
+	// in the environment, or one at a fixed offset from this executable. PATH is
+	// deliberately not among them, so "whatever came first on PATH" — the case
+	// this rule is about — cannot be what lands here.
 	command := exec.CommandContext(ctx, tool, args...)
 	command.Stdout = &output
 	command.Stderr = &output
@@ -92,10 +98,23 @@ func locateTool() (string, error) {
 	return locateBinary("ah", "AGENTHUB_AH")
 }
 
+// findNode locates the agenthub-node the installed service should run, the same
+// way and in the same places as ah. A variable so tests can stand in for it.
+//
+// The install has to name it. Left to itself `ah service install` falls back to
+// exec.LookPath("agenthub-node") and writes whatever that finds into the
+// ExecStart of a launchd job or a systemd unit — started at boot, every boot.
+// Taking PATH out of this file only moved that decision one hop down; the GUI
+// already knows which agenthub-node it means, because the packaging step put it
+// beside this executable, so it says so.
+var findNode = func() (string, error) {
+	return locateBinary("agenthub-node", "AGENTHUB_NODE")
+}
+
 // locateBinary is that search, with the binary's name and the environment
-// variable that overrides it as parameters: ah and agenthub-mcp ship side by
-// side and are found the same way, and a second copy of this list would be a
-// second thing to keep in step with how the app is packaged.
+// variable that overrides it as parameters: ah, agenthub-node and agenthub-mcp
+// ship side by side and are found the same way, and a second copy of this list
+// would be a second thing to keep in step with how the app is packaged.
 //
 // PATH is deliberately not one of the places. What this finds is run to install
 // a launchd job or a systemd unit; anything named ah that happened to come
@@ -115,13 +134,46 @@ func locateBinary(name, envName string) (string, error) {
 	return locateBinaryNear(filepath.Dir(self), name, envName)
 }
 
+// executableName is what the file is actually called on this operating system.
+// The packaging step writes ah.exe on Windows (desktop/build/bundle-binaries.sh),
+// so a search for "ah" there would look straight past what was bundled.
+func executableName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+// runnable reports whether a path is something this app could actually execute.
+// os.Stat succeeding says only that the name exists: a directory called ah, or
+// a text file, would otherwise be handed back as the tool and fail later with a
+// message about exec rather than about the path being wrong.
+func runnable(path string) bool {
+	// #nosec G703 -- the taint gosec follows is AGENTHUB_AH / AGENTHUB_NODE /
+	// AGENTHUB_MCP, set by the person this app runs as to name a binary they
+	// want run instead of the bundled one; every other path here is built from
+	// this executable's own location. Nothing the window or the network
+	// supplies reaches it, and "traversal" into one's own account is not a
+	// boundary crossed.
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	// Windows decides by extension, not by a mode bit; there is none to check.
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return info.Mode().Perm()&0o111 != 0
+}
+
 // locateBinaryNear is that search with the executable's directory given rather
 // than asked for, so a test can lay out a bundle or a checkout in a temporary
 // directory and watch which of them the search will and will not accept.
 func locateBinaryNear(dir, name, envName string) (string, error) {
-	looked := make([]string, 0, 6)
+	file := executableName(name)
+	looked := make([]string, 0, 4)
 	if given := os.Getenv(envName); given != "" {
-		if _, err := os.Stat(given); err == nil {
+		if runnable(given) {
 			return absolute(given)
 		}
 		looked = append(looked, "$"+envName+"="+given)
@@ -130,29 +182,18 @@ func locateBinaryNear(dir, name, envName string) (string, error) {
 	// Contents/MacOS in a bundle and the unpacked directory on Linux, and
 	// Contents/Resources for a bundle laid out the other way.
 	for _, candidate := range []string{
-		filepath.Join(dir, name),
-		filepath.Join(dir, "..", "Resources", name),
+		filepath.Join(dir, file),
+		filepath.Join(dir, "..", "Resources", file),
 	} {
-		if _, err := os.Stat(candidate); err == nil {
+		if runnable(candidate) {
 			return absolute(filepath.Clean(candidate))
 		}
 		looked = append(looked, candidate)
 	}
-	// The source tree, for a developer running the app out of desktop/build/bin:
-	// <repo>/desktop/build/bin/<app>.app/Contents/MacOS on macOS (six levels
-	// up), <repo>/desktop/build/bin on Linux (three), binaries at <repo>/bin.
-	// Taken only when that directory really is this project's checkout: the
-	// offsets on their own would also match an app someone unpacked six levels
-	// deep inside a tree they do not control.
-	for _, root := range []string{
-		filepath.Join(dir, "..", "..", "..", "..", "..", ".."),
-		filepath.Join(dir, "..", "..", ".."),
-	} {
-		if !isProjectCheckout(root) {
-			continue
-		}
-		candidate := filepath.Clean(filepath.Join(root, "bin", name))
-		if _, err := os.Stat(candidate); err == nil {
+	// The source tree, for a developer running the app out of desktop/build/bin.
+	if root, ok := checkoutAbove(dir); ok {
+		candidate := filepath.Clean(filepath.Join(root, "bin", file))
+		if runnable(candidate) {
 			return absolute(candidate)
 		}
 		looked = append(looked, candidate)
@@ -166,9 +207,50 @@ func locateBinaryNear(dir, name, envName string) (string, error) {
 // that happens to sit at the same offset from where the app was unpacked.
 const modulePath = "agenthub.local/agenthub"
 
+// buildOutput is where `wails build` leaves the app, relative to the checkout.
+var buildOutput = []string{"desktop", "build", "bin"}
+
+// checkoutAbove reports the checkout a developer is running the app out of, if
+// that is what dir is: <repo>/desktop/build/bin on Linux and Windows, and
+// <repo>/desktop/build/bin/<app>.app/Contents/MacOS on macOS. Nothing else.
+//
+// Counting levels up and asking only whether a go.mod of ours is there is not
+// enough, and was a hole. Three levels up from <dir>/Anything.app/Contents/MacOS
+// is <dir> itself, so an app dropped in a world-writable directory — /Users/Shared
+// is drwxrwxrwt — let any other local account plant a go.mod and a bin/ah there
+// and have this GUI run it to install a launchd job. The path has to have the
+// shape the build actually produces, not merely the right depth.
+func checkoutAbove(dir string) (string, bool) {
+	segments := strings.Split(filepath.ToSlash(filepath.Clean(dir)), "/")
+	// A macOS bundle sits three further segments down: <x>.app/Contents/MacOS.
+	if n := len(segments); n >= 3 &&
+		segments[n-1] == "MacOS" && segments[n-2] == "Contents" &&
+		strings.HasSuffix(segments[n-3], ".app") {
+		segments = segments[:n-3]
+	}
+	n := len(segments)
+	if n < len(buildOutput) {
+		return "", false
+	}
+	for i, want := range buildOutput {
+		if segments[n-len(buildOutput)+i] != want {
+			return "", false
+		}
+	}
+	above := strings.Join(segments[:n-len(buildOutput)], "/")
+	// "" here is either a relative desktop/build/bin with nothing above it or
+	// the filesystem root; neither is a checkout.
+	if above == "" {
+		return "", false
+	}
+	root := filepath.Clean(filepath.FromSlash(above))
+	if !isProjectCheckout(root) {
+		return "", false
+	}
+	return root, true
+}
+
 func isProjectCheckout(root string) bool {
-	// #nosec G304 -- the path is derived from this executable's own location,
-	// never from anything the window or the network supplied.
 	content, err := os.ReadFile(filepath.Clean(filepath.Join(root, "go.mod")))
 	if err != nil {
 		return false
@@ -268,7 +350,11 @@ func (a *App) runService(args ...string) (ServiceResult, error) {
 // set is passed, so the node's defaults apply to the rest; the peer listener
 // itself is validated by ah with the node's rule, not guessed at here.
 func installArgs(form ServiceForm) ([]string, error) {
-	args := []string{"service", "install"}
+	node, err := findNode()
+	if err != nil {
+		return nil, err
+	}
+	args := []string{"service", "install", "--node-binary", node}
 	if path := strings.TrimSpace(form.DBPath); path != "" {
 		args = append(args, "--db", path)
 	}
