@@ -402,6 +402,84 @@ if (!el("banner").textContent.includes("重新讀取")) {
   failures.push(`the owner was not told to reload first: ${el("banner").textContent}`);
 }
 
+// R9. Two overlapping reads must not interleave. Painting used to await in the
+//     middle of itself, so the baseline came from one read and the form from
+//     the other, and the next save wrote fields nobody touched.
+let slowFirst = true;
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => {
+    // The first read's address lookup is the slow one, so its paint would land
+    // last if anything were painted after an await.
+    if (slowFirst) {
+      slowFirst = false;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    return [];
+  },
+});
+let answers = [
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, sources: {}, saved: {}, restartRequired: false },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, sources: {}, saved: {}, restartRequired: false },
+];
+settingsAnswer = async () => answers.shift() ?? answers[0];
+app.state.nodeSettings = null;
+const first = app.loadNodeSettings();
+const second = app.loadNodeSettings();
+await Promise.all([first, second]);
+await tick();
+// Whichever read won, the baseline and the form must be the same read.
+const baseline = app.state.nodeSettings?.settings ?? {};
+if (el("node-discover").checked !== Boolean(baseline.discover) ||
+    el("node-autowake").checked !== Boolean(baseline.autoWake)) {
+  failures.push("the form and the baseline came from different reads");
+}
+const idle = app.readNodeSettingsPatch();
+if (Object.keys(idle).length !== 0) {
+  failures.push(`with nothing touched the patch is ${JSON.stringify(idle)}, want empty`);
+}
+
+// R10. A successful save repaints from the node AND keeps the address list: a
+//      repaint without it would leave the owner with only 「只在本機」.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }],
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {}, saved: {}, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: {}, saved: {}, restartRequired: true,
+});
+await app.saveNodeSettings();
+await tick();
+if (el("node-peerlisten").options.length < 2) {
+  failures.push("a successful save emptied the address list, leaving only 只在本機");
+}
+if (el("node-peerlisten").value !== "192.168.50.10:7463") {
+  failures.push(`a successful save lost the selected address: ${el("node-peerlisten").value}`);
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
