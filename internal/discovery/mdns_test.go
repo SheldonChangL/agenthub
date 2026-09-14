@@ -768,8 +768,10 @@ func TestARevokedNodesAddressStopsBeingRecorded(t *testing.T) {
 
 	// The owner revokes it, and its announcements keep arriving throughout.
 	resolver.trusted = nil
-	for range 5 {
-		clock = clock.Add(max(trustCacheTTL/4, addressChangeCooldown/4))
+	// Small steps, so a cache that a hit could renew would still be alive when
+	// the address-change cooldown finally lets a write through.
+	for range 40 {
+		clock = clock.Add(trustCacheTTL / 3)
 		if _, err := browser.Apply(context.Background(), Announcement{
 			NodeID: pairedNode, Address: "192.0.2.11:7463",
 		}); err != nil {
