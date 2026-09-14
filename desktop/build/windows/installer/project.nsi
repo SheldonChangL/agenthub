@@ -96,11 +96,43 @@ Section
 
     !insertmacro wails.files
 
+    # wails.files installs the app executable and nothing else, but the app
+    # resolves ah, agenthub-node and agenthub-mcp beside its own executable and
+    # deliberately does not fall back to PATH (desktop/build/bundle-binaries.sh
+    # says why). Without these three the installed app comes up and every
+    # service and MCP action answers "ah was not found".
+    #
+    # They are taken from build/bin, where the postBuildHook has just put them,
+    # so `wails build -platform windows/amd64 -nsis` is still one command.
+    File "/oname=ah.exe" "..\..\bin\ah.exe"
+    File "/oname=agenthub-node.exe" "..\..\bin\agenthub-node.exe"
+    File "/oname=agenthub-mcp.exe" "..\..\bin\agenthub-mcp.exe"
+
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
+
+    # agenthub-node is the part that has to keep running; the desktop app is
+    # only its front end. On macOS and Linux the app installs a launchd job or
+    # a systemd user unit through `ah service`, but internal/service answers
+    # Supported: false on Windows (#65), so the installer is what arranges
+    # start-up here.
+    #
+    # Current user, not all users, and deliberately: node.key is sealed with
+    # DPAPI against the user who created it, so a copy started under anyone
+    # else cannot open it. SetShellVarContext current pins $SMSTARTUP to this
+    # user's own Startup folder even when the install scope is machine-wide.
+    #
+    # agenthub-node is a console program, so this leaves a console window in
+    # the taskbar. Minimised rather than hidden: hiding it would need the
+    # binary built with -H windowsgui, which also takes away the only place its
+    # log is visible, and that trade is not worth making before anyone has run
+    # this on a real Windows machine.
+    SetShellVarContext current
+    CreateShortCut "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk" "$INSTDIR\agenthub-node.exe" "" "" 0 SW_SHOWMINIMIZED
+    !insertmacro wails.setShellContext
 
     !insertmacro wails.writeUninstaller
 SectionEnd
@@ -114,6 +146,12 @@ Section "uninstall"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
+
+    # Removed under the same context it was created under, or it is left behind
+    # pointing at a directory that no longer exists.
+    SetShellVarContext current
+    Delete "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk"
+    !insertmacro wails.setShellContext
 
     !insertmacro wails.unassociateFiles
     !insertmacro wails.unassociateCustomProtocols
