@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -710,4 +711,97 @@ func TestANodeNotOfferingAnnouncesNothingExtra(t *testing.T) {
 	if len(got) != 1 || got[0].Offering() {
 		t.Errorf("announcements = %+v; a quiet node must not read as an offer", got)
 	}
+}
+
+// TestTheTrustedSetIsNotReadPerPacket is issue #92's second finding: the same
+// dispatch hands every packet to this browser, including this node's own
+// announcements coming back on the loopback, and each one read the whole
+// trusted set.
+func TestTheTrustedSetIsNotReadPerPacket(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+	packet := []Announcement{{NodeID: pairedNode, Address: "192.0.2.10:7463"}}
+
+	for range 200 {
+		if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resolver.trustReads != 1 {
+		t.Errorf("200 packets cost %d reads of the trusted set, want 1", resolver.trustReads)
+	}
+
+	clock = clock.Add(trustCacheTTL - time.Millisecond)
+	if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 1 {
+		t.Errorf("trustReads = %d inside the TTL, want 1", resolver.trustReads)
+	}
+
+	clock = clock.Add(2 * time.Millisecond)
+	if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 2 {
+		t.Errorf("trustReads = %d after the TTL, want 2", resolver.trustReads)
+	}
+}
+
+// TestARevokedNodesAddressStopsBeingRecorded is the same constraint the
+// candidate list has: the cached set is a reason to skip a read, not a record
+// of who is trusted, and a steady stream of packets must not keep it alive.
+func TestARevokedNodesAddressStopsBeingRecorded(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+
+	if _, err := browser.Apply(context.Background(), Announcement{
+		NodeID: pairedNode, Address: "192.0.2.10:7463",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.writes != 1 {
+		t.Fatalf("writes = %d; a paired node's address must be recorded", resolver.writes)
+	}
+
+	// The owner revokes it, and its announcements keep arriving throughout.
+	resolver.trusted = nil
+	for range 5 {
+		clock = clock.Add(max(trustCacheTTL/4, addressChangeCooldown/4))
+		if _, err := browser.Apply(context.Background(), Announcement{
+			NodeID: pairedNode, Address: "192.0.2.11:7463",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resolver.writes != 1 {
+		t.Errorf("a revoked node's new address was recorded %d times", resolver.writes-1)
+	}
+	if resolver.stored[pairedNode] != "192.0.2.10:7463" {
+		t.Errorf("stored address = %q; the revoked node's row moved", resolver.stored[pairedNode])
+	}
+}
+
+// TestConcurrentApply covers the state the cache added: the packet path is one
+// goroutine today, but Apply is exported and the cached set is shared.
+func TestConcurrentApply(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	browser := NewBrowser(resolver, anyAddress)
+	var wait sync.WaitGroup
+	for i := range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 50 {
+				if _, err := browser.Apply(context.Background(), Announcement{
+					NodeID: pairedNode, Address: "192.0.2.10:746" + strconv.Itoa(i%10),
+				}); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wait.Wait()
 }

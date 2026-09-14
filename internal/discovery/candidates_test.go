@@ -929,3 +929,74 @@ func TestANodeIsNotItsOwnCandidate(t *testing.T) {
 		t.Errorf("rejecting our own announcement cost %d trust reads", probe.reads)
 	}
 }
+
+// TestAReplayedPairedIDDoesNotCostAReadPerPacket is issue #92's first finding.
+// A paired node is never listed, so nothing about it ever fills up to stop the
+// asking — the TTL is what stops it.
+func TestAReplayedPairedIDDoesNotCostAReadPerPacket(t *testing.T) {
+	const replayed = "node_alreadypaired00"
+	c, probe, clock := newTestCandidates(t, replayed)
+	source := netip.MustParseAddr("192.168.1.9")
+	replay := func() {
+		if _, err := c.ObserveAll(context.Background(), source,
+			[]Announcement{offering(replayed, "192.168.1.9:7463", "already paired")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range 200 {
+		replay()
+	}
+	if probe.reads != 1 {
+		t.Errorf("200 replayed packets cost %d trust reads, want 1", probe.reads)
+	}
+	if len(c.List()) != 0 {
+		t.Errorf("a paired node was listed as a candidate: %v", c.List())
+	}
+
+	// Within the TTL the answer is still reused, however many packets arrive.
+	*clock = clock.Add(trustCacheTTL - time.Millisecond)
+	replay()
+	if probe.reads != 1 {
+		t.Errorf("reads = %d inside the TTL, want 1", probe.reads)
+	}
+
+	// Past it, the store is asked again: this is a cache, not a record.
+	*clock = clock.Add(2 * time.Millisecond)
+	replay()
+	if probe.reads != 2 {
+		t.Errorf("reads = %d after the TTL, want 2", probe.reads)
+	}
+}
+
+// TestAnUnpairedNodeStopsBeingExcluded is the hard constraint on the cache: it
+// must not become a record of who is paired. A node the owner has just
+// unpaired has to appear as a candidate again within the TTL, and a replay
+// arriving the whole time must not hold the exclusion open.
+func TestAnUnpairedNodeStopsBeingExcluded(t *testing.T) {
+	const peer = "node_wasPaired000000"
+	c, probe, clock := newTestCandidates(t, peer)
+	source := netip.MustParseAddr("192.168.1.9")
+	announce := func() {
+		if _, err := c.ObserveAll(context.Background(), source,
+			[]Announcement{offering(peer, "192.168.1.9:7463", "the machine")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	announce()
+	if len(c.List()) != 0 {
+		t.Fatal("a paired node was listed as a candidate")
+	}
+
+	// The owner revokes it. Its announcements never stopped arriving.
+	delete(probe.paired, peer)
+	for range 5 {
+		*clock = clock.Add(trustCacheTTL / 4)
+		announce()
+	}
+	if len(c.List()) != 1 {
+		t.Fatalf("an unpaired node is still excluded %v after the revoke; list = %v",
+			trustCacheTTL+trustCacheTTL/4, c.List())
+	}
+}
