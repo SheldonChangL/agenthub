@@ -652,3 +652,53 @@ func TestFrontendKeepsTheWorkingDirectoryReadable(t *testing.T) {
 			"reorders the path itself")
 	}
 }
+
+// TestFrontendBackdropRainIsOptIn covers #156.
+func TestFrontendBackdropRainIsOptIn(t *testing.T) {
+	runNodeCheck(t, "backdrop-switches.mjs")
+}
+
+// TestFrontendMotionToggleStartsUnchecked keeps the markup agreeing with the
+// state it is supposed to show.
+//
+// renderSettings writes the switch from state on every paint, so a stray
+// checked attribute would only be visible for the first frame — long enough to
+// read as the rain being on, and easy to leave behind by accident.
+func TestFrontendMotionToggleStartsUnchecked(t *testing.T) {
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	for _, line := range strings.Split(string(markup), "\n") {
+		if !strings.Contains(line, `id="toggle-motion"`) {
+			continue
+		}
+		if strings.Contains(line, "checked") {
+			t.Errorf("the 數字雨 switch is checked in the markup; the rain costs a whole core on an "+
+				"Intel HD 520 and starts off (#156): %s", strings.TrimSpace(line))
+		}
+		return
+	}
+	t.Error(`no toggle-motion switch in index.html`)
+}
+
+// TestFrontendDoesNotBlurOverMovingPixels keeps blur off the backdrop (#156).
+//
+// Sixteen panels carried backdrop-filter over the rain, so a frame of moving
+// background was resampled sixteen times. Unlike the rain itself — 101.7% of a
+// core with it running against 2.4% with it off, measured on an Intel HD 520 —
+// the blur was never measured on its own, so this guard rests on the reasoning
+// and not on a number. It costs nothing to keep: the panels only ever needed to
+// look translucent, which a colour does for free.
+func TestFrontendDoesNotBlurOverMovingPixels(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	// The declaration, not the word: the rule that removed them explains itself
+	// in a comment that names what it removed.
+	if count := strings.Count(string(stylesheet), "backdrop-filter:"); count > 0 {
+		t.Errorf("style.css has %d backdrop-filter rules; each one resamples the moving backdrop "+
+			"every frame, which is what made the window unusable on an Intel HD 520 (#156)", count)
+	}
+}

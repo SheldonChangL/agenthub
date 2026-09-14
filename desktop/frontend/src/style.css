@@ -11,7 +11,7 @@
 
 :root {
   --bg: #0b0f12;
-  --panel: rgba(16, 20, 24, 0.86);
+  --panel: rgba(16, 20, 24, 0.93);
   --panel-solid: #12171c;
   --panel-2: #1a2027;
   --line: #262e37;
@@ -59,7 +59,12 @@ body {
 /* ---------- backdrop: photo + rain ---------- */
 
 /* Both layers are behind #app's content (z-index 0 vs 1) and never receive
-   pointer events. The rain is pure CSS columns built once at boot; a person
+   pointer events.
+
+   No backdrop-filter anywhere: sixteen blurred panels sat directly over the
+   moving rain, so every frame resampled a changing image sixteen times. On an
+   Intel HD 520 that pinned a core with the window merely open (#156). The
+   panels only ever needed to look translucent, which a colour does for free. The rain is pure CSS columns built once at boot; a person
    who set reduce-motion, or who turned the switch off in 設定, gets a still
    photo and no columns at all. */
 .backdrop {
@@ -122,8 +127,6 @@ body.no-backdrop .backdrop .rain { display: none; }
      element's top-left and would otherwise sit on top of the app's name. */
   border-bottom: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
 }
 /* 78px clears the three window buttons; the padding is on the bar rather than
    a spacer element so the whole strip stays one draggable region. */
@@ -247,8 +250,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   padding: 10px 16px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   flex-wrap: wrap;
 }
 #search { width: 280px; flex: none; }
@@ -291,8 +292,6 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
@@ -445,8 +444,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-top: 1px solid var(--line);
   font-size: 11px; color: var(--muted);
   background: var(--panel);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 /* ---------- network view ---------- */
@@ -460,8 +457,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   display: flex; flex-direction: column;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   overflow-y: auto;
 }
 .nodelist-head {
@@ -510,8 +505,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 .nodedetail > .empty { padding-top: 120px; }
@@ -649,8 +642,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   padding: 14px 10px;
   border-right: 1px solid var(--line);
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   display: flex; flex-direction: column; gap: 2px;
 }
 .settingsnav a {
@@ -665,8 +656,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   padding: 24px 32px;
   max-width: 860px;
   background: var(--panel);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
   border-right: 1px solid var(--line);
 }
 .settingsbody section { max-width: 760px; margin-bottom: 28px; }
