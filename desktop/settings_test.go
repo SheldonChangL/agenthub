@@ -149,3 +149,45 @@ func quoteJSON(value string) string {
 	encoded, _ := json.Marshal(value)
 	return string(encoded)
 }
+
+// An empty treatAsPrivate has to reach the node as [], not as an absent key.
+//
+// The two mean opposite things: [] withdraws every declared range, an absent
+// key leaves them alone. The field is a *[]string with omitempty, and omitempty
+// on a pointer asks whether the pointer is nil — not whether the slice behind
+// it is empty — so a non-nil pointer to an empty slice is encoded. That is the
+// behaviour a withdrawal depends on, and it is one struct tag away from
+// silently becoming "leave it alone".
+func TestWithdrawnRangesReachTheNodeAsAnEmptyArray(t *testing.T) {
+	var body map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"settings":{},"sources":{},"saved":{},"restartRequired":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	empty := []string{}
+	if view := app.SaveNodeSettings(NodeSettingsPatch{TreatAsPrivate: &empty}); view.Error != "" {
+		t.Fatalf("SaveNodeSettings: %s", view.Error)
+	}
+	raw, ok := body["treatAsPrivate"]
+	if !ok {
+		t.Fatal("treatAsPrivate was omitted, which tells the node to leave the ranges alone")
+	}
+	if string(raw) != "[]" {
+		t.Errorf("treatAsPrivate = %s, want []", raw)
+	}
+
+	// And a patch that does not mention them leaves the key out entirely.
+	body = nil
+	on := true
+	if view := app.SaveNodeSettings(NodeSettingsPatch{AllowLAN: &on}); view.Error != "" {
+		t.Fatalf("SaveNodeSettings: %s", view.Error)
+	}
+	if _, present := body["treatAsPrivate"]; present {
+		t.Error("a patch that never mentioned the ranges still sent them")
+	}
+}
