@@ -502,6 +502,150 @@ if (el("node-peerlisten").value !== "192.168.50.10:7463") {
   failures.push(`a successful save lost the selected address: ${el("node-peerlisten").value}`);
 }
 
+/* ---- round three ---- */
+
+// R11. The form edits the saved configuration, so a flag that pins something
+//      over a different stored value cannot silently destroy it.
+//
+//      The node merges a write onto `saved` and judges it there. Started with
+//      -allow-lan over a stored allowLan:false and a remembered LAN address,
+//      a form painted from the running values would show the box ticked, send
+//      an unrelated field, and the node would withdraw the address — with the
+//      screen having promised nothing of the sort.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en0", address: "192.168.1.10", subnet: "192.168.1.0/24", private: true }],
+});
+settingsAnswer = async () => ({
+  // running: the flag opened it
+  settings: { peerListen: "192.168.1.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { allowLan: "flag", peerListen: "remembered" },
+  // stored: allowLan is off, and the LAN address is remembered beside it
+  saved: { peerListen: "192.168.1.10:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: true,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (el("node-allow-lan").checked) {
+  failures.push("the box shows the flag's value, so a save would write a configuration nobody sees");
+}
+// The form must warn that saving anything withdraws the remembered address.
+if (!el("node-settings-combination").serialize().includes("收回本機")) {
+  failures.push("an unrelated save would withdraw the remembered address with no warning");
+}
+// And ticking the box has to reach the node: it differs from what is stored.
+el("node-allow-lan").checked = true;
+const r11 = app.readNodeSettingsPatch();
+if (r11.allowLan !== true) {
+  failures.push(`ticking allowLan over a stored false sent ${JSON.stringify(r11)}; a LAN listener is unreachable`);
+}
+
+// R12. The refusal prediction, which had no assertion at all.
+//      Naming a non-loopback address while allowLan is off is refused by the
+//      node; leaving the address alone is a withdrawal. The form must say which.
+el("node-allow-lan").checked = false;
+el("node-peerlisten").value = "192.168.1.10:7463";
+app.syncNodeSettingsForm();
+const withdrawal = el("node-settings-combination").serialize();
+if (!withdrawal.includes("收回本機") || withdrawal.includes("會拒絕")) {
+  failures.push(`leaving the address alone was not described as a withdrawal: ${withdrawal}`);
+}
+// Now name a different LAN address with allowLan still off.
+el("node-peerlisten").value = "";
+app.syncNodeSettingsForm();
+const backToLoopback = el("node-settings-combination").serialize();
+if (backToLoopback.includes("會拒絕")) {
+  failures.push("moving to loopback with allowLan off was described as a refusal");
+}
+
+// R13. The address select's real handler offers the range; R6/R7 called the
+//      function directly, so the wiring itself was untested and could be
+//      removed without a failure.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-peerlisten").value = "122.122.0.7:7463";
+el("node-peerlisten").onchange();
+if (el("node-private").value.trim() !== "122.122.0.0/16") {
+  failures.push(`the select's own handler did not offer the range: ${el("node-private").value}`);
+}
+
+// R14. A stored non-private address this machine no longer offers is still
+//      judged: the interface list is a convenience, not the rule.
+settingsAnswer = async () => ({
+  settings: { peerListen: "203.0.113.9:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "203.0.113.9:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [],
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (!el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a stored public address with no interface entry was not flagged");
+}
+// Declaring a range that covers it clears the warning; one that does not, does not.
+el("node-private").value = "203.0.113.0/24";
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a declared range covering the address did not clear the warning");
+}
+el("node-private").value = "198.51.100.0/24";
+app.syncNodeSettingsForm();
+if (!el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("an unrelated declared range was accepted as covering the address");
+}
+
+// R15. Private-by-definition and the loopback spellings, against the node's rule.
+for (const address of ["10.0.0.5:7463", "172.16.0.1:7463", "172.31.255.254:7463", "192.168.1.1:7463", "169.254.1.1:7463"]) {
+  if (!app.isPrivateByDefinition(address)) failures.push(`${address} is private by definition and was not`);
+}
+for (const address of ["172.15.0.1:7463", "172.32.0.1:7463", "203.0.113.9:7463", "122.122.0.7:7463"]) {
+  if (app.isPrivateByDefinition(address)) failures.push(`${address} is not private by definition and was`);
+}
+for (const address of ["[::ffff:7f00:1]:7463", "[::ffff:127.0.0.1]:7463", "[::1]:7463", "localhost:1", "127.5.5.5:9"]) {
+  if (!app.isLoopbackListen(address)) failures.push(`${address} is loopback to the node and was not here`);
+}
+if (app.coversAddress("10.0.0.0/8", "10.1.2.3:7463") !== true) failures.push("a covering range was not recognised");
+if (app.coversAddress("10.0.0.0/8", "11.1.2.3:7463") !== false) failures.push("a range that does not cover was accepted");
+if (app.coversAddress("not-a-range", "10.1.2.3:7463") !== false) failures.push("a malformed range was accepted");
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

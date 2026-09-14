@@ -2346,6 +2346,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The address a node serves when nobody has named one.
   const LOOPBACK_LISTEN = "127.0.0.1:7463";
 
+  // isPrivateByDefinition is nodeconfig's "private by definition" half: RFC 1918,
+  // RFC 4193 and link-local. The owner's declared ranges are the other half and
+  // are read from the form, so an address this machine no longer offers is
+  // still judged — the interface list is a convenience, not the rule.
+  function isPrivateByDefinition(address) {
+    const host = hostOf(address);
+    const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (v4) {
+      const [a, b] = [Number(v4[1]), Number(v4[2])];
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 169 && b === 254) return true;
+      return false;
+    }
+    // fc00::/7 (unique local) and fe80::/10 (link-local).
+    return /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+  }
+
+  // hostOf strips the port and any brackets, lower-cased.
+  function hostOf(address) {
+    const value = String(address ?? "").trim();
+    const cut = value.lastIndexOf(":");
+    if (cut < 0) return value.toLowerCase();
+    let host = value.slice(0, cut).trim().toLowerCase();
+    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+    return host;
+  }
+
   // isLoopbackListen follows nodeconfig.ValidateLoopback: the host decides, the
   // port never does. 127.0.0.1:9999 and [::1]:7463 are as much off-network as
   // the default, and treating them as LAN is how a form can turn allowLan on
@@ -2358,9 +2387,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let host = value.slice(0, cut).trim().toLowerCase();
     if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
     if (host === "localhost" || host === "::1") return true;
-    // ::ffff:127.0.0.1 is what net.ParseIP gives an IPv4-mapped address, and
-    // Go's IsLoopback accepts it; the rule this follows is the node's.
-    if (host.startsWith("::ffff:")) host = host.slice(7);
+    // An IPv4-mapped address is the same address, in either spelling:
+    // ::ffff:127.0.0.1 and ::ffff:7f00:1 both parse to 127.0.0.1 for Go, whose
+    // IsLoopback is the rule this follows.
+    if (host.startsWith("::ffff:")) {
+      const mapped = host.slice(7);
+      const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(mapped);
+      if (hex) {
+        const high = parseInt(hex[1], 16);
+        const low = parseInt(hex[2], 16);
+        return (high >> 8) === 127;
+      }
+      host = mapped;
+    }
     return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
@@ -2605,12 +2644,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // that edits them to make its own warning go away has taken the decision.
     const select = el("node-peerlisten");
     const option = select.options[select.selectedIndex];
-    const subnet = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
     const declared = el("node-private").value.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
-    if (subnet && !declared.includes(subnet)) {
+    // Judged from the address, not from the interface entry: a stored address
+    // whose cable is unplugged has no entry, and one marked private by an
+    // entry is still refused if the range it needs was never declared.
+    if (lanAddress && !isPrivateByDefinition(address) && !declared.some((range) => coversAddress(range, address))) {
+      const subnet = option?.dataset?.subnet ?? "";
       warning.append(element("div", "stale",
         `「${address}」不在私有網段，節點會拒絕它，除非「視為私有網段」裡有涵蓋它的範圍。` +
-        `這個介面自己的網段是 ${subnet}。`));
+        (subnet ? `這個介面自己的網段是 ${subnet}。` : "")));
     }
 
     // The note explains the field's current contents, so it is shown whenever
@@ -2647,6 +2689,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (holdsPrevious) field.value = suggestion;
     else if (suggestion !== "" && field.value.trim() === "" && previous === "") field.value = suggestion;
     state.nodePrivateSuggested = field.value.trim() === suggestion ? suggestion : "";
+  }
+
+  // coversAddress answers whether a declared CIDR contains an address. IPv4
+  // only, deliberately: a wrong "yes" would suppress a warning the node will
+  // act on, so anything else is answered "no" and the warning stands.
+  function coversAddress(range, address) {
+    const parts = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/.exec(String(range).trim());
+    const host = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostOf(address));
+    if (!parts || !host) return false;
+    const bits = Number(parts[5]);
+    if (bits < 0 || bits > 32) return false;
+    const pack = (a, b, c, d) => ((a << 24) >>> 0) + (b << 16) + (c << 8) + d;
+    const network = pack(Number(parts[1]), Number(parts[2]), Number(parts[3]), Number(parts[4]));
+    const value = pack(Number(host[1]), Number(host[2]), Number(host[3]), Number(host[4]));
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    return (network & mask) === (value & mask);
   }
 
   // readNodeSettingsPatch sends only what the owner changed.
@@ -2857,7 +2915,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
-    isLoopbackListen, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
+    isLoopbackListen, isPrivateByDefinition, coversAddress, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
