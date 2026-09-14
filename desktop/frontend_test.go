@@ -532,3 +532,87 @@ func TestFrontendEveryNodeCheckIsRunByGo(t *testing.T) {
 		t.Fatal("no frontend checks found; this test would pass vacuously")
 	}
 }
+
+// TestFrontendKeepsTheRowActionsReachable pins the two mechanisms that make the
+// last column usable, both of which were missing when the app was first run on
+// a real desktop (issue #153).
+//
+// The column was 214px wide for 241px of buttons, so the third one — copy the
+// resume command — was clipped by the cell's own overflow at EVERY window
+// width, not only narrow ones; and the table could not scroll horizontally,
+// because `width: 100%` with no `min-width` means it is always exactly as wide
+// as its container however much it has to fit. Neither is visible from reading
+// the markup, which is why they are checked here by number.
+func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	css := string(stylesheet)
+
+	// The measured content is 241px: three buttons (63 + 83 + 67), two 4px
+	// gaps, and 10px of cell padding each side. The floor leaves room for a
+	// font that renders the labels wider than the machine this was measured on.
+	const actionsFloor = 250
+	width := regexp.MustCompile(`col\.c-actions \{ width: (\d+)px; \}`).FindStringSubmatch(css)
+	if width == nil {
+		t.Fatal("style.css no longer sets a width for col.c-actions; the row actions have no reserved space")
+	}
+	pixels, err := strconv.Atoi(width[1])
+	if err != nil {
+		t.Fatalf("parse col.c-actions width %q: %v", width[1], err)
+	}
+	if pixels < actionsFloor {
+		t.Errorf("col.c-actions is %dpx, want at least %dpx: the three row actions need 241px and the cell "+
+			"clips what does not fit, at every window width", pixels, actionsFloor)
+	}
+
+	// Without a min-width the table is always exactly as wide as the card, so a
+	// narrow window squeezes columns instead of letting .tablescroll scroll.
+	table := regexp.MustCompile(`\ntable \{[^}]*\}`).FindString(css)
+	if table == "" {
+		t.Fatal("style.css has no table rule")
+	}
+	if !strings.Contains(table, "min-width") {
+		t.Error("the table rule sets no min-width, so a narrow window compresses the columns " +
+			"instead of scrolling and the last one is cut off with no way to reach it")
+	}
+
+	// And the actions stay put while the rest scrolls under them.
+	actions := regexp.MustCompile(`\n\.col-actions \{[^}]*\}`).FindString(css)
+	if !strings.Contains(actions, "position: sticky") {
+		t.Error(".col-actions is no longer sticky, so the row actions scroll out of reach on a narrow window")
+	}
+}
+
+// TestFrontendLeavesRoomForTheMacWindowButtons covers the other half of #153.
+//
+// desktop/main.go asks for mac.TitleBarHiddenInset(), which draws the traffic
+// lights over the top-left of the page. Without a left inset they sit on top of
+// the app's name and the node line beneath it. The inset is keyed off a class
+// the window sets from HostPlatform(), so both halves are checked.
+func TestFrontendLeavesRoomForTheMacWindowButtons(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	if !strings.Contains(string(stylesheet), "body.mac .titlebar") {
+		t.Error("style.css has no body.mac .titlebar rule, so the macOS window buttons cover the app's name")
+	}
+
+	window, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !strings.Contains(string(window), "TitleBarHiddenInset") {
+		t.Skip("the window no longer insets its title bar; the rule above is then unnecessary")
+	}
+
+	var joined strings.Builder
+	for _, source := range frontendSources(t) {
+		joined.WriteString(source)
+	}
+	if !strings.Contains(joined.String(), "HostPlatform") {
+		t.Error("no frontend source asks for the host platform, so the macOS inset is never applied")
+	}
+}

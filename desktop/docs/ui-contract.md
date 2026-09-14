@@ -311,6 +311,11 @@
 - **可捲動容器要有對應屬性**：`.nodelist {` 含 `overflow-y`；`#candidate-rows {`、`#inbox-body {`、
   `.inboxrow .inboxbody {` 含 `max-height`。
 - index.html 至少一個 `<p class="warning">`。
+- **版面（#153，實機才看得到）**：`col.c-actions` 寬度至少 250px（三顆列動作量到 241px，
+  儲存格 `overflow: hidden` 會把裝不下的裁掉，**任何視窗寬度都一樣**）；`table` 要有 `min-width`
+  （沒有的話 `width: 100%` 讓它永遠等於容器寬，窄視窗只會壓縮欄位而不會捲動）；`.col-actions`
+  要 `position: sticky`；`style.css` 要有 `body.mac .titlebar` 的左內縮，因為 `main.go` 用
+  `mac.TitleBarHiddenInset()`，視窗按鈕會畫在頁面左上角。
 - 九個 node 測試由 Go 測試以 `node frontend/test/<file>.mjs` 執行，路徑與檔名不可改。
 
 若新設計把 modal 改成抽屜，`.modal-card .warning` 這條選擇器仍要存在（可以是共用規則），
