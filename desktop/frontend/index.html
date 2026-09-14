@@ -238,10 +238,9 @@
             <div class="card">
               <div class="cardbody" style="display: flex; flex-direction: column; gap: 12px">
                 <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span>顯示背景照片與數字雨<span class="why" style="display: block">關掉後是純深色底。</span></span></label>
-                <label class="toggle"><input type="checkbox" id="toggle-motion" checked /><span>數字雨動畫<span class="why" style="display: block">只停動畫，照片留著。</span></span></label>
-                <!-- What is actually being drawn, which can differ from the two
-                     switches above when this machine cannot keep up. Said here
-                     rather than by silently moving the switches. -->
+                <label class="toggle"><input type="checkbox" id="toggle-motion" /><span>數字雨動畫<span class="why" style="display: block">預設關閉：在較舊的內顯上會吃掉整顆 CPU 核心。打開只影響動畫，照片一直都在。</span></span></label>
+                <!-- What is actually being drawn, and what the moving half
+                     costs: the rain is off until it is asked for. -->
                 <p id="appearance-state" class="muted" style="margin: 0"></p>
               </div>
             </div>
