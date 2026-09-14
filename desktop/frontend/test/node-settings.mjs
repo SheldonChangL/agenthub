@@ -558,12 +558,45 @@ const withdrawal = el("node-settings-combination").serialize();
 if (!withdrawal.includes("收回本機") || withdrawal.includes("會拒絕")) {
   failures.push(`leaving the address alone was not described as a withdrawal: ${withdrawal}`);
 }
-// Now name a different LAN address with allowLan still off.
+// Moving to loopback with allowLan off is neither: nothing to withdraw, nothing
+// to refuse.
 el("node-peerlisten").value = "";
 app.syncNodeSettingsForm();
 const backToLoopback = el("node-settings-combination").serialize();
 if (backToLoopback.includes("會拒絕")) {
   failures.push("moving to loopback with allowLan off was described as a refusal");
+}
+
+// And NAMING a LAN address while allowLan is off is the refusal case — the node
+// answers 400 naming that address. The form has to say so before the owner
+// presses save, and must not call it a withdrawal.
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-allow-lan").checked = false;
+el("node-peerlisten").value = "192.168.1.10:7463";
+app.syncNodeSettingsForm();
+const refusalWarn = el("node-settings-combination").serialize();
+if (!refusalWarn.includes("會拒絕")) {
+  failures.push(`naming a LAN address with allowLan off was not described as a refusal: ${refusalWarn}`);
+}
+if (!refusalWarn.includes("192.168.1.10:7463")) {
+  failures.push("the refusal warning did not name the address the node will name");
+}
+if (refusalWarn.includes("收回本機")) {
+  failures.push("a refusal was also described as a withdrawal");
+}
+// Ticking allowLan is what makes it acceptable, and the warning goes.
+el("node-allow-lan").checked = true;
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("會拒絕")) {
+  failures.push("the refusal warning stayed after allowLan was turned on");
 }
 
 // R13. The address select's real handler offers the range; R6/R7 called the
