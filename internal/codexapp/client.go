@@ -44,6 +44,10 @@ type Client struct {
 	// onNotify observes the stream. Nil ignores it.
 	onNotify func(method string, params json.RawMessage)
 
+	// turns remembers which turns the server has said are over, so a caller
+	// holding a thread's turn slot can learn when to let go of it.
+	turns turnTracker
+
 	done           chan struct{}
 	closeOnce      sync.Once
 	closeTransport sync.Once
@@ -159,6 +163,11 @@ func (c *Client) read() {
 		case hasID:
 			c.deliver(frame.ID, frame)
 		case frame.Method != "":
+			// Observed first, and unconditionally. A turn's completion is
+			// this client's own business — it is what frees the thread for
+			// the next message — and must not depend on whoever constructed
+			// the client having asked for notifications.
+			c.observe(frame.Method, frame.Params)
 			if c.onNotify != nil {
 				c.onNotify(frame.Method, frame.Params)
 			}
@@ -218,14 +227,36 @@ func (c *Client) deliver(rawID json.RawMessage, frame struct {
 	}
 	switch {
 	case frame.Error != nil:
-		waiter <- rawResponse{err: fmt.Errorf("Codex App Server error %d: %s",
-			frame.Error.Code, frame.Error.Message)}
+		waiter <- rawResponse{err: ServerError{Code: frame.Error.Code, Message: frame.Error.Message}}
 	case len(frame.Result) == 0:
 		waiter <- rawResponse{err: errors.New("Codex App Server response has no result")}
 	default:
 		waiter <- rawResponse{result: frame.Result}
 	}
 }
+
+// ServerError is an error frame app-server sent in answer to a call.
+//
+// Typed, and not just a message, because the difference between "the server
+// refused this" and "we never learned what the server did with it" decides
+// whether a Codex thread can be treated as free. A refusal is the server's own
+// answer: it took no turn. Anything else — a deadline, a connection that went
+// away mid-call — leaves a turn that may well be running, and a caller that
+// cannot tell the two apart has to guess about a thread it is holding.
+type ServerError struct {
+	Code    int
+	Message string
+}
+
+func (e ServerError) Error() string {
+	return fmt.Sprintf("Codex App Server error %d: %s", e.Code, e.Message)
+}
+
+// ErrNotSent marks a call that never left this process: the connection was
+// already gone, or the write itself failed. The server cannot have acted on a
+// request it never received, which is the other half of the same question
+// ServerError answers.
+var ErrNotSent = errors.New("the request was not sent to Codex App Server")
 
 // answer replies to a request the server made.
 func (c *Client) answer(id json.RawMessage, method string, params json.RawMessage) {
@@ -345,9 +376,9 @@ func (c *Client) call(ctx context.Context, method string, params any, destinatio
 	case <-c.done:
 		c.pendingMu.Unlock()
 		if err := c.Err(); err != nil {
-			return err
+			return fmt.Errorf("%w: %w", ErrNotSent, err)
 		}
-		return errors.New("Codex App Server connection is closed")
+		return fmt.Errorf("%w: Codex App Server connection is closed", ErrNotSent)
 	default:
 	}
 	c.pending[id] = waiter
@@ -361,7 +392,7 @@ func (c *Client) call(ctx context.Context, method string, params any, destinatio
 		c.pendingMu.Lock()
 		delete(c.pending, id)
 		c.pendingMu.Unlock()
-		return fmt.Errorf("write Codex App Server %s request: %w", method, err)
+		return fmt.Errorf("%w: write Codex App Server %s request: %w", ErrNotSent, method, err)
 	}
 
 	select {

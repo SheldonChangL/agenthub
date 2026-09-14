@@ -3,6 +3,7 @@ package codexapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -469,4 +470,72 @@ func (c *countingCloser) closed() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.count
+}
+
+// An error frame comes back as a ServerError, not as prose.
+//
+// The difference the type carries is the one thing a caller holding a Codex
+// thread has to decide on: the server answering "no" means it took no turn, so
+// the thread is free. Flattened into a message, that answer is
+// indistinguishable from a deadline or a connection that went away mid-call —
+// both of which leave a turn that may well be running.
+func TestAnErrorFrameComesBackTyped(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClient(server.transport)
+	t.Cleanup(func() { _ = client.Close() })
+
+	failed := make(chan error, 1)
+	go func() {
+		_, err := client.StartTurn(context.Background(), StartTurnParams{
+			ThreadID: "thread-1",
+			Input:    []TurnInput{{Type: "text", Text: "hello"}},
+		})
+		failed <- err
+	}()
+	id, _ := server.nextCall(t)
+	server.send(t, map[string]any{
+		"id":    id,
+		"error": map[string]any{"code": -32602, "message": "no such thread"},
+	})
+
+	err := <-failed
+	var refused ServerError
+	if !errors.As(err, &refused) {
+		t.Fatalf("turn/start refused with %v (%T), which no caller can tell apart from a "+
+			"deadline; a refusal means no turn was taken and a deadline means one may be "+
+			"running", err, err)
+	}
+	if refused.Code != -32602 || !strings.Contains(refused.Message, "no such thread") {
+		t.Errorf("the refusal came back as %+v", refused)
+	}
+	if !strings.Contains(err.Error(), "no such thread") {
+		t.Errorf("the error reads %q and no longer says what the server said", err)
+	}
+}
+
+// A call that could not be written is marked as never sent.
+//
+// The server cannot have acted on a request it never received, and that is the
+// other answer that rules a turn out. Without the marker it reads like every
+// other transport failure, and a caller holding the thread has to assume the
+// worst about a turn that cannot exist.
+func TestACallThatWasNeverWrittenSaysSo(t *testing.T) {
+	server := newFakeServer(t)
+	client := NewClient(server.transport)
+	server.hangUp()
+	// The write end dies with the connection; the client notices on the write
+	// or on the reader, and either way nothing reached a server.
+	_ = client.Close()
+
+	_, err := client.StartTurn(context.Background(), StartTurnParams{
+		ThreadID: "thread-1",
+		Input:    []TurnInput{{Type: "text", Text: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("turn/start over a closed connection was reported as started")
+	}
+	if !errors.Is(err, ErrNotSent) {
+		t.Errorf("turn/start over a closed connection failed with %v, which does not say the "+
+			"request never went out", err)
+	}
 }
