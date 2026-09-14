@@ -267,6 +267,23 @@
 一個 `PUT` 部分更新回 `restartRequired: true`；欄位 `peerListen`、`allowLan`、`discover`、
 `treatAsPrivate[]`、`autoWake`。設定頁的主按鈕由「重新安裝（改旗標）」改為「儲存並重啟服務」。
 
+## 7.8 節點設定頁：八輪審查釘出來的四條規則
+
+實作 `feat/116-settings-page` 時，前五輪各出現一次 P1，全部源於誤解節點的語意。列在這裡，
+因為每一條看起來都像細節，實際上都會讓使用者的設定悄悄消失或讓節點對外開放：
+
+1. **表單編輯的是「下次啟動會用的設定」（`saved`），不是正在跑的值（`settings`）。**
+   節點把寫入合併到 `saved` 再判斷（`internal/api/settings.go` 自己的註解就寫著）。用正在跑的值
+   當基準，會讓一個無關欄位的存檔把記住的區網位址撤掉，而且那個開關永遠送不出去。
+2. **`loopback` 看主機不看埠**，照 `nodeconfig.ValidateLoopback`。只比對 `127.0.0.1:7463` 會把
+   `127.0.0.1:9999` 判成對外位址。
+3. **設定有沒有生效要用觀察的，不能用推論的。** 節點每次啟動都把命令列給的值寫回自己的資料庫
+   （`cmd/agenthub-node/main.go`），所以服務單元裡烘進去的旗標在重啟後同時是 running 也是 saved，
+   從來源欄位看不出任何異常。唯一可靠的辦法是比對「使用者要求的值」與「重啟後節點實際持有的值」。
+4. **表單不替使用者做選擇。** 早期版本會因為選了區網位址就自動打開允許區網，而且綁在那個開關
+   自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
+   不改使用者控制的欄位。
+
 ## 8. 新需求（2026-09-11，owner 指定）
 
 **列動作「複製 resume 指令」。** 依 provider 產生指令並寫入剪貼簿：
@@ -325,7 +342,9 @@
   `App.RestartService()` 跑 `ah service restart`。設定頁新增「節點設定」區，主按鈕是「儲存並重啟服務」。
   安裝表單只剩資料庫路徑——把這五個值燒進 unit 檔會變成節點之外的第二份設定來源，正是 #116 要拿掉的。
   寫入只送改過的欄位；清空網段送空陣列（省略代表不動，永遠撤不掉）。節點不是背景服務時不假裝重啟過。
-  測試：`desktop/settings_test.go`、`frontend/test/node-settings.mjs`（四個變異測試確認抓得到）。
+  測試：`desktop/settings_test.go`、`frontend/test/node-settings.mjs`（約 30 段、130 條以上斷言，
+  逐條反轉都會讓測試失敗）、`frontend/test/dom-shim-select.mjs`（假 select 的行為，兩個 P1 曾靠它的
+  失真而矇混過關）。八輪 fresh-context 審查，每一輪的修正都另外做過原始碼變異測試。
 
 ### 7.7 `GET /v1/outbound?session=`（#132 已合併，main `c3234e7`）
 
