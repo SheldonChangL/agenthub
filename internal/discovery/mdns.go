@@ -175,12 +175,23 @@ type Browser struct {
 	resolver Resolver
 	policy   AddressPolicy
 	now      func() time.Time
+	// mu guards everything below. The packet path is one goroutine today — the
+	// read loop dispatches to handlers in order — but Apply is exported and the
+	// cache is the first state here whose staleness matters, so the state is
+	// guarded rather than left resting on the current caller.
+	mu sync.Mutex
 	// applied remembers the last address stored for each node, so a peer
 	// re-announcing an unchanged address does not write on every packet.
 	applied map[string]string
 	// changedAt remembers when each node's address last moved, so alternating
 	// announcements cannot turn the dedup above into a write amplifier.
 	changedAt map[string]time.Time
+	// trusted is the set from the last read of the trust store, reused until
+	// trustedUntil. Without it, every packet — including this node's own
+	// announcements arriving back on the multicast loopback every 20 s — costs
+	// a full read of the trusted set.
+	trusted      map[string]struct{}
+	trustedUntil time.Time
 }
 
 func NewBrowser(resolver Resolver, policy AddressPolicy) *Browser {
@@ -203,13 +214,11 @@ func (b *Browser) ApplyAll(ctx context.Context, announcements []Announcement) (i
 	if len(announcements) == 0 {
 		return 0, nil
 	}
-	ids, err := b.resolver.TrustedNodeIDs(ctx)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	trusted, err := b.trustedNodes(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("read trusted nodes: %w", err)
-	}
-	trusted := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		trusted[id] = struct{}{}
+		return 0, err
 	}
 
 	applied := 0
@@ -223,6 +232,38 @@ func (b *Browser) ApplyAll(ctx context.Context, announcements []Announcement) (i
 		}
 	}
 	return applied, nil
+}
+
+// trustedNodes returns the trusted set, reading the store at most once per
+// trustCacheTTL.
+//
+// The staleness this buys runs one way that matters: for up to trustCacheTTL
+// after a revoke, an announcement naming the revoked node is still treated as
+// trusted and its address recorded. That write is bounded and not a trust
+// decision — the row it updates belongs to a node the registry is about to
+// refuse anyway, delivery pins TLS to the key recorded at pairing, and the next
+// read drops it. See trustCacheTTL for why three seconds is the bound.
+//
+// Called with b.mu held.
+func (b *Browser) trustedNodes(ctx context.Context) (map[string]struct{}, error) {
+	now := b.now()
+	if b.trusted != nil && now.Before(b.trustedUntil) {
+		return b.trusted, nil
+	}
+	ids, err := b.resolver.TrustedNodeIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read trusted nodes: %w", err)
+	}
+	trusted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		trusted[id] = struct{}{}
+	}
+	// The deadline is set from this read, never extended by a reuse: an
+	// expiry a hit could push forward is a set that a steady stream of packets
+	// keeps alive, and then a revoke would never be noticed.
+	b.trusted = trusted
+	b.trustedUntil = now.Add(trustCacheTTL)
+	return trusted, nil
 }
 
 // Apply records a single announcement. It reads the trust store itself, so
