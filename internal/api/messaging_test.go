@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -792,4 +795,426 @@ func TestAPageBoundaryOnAPeerChosenIDIsCrossable(t *testing.T) {
 	if len(page.Messages) != 1 || page.Messages[0].ID == "msg with space" {
 		t.Errorf("page 2 = %+v; want the message after the first", page.Messages)
 	}
+}
+
+// queueForPeerViaAPI sends one message to a peer through the owner API and
+// returns the id it was queued under.
+func queueForPeerViaAPI(t *testing.T, owner http.Handler, from, body string) string {
+	t.Helper()
+	response := perform(t, owner, http.MethodPost, "/v1/messages", map[string]string{
+		"to": peerNodeID + "/codex:their-session", "from": from, "body": body,
+	})
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("queue = %d %s", response.Code, response.Body.String())
+	}
+	var queued struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &queued); err != nil {
+		t.Fatal(err)
+	}
+	// Two in the same millisecond tie, and the tie-break is a random id — so a
+	// test asserting an order would be asserting nothing.
+	time.Sleep(2 * time.Millisecond)
+	return queued.ID
+}
+
+type outboundPage struct {
+	Messages []struct {
+		ID                string `json:"id"`
+		DestinationNodeID string `json:"destinationNodeId"`
+		To                string `json:"to"`
+		From              string `json:"from"`
+		State             string `json:"state"`
+		Attempts          int    `json:"attempts"`
+		LastError         string `json:"lastError"`
+		Body              string `json:"body"`
+		CreatedAt         string `json:"createdAt"`
+		WakeHops          int    `json:"wakeHops"`
+	} `json:"messages"`
+	Next string `json:"next"`
+}
+
+func readOutboundPage(t *testing.T, owner http.Handler, query string) outboundPage {
+	t.Helper()
+	response := perform(t, owner, http.MethodGet, "/v1/outbound"+query, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound%s = %d %s", query, response.Code, response.Body.String())
+	}
+	var page outboundPage
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode %s: %v", response.Body.String(), err)
+	}
+	return page
+}
+
+// TestOutboundListAnswersNewestFirst is the endpoint the desktop reads. `ah
+// send` answers "queued" and nothing else, so an owner without the id — the
+// terminal is closed, or an agent sent it — had no way to ask what happened.
+func TestOutboundListAnswersNewestFirst(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	first := queueForPeerViaAPI(t, owner, from, "one")
+	second := queueForPeerViaAPI(t, owner, from, "two")
+
+	page := readOutboundPage(t, owner, "")
+	if len(page.Messages) != 2 {
+		t.Fatalf("listed %d rows; want 2", len(page.Messages))
+	}
+	if page.Messages[0].ID != second || page.Messages[1].ID != first {
+		t.Fatalf("ids = %q, %q; want the newest first",
+			page.Messages[0].ID, page.Messages[1].ID)
+	}
+	row := page.Messages[0]
+	if row.State != string(registry.OutboundPending) || row.To != "codex:their-session" {
+		t.Errorf("row = %#v; want the same fields the single lookup answers with", row)
+	}
+	// The destination node travels with the row: `to` is the session half
+	// alone, so without it a reader cannot say which machine a message is
+	// stuck on — which is the question an owner opens this list with.
+	if row.DestinationNodeID != peerNodeID {
+		t.Errorf("destinationNodeId = %q; want %q", row.DestinationNodeID, peerNodeID)
+	}
+	if row.CreatedAt == "" {
+		t.Error("a row carries no time, so nothing can say when it was sent")
+	}
+	// No bodies. A page of fifty 32KB bodies is both more than this question
+	// needs and enough to pass a reader's response cap — which is how the
+	// answer to "what is jamming my outbox" becomes unreadable exactly when it
+	// is wanted.
+	if strings.Contains(bodyOf(t, owner, "/v1/outbound"), `"body"`) {
+		t.Error("the listing carries message bodies")
+	}
+	// And the settled state travels: a refusal is the outcome the owner most
+	// needs to see, and it is only ever visible here.
+	if err := store.MarkOutbound(context.Background(), second, registry.OutboundRefused,
+		"the addressed session does not accept messages"); err != nil {
+		t.Fatal(err)
+	}
+	page = readOutboundPage(t, owner, "")
+	if page.Messages[0].State != string(registry.OutboundRefused) ||
+		page.Messages[0].Attempts != 1 ||
+		!strings.Contains(page.Messages[0].LastError, "does not accept") {
+		t.Fatalf("refused row = %#v; want the state, the attempt and the reason", page.Messages[0])
+	}
+}
+
+// bodyOf reads a path as a string, for the assertions about what a body does
+// not contain.
+func bodyOf(t *testing.T, owner http.Handler, path string) string {
+	t.Helper()
+	return perform(t, owner, http.MethodGet, path, nil).Body.String()
+}
+
+// TestOutboundListPagesAndBoundsItself covers the three ways a caller can ask
+// for the wrong thing.
+func TestOutboundListPagesAndBoundsItself(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	// Empty is an empty list, not an error and not a missing field.
+	empty := readOutboundPage(t, owner, "")
+	if len(empty.Messages) != 0 || empty.Next != "" {
+		t.Fatalf("empty node answered %#v", empty)
+	}
+	if !strings.Contains(bodyOf(t, owner, "/v1/outbound"), `"messages"`) {
+		t.Error("an empty answer omits the messages key, so a client cannot tell it from a failure")
+	}
+
+	oldest := queueForPeerViaAPI(t, owner, from, "one")
+	middle := queueForPeerViaAPI(t, owner, from, "two")
+	newest := queueForPeerViaAPI(t, owner, from, "three")
+
+	page := readOutboundPage(t, owner, "?limit=2")
+	if len(page.Messages) != 2 || page.Messages[0].ID != newest || page.Messages[1].ID != middle {
+		t.Fatalf("first page = %#v", page.Messages)
+	}
+	if page.Next == "" {
+		t.Fatal("a full page carries no cursor, so the rest is unreachable")
+	}
+	next := readOutboundPage(t, owner, "?limit=2&after="+url.QueryEscape(page.Next))
+	if len(next.Messages) != 1 || next.Messages[0].ID != oldest {
+		t.Fatalf("second page = %#v; want the oldest alone, nothing repeated", next.Messages)
+	}
+	if next.Next != "" {
+		t.Error("a short page carries a cursor, which reads as more to come")
+	}
+
+	for _, bad := range []string{"?limit=0", "?limit=201", "?limit=x"} {
+		if code := perform(t, owner, http.MethodGet, "/v1/outbound"+bad, nil).Code; code != http.StatusBadRequest {
+			t.Errorf("GET /v1/outbound%s = %d; want 400", bad, code)
+		}
+	}
+	// And the ends of the range are inside it. Only the refusals were covered,
+	// so a bound written one step too tight would have refused a caller asking
+	// for exactly one row, or for a full page, and nothing would have said so.
+	for _, good := range []string{"?limit=1", "?limit=200"} {
+		if code := perform(t, owner, http.MethodGet, "/v1/outbound"+good, nil).Code; code != http.StatusOK {
+			t.Errorf("GET /v1/outbound%s = %d; want 200, the limit is inclusive", good, code)
+		}
+	}
+	// A cursor this node did not issue is refused rather than silently read as
+	// the start, which would answer a page the caller has already seen.
+	if code := perform(t, owner, http.MethodGet, "/v1/outbound?after=nonsense", nil).Code; code != http.StatusBadRequest {
+		t.Errorf("a forged cursor = %d; want 400", code)
+	}
+}
+
+// TestOutboundListNarrowsToOneSession is the parameter the desktop needs. The
+// window is opened from one session's row, but the list is the whole node's,
+// so without this the front end filters client-side and pages for rows it
+// throws away.
+func TestOutboundListNarrowsToOneSession(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	mine := openOutbound(t, store, owner, "mine")
+	theirs := openOutbound(t, store, owner, "theirs")
+
+	first := queueForPeerViaAPI(t, owner, mine, "one")
+	queueForPeerViaAPI(t, owner, theirs, "not mine")
+	second := queueForPeerViaAPI(t, owner, mine, "two")
+
+	page := readOutboundPage(t, owner, "?session="+url.QueryEscape(mine))
+	if len(page.Messages) != 2 {
+		t.Fatalf("listed %d rows for one session; want its 2: %#v", len(page.Messages), page.Messages)
+	}
+	if page.Messages[0].ID != second || page.Messages[1].ID != first {
+		t.Fatalf("ids = %q, %q; want this session's two, newest first",
+			page.Messages[0].ID, page.Messages[1].ID)
+	}
+	// The qualified form of the same address is the same session, as it is
+	// everywhere else a session is addressed.
+	qualified := readOutboundPage(t, owner, "?session="+url.QueryEscape(testNodeID+"/"+mine))
+	if len(qualified.Messages) != 2 {
+		t.Errorf("the qualified address listed %d rows; want the same 2", len(qualified.Messages))
+	}
+
+	// Paging under the filter walks the filtered list, not the node's.
+	firstPage := readOutboundPage(t, owner, "?limit=1&session="+url.QueryEscape(mine))
+	if len(firstPage.Messages) != 1 || firstPage.Messages[0].ID != second || firstPage.Next == "" {
+		t.Fatalf("first filtered page = %#v (next %q)", firstPage.Messages, firstPage.Next)
+	}
+	next := readOutboundPage(t, owner,
+		"?limit=1&session="+url.QueryEscape(mine)+"&after="+url.QueryEscape(firstPage.Next))
+	if len(next.Messages) != 1 || next.Messages[0].ID != first {
+		t.Fatalf("second filtered page = %#v; want this session's older row, not the other session's",
+			next.Messages)
+	}
+	end := readOutboundPage(t, owner,
+		"?limit=1&session="+url.QueryEscape(mine)+"&after="+url.QueryEscape(next.Next))
+	if len(end.Messages) != 0 {
+		t.Fatalf("page past the end of the filtered list = %#v; want nothing", end.Messages)
+	}
+}
+
+// TestOutboundListRefusesASessionThatIsNotLocal keeps the filter from
+// answering an empty page for an address this node cannot own. An empty list
+// reads as "this session sent nothing", which is a different fact.
+func TestOutboundListRefusesASessionThatIsNotLocal(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	remote := perform(t, owner, http.MethodGet,
+		"/v1/outbound?session="+url.QueryEscape("node_somewhere_else/codex:theirs"), nil)
+	if remote.Code != http.StatusNotFound || !strings.Contains(remote.Body.String(), "UNKNOWN_NODE") {
+		t.Fatalf("another node's session = %d %s; want 404 UNKNOWN_NODE, the answer /v1/wakes gives",
+			remote.Code, remote.Body.String())
+	}
+	malformed := perform(t, owner, http.MethodGet, "/v1/outbound?session=nonsense", nil)
+	if malformed.Code != http.StatusBadRequest {
+		t.Fatalf("a malformed session = %d %s; want 400", malformed.Code, malformed.Body.String())
+	}
+}
+
+// TestABlankSessionFilterIsRefusedNotIgnored covers the value that used to be
+// trimmed away: a caller that asked to narrow the list was handed the whole
+// node's, which reads as the session's own traffic and is not. The two
+// listings answer alike, because they are the same mistake.
+func TestABlankSessionFilterIsRefusedNotIgnored(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	for _, path := range []string{
+		"/v1/outbound?session=",
+		"/v1/outbound?session=%20%20",
+		"/v1/wakes?session=",
+		"/v1/wakes?session=%20%20",
+	} {
+		response := perform(t, owner, http.MethodGet, path, nil)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_REQUEST") {
+			t.Errorf("GET %s = %d %s; want 400 INVALID_REQUEST rather than the whole node's list",
+				path, response.Code, response.Body.String())
+		}
+	}
+	// Absent still means everything: nobody asked to narrow anything.
+	for _, path := range []string{"/v1/outbound", "/v1/wakes"} {
+		if code := perform(t, owner, http.MethodGet, path, nil).Code; code != http.StatusOK {
+			t.Errorf("GET %s = %d; want 200 when no filter was asked for", path, code)
+		}
+	}
+}
+
+// TestASessionFilterGivenTwiceIsRefused covers the query the CLI already
+// refuses on its own side: `--session` twice is an error there, so `?session=`
+// twice cannot quietly keep the first value and drop the second. Two different
+// sessions asked for is not a listing anyone can read.
+func TestASessionFilterGivenTwiceIsRefused(t *testing.T) {
+	_, owner, _ := testSurfaces(t)
+
+	for _, path := range []string{
+		"/v1/outbound?session=codex:a&session=codex:b",
+		"/v1/wakes?session=codex:a&session=codex:b",
+		// The same value twice is refused too. It is not ambiguous, so a
+		// reading that only rejected disagreement would let it through — and
+		// then a caller who built the query wrong would be told nothing.
+		"/v1/outbound?session=codex:a&session=codex:a",
+		"/v1/wakes?session=codex:a&session=codex:a",
+	} {
+		response := perform(t, owner, http.MethodGet, path, nil)
+		if response.Code != http.StatusBadRequest ||
+			!strings.Contains(response.Body.String(), "INVALID_REQUEST") ||
+			!strings.Contains(response.Body.String(), "more than once") {
+			t.Errorf("GET %s = %d %s; want 400 INVALID_REQUEST naming the repeat",
+				path, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestTheListRowCarriesEveryFieldTheSingleLookupDoes pins the promise
+// outboundSummary makes in its own comment. The summary is written out by
+// hand, so a field added to registry.OutboundMessage reaches GET
+// /v1/outbound/{id} and silently never reaches the list — and nothing else in
+// the suite notices, because every existing assertion names the fields it
+// already knows.
+func TestTheListRowCarriesEveryFieldTheSingleLookupDoes(t *testing.T) {
+	store, owner, _ := testSurfaces(t)
+	sender := newSender(t, peerNodeID)
+	sender.pairWith(t, owner)
+	from := openOutbound(t, store, owner, "sender")
+
+	// Every omitempty field filled, or the comparison would pass by both sides
+	// omitting the same key. WakeHops is set here rather than earned through a
+	// wake because what is under test is the shape of the answer.
+	queued, err := store.QueueOutbound(context.Background(), registry.OutboundMessage{
+		DestinationNodeID: peerNodeID,
+		To:                "codex:their-session",
+		From:              testNodeID + "/" + from,
+		Body:              "a body the list does not carry",
+		WakeHops:          2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkOutbound(context.Background(), queued.ID, registry.OutboundRefused,
+		"the addressed session does not accept messages"); err != nil {
+		t.Fatal(err)
+	}
+
+	single := perform(t, owner, http.MethodGet, "/v1/outbound/"+queued.ID, nil)
+	if single.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound/%s = %d %s", queued.ID, single.Code, single.Body.String())
+	}
+	var one map[string]json.RawMessage
+	if err := json.Unmarshal(single.Body.Bytes(), &one); err != nil {
+		t.Fatal(err)
+	}
+	listed := perform(t, owner, http.MethodGet, "/v1/outbound", nil)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("GET /v1/outbound = %d %s", listed.Code, listed.Body.String())
+	}
+	var page struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 1 {
+		t.Fatalf("listed %d rows; want the one queued", len(page.Messages))
+	}
+
+	// The list deliberately carries no body, and only that.
+	if _, present := page.Messages[0]["body"]; present {
+		t.Error("the list row carries a body")
+	}
+	// The values travel too, not only the keys: wakeHops is how far an
+	// automatic exchange has gone, and a row that always reads zero would say
+	// the opposite of what happened.
+	typed := readOutboundPage(t, owner, "")
+	if typed.Messages[0].WakeHops != 2 || typed.Messages[0].DestinationNodeID != peerNodeID {
+		t.Errorf("row = %#v; want wakeHops 2 and the destination node", typed.Messages[0])
+	}
+
+	// The single lookup is checked against the struct itself rather than
+	// against the fixture: an omitempty field added later and left zero here
+	// would drop out of both answers and the two would still agree.
+	declared := jsonFieldsOf(t, registry.OutboundMessage{})
+	sort.Strings(declared)
+	lookupKeys := keysOf(one)
+	sort.Strings(lookupKeys)
+	if !slices.Equal(declared, lookupKeys) {
+		t.Errorf("GET /v1/outbound/{id} does not answer with every declared field:\n"+
+			" declared: %v\n answered: %v\n"+
+			"fill the new field in this fixture, or say here why it is not carried",
+			declared, lookupKeys)
+	}
+
+	row := keysOf(page.Messages[0])
+	row = append(row, "body")
+	sort.Strings(row)
+	lookup := keysOf(one)
+	sort.Strings(lookup)
+	if !slices.Equal(row, lookup) {
+		t.Errorf("the list row and the single lookup answer with different fields:\n"+
+			" list + body: %v\n lookup:      %v\n"+
+			"a field added to registry.OutboundMessage has to be added to outboundSummary too",
+			row, lookup)
+	}
+}
+
+// jsonFieldsOf is the field set a struct declares — the names its answers can
+// carry, whatever a given value happens to fill in.
+//
+// Called with anything but a struct, NumField panics with a message about
+// reflection rather than about the test, so the kind is checked here.
+func jsonFieldsOf(t *testing.T, value any) []string {
+	t.Helper()
+	structType := reflect.TypeOf(value)
+	if structType == nil || structType.Kind() != reflect.Struct {
+		t.Fatalf("jsonFieldsOf wants a struct, got %T", value)
+	}
+	fields := make([]string, 0, structType.NumField())
+	for i := range structType.NumField() {
+		field := structType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tag := field.Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "-" {
+			continue
+		}
+		if name == "" {
+			// encoding/json falls back to the Go field name for an exported
+			// field with no name in its tag, so that is the name the answer
+			// would carry. Naming it here keeps a newly added untagged field
+			// failing as a missing field rather than as one nobody declared.
+			name = field.Name
+		}
+		fields = append(fields, name)
+	}
+	return fields
+}
+
+// keysOf is the top-level field set of one JSON object.
+func keysOf(object map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		keys = append(keys, key)
+	}
+	return keys
 }

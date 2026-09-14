@@ -54,6 +54,16 @@ type Server struct {
 	// One entry per node id the owner has paired, dropped on revoke.
 	refusedMu sync.Mutex
 	refused   map[string]uint64
+	// settings is the start-up configuration main resolved for this process,
+	// with the provenance of each value. Nil on a server built without it, and
+	// the two settings endpoints then refuse rather than answering from the
+	// database, which cannot say what this process is running with.
+	settings *effectiveSettings
+	// peerListenWithdrawn says this start took the remembered peer listener off
+	// the network because allowLan was off. The value in effect is then the
+	// default, and sources says so — truthfully, but in a way that reads as
+	// "nobody ever stored one". This is the difference.
+	peerListenWithdrawn bool
 	// autoWake is the node's own -auto-wake flag, published on the owner
 	// surface. A session's own autoWake does nothing while this is closed, and
 	// the owner has to be able to see that before ticking the session's box.
@@ -156,6 +166,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/sessions/{id}/audience", s.setAudience)
 	mux.HandleFunc("POST /v1/sessions/audience", s.setAudienceBatch)
 	mux.HandleFunc("GET /v1/node", s.getNode)
+	mux.HandleFunc("GET /v1/node/settings", s.getNodeSettings)
+	mux.HandleFunc("PUT /v1/node/settings", s.setNodeSettings)
 	mux.HandleFunc("GET /v1/nodes", s.listNodes)
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
@@ -181,6 +193,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
+	// The list and the single lookup sit together: an owner who no longer has
+	// the id — because the terminal that printed it is gone, or because they
+	// are looking at a window — otherwise cannot ask the question at all.
+	mux.HandleFunc("GET /v1/outbound", s.outboundList)
 	mux.HandleFunc("GET /v1/outbound/{id}", s.outboundStatus)
 	return securityBoundary(mux)
 }
@@ -274,6 +290,34 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, session)
+}
+
+// sessionFilter reads the optional `session` query parameter shared by the
+// listing endpoints.
+//
+// A parameter that is present but blank is refused rather than trimmed away.
+// Trimming it left `?session=%20%20` answering with the whole node's list —
+// which a caller that asked for one session reads as that session's, and
+// believing a node's traffic is one session's is precisely what the filter
+// exists to prevent. An absent parameter still means "everything", because
+// nobody asked to narrow anything.
+func sessionFilter(w http.ResponseWriter, r *http.Request) (string, bool) {
+	raw, present := r.URL.Query()["session"]
+	if !present {
+		return "", true
+	}
+	if len(raw) > 1 {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"session was given more than once; a listing is filtered by one session")
+		return "", false
+	}
+	session := strings.TrimSpace(raw[0])
+	if session == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			"session must name a session; omit the parameter to list every session on this node")
+		return "", false
+	}
+	return session, true
 }
 
 // localSession resolves an address a caller wrote, in either form, to a session
@@ -953,7 +997,10 @@ func (s *Server) wakes(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	session := strings.TrimSpace(r.URL.Query().Get("session"))
+	session, ok := sessionFilter(w, r)
+	if !ok {
+		return
+	}
 	if session != "" {
 		// Resolved through the same check every other session-scoped endpoint
 		// uses, so a qualified address for another node is refused here rather

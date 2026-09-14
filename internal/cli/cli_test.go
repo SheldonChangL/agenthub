@@ -927,3 +927,309 @@ func TestUsageNamesTheAddressSubcommand(t *testing.T) {
 		t.Errorf("usage does not describe `ah nodes address`: %q", usage)
 	}
 }
+
+// TestOutboundWithoutAnIDListsTheQueue covers the command an owner reaches for
+// when they no longer have the id — the terminal that printed it is closed, or
+// an agent sent the message rather than them.
+func TestOutboundWithoutAnIDListsTheQueue(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"id":"msg_1","to":"codex:theirs","state":"refused","attempts":2,"lastError":"nowhere to deliver to"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "outbound"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(asked) != 1 || asked[0] != "GET /v1/outbound" {
+		t.Fatalf("requests = %v; want the listing endpoint, not the single lookup", asked)
+	}
+	// The refusal and its reason are the whole point of looking.
+	for _, want := range []string{"msg_1", "refused", "nowhere to deliver to"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout = %q; want it to contain %q", stdout.String(), want)
+		}
+	}
+}
+
+// TestOutboundWithAnIDStillAsksAboutThatMessage keeps the listing from taking
+// over the lookup that already existed.
+func TestOutboundWithAnIDStillAsksAboutThatMessage(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","state":"pending"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "outbound", "msg_1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if len(asked) != 1 || asked[0] != "/v1/outbound/msg_1" {
+		t.Fatalf("requests = %v", asked)
+	}
+
+	// And a second argument is still refused, before anything is sent.
+	stdout.Reset()
+	stderr.Reset()
+	if code := Run(context.Background(),
+		[]string{"--url", "http://127.0.0.1:1", "outbound", "msg_1", "msg_2"}, &stdout, &stderr); code == 0 {
+		t.Fatal("two message ids were accepted")
+	}
+}
+
+// `/agenthub-watch` deletes a message every tick, and until this existed the
+// skill told the agent to run `curl -X DELETE`: the CLI could already do it,
+// under a name nobody looks for. The path is the thing to hold — a wrong one
+// deletes somebody else's message or nothing at all.
+func TestInboxDeleteDropsOneMessage(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "delete", "claude:abc", "msg_01"},
+		&stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if method != http.MethodDelete || path != "/v1/inbox/claude:abc/msg_01" {
+		t.Errorf("request = %s %s, want DELETE /v1/inbox/claude:abc/msg_01", method, path)
+	}
+}
+
+// Both arguments are path segments. A message id is chosen by whatever wrote
+// the message, so it is escaped rather than pasted in.
+func TestInboxDeleteEscapesBothSegments(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "delete", "codex:a/b", "m/../x"},
+		&stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if path != "/v1/inbox/codex:a%2Fb/m%2F..%2Fx" {
+		t.Errorf("path = %s; a segment was not escaped", path)
+	}
+}
+
+// Wrong arity, or a second argument that is not a session id, must fail before
+// any request: `ah inbox delete claude:abc` with the message id forgotten must
+// not become "empty this whole inbox".
+func TestInboxDeleteRejectsIncoherentInput(t *testing.T) {
+	cases := map[string][]string{
+		"no arguments":           {"inbox", "delete"},
+		"session but no message": {"inbox", "delete", "claude:abc"},
+		"a spare word":           {"inbox", "delete", "claude:abc", "msg_01", "extra"},
+		"no provider prefix":     {"inbox", "delete", "abc", "msg_01"},
+		"arguments reversed":     {"inbox", "delete", "msg_01", "claude:abc"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			// Unreachable on purpose: these must fail before a request.
+			code := Run(context.Background(), append([]string{"--url", "http://127.0.0.1:1"}, args...), &stdout, &stderr)
+			if code == 0 {
+				t.Errorf("Run(%v) = 0; want a non-zero exit", args)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("Run(%v) wrote to stdout: %s", args, stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "ah inbox delete") {
+				t.Errorf("Run(%v) did not name the command in its usage: %q", args, stderr.String())
+			}
+		})
+	}
+}
+
+// The subcommand must not have eaten the command it was added to: `ah inbox
+// <session-id>` still reads, and reads the session it was given.
+func TestInboxStillReadsWithASessionID(t *testing.T) {
+	var method, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[],"count":0}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "inbox", "claude:abc"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if method != http.MethodGet || path != "/v1/inbox/claude:abc" {
+		t.Errorf("request = %s %s, want GET /v1/inbox/claude:abc", method, path)
+	}
+}
+
+// The usage has to name the subcommand, or it is a command nobody finds — the
+// failure that made the skill reach for curl in the first place.
+func TestUsageNamesInboxDelete(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	usage := stdout.String() + stderr.String()
+	if !strings.Contains(usage, "ah inbox delete <session-id> <message-id>") {
+		t.Errorf("usage does not describe `ah inbox delete`: %q", usage)
+	}
+}
+
+// TestOutboundSessionFlagReachesTheQuery pins that the flag becomes a server
+// side filter. A flag that were dropped on the floor would look like it
+// worked: the listing still renders, just with everyone else's rows in it.
+func TestOutboundSessionFlagReachesTheQuery(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"messages":[{"id":"msg_1","to":"codex:theirs","state":"pending"}]}`))
+	}))
+	defer server.Close()
+
+	// Both spellings, as `--from` takes both. `--session=<id>` was read as a
+	// message id and asked GET /v1/outbound/--session=codex:mine, answered 404
+	// UNKNOWN_MESSAGE — an error about the wrong thing entirely.
+	for _, args := range [][]string{
+		{"outbound", "--session", "codex:mine"},
+		{"outbound", "--session=codex:mine"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr); code != 0 {
+			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr.String())
+		}
+	}
+	if len(asked) != 2 {
+		t.Fatalf("requests = %v; want one per spelling", asked)
+	}
+	for _, request := range asked {
+		if request != "GET /v1/outbound?session=codex%3Amine" {
+			t.Fatalf("requests = %v; want both spellings on the same listing query", asked)
+		}
+	}
+}
+
+// TestOutboundSessionAndMessageIDAreExclusive covers the combination that
+// cannot mean anything: one message is one message, and a filter applied to it
+// would either be ignored or silently contradict the id.
+func TestOutboundSessionAndMessageIDAreExclusive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a request was sent: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	for _, args := range [][]string{
+		{"outbound", "msg_1", "--session", "codex:mine"},
+		{"outbound", "--session", "codex:mine", "msg_1"},
+		{"outbound", "--session"},
+		{"outbound", "msg_1", "--session=codex:mine"},
+		{"outbound", "--session", "codex:mine", "--session=codex:other"},
+		// A value of spaces trims to nothing. Sent on, it would be dropped at
+		// the node and answered with the whole node's listing — which is the
+		// one answer this filter exists to keep a reader from mistaking.
+		{"outbound", "--session", "   "},
+		{"outbound", "--session=  "},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr); code == 0 {
+			t.Errorf("%v was accepted", args)
+		}
+	}
+}
+
+// The usage has to name the flag, or it is a filter nobody finds.
+func TestUsageNamesTheOutboundSessionFlag(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	Run(context.Background(), nil, &stdout, &stderr)
+	if usage := stdout.String() + stderr.String(); !strings.Contains(usage, "ah outbound [--session <session-id>]") {
+		t.Errorf("usage does not describe the filter: %q", usage)
+	}
+}
+
+// TestWakesRefusesABlankSessionWithoutAsking covers the argument that trims to
+// nothing. Sent on, it became `?session=++` and came back with the node's
+// refusal — "omit the parameter", advice a CLI user cannot take, since there is
+// no parameter here to omit, only an argument to leave off.
+func TestWakesRefusesABlankSessionWithoutAsking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a request was sent: %s %s", r.Method, r.URL)
+	}))
+	defer server.Close()
+
+	for _, args := range [][]string{
+		{"wakes", ""},
+		{"wakes", "   "},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(),
+			append([]string{"--url", server.URL}, args...), &stdout, &stderr)
+		if code == 0 {
+			t.Errorf("%v was accepted", args)
+		}
+		if !strings.Contains(stderr.String(), "usage: ah wakes [session-id]") {
+			t.Errorf("%v: stderr = %q; want the usage a caller can act on", args, stderr.String())
+		}
+	}
+}
+
+// TestWakesSendsTheSessionItWasGiven is the positive half of the blank-argument
+// test above: that one only proves nothing is sent when the argument is empty.
+//
+// Surviving mutation: deleting `?session=` from the wakes path left every test
+// green, and `ah wakes codex:x` would then have listed the whole node's trail
+// under a heading naming one session — the answer to a question nobody asked,
+// and indistinguishable from a busy session.
+func TestWakesSendsTheSessionItWasGiven(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		args     []string
+		rawQuery string
+	}{
+		{"a session id", []string{"wakes", "codex:x"}, "session=codex%3Ax"},
+		// Padding a shell left behind is trimmed off the value, not sent as
+		// part of it: `codex:x` and ` codex:x ` are the same session.
+		{"padded", []string{"wakes", " codex:x "}, "session=codex%3Ax"},
+		// No argument is not a filter of nothing; it is no filter.
+		{"no argument", []string{"wakes"}, ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var asked int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				asked++
+				if r.URL.Path != "/v1/wakes" {
+					t.Errorf("path = %q; want /v1/wakes", r.URL.Path)
+				}
+				if r.URL.RawQuery != testCase.rawQuery {
+					t.Errorf("query = %q; want %q", r.URL.RawQuery, testCase.rawQuery)
+				}
+				_, _ = w.Write([]byte(`{"wakes":[],"limits":{}}`))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			code := Run(context.Background(),
+				append([]string{"--url", server.URL}, testCase.args...), &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("exit = %d; stderr = %q", code, stderr.String())
+			}
+			if asked != 1 {
+				t.Errorf("the node was asked %d times; want once", asked)
+			}
+		})
+	}
+}
