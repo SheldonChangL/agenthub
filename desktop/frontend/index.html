@@ -116,6 +116,7 @@
       <section id="settings-view" class="view settingswrap hidden">
         <nav class="settingsnav" id="settings-nav">
           <a data-target="settings-service" class="on">背景服務</a>
+          <a data-target="settings-node">節點設定</a>
           <a data-target="settings-identity">本機身分</a>
           <a data-target="settings-appearance">外觀</a>
         </nav>
@@ -131,43 +132,16 @@
                 <button id="service-uninstall" class="ghost danger">移除服務…</button>
               </div>
               <div id="service-form" class="card hidden">
-                <div class="cardhead"><span>啟動旗標</span><span class="muted">安裝會取代已有的登記；要改旗標就再安裝一次。</span></div>
+                <div class="cardhead"><span>安裝為背景服務</span><span class="muted">安裝會取代已有的登記。</span></div>
                 <div class="cardbody serviceform">
                   <p class="muted" style="margin: 0">
-                    下面的欄位就是 <code>agenthub-node</code> 的啟動旗標；沒填的用節點預設值。
+                    對外位址、允許區網、探索與自動喚醒都由節點自己記住，改它們到「節點設定」，
+                    不必重裝服務。這裡只有安裝本身需要知道的事。
                   </p>
                   <div class="fieldgrid">
                     <label>
-                      <span class="fieldlabel">對外位址<small>其他機器連進來的地方</small></span>
-                      <select id="service-address"><option value="">只在本機（127.0.0.1:7463）</option></select>
-                    </label>
-                    <label>
                       <span class="fieldlabel">資料庫路徑<small>留空＝節點預設位置</small></span>
                       <input id="service-db" type="text" placeholder="留空＝節點預設位置" autocomplete="off" />
-                    </label>
-                    <label>
-                      <span class="fieldlabel">視為私有網段<small>--treat-as-private，直連網路線常需要，逗號分隔</small></span>
-                      <input id="service-private" type="text" placeholder="例如 122.122.0.0/16" autocomplete="off" />
-                    </label>
-                  </div>
-                  <p id="service-private-note" class="muted hidden" style="margin: 0"></p>
-                  <div class="flagrows">
-                    <label>
-                      <input type="checkbox" id="service-allow-lan" />
-                      <span>允許區網連線 <code>--allow-lan</code>
-                        <span id="service-lan-note" class="why warn hidden" style="display: block">
-                          這是唯一會讓資料離開這台機器的開關。開了之後，配對過的節點才能連進來；沒配對的仍然連不上，
-                          但同網段的人會看得到這個 port 在聽。選了非本機位址就需要它。
-                        </span>
-                      </span>
-                    </label>
-                    <label>
-                      <input type="checkbox" id="service-discover" />
-                      <span>在區網上尋找配對節點的位址 <code>--discover</code></span>
-                    </label>
-                    <label>
-                      <input type="checkbox" id="service-autowake" />
-                      <span>允許訊息自動喚醒 agent <code>--auto-wake</code><span class="why" style="display: block">每個 session 仍要各自打開。</span></span>
                     </label>
                   </div>
                 </div>
@@ -181,6 +155,65 @@
               </div>
               <pre id="service-output" class="serviceoutput hidden"></pre>
             </div>
+          </section>
+
+          <section id="settings-node">
+            <h2>節點設定</h2>
+            <p class="muted">
+              這些是節點自己記住的啟動設定，改了不用重裝服務。
+              節點只在啟動時讀它們，所以存檔之後要重新啟動才會生效。
+            </p>
+            <div class="card">
+              <div class="cardhead"><span>啟動設定</span><span id="node-settings-state" class="muted"></span></div>
+              <div class="cardbody serviceform">
+                <!-- Filled from the node's answer on every read and every write:
+                     turning allowLan off pulls peerListen back to loopback in
+                     the same write, so a form that merged only what it sent
+                     would show an address the node no longer has. -->
+                <div id="node-settings-notice"></div>
+                <!-- What the node will do with the combination on screen, before
+                     the owner finds out by being refused or by losing an address. -->
+                <div id="node-settings-combination"></div>
+                <div class="fieldgrid">
+                  <label>
+                    <span class="fieldlabel">對外位址<small>其他機器連進來的地方<span id="node-peerlisten-source" class="sourcetag"></span></small></span>
+                    <select id="node-peerlisten"><option value="">只在本機（127.0.0.1:7463）</option></select>
+                  </label>
+                  <label>
+                    <span class="fieldlabel">視為私有網段<small>直連網路線常需要，逗號分隔<span id="node-private-source" class="sourcetag"></span></small></span>
+                    <input id="node-private" type="text" placeholder="例如 122.122.0.0/16" autocomplete="off" />
+                  </label>
+                </div>
+                <p id="node-private-note" class="muted hidden" style="margin: 0"></p>
+                <div class="flagrows">
+                  <label>
+                    <input type="checkbox" id="node-allow-lan" />
+                    <span>允許區網連線<span id="node-allowlan-source" class="sourcetag"></span>
+                      <span id="node-lan-note" class="why warn hidden" style="display: block">
+                        這是唯一會讓資料離開這台機器的開關。開了之後，配對過的節點才能連進來；沒配對的仍然連不上，
+                        但同網段的人會看得到這個 port 在聽。選了非本機位址就需要它。
+                      </span>
+                    </span>
+                  </label>
+                  <label>
+                    <input type="checkbox" id="node-discover" />
+                    <span>在區網上尋找配對節點的位址<span id="node-discover-source" class="sourcetag"></span></span>
+                  </label>
+                  <label>
+                    <input type="checkbox" id="node-autowake" />
+                    <span>允許訊息自動喚醒 agent<span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block">每個 session 仍要各自打開。</span></span>
+                  </label>
+                </div>
+              </div>
+              <div class="cardfoot">
+                <span id="node-settings-hint" class="muted">節點只在啟動時讀這些值。</span>
+                <span>
+                  <button id="node-settings-reload" class="ghost">重新讀取</button>
+                  <button id="node-settings-save" class="primary">儲存並重啟服務</button>
+                </span>
+              </div>
+            </div>
+            <pre id="node-settings-output" class="serviceoutput hidden"></pre>
           </section>
 
           <section id="settings-identity">
