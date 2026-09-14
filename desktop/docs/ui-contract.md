@@ -321,8 +321,11 @@
 - 已知待修（#135，不擋前端）：同一 process 內 owner 又把 LAN 寫回去時，GET 的 `message` 說明字串會過期。
   **顯示 `message` 時以 `saved` 欄位為準**，不要單看字串。
 - `--listen` 不進設定，UI 不給欄位。重啟用 `ah service restart`，尚無 API；需要時開 issue。
-- 設定頁改法：主按鈕「重新安裝（改旗標）」→「儲存並重啟服務」；desktop 端要加 `NodeSettings()` / `SaveNodeSettings()`
-  綁定與 `ah service restart` 的呼叫。這一項是 PR #131 之後的接續 PR，不併入 #131。
+- **已實作**（`feat/116-settings-page`）：`App.NodeSettings()` / `App.SaveNodeSettings(patch)` 接 GET/PUT，
+  `App.RestartService()` 跑 `ah service restart`。設定頁新增「節點設定」區，主按鈕是「儲存並重啟服務」。
+  安裝表單只剩資料庫路徑——把這五個值燒進 unit 檔會變成節點之外的第二份設定來源，正是 #116 要拿掉的。
+  寫入只送改過的欄位；清空網段送空陣列（省略代表不動，永遠撤不掉）。節點不是背景服務時不假裝重啟過。
+  測試：`desktop/settings_test.go`、`frontend/test/node-settings.mjs`（四個變異測試確認抓得到）。
 
 ### 7.7 `GET /v1/outbound?session=`（#132 已合併，main `c3234e7`）
 
