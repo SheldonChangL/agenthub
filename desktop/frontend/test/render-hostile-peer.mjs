@@ -8,28 +8,19 @@
 // has itself been compromised, or whose own provider files were tampered with,
 // sends signed hostile strings.
 //
-//   node frontend/test/render-hostile-peer.mjs [path-to-main.js]
+//   node frontend/test/render-hostile-peer.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
-const wiring = source.indexOf("/* ---------------- wiring ---------------- */");
-if (wiring > 0) source = source.slice(0, wiring);
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+const { configure, boot } = await import("../src/app.js");
 
 const noop = async () => ({});
-const scope = new Function(
-  "document", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode", "Heartbeat",
-  source + "\nreturn { nodeSessions, presenceLabel, heardFrom, state };"
-)(document, noop, noop, noop, noop, noop, noop);
+configure({
+  Overview: noop, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+});
+const scope = boot({ start: false });
 
 const { nodeSessions, presenceLabel, state } = scope;
 

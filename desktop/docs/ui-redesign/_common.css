@@ -1,0 +1,29 @@
+    body { margin: 0; background: #0f1115; color: #e6e9ef; font: 13px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang TC", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #4f8cff; } a:hover { color: #3f7bef; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; }
+    .muted { color: #8b93a5; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font-size: 12.5px; white-space: nowrap; }
+    .btn.primary { background: #4f8cff; border-color: #4f8cff; color: #fff; }
+    .btn.ghost { background: transparent; }
+    .btn.danger { background: transparent; border-color: #5a3330; color: #f0908a; }
+    .pill { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 999px; font-size: 11px; border: 1px solid #272c38; color: #8b93a5; }
+    .pill.active { color: #35c07a; border-color: rgba(53,192,122,.4); }
+    .pill.idle { color: #e0a33e; border-color: rgba(224,163,62,.4); }
+    .pill.public { color: #4f8cff; border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.1); }
+    .pill.bad { color: #f0908a; border-color: rgba(229,84,75,.45); }
+    .titlebar { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 16px; border-bottom: 1px solid #272c38; background: #161920; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #35c07a; box-shadow: 0 0 0 3px rgba(53,192,122,.15); }
+    .tabs { display: flex; gap: 2px; margin-left: 18px; }
+    .tab { padding: 0 12px; height: 30px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; color: #8b93a5; font-size: 12.5px; }
+    .tab.on { background: #1c202a; color: #e6e9ef; }
+    .tab .n { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: #272c38; color: #8b93a5; }
+    .statusbar { height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid #272c38; font-size: 11px; color: #8b93a5; background: #161920; }
+    .stale { padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(224,163,62,.35); background: rgba(224,163,62,.07); color: #e6e9ef; font-size: 12px; }
+    .fingerprint { font-family: "SF Mono", ui-monospace, Menlo, monospace; letter-spacing: .06em; }
+    .claimed { font-family: "SF Mono", ui-monospace, Menlo, monospace; color: #e0a33e; }
+    input.field, .field { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font: inherit; font-size: 12.5px; }
+    .check { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .check.on { background: #4f8cff; border-color: #4f8cff; }
+    .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .radio.on { border: 4px solid #4f8cff; background: #fff; }
+    .kbd { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid #272c38; color: #8b93a5; }

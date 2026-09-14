@@ -20,15 +20,23 @@ export function LocalAddresses():Promise<Array<main.LocalAddress>>;
 
 export function MCPConfig(arg1:string):Promise<main.MCPConfigResult>;
 
+export function NodeSettings():Promise<main.NodeSettingsView>;
+
 export function NodeURL():Promise<string>;
 
 export function OpenPairing(arg1:number):Promise<main.PairingState>;
+
+export function Outbound(arg1:string,arg2:number,arg3:string):Promise<main.OutboundView>;
 
 export function Overview():Promise<main.Overview>;
 
 export function Pairing():Promise<main.Pairing>;
 
+export function RestartService():Promise<main.ServiceResult>;
+
 export function RevokeNode(arg1:string):Promise<void>;
+
+export function SaveNodeSettings(arg1:main.NodeSettingsPatch):Promise<main.NodeSettingsView>;
 
 export function ServiceStatus():Promise<main.ServiceStatus>;
 
@@ -43,3 +51,5 @@ export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.Visib
 export function TrustNode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<main.TrustedNode>;
 
 export function UninstallService():Promise<main.ServiceResult>;
+
+export function Wakes(arg1:string,arg2:number):Promise<main.WakesView>;
