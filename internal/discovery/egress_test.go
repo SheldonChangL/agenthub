@@ -3,6 +3,7 @@ package discovery
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
@@ -1233,5 +1234,36 @@ func TestAnUnexplainedReleaseFailureIsReportedOnce(t *testing.T) {
 	}
 	if !strings.Contains(logged.String(), "veth0") {
 		t.Errorf("the report does not name the interface whose slot was lost: %q", logged.String())
+	}
+}
+
+// Releasing happens before joining, not after, and the difference is only
+// visible when a whole set of interfaces goes at once — a container runtime
+// tearing its network down and building a new one, which is the shape of host
+// this bug was found on. With the quota full, a release that ran after the
+// joins would let the replacement interface fail with ENOBUFS and pick it up
+// only on the next tick: ten seconds of a peer announcing into a socket that
+// cannot hear it, for no reason except the order of two loops.
+func TestASlotFreedOnThisTickIsUsableOnThisTick(t *testing.T) {
+	joins, quota := offline(t)
+
+	full := make([]net.Interface, 0, quota.limit)
+	for i := 0; i < quota.limit; i++ {
+		full = append(full, usableInterface(fmt.Sprintf("veth%d", i), 100+i))
+	}
+	current := full
+	joins.interfaces = func() ([]net.Interface, error) { return current, nil }
+	joins.refresh()
+	if len(quota.slots) != quota.limit {
+		t.Fatalf("the quota is not full to begin with: %d of %d slots", len(quota.slots), quota.limit)
+	}
+
+	// The whole set is destroyed and one interface takes their place.
+	current = []net.Interface{usableInterface("br0", 200)}
+	joins.refresh()
+
+	if !quota.slots[200] {
+		t.Error("the replacement interface was not joined on the tick its predecessors went " +
+			"away; the slots were released only after the join had already been refused")
 	}
 }
