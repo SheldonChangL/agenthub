@@ -1028,6 +1028,153 @@ if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
   failures.push("the panel stayed disabled after the write finished");
 }
 
+/* ---- round seven ---- */
+
+// R24. A status read that fails AFTER a successful restart is not a failed
+//      restart. The node did come back on the new settings; saying otherwise
+//      sends the owner to restart something that is already running.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+let statusCalls = 0;
+baseBindings({
+  ServiceStatus: async () => {
+    statusCalls += 1;
+    // The first read (before the restart) works; the one after it does not.
+    if (statusCalls > 1) throw new Error("bridge closed");
+    return serviceStatus;
+  },
+});
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+app.state.service = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+const wokeView = { ...plainView, saved: { ...plainView.saved, autoWake: true }, restartRequired: true };
+saveAnswer = async () => wokeView;
+afterRestart(wokeView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const afterStatusFail = el("banner").textContent;
+if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
+if (afterStatusFail.includes("重新啟動背景服務失敗")) {
+  failures.push(`a status read that failed after a good restart was reported as a failed restart: ${afterStatusFail}`);
+}
+if (!afterStatusFail.includes("讀不到服務狀態")) {
+  failures.push(`the owner was not told the status could not be read: ${afterStatusFail}`);
+}
+
+// R25. A save really does hold the panel off, end to end: the buttons are
+//      disabled while the write is in the air, not merely when state.busy is
+//      set by hand.
+let disabledDuringWrite = null;
+baseBindings({
+  SaveNodeSettings: async (patch) => {
+    saveCalls.push(patch);
+    disabledDuringWrite = {
+      reload: el("node-settings-reload").disabled,
+      save: el("node-settings-save").disabled,
+    };
+    return wokeView;
+  },
+});
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+app.state.service = serviceStatus;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+afterRestart(wokeView);
+saveCalls = [];
+await app.saveNodeSettings();
+await tick();
+if (!disabledDuringWrite || !disabledDuringWrite.reload || !disabledDuringWrite.save) {
+  failures.push(`the panel was still live while the write was out: ${JSON.stringify(disabledDuringWrite)}`);
+}
+if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
+  failures.push("the panel stayed disabled after the write finished");
+}
+
+// R26. A re-read that failed leaves no tag claiming what is "running": that
+//      process has been replaced and this window never saw its replacement.
+baseBindings();
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { allowLan: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: true,
+});
+app.state.nodeSettings = null;
+app.state.service = serviceStatus;
+await app.loadNodeSettings();
+await tick();
+if (!el("node-allowlan-source").textContent.includes("目前執行中的是")) {
+  failures.push("the running value was not named before the save");
+}
+el("node-autowake").checked = true;
+saveAnswer = async () => wokeView;
+settingsAnswer = async () => ({ error: "connection refused" });
+await app.saveNodeSettings();
+await tick();
+if (el("node-allowlan-source").textContent !== "") {
+  failures.push(`a tag still describes the replaced process: ${el("node-allowlan-source").textContent}`);
+}
+if (el("node-settings-hint").textContent.includes("存檔後要重新啟動")) {
+  failures.push("the form still asks for a restart it cannot know is needed");
+}
+
+// R27. A node that is not a service leaves the owner with something to do, so
+//      the banner stays on screen rather than fading like a success.
+serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+app.state.service = null;
+baseBindings();
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => wokeView;
+afterRestart(wokeView);
+await app.saveNodeSettings();
+await tick();
+if (!el("banner").textContent.includes("自己重新啟動")) {
+  failures.push("the owner was not told to restart it themselves");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save the node has not read yet was marked successful, so it fades off screen");
+}
+
+// R28. A settings read that failed is retried on the next visit to the view.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+let visitReads = 0;
+baseBindings();
+settingsAnswer = async () => { visitReads += 1; return { error: "connection refused" }; };
+app.state.nodeSettings = null;
+app.state.nodeSettingsTried = false;
+app.state.view = "settings";
+app.render();
+await tick();
+const readsAfterFirstVisit = visitReads;
+if (readsAfterFirstVisit !== 1) failures.push(`the first visit read ${readsAfterFirstVisit} times, want 1`);
+app.render();
+await tick();
+if (visitReads !== readsAfterFirstVisit) failures.push("a failed read re-fired on the next repaint");
+// Leave the view and come back.
+app.state.view = "local";
+app.render();
+app.state.view = "settings";
+app.render();
+await tick();
+if (visitReads <= readsAfterFirstVisit) {
+  failures.push("returning to the settings view did not try the node again");
+}
+
+// R23 runs last on purpose. It calls paintAfterSave with literal sequence
+// numbers to control which paint finishes first, and that leaves the module's
+// applied-watermark above anything a later section could reach — every read
+// after it would be discarded as stale.
 // R23. Of two paints the newer sequence wins, even when the older one finishes
 //      last. The guard is re-checked AFTER the address lookup rather than
 //      claimed before it: claiming first lets the older paint run to completion
@@ -1055,6 +1202,7 @@ await tick();
 if (!el("node-autowake").checked) {
   failures.push("an older paint landed on top of a newer one");
 }
+
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));
