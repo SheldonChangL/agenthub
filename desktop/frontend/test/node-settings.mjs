@@ -933,6 +933,119 @@ if (el("node-settings-combination").serialize().includes("不在私有網段")) 
   failures.push("a loopback address was flagged as public");
 }
 
+/* ---- round six ---- */
+
+const baseBindings = (over = {}) => configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [],
+  ...over,
+});
+
+const plainView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+};
+
+// R20. A status read that throws is not a save that failed. The write landed;
+//      telling the owner it failed makes them send it again.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+baseBindings({ ServiceStatus: async () => { throw new Error("ah: connection reset"); } });
+settingsAnswer = async () => plainView;
+app.state.service = null;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveCalls = [];
+restartCalls = 0;
+const autoWakeSaved = { ...plainView, saved: { ...plainView.saved, autoWake: true }, restartRequired: true };
+saveAnswer = async () => autoWakeSaved;
+afterRestart(autoWakeSaved);
+await app.saveNodeSettings();
+await tick();
+const statusFailed = el("banner").textContent;
+if (statusFailed.includes("儲存節點設定失敗")) {
+  failures.push(`a status read that threw was reported as a failed save: ${statusFailed}`);
+}
+if (!statusFailed.includes("設定已儲存")) failures.push("the owner was not told the save landed");
+if (!statusFailed.includes("讀不到背景服務狀態")) {
+  failures.push(`the owner was not told why nothing was restarted: ${statusFailed}`);
+}
+if (restartCalls !== 0) failures.push("a service whose status could not be read was restarted");
+if (saveCalls.length !== 1) failures.push(`the write went out ${saveCalls.length} times`);
+
+// R21. A re-read that fails after the restart means the check did not happen.
+//      Saying nothing would read as success, and the commonest reason a save
+//      does not take effect looks exactly like success.
+app.state.service = serviceStatus;
+baseBindings();
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => autoWakeSaved;
+settingsAnswer = async () => ({ error: "connection refused" });
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const unverified = el("banner").textContent;
+if (unverified.includes("回應中")) {
+  failures.push(`a save whose effect was never checked was reported as confirmed: ${unverified}`);
+}
+if (!unverified.includes("無法確認")) {
+  failures.push(`the owner was not told the check did not happen: ${unverified}`);
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("an unverified save was marked successful");
+}
+
+// R22. While a write is in flight the panel's own read and write are held off.
+//      Sequence numbers order by when a read STARTED, so a reload clicked during
+//      a save carries a higher number while answering from before the restart —
+//      it would win the guard and repaint the form with pre-restart values under
+//      a success banner. The button is the thing that stops it.
+app.state.busy = true;
+app.render();
+if (!el("node-settings-reload").disabled) {
+  failures.push("the panel can be re-read while a write is in flight");
+}
+if (!el("node-settings-save").disabled) {
+  failures.push("the panel can be written again while a write is in flight");
+}
+app.state.busy = false;
+app.render();
+if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
+  failures.push("the panel stayed disabled after the write finished");
+}
+
+// R23. Of two paints, the newer sequence wins whichever finishes first: the
+//      guard is checked after the address lookup, not claimed before it.
+baseBindings();
+app.state.nodeSettings = null;
+settingsAnswer = async () => plainView;
+await app.loadNodeSettings();
+await tick();
+const older = { ...plainView, saved: { ...plainView.saved, autoWake: false } };
+const newer = { ...plainView, saved: { ...plainView.saved, autoWake: true } };
+// The newer paint is issued second and finishes first.
+const slow = app.paintAfterSave(900, older);
+const fast = app.paintAfterSave(901, newer);
+await Promise.all([fast, slow]);
+await tick();
+if (!el("node-autowake").checked) {
+  failures.push("an older paint overwrote a newer one");
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

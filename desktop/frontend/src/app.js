@@ -413,6 +413,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("selection-count").textContent = count ? `已選取 ${count} 個 session` : "未選取";
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
+    // The settings panel's own read and write follow state.busy wherever the
+    // window happens to be showing. A read started during a save answers from
+    // before the restart but carries a higher sequence number, so it would win
+    // the guard and repaint the form with pre-restart values under a success
+    // banner; the button is what stops it.
+    el("node-settings-reload").disabled = state.busy;
+    el("node-settings-save").disabled = state.busy;
 
     const allPicked = rows.length > 0 && rows.every((s) => state.selected.has(s.id));
     const some = !allPicked && rows.some((s) => state.selected.has(s.id));
@@ -440,11 +447,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
-    // A read started during a save answers from before the restart but carries
-    // a higher sequence number, so it would win the guard and repaint the form
-    // with pre-restart values under a success banner. Held off instead.
-    el("node-settings-reload").disabled = state.busy;
-    el("node-settings-save").disabled = state.busy;
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -2806,10 +2808,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // read since: skipping it here would leave the node holding settings it
       // has not read, with nothing on screen saying so. Only the painting below
       // is subject to the guard.
-      // Read the status if this window has never had one: assuming "not a
-      // service" from an absent read would skip the restart and tell the owner
-      // to do it themselves, on a machine where it is installed.
-      if (!state.service) await loadService();
       // The status read and the restart are both allowed to fail without
       // turning this into "the save failed": the write already landed, and an
       // owner told otherwise will try again and re-send it.
@@ -3081,7 +3079,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
