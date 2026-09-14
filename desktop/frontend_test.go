@@ -652,3 +652,27 @@ func TestFrontendKeepsTheWorkingDirectoryReadable(t *testing.T) {
 			"reorders the path itself")
 	}
 }
+
+// TestFrontendBackdropDegradesItself covers #156.
+func TestFrontendBackdropDegradesItself(t *testing.T) {
+	runNodeCheck(t, "backdrop-degrade.mjs")
+}
+
+// TestFrontendDoesNotBlurOverMovingPixels pins the cheap half of #156.
+//
+// Sixteen panels carried backdrop-filter over the animated rain, so every frame
+// resampled a changing image sixteen times; on an Intel HD 520 that pinned a
+// core with the window merely open. The panels only ever needed to look
+// translucent, which a colour does for free.
+func TestFrontendDoesNotBlurOverMovingPixels(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	// The declaration, not the word: the rule that removed them explains itself
+	// in a comment that names what it removed.
+	if count := strings.Count(string(stylesheet), "backdrop-filter:"); count > 0 {
+		t.Errorf("style.css has %d backdrop-filter rules; each one resamples the moving backdrop "+
+			"every frame, which is what made the window unusable on an Intel HD 520 (#156)", count)
+	}
+}

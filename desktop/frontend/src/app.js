@@ -63,7 +63,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     outbound: { messages: [], next: "", loading: false, error: "", session: null },
     wakes: { wakes: [], limits: null, loading: false, error: "", session: null },
     // Background photo + rain: the owner's switches, and the OS's reduce-motion.
+    // What the owner chose. Never written by the automatic degrade below —
+    // their switch has to keep saying what they asked for, or the settings page
+    // would quietly rewrite their decision and read as a broken toggle.
     ui: { backdrop: true, motion: true },
+    // What this machine turned out to be able to draw: null (everything the
+    // owner asked for), "photo" (rain dropped), "plain" (photo dropped too).
+    autoTier: null,
+    autoReason: "",
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -115,6 +122,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (ui && typeof ui === "object") {
       state.ui.backdrop = ui.backdrop !== false;
       state.ui.motion = ui.motion !== false;
+      // Remembered so a machine that could not keep up does not spend the first
+      // seconds of every start drawing something it will drop again.
+      if (ui.autoTier === "photo" || ui.autoTier === "plain") {
+        state.autoTier = ui.autoTier;
+        state.autoReason = typeof ui.autoReason === "string" ? ui.autoReason : "";
+      }
     }
   }
 
@@ -132,7 +145,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function savePrefs() {
     try {
       globalThis.localStorage?.setItem(F.PREFS_KEY, F.serializePrefs(state));
-      globalThis.localStorage?.setItem(UI_PREFS_KEY, JSON.stringify(state.ui));
+      globalThis.localStorage?.setItem(UI_PREFS_KEY, JSON.stringify({ ...state.ui, autoTier: state.autoTier, autoReason: state.autoReason }));
     } catch {
       // Nothing to do: the table still works, it just forgets on restart.
     }
@@ -463,6 +476,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
+    el("appearance-state").textContent = describeBackdropState();
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -470,11 +484,123 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // applyBackdrop paints the owner's switches onto <body>; the stylesheet does
   // the rest, and prefers-reduced-motion wins over the motion switch there.
+  // The effective backdrop is the owner's choice capped by what this machine
+  // was measured to manage. Both halves are kept: `state.ui` is what they asked
+  // for and is what the switches show; `state.autoTier` is what was possible.
+  function backdropPlan() {
+    const photo = state.ui.backdrop && state.autoTier !== "plain";
+    const rain = photo && state.ui.motion && state.autoTier === null;
+    return { photo, rain };
+  }
+
   function applyBackdrop() {
     const body = document.body;
     if (!body?.classList) return;
-    body.classList.toggle("no-backdrop", !state.ui.backdrop);
-    body.classList.toggle("no-motion", !state.ui.motion);
+    const plan = backdropPlan();
+    body.classList.toggle("no-backdrop", !plan.photo);
+    body.classList.toggle("no-motion", !plan.rain);
+  }
+
+  /* ---------------- backdrop: what this machine can actually draw ---------------- */
+
+  // Anything slower than this is not keeping up. 60fps is 16.7ms a frame; 28ms
+  // is about 36, which is where a continuously moving background stops looking
+  // like an effect and starts looking like the window is struggling.
+  const SLOW_FRAME_MS = 28;
+
+  // measureFramePacing watches real frames rather than guessing from the user
+  // agent or the platform: the same GPU is fast with one window open and slow
+  // with twenty, and a platform string knows nothing about either.
+  //
+  // It resolves with the median interval, or null when it could not measure.
+  // A hidden window is the important null: requestAnimationFrame is throttled
+  // or stopped there, so frames would look enormously slow and every machine
+  // would be judged unable to draw its own background. The existing
+  // visibilitychange handler also pauses the rain, so there would be nothing to
+  // measure even if the frames arrived.
+  function measureFramePacing({ frames = 60, budgetMs = 2500 } = {}) {
+    return new Promise((resolve) => {
+      if (typeof requestAnimationFrame !== "function" || document.hidden) {
+        resolve(null);
+        return;
+      }
+      const intervals = [];
+      let last = 0;
+      const started = Date.now();
+      const step = (now) => {
+        if (document.hidden) {
+          // Became hidden mid-measurement: what was collected describes a
+          // window that stopped being drawn, not a machine that cannot draw.
+          resolve(null);
+          return;
+        }
+        if (last !== 0) intervals.push(now - last);
+        last = now;
+        if (intervals.length >= frames || Date.now() - started > budgetMs) {
+          if (intervals.length < 10) {
+            resolve(null);
+            return;
+          }
+          const sorted = [...intervals].sort((a, b) => a - b);
+          resolve(sorted[Math.floor(sorted.length / 2)]);
+          return;
+        }
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  // calibrateBackdrop drops a tier at a time until the window keeps up, and
+  // never climbs back on its own.
+  //
+  // No climbing back is the hysteresis: a machine that manages 60fps for two
+  // seconds because nothing else is happening would otherwise turn the rain
+  // back on, fail again, and leave the background flickering between states.
+  // The owner can ask for it again — their switch clears this and re-measures —
+  // which is a decision rather than a bounce.
+  let calibrating = false;
+  async function calibrateBackdrop() {
+    if (calibrating) return;
+    calibrating = true;
+    try {
+      // Two chances to drop: rain first, then the photo.
+      for (let step = 0; step < 2; step++) {
+        const plan = backdropPlan();
+        if (!plan.photo && !plan.rain) return;
+        const median = await measureFramePacing();
+        if (median === null || median <= SLOW_FRAME_MS) return;
+        const next = plan.rain ? "photo" : "plain";
+        state.autoTier = next;
+        state.autoReason = `量到每格約 ${Math.round(median)} 毫秒（約 ${Math.round(1000 / median)} fps）`;
+        applyBackdrop();
+        savePrefs();
+        if (state.view === "settings") renderSettings();
+        // Let the new state settle before judging it.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+    } finally {
+      calibrating = false;
+    }
+  }
+
+  // describeBackdropState is what the settings page says out loud.
+  //
+  // The switches keep showing what the owner asked for; this sentence says what
+  // is actually being drawn and why it differs. A degrade that changed the
+  // switches instead would look like the switches were broken.
+  function describeBackdropState() {
+    if (!state.ui.backdrop) return "已關閉：純深色底。";
+    if (state.autoTier === "plain") {
+      return `這台機器跟不上，已自動關掉背景照片與數字雨（${state.autoReason}）。` +
+        "重新打開上面的開關會再量一次。";
+    }
+    if (state.autoTier === "photo") {
+      return `這台機器跟不上，已自動停掉數字雨，照片留著（${state.autoReason}）。` +
+        "重新打開上面的開關會再量一次。";
+    }
+    if (!state.ui.motion) return "照片顯示中，數字雨依你的設定關閉。";
+    return "照片與數字雨都在顯示。";
   }
 
   // buildRain makes the falling 0/1 columns once. Pure CSS animation after
@@ -3084,9 +3210,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("copy-identity-key").onclick = () => copyLocalPublicKey("identity-copy-status");
   el("toggle-backdrop").onchange = (event) => {
     state.ui.backdrop = Boolean(event.target.checked);
+    // Asking for it again clears what was measured last time and measures
+    // again: the machine may be less busy now, and this is the owner's
+    // decision rather than the flicker an automatic climb-back would cause.
+    state.autoTier = null;
+    state.autoReason = "";
     savePrefs();
     applyBackdrop();
     render();
+    if (state.ui.backdrop) calibrateBackdrop().catch(() => {});
   };
   el("toggle-motion").onchange = (event) => {
     state.ui.motion = Boolean(event.target.checked);
@@ -3099,6 +3231,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   applyBackdrop();
   buildRain();
   if (backdropUrl) el("backdrop-photo").src = backdropUrl;
+  // Measured once the window has settled, and only if there is something being
+  // drawn to measure. Not at boot: the first second is layout and the first
+  // reads, and judging the machine on that would degrade every machine.
+  if (typeof setTimeout === "function") {
+    setTimeout(() => calibrateBackdrop().catch(() => {}), 1500);
+  }
   // macOS draws the window buttons over the page's top-left corner, so the
   // title bar has to leave room for them. Asked of the host rather than guessed
   // from the node's platform: they are different facts, and the node's is
@@ -3126,6 +3264,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
+    backdropPlan, describeBackdropState, calibrateBackdrop, measureFramePacing,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
