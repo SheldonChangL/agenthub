@@ -147,7 +147,14 @@ func checkout(t *testing.T, root string) {
 // found, and not run, even though it is sitting right there.
 func TestLocateBinaryNeverRunsAnAhFromPATH(t *testing.T) {
 	onPath := t.TempDir()
-	executable(t, filepath.Join(onPath, "ah"))
+	planted := filepath.Join(onPath, "ah")
+	executable(t, planted)
+	// Runnable, not merely present: an ah without the bit would be passed over
+	// by a PATH search anyway, and this test would pass without proving that no
+	// PATH search happens.
+	if err := os.Chmod(planted, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", onPath)
 	t.Setenv("AGENTHUB_AH", "")
 

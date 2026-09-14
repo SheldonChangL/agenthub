@@ -60,6 +60,18 @@ boots the real markup and `app.js` against fake data.
 The desktop app is a separate Go module so Wails and CGo do not affect the
 cross-platform node or CLI builds.
 
+`wails build` also runs `build/bundle-binaries.sh` as a post-build hook, which
+builds `ah` and `agenthub-node` for the same target and copies them in beside
+the app executable — `Contents/MacOS` in the bundle, the unpacked directory on
+Linux and Windows — then seals the macOS bundle again, since adding files to a
+signed bundle invalidates its signature. Those copies are how the app finds
+`ah`: the service panel runs `ah service`, and the search is `AGENTHUB_AH`,
+beside the executable, `Contents/Resources`, then this checkout's `bin/` — never
+PATH, because installing a launchd job or a systemd unit must not mean running
+whatever binary named `ah` happened to come first there. Set `AGENTHUB_RELEASE`
+to stamp a tag into the bundled pair; the script can also be called on its own
+with `<goos>/<goarch>` and the path to the app executable.
+
 ## Current boundaries
 
 - Audience choices are implemented and persist across discovery. They decide the

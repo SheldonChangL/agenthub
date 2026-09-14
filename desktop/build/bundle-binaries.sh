@@ -71,15 +71,32 @@ done
 
 ls -l "${destination}/ah${suffix}" "${destination}/agenthub-node${suffix}"
 
-# macOS refuses to run an unsigned executable on Apple silicon, and the Go
-# linker's own ad-hoc signature is lost by nothing here — but a bundle-level
-# signature would be, so this is where the ordering matters for #66: sign the
-# nested binaries first and seal the bundle after this script has run, never
-# before. Verified here so a broken nested signature is a build failure rather
-# than a launch failure on somebody else's machine.
+# A bundle's signature seals its contents, and wails signs the bundle before it
+# runs this hook — so copying anything in afterwards invalidates the seal
+# ("a sealed resource is missing or invalid"), and on Apple silicon an app whose
+# signature does not verify is killed at launch rather than merely warned about.
+# Sealing again here is not optional tidying; without it this script would ship
+# a .app that does not start.
+#
+# That ordering is the whole of this script's bearing on real signing (#66):
+# nested code is signed first, the bundle last, and anything that adds files to
+# the bundle has to run before the bundle is sealed. A signing step added later
+# goes after this script, not before it.
 if [ "$goos" = "darwin" ] && [ "$(uname -s)" = "Darwin" ]; then
+	bundle=$destination
+	case "$bundle" in
+	*/Contents/MacOS) bundle=$(dirname -- "$(dirname -- "$bundle")") ;;
+	*) bundle="" ;;
+	esac
 	for command in ah agenthub-node; do
-		codesign --verify "${destination}/${command}" ||
-			codesign --force --sign - "${destination}/${command}"
+		codesign --force --sign - "${destination}/${command}"
 	done
+	if [ -n "$bundle" ]; then
+		echo "re-sealing ${bundle}"
+		codesign --force --sign - "$bundle"
+		# Checked, not assumed: a bundle that fails this is one that would fail
+		# to launch, and finding that out here beats finding it out on the
+		# machine of the colleague who installed it.
+		codesign --verify --deep --strict "$bundle"
+	fi
 fi
