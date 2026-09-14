@@ -3,9 +3,11 @@ package codexdriver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"agenthub.local/agenthub/internal/codexapp"
 	"agenthub.local/agenthub/internal/model"
@@ -79,10 +81,20 @@ type recordingConversation struct {
 	turns   []codexapp.StartTurnParams
 	failOn  string
 	// turnIDs are handed out in order, one per StartTurn, so a test can say
-	// which turn app-server claims to have started.
+	// which turn app-server claims to have started. Past the end of it — or
+	// with none given at all — an id is minted, because the empty id is not a
+	// neutral default: the driver reads it as "no turn to wait for" and frees
+	// the thread at once, so every test that forgot to set this was quietly
+	// exercising a build with the serialisation switched off, and passing.
 	turnIDs []string
+	// blankTurnIDs is how a test asks for the empty id on purpose, to exercise
+	// a server that answered turn/start without naming a turn.
+	blankTurnIDs bool
 	// over is closed per turn id by finish(); WaitForTurn blocks on it.
 	over map[string]chan struct{}
+	// ended says which of those channels finish() has already closed, so that
+	// two calls for one turn cannot close it twice.
+	ended map[string]bool
 	// waitErr makes WaitForTurn fail at once, standing in for a connection
 	// that died under a turn.
 	waitErr error
@@ -105,14 +117,34 @@ func (c *recordingConversation) waiter(turnID string) chan struct{} {
 	return made
 }
 
+// autoTurnID names a turn the fake minted for a test that did not name one.
+func autoTurnID(n int) string { return fmt.Sprintf("turn-auto-%d", n) }
+
 // finish is what a test uses to say a turn ended, standing in for the
 // turn/completed notification app-server sends.
+//
+// All of it under the one lock: reading "not closed yet" and closing in two
+// steps is a double close — a panic — the moment two callers finish the same
+// turn.
 func (c *recordingConversation) finish(turnID string) {
-	select {
-	case <-c.waiter(turnID):
-	default:
-		close(c.waiter(turnID))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.over == nil {
+		c.over = map[string]chan struct{}{}
 	}
+	ending, known := c.over[turnID]
+	if !known {
+		ending = make(chan struct{})
+		c.over[turnID] = ending
+	}
+	if c.ended == nil {
+		c.ended = map[string]bool{}
+	}
+	if c.ended[turnID] {
+		return
+	}
+	c.ended[turnID] = true
+	close(ending)
 }
 
 func (c *recordingConversation) WaitForTurn(ctx context.Context, turnID string) error {
@@ -169,8 +201,11 @@ func (c *recordingConversation) StartTurn(_ context.Context, params codexapp.Sta
 	c.turns = append(c.turns, params)
 	failing := c.failOn == "start"
 	turnID := ""
-	if index := len(c.turns) - 1; index < len(c.turnIDs) {
+	switch index := len(c.turns) - 1; {
+	case index < len(c.turnIDs):
 		turnID = c.turnIDs[index]
+	case !c.blankTurnIDs:
+		turnID = autoTurnID(index + 1)
 	}
 	c.mu.Unlock()
 	if failing {
@@ -312,5 +347,65 @@ func TestDriveRefusesASessionWithNoThread(t *testing.T) {
 	}
 	if len(conversation.calls) != 0 {
 		t.Errorf("it connected anyway: %v", conversation.calls)
+	}
+}
+
+// The serialisation holds for a test that never names a turn id.
+//
+// The fake used to answer turn/start with the empty id whenever a test had not
+// listed one, and the driver reads the empty id as "no turn to wait for" and
+// frees the thread immediately. So a forgotten field turned the serialisation
+// off and the test still passed — the same shape of silent hole as #142, one
+// layer down. This pins the default: with no turn ids listed at all, the
+// second message still waits for the first turn to end.
+func TestSerialisationHoldsWithoutATestNamingTurnIds(t *testing.T) {
+	conversation := &recordingConversation{}
+	driver := NewWith(conversation)
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err != nil {
+		t.Fatal(err)
+	}
+	second := make(chan error, 1)
+	go func() { second <- driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
+
+	time.Sleep(settle)
+	if got := conversation.started(); got != 1 {
+		t.Fatalf("%d turns started while the first was still running; the thread was freed "+
+			"by a turn id the fake never gave", got)
+	}
+	conversation.finish(autoTurnID(1))
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the second message: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn ended and the message behind it was never let through")
+	}
+}
+
+// A turn can be finished from more than one goroutine without the fake
+// panicking.
+//
+// Checking "not closed yet" and closing were two steps under no shared lock,
+// so two calls for one turn could both reach the close. Only one test
+// goroutine finishes turns today, which makes this a trap laid for the next
+// test rather than a live failure — and a panic in a helper reads as a bug in
+// the driver.
+func TestFinishingOneTurnFromSeveralGoroutinesIsSafe(t *testing.T) {
+	conversation := &recordingConversation{}
+	for turn := 0; turn < 16; turn++ {
+		var racing sync.WaitGroup
+		start := make(chan struct{})
+		for caller := 0; caller < 8; caller++ {
+			racing.Add(1)
+			go func() {
+				defer racing.Done()
+				<-start
+				conversation.finish(autoTurnID(turn))
+			}()
+		}
+		close(start)
+		racing.Wait()
 	}
 }
