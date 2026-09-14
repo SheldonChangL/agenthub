@@ -2583,15 +2583,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     // What the node will do with this combination, before the owner finds out
     // by being refused or by losing an address.
+    //
+    // The two outcomes are not the same and turn on one thing —
+    // nodeconfig.WithdrawPeerListen takes `peerListenNamed`: a write that NAMES
+    // a non-loopback address with allowLan off is refused, and one that leaves
+    // the address alone withdraws it to loopback instead. Saying "will be
+    // refused" for the second would send the owner looking for a mistake that
+    // is not there, and saying "will be withdrawn" for the first would promise
+    // a save that does not happen.
+    const stored = state.nodeSettings?.settings?.peerListen ?? "";
+    const naming = address !== (stored || LOOPBACK_LISTEN);
     const warning = el("node-settings-combination");
     warning.replaceChildren();
-    if (lanAddress && !allowLan) {
+    if (!allowLan && lanAddress && naming) {
       warning.append(element("div", "stale",
         `「${address}」不是本機位址，而「允許區網連線」是關的：節點會拒絕這次儲存，` +
         "訊息會指名這個位址。要服務它就把「允許區網連線」一起打開。"));
-    } else if (!allowLan && !isLoopbackListen(state.nodeSettings?.settings?.peerListen ?? "")) {
+    } else if (!allowLan && !isLoopbackListen(stored)) {
       warning.append(element("div", "stale",
-        "關掉「允許區網連線」會讓節點在這次儲存時把對外位址收回本機，而且收回的位址救不回來。"));
+        `關掉「允許區網連線」會讓節點在這次儲存時把對外位址從「${stored}」收回本機，` +
+        "而且收回的位址救不回來。"));
     }
 
     const privateField = el("node-private");
@@ -2672,6 +2683,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // read since: skipping it here would leave the node holding settings it
       // has not read, with nothing on screen saying so. Only the painting below
       // is subject to the guard.
+      // Read the status if this window has never had one: assuming "not a
+      // service" from an absent read would skip the restart and tell the owner
+      // to do it themselves, on a machine where it is installed.
+      if (!state.service) await loadService();
       const installed = Boolean(state.service?.installed);
       let restarted = null;
       if (installed) {
