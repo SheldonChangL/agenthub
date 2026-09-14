@@ -6,15 +6,19 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
 	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/text/secure/precis"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
+	"agenthub.local/agenthub/internal/registry"
 )
 
 // fakeResolver records what discovery tried to write, so a test can assert on
@@ -36,10 +40,17 @@ func (r *fakeResolver) TrustedNodeIDs(context.Context) ([]string, error) {
 	return r.trusted, nil
 }
 
+// SetNodeAddress refuses ids it holds no row for, as the real registry does:
+// its UPDATE matches nothing and it returns ErrNotFound. Discovery can reach
+// that case through a cached trusted set that has gone stale, so a fake that
+// accepted every id would hide the behaviour under test.
 func (r *fakeResolver) SetNodeAddress(_ context.Context, nodeID, address string) error {
 	r.writes++
 	if r.failWith != nil {
 		return r.failWith
+	}
+	if !slices.Contains(r.trusted, nodeID) {
+		return fmt.Errorf("node %q: %w", nodeID, registry.ErrNotFound)
 	}
 	r.stored[nodeID] = address
 	return nil
@@ -710,4 +721,182 @@ func TestANodeNotOfferingAnnouncesNothingExtra(t *testing.T) {
 	if len(got) != 1 || got[0].Offering() {
 		t.Errorf("announcements = %+v; a quiet node must not read as an offer", got)
 	}
+}
+
+// TestTheTrustedSetIsNotReadPerPacket is issue #92's second finding: the same
+// dispatch hands every packet to this browser, including this node's own
+// announcements coming back on the loopback, and each one read the whole
+// trusted set.
+func TestTheTrustedSetIsNotReadPerPacket(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+	packet := []Announcement{{NodeID: pairedNode, Address: "192.0.2.10:7463"}}
+
+	for range 200 {
+		if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resolver.trustReads != 1 {
+		t.Errorf("200 packets cost %d reads of the trusted set, want 1", resolver.trustReads)
+	}
+
+	clock = clock.Add(trustCacheTTL - time.Millisecond)
+	if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 1 {
+		t.Errorf("trustReads = %d inside the TTL, want 1", resolver.trustReads)
+	}
+
+	clock = clock.Add(2 * time.Millisecond)
+	if _, err := browser.ApplyAll(context.Background(), packet); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 2 {
+		t.Errorf("trustReads = %d after the TTL, want 2", resolver.trustReads)
+	}
+}
+
+// TestARevokedNodesAddressStopsBeingRecorded is the same constraint the
+// candidate list has: the cached set is a reason to skip a read, not a record
+// of who is trusted, and a steady stream of packets must not keep it alive.
+func TestARevokedNodesAddressStopsBeingRecorded(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+
+	if _, err := browser.Apply(context.Background(), Announcement{
+		NodeID: pairedNode, Address: "192.0.2.10:7463",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.writes != 1 {
+		t.Fatalf("writes = %d; a paired node's address must be recorded", resolver.writes)
+	}
+
+	// The owner revokes it, and its announcements keep arriving throughout.
+	resolver.trusted = nil
+	readsAtRevoke := resolver.trustReads
+
+	// Steps are real seconds, not multiples of trustCacheTTL: advancing by the
+	// constant would let this pass whatever the constant is, and its size is
+	// the only thing that ends the stale exclusion — unpairing does not
+	// invalidate the cached set.
+	announce := func() {
+		clock = clock.Add(time.Second)
+		if _, err := browser.Apply(context.Background(), Announcement{
+			NodeID: pairedNode, Address: "192.0.2.11:7463",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Within the bound trustCacheTTL claims, a steady stream of packets must
+	// not keep the cached set alive: the store has to be asked again.
+	const recovery = 4 * time.Second
+	for elapsed := time.Duration(0); elapsed < recovery; elapsed += time.Second {
+		announce()
+	}
+	if resolver.trustReads <= readsAtRevoke {
+		t.Fatalf("the trusted set was not re-read in the %v after the revoke "+
+			"(reads still %d); a replay held the cached set open", recovery, resolver.trustReads)
+	}
+
+	// Keep going past addressChangeCooldown (30 s), which is what gates the
+	// write: until it elapses no announcement can move the row at all, so the
+	// assertions below only mean something once the clock is past it. This is
+	// the one place the two constants are coupled — the loop has to outlast the
+	// cooldown, which is why it counts seconds rather than TTLs.
+	for elapsed := recovery; elapsed < addressChangeCooldown+10*time.Second; elapsed += time.Second {
+		announce()
+	}
+	if resolver.writes != 1 {
+		t.Errorf("a revoked node's new address was recorded %d times", resolver.writes-1)
+	}
+	if resolver.stored[pairedNode] != "192.0.2.10:7463" {
+		t.Errorf("stored address = %q; the revoked node's row moved", resolver.stored[pairedNode])
+	}
+}
+
+// TestARevokedIDDoesNotAbortTheRestOfItsPacket covers what the cached set made
+// reachable: before it, a revoked id never got past the per-packet trust read,
+// so SetNodeAddress was never called for one. Inside the TTL it now is, and the
+// store answers ErrNotFound because the row is gone.
+//
+// That answer is the cache being stale, not a failure. Treated as an error it
+// would return out of ApplyAll's loop, and every announcement queued behind the
+// revoked one in the same packet — peers that are still paired — would silently
+// lose its address, once per packet, for as long as the revoked node announced.
+func TestARevokedIDDoesNotAbortTheRestOfItsPacket(t *testing.T) {
+	const otherNode = "node_alsoPaired00000"
+	resolver := newResolver(pairedNode, otherNode)
+	clock := time.Now().UTC()
+	browser := clockedBrowser(resolver, anyAddress, &clock)
+
+	// Warm the cached set without recording an address for either peer, so
+	// neither is later held back by the address-change cooldown.
+	if _, err := browser.ApplyAll(context.Background(), []Announcement{
+		{NodeID: unpairedNode, Address: "192.0.2.99:7463"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 1 {
+		t.Fatalf("trustReads = %d; the cached set was not warmed", resolver.trustReads)
+	}
+
+	// The owner revokes one of them. The cached set still says it is paired.
+	resolver.trusted = []string{otherNode}
+
+	applied, err := browser.ApplyAll(context.Background(), []Announcement{
+		{NodeID: pairedNode, Address: "192.0.2.10:7463"},
+		{NodeID: otherNode, Address: "192.0.2.11:7463"},
+	})
+	if err != nil {
+		t.Fatalf("ApplyAll() error = %v; a revoked id must not fail the packet", err)
+	}
+	if applied != 1 {
+		t.Errorf("applied = %d, want 1", applied)
+	}
+	if got := resolver.stored[otherNode]; got != "192.0.2.11:7463" {
+		t.Errorf("the still-paired peer announced after the revoked one stored %q; "+
+			"the revoked id cut the packet short", got)
+	}
+	if got, ok := resolver.stored[pairedNode]; ok {
+		t.Errorf("the revoked node's address was stored as %q", got)
+	}
+
+	// And the refusal invalidates the cached set, so the staleness that caused
+	// it does not survive into the next packet.
+	if _, err := browser.ApplyAll(context.Background(), []Announcement{
+		{NodeID: unpairedNode, Address: "192.0.2.99:7463"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.trustReads != 2 {
+		t.Errorf("trustReads = %d; ErrNotFound did not invalidate the cached set", resolver.trustReads)
+	}
+}
+
+// TestConcurrentApply covers the state the cache added: the packet path is one
+// goroutine today, but Apply is exported and the cached set is shared.
+func TestConcurrentApply(t *testing.T) {
+	resolver := newResolver(pairedNode)
+	browser := NewBrowser(resolver, anyAddress)
+	var wait sync.WaitGroup
+	for i := range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 50 {
+				if _, err := browser.Apply(context.Background(), Announcement{
+					NodeID: pairedNode, Address: "192.0.2.10:746" + strconv.Itoa(i%10),
+				}); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wait.Wait()
 }
