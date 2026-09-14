@@ -154,7 +154,10 @@ if (!el("banner").textContent.includes("回應中")) {
 serviceStatus = { supported: true, installed: true, running: false, pid: 0, unitPath: "/u", logHint: "/var/log/agenthub-node.log" };
 app.state.service = serviceStatus;
 el("node-autowake").checked = true;
-saveAnswer = async () => ({ settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, restartRequired: true });
+const cameBackView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, restartRequired: true };
+saveAnswer = async () => cameBackView;
+// The settings did stick; what did not happen is the node coming back.
+afterRestart(cameBackView);
 await app.saveNodeSettings();
 await tick();
 const afterFailedRestart = el("banner").textContent;
@@ -695,16 +698,17 @@ if (app.coversAddress("not-a-range", "10.1.2.3:7463") !== false) failures.push("
 
 /* ---- round four ---- */
 
-// R16. A flag baked into the service unit is given on EVERY start, so it
-//      overrides whatever was saved — `ah service install` says so in its own
-//      report. After the window restarts the service itself, a value still
-//      arriving as a flag AND still differing from what is stored is one the
-//      unit is pinning: the save changed nothing about the running node, and
-//      saying "restarted and answering" would be a claim about a
-//      security-relevant setting that provably did not take effect.
+// R16. A setting the service unit pins does not survive the restart, and the
+//      window must not call that a success.
+//
+//      The node writes what it was given on the command line back into its own
+//      store (cmd/agenthub-node/main.go), so after the restart the stored value
+//      IS the unit's flag and `sources`/`saved`/`settings` all agree. Nothing
+//      in the answer says the owner's value was replaced — the only evidence is
+//      that what they asked for is not what is there.
 serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
 app.state.service = serviceStatus;
-configure({
+const withRestart = (restart) => configure({
   Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
   Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
   Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
@@ -712,38 +716,90 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartService: restart,
   LocalAddresses: async () => [],
 });
-const pinnedView = {
-  // The unit still supplies --allow-lan=true, so the restarted node is LAN-open
-  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
-  sources: { allowLan: "flag" },
+withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
+// Before: the unit carries --auto-wake=false, so that is what is stored.
+const unitPinned = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { autoWake: "flag" },
   saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
-  restartRequired: true,
+  restartRequired: false,
 };
-settingsAnswer = async () => pinnedView;
+settingsAnswer = async () => unitPinned;
 app.state.nodeSettings = null;
 await app.loadNodeSettings();
 await tick();
-if (app.pinnedByUnit(pinnedView).length !== 1) {
-  failures.push(`pinnedByUnit saw ${JSON.stringify(app.pinnedByUnit(pinnedView))}, want the one flag-pinned field`);
-}
+// The owner turns it on. The PUT succeeds and answers with it on.
 el("node-autowake").checked = true;
-saveAnswer = async () => pinnedView;
-afterRestart(pinnedView);
+saveAnswer = async () => ({
+  ...unitPinned,
+  settings: { ...unitPinned.settings, autoWake: true },
+  saved: { ...unitPinned.saved, autoWake: true },
+  restartRequired: true,
+});
+// The restart re-applies the unit's flag, and the node stores it again.
+afterRestart(unitPinned);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
+if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
 const pinnedBanner = el("banner").textContent;
 if (pinnedBanner.includes("回應中")) {
-  failures.push("a setting the unit overrides was reported as having taken effect");
+  failures.push("a setting the unit replaced after the restart was reported as having taken effect");
 }
-if (!pinnedBanner.includes("允許區網連線") || !pinnedBanner.includes("啟動旗標")) {
-  failures.push(`the owner was not told which settings the unit pins: ${pinnedBanner}`);
+if (!pinnedBanner.includes("自動喚醒")) {
+  failures.push(`the owner was not told which setting did not survive: ${pinnedBanner}`);
 }
-if (!pinnedBanner.includes("重裝")) failures.push("the owner was not told how to clear it");
-if (el("banner").className.includes("ok")) failures.push("a save that did not take effect was marked successful");
+if (!pinnedBanner.includes("單元檔") || !pinnedBanner.includes("重裝")) {
+  failures.push("the owner was not told the likely cause or how to clear it");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save that did not take effect was marked successful");
+}
+// Only what the owner asked for is judged, and each field the way the node
+// compares it.
+if (app.didNotStick({ autoWake: true }, unitPinned.saved).length !== 1) {
+  failures.push("a value that did not survive was not reported");
+}
+if (app.didNotStick({ discover: false }, unitPinned.saved).length !== 0) {
+  failures.push("a value that did survive was reported as lost");
+}
+if (app.didNotStick({ treatAsPrivate: ["10.0.0.0/8", "192.168.0.0/16"] },
+    { treatAsPrivate: ["192.168.0.0/16", "10.0.0.0/8"] }).length !== 0) {
+  failures.push("the same ranges in another order were reported as lost");
+}
+if (app.didNotStick({ treatAsPrivate: [] }, { treatAsPrivate: ["10.0.0.0/8"] }).length !== 1) {
+  failures.push("a withdrawal that did not take was not reported");
+}
+if (app.didNotStick({ peerListen: "127.0.0.1:7463" }, { peerListen: "" }).length !== 0) {
+  failures.push("the default address was reported as lost");
+}
+
+// R16b. A restart that fails is not a save that failed.
+withRestart(async () => { throw new Error("launchctl: Input/output error"); });
+settingsAnswer = async () => unitPinned;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-discover").checked = true;
+saveCalls = [];
+saveAnswer = async () => ({ ...unitPinned, saved: { ...unitPinned.saved, discover: true }, restartRequired: true });
+await app.saveNodeSettings();
+await tick();
+const restartFailed = el("banner").textContent;
+if (restartFailed.includes("儲存節點設定失敗")) {
+  failures.push(`a failed restart was reported as a failed save: ${restartFailed}`);
+}
+if (!restartFailed.includes("設定已儲存")) {
+  failures.push(`the owner was not told the save itself landed: ${restartFailed}`);
+}
+if (!restartFailed.includes("自己重啟")) {
+  failures.push("the owner was not told what to do about the node still running old settings");
+}
+if (saveCalls.length !== 1) failures.push(`the write was sent ${saveCalls.length} times`);
+withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
 
 // R17. The node is read again after the restart, so the form stops describing
 //      the process that has been replaced.
@@ -760,14 +816,26 @@ await app.loadNodeSettings();
 await tick();
 const readsBefore = reads;
 el("node-discover").checked = false;
-saveAnswer = async () => ({
-  ...freshView,
-  saved: { ...freshView.saved, discover: false },
-  restartRequired: true,
+const savedView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { discover: "remembered" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
   message: "saved; these take effect when the node next starts",
-});
+};
+saveAnswer = async () => savedView;
+// The re-read must agree with the write, or the form would show the owner's
+// change reverted — which is R16's case, not this one. Still counted, because
+// that a re-read happens at all is what this section is about.
+settingsAnswer = async () => { reads += 1; return savedView; };
 await app.saveNodeSettings();
 await tick();
+if (el("node-discover").checked) {
+  failures.push("after the restart the form shows the value the owner had just turned off");
+}
+if (el("banner").textContent.includes("又變回原來的值")) {
+  failures.push("a save that did stick was reported as replaced");
+}
 if (reads <= readsBefore) {
   failures.push("the node was not read again after the restart, so the form still describes the dead process");
 }
