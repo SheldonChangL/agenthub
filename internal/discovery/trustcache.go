@@ -24,10 +24,21 @@ import (
 // exactly how long an answer may be wrong: a node revoked while its
 // announcements are arriving can stay excluded from the candidate list, and can
 // keep having its address recorded, for up to three seconds after the revoke.
-// That bound has to be invisible to a person, and it is — an open pairing
-// window re-announces every 20 seconds (pairing.AnnounceInterval), so waiting
-// for the next packet already dominates this by most of a minute, and the
-// pairing flow is a human walking between two machines.
+//
+// Three seconds is the whole of that bound, and it does not move with how fast
+// packets arrive: an entry is stamped now+TTL when it is written, a hit never
+// pushes that stamp forward, and expire() runs at the top of both readers, so
+// the entry is gone on the first read past its deadline no matter how many
+// packets landed in between. A sender flooding the group buys itself nothing
+// but reads it does not get. (What the 20-second announce interval of an open
+// pairing window says is only that in ordinary use the wait for the next packet
+// dominates, so the three seconds are never reached — it is not what bounds
+// them, because an attacker picks their own send rate.)
+//
+// Note what the bound is not attached to: unpairing does not invalidate these
+// entries explicitly. This TTL is the only thing that ends a stale exclusion,
+// which is why it is pinned by a test against a real duration rather than
+// against its own symbol — see TestTheTrustCacheTTLStaysWithinItsClaimedBound.
 //
 // Not longer, because that bound is the entire cost of the cache and it only
 // buys fewer reads against a flood that is a nuisance rather than a denial of

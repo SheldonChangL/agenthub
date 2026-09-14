@@ -37,6 +37,7 @@ import (
 
 	"agenthub.local/agenthub/internal/identity"
 	"agenthub.local/agenthub/internal/label"
+	"agenthub.local/agenthub/internal/registry"
 )
 
 const (
@@ -266,8 +267,12 @@ func (b *Browser) trustedNodes(ctx context.Context) (map[string]struct{}, error)
 	return trusted, nil
 }
 
-// Apply records a single announcement. It reads the trust store itself, so
-// ApplyAll is what the packet path uses.
+// Apply records a single announcement.
+//
+// It is ApplyAll with a packet of one, sharing the same cached trusted set, so
+// inside trustCacheTTL it may read the trust store not at all. The packet path
+// still calls ApplyAll directly: a packet is read as a whole under one lock, and
+// the count ApplyAll returns is per packet.
 func (b *Browser) Apply(ctx context.Context, announcement Announcement) (bool, error) {
 	applied, err := b.ApplyAll(ctx, []Announcement{announcement})
 	return applied == 1, err
@@ -301,6 +306,22 @@ func (b *Browser) apply(ctx context.Context, trusted map[string]struct{}, announ
 		return false, nil
 	}
 	if err := b.resolver.SetNodeAddress(ctx, announcement.NodeID, announcement.Address); err != nil {
+		if errors.Is(err, registry.ErrNotFound) {
+			// The cached set is stale: this id was revoked since the last read,
+			// and the store is refusing to move a row that no longer exists.
+			// That is the cache being wrong in the one direction it is allowed
+			// to be wrong, not a failure. Reporting it would abort the packet,
+			// so the peers announced after this one — still paired — would lose
+			// their addresses, and it would log once per packet for as long as
+			// the revoked node kept announcing.
+			//
+			// Drop the cached set so the next packet asks the store again. What
+			// is left of this packet keeps using the set already read: a re-read
+			// here would sell a sender one trust read per revoked id it names,
+			// which is the amplification this cache exists to close.
+			b.trustedUntil = time.Time{}
+			return false, nil
+		}
 		return false, fmt.Errorf("record address for %q: %w", announcement.NodeID, err)
 	}
 	b.applied[announcement.NodeID] = announcement.Address
