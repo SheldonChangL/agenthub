@@ -60,6 +60,35 @@ boots the real markup and `app.js` against fake data.
 The desktop app is a separate Go module so Wails and CGo do not affect the
 cross-platform node or CLI builds.
 
+`wails build` also runs `build/bundle-binaries.sh` as a post-build hook, which
+builds `ah`, `agenthub-node` and `agenthub-mcp` for the same target (`.exe` on
+Windows) and copies them in beside the app executable — `Contents/MacOS` in the
+bundle, the unpacked directory on Linux and Windows — then seals the macOS
+bundle again, since adding files to a signed bundle invalidates its signature.
+
+Those copies are how the app finds them. The service panel runs `ah service`,
+the MCP dialog names `agenthub-mcp`, and both use the same search: the
+`AGENTHUB_AH` / `AGENTHUB_MCP` / `AGENTHUB_NODE` override, beside the
+executable, `Contents/Resources`, then this checkout's `bin/` — never PATH,
+because installing a launchd job or a systemd unit must not mean running
+whatever binary of that name happened to come first there. The checkout
+fallback is taken only from `desktop/build/bin` (or a `.app` under it): the
+`go.mod` check alone would have accepted any world-writable directory an app
+was dropped into. An override has to be a regular file with the execute bit,
+or it is passed over.
+
+The install also passes `--node-binary` explicitly, so the `ExecStart` written
+into the launchd job or systemd unit names the bundled `agenthub-node` rather
+than whatever `ah` would have found on PATH.
+
+`darwin/universal` is accepted and is what `wails` passes for a universal
+build: each command is built for both architectures and merged with `lipo`.
+Set `AGENTHUB_RELEASE` to stamp a tag into the bundled binaries. Signing is
+ad-hoc by default; `AGENTHUB_CODESIGN_IDENTITY` and `AGENTHUB_CODESIGN_FLAGS`
+(for example `--options runtime --timestamp`) are there for real signing (#66).
+The script can also be called on its own with `<goos>/<goarch>` and the path to
+the app executable.
+
 ## Current boundaries
 
 - Audience choices are implemented and persist across discovery. They decide the
