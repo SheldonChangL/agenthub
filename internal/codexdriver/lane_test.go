@@ -272,6 +272,41 @@ func TestAFailedWaitReleasesTheThread(t *testing.T) {
 	}
 }
 
+// A turn whose completion never comes does not hold the thread for ever.
+//
+// The connection dying is the failure with a signal; this is the one without.
+// app-server stays up, the turn is never reported as over, and nothing else in
+// this driver has an opinion about it — so the backstop is the only thing
+// standing between that and a session no message can ever wake again. Deleting
+// it (context.WithCancel in place of the timeout) passed both packages.
+func TestATurnThatNeverCompletesDoesNotHoldTheThreadForEver(t *testing.T) {
+	conversation := &recordingConversation{turnIDs: []string{"turn-1", "turn-2"}}
+	driver := NewWith(conversation)
+	driver.maxTurn = 20 * time.Millisecond
+
+	if err := driver.Drive(context.Background(), codexSession(), envelope("msg_1")); err != nil {
+		t.Fatal(err)
+	}
+	// turn-1 is never finished here. The fake honours the wait's context, as
+	// the real client does, so the backstop expiring is the only thing that can
+	// end this wait — and maxWait is untouched, so a message that gets through
+	// got through because the thread was released, not because it gave up.
+	second := make(chan error, 1)
+	go func() { second <- driver.Drive(context.Background(), codexSession(), envelope("msg_2")) }()
+	select {
+	case err := <-second:
+		if err != nil {
+			t.Fatalf("the next message after the backstop: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("a turn that never reported completing held the thread well past the %s "+
+			"backstop; this session would never be woken again", driver.maxTurn)
+	}
+	if got := conversation.started(); got != 2 {
+		t.Errorf("%d turns started; the message let through never reached the thread", got)
+	}
+}
+
 // app-server answering with a turn that was already running is reported, not
 // reported as a success.
 //
