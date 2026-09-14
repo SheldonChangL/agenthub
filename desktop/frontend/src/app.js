@@ -63,7 +63,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     outbound: { messages: [], next: "", loading: false, error: "", session: null },
     wakes: { wakes: [], limits: null, loading: false, error: "", session: null },
     // Background photo + rain: the owner's switches, and the OS's reduce-motion.
-    ui: { backdrop: true, motion: true },
+    // The rain starts off. It costs a whole core on an Intel HD 520 (measured:
+    // 101.7% with it running, 2.4% with it off, #156), which is not something
+    // to spend on a machine whose owner has not asked for it. The photo is
+    // free by comparison and stays on.
+    ui: { backdrop: true, motion: false },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -114,7 +118,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     if (ui && typeof ui === "object") {
       state.ui.backdrop = ui.backdrop !== false;
-      state.ui.motion = ui.motion !== false;
+      // Opt-in, so a stored file written before the rain had a switch — or one
+      // with the key missing — leaves it off rather than on.
+      state.ui.motion = ui.motion === true;
     }
   }
 
@@ -132,7 +138,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function savePrefs() {
     try {
       globalThis.localStorage?.setItem(F.PREFS_KEY, F.serializePrefs(state));
-      globalThis.localStorage?.setItem(UI_PREFS_KEY, JSON.stringify(state.ui));
+      globalThis.localStorage?.setItem(UI_PREFS_KEY, JSON.stringify({ ...state.ui }));
     } catch {
       // Nothing to do: the table still works, it just forgets on restart.
     }
@@ -463,6 +469,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
+    el("appearance-state").textContent = describeBackdropState();
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -470,11 +477,36 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // applyBackdrop paints the owner's switches onto <body>; the stylesheet does
   // the rest, and prefers-reduced-motion wins over the motion switch there.
+  // The backdrop is the owner's two switches and nothing else. An earlier
+  // version measured frame pacing and dropped the rain by itself; it is gone.
+  // Guessing produced a background that changed state without being asked,
+  // and the honest version of that judgement is a switch that starts off.
+  function backdropPlan() {
+    const photo = state.ui.backdrop;
+    const rain = photo && state.ui.motion;
+    return { photo, rain };
+  }
+
   function applyBackdrop() {
+    const plan = backdropPlan();
+    // Built the first time it is switched on, not at boot: the rain starts off,
+    // and an owner who leaves it off should never pay for 56 columns of DOM.
+    // Before the <body> guard, because whether the columns are needed has
+    // nothing to do with whether there is a body to put classes on.
+    if (plan.rain) buildRain();
     const body = document.body;
     if (!body?.classList) return;
-    body.classList.toggle("no-backdrop", !state.ui.backdrop);
-    body.classList.toggle("no-motion", !state.ui.motion);
+    body.classList.toggle("no-backdrop", !plan.photo);
+    body.classList.toggle("no-motion", !plan.rain);
+  }
+
+  // describeBackdropState is what the settings page says out loud: what is
+  // being drawn, and what the moving one costs, so the switch is a decision
+  // and not a surprise.
+  function describeBackdropState() {
+    if (!state.ui.backdrop) return "已關閉：純深色底。";
+    if (!state.ui.motion) return "照片顯示中。數字雨預設關閉：它在較舊的內顯上會吃掉整顆 CPU 核心。";
+    return "照片與數字雨都在顯示。數字雨在較舊的內顯上會吃掉整顆 CPU 核心；覺得風扇吵就關掉它。";
   }
 
   // buildRain makes the falling 0/1 columns once. Pure CSS animation after
@@ -3097,7 +3129,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   loadPrefs();
   el("search").value = state.search;
   applyBackdrop();
-  buildRain();
   if (backdropUrl) el("backdrop-photo").src = backdropUrl;
   // macOS draws the window buttons over the page's top-left corner, so the
   // title bar has to leave room for them. Asked of the host rather than guessed
@@ -3126,6 +3157,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
+    backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;

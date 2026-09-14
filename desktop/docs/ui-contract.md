@@ -365,3 +365,23 @@
   `outbound_test.go` 的 `TestOutboundForwardsTheSessionFilterAndDropsABlankOne` 釘住這個行為。
 - `session` 給兩次是 `400`（「session was given more than once」，#139）。本機 client 用 `url.Values.Set`，
   一個鍵只會有一個值，碰不到這個錯；改成 `Add` 才會。
+
+## 9. 背景特效：數字雨是 opt-in（#156，2026-09-14 實測）
+
+在 Ubuntu 測試機（HP ProBook，Intel HD 520，WebKitGTK 2.40，`wails build -tags webkit2_40`）上量到的：
+
+| 狀態 | 驗證方式 | WebKitWebProcess | app 全樹總計 |
+|---|---|---|---|
+| 數字雨執行中 | 相隔 1 秒兩張截圖 md5 不同（畫面確實在動） | 100.2% | **101.7%** |
+| 數字雨關閉、照片留著 | 截圖靜止、貓可見 | 2.0% | **2.4%** |
+
+量測方法：`/proc/<pid>/stat` 的 utime+stime，對 app 進程與其子進程（WebKitWebProcess、WebKitNetworkProcess）取 30 秒差值；每次都確認視窗 pid 的 `/proc/pid/exe` 指向剛 build 出來的 binary。成本來源是 56 個各自動畫、帶雙層 text-shadow 發光的 column，在軟體合成路徑上逐幀重新光柵化。
+
+契約：
+
+1. `state.ui.motion` 預設 `false`。讀舊的 localStorage 時用 `ui.motion === true`（不是 `!== false`），否則所有既有安裝都會在升級後自動把雨打開。
+2. 沒有任何自動降級。曾經有一版會量幀距、自己把雨關掉，並把結果寫進 localStorage；它會在使用者沒要求的情況下改變背景，而且一旦降級就永久記住。已整個移除，`autoTier` / `autoReason` / `calibrateBackdrop` / `measureFramePacing` 都不存在了。
+3. 56 個 column 只在雨真的要畫時才建（`applyBackdrop()` 裡，在 `document.body` 判斷之前）。
+4. 設定頁那句話兩種狀態都要講出成本，字串含「CPU」；關閉時另含「預設關閉」。`frontend/test/backdrop-switches.mjs` 逐字斷言。
+5. `index.html` 的 `#toggle-motion` 不得帶 `checked`（`TestFrontendMotionToggleStartsUnchecked`）。
+6. `style.css` 不得有任何 `backdrop-filter:`（`TestFrontendDoesNotBlurOverMovingPixels`）。注意：毛玻璃**沒有**被單獨量過，這條靠推論成立，不要對外宣稱它有數字。
