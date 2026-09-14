@@ -69,6 +69,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     service: null,
     // The node's remembered start-up settings, as the node last answered.
     nodeSettings: null,
+    // Whether a read has been attempted for this view; a failure leaves
+    // nodeSettings null, and without this the panel would re-read on every
+    // repaint.
+    nodeSettingsTried: false,
     nodePrivateSuggested: "",
     nodeReachable: false,
     serviceFormTouched: false,
@@ -383,7 +387,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       renderSettings();
       // Read once when the view first opens, then only when asked: these
       // change when the owner changes them, not on their own.
-      if (!state.nodeSettings) loadNodeSettings().catch(() => {});
+      // Once per view, not once per render: a failed read leaves the baseline
+      // null on purpose, and re-firing on every repaint would reset the panel
+      // to 「讀取中…」 on every background poll.
+      if (!state.nodeSettings && !state.nodeSettingsTried) {
+        state.nodeSettingsTried = true;
+        loadNodeSettings().catch(() => {});
+      }
     }
 
     const rows = visible();
@@ -2794,12 +2804,34 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // service" from an absent read would skip the restart and tell the owner
       // to do it themselves, on a machine where it is installed.
       if (!state.service) await loadService();
-      const installed = Boolean(state.service?.installed);
-      let restarted = null;
+      // The status read and the restart are both allowed to fail without
+      // turning this into "the save failed": the write already landed, and an
+      // owner told otherwise will try again and re-send it.
+      let installed = Boolean(state.service?.installed);
+      if (!state.service) {
+        try {
+          await loadService();
+          installed = Boolean(state.service?.installed);
+        } catch {
+          installed = false;
+        }
+      }
       if (installed) {
-        restarted = await api.RestartService();
-        showNodeSettingsOutput(restarted);
-        await loadService();
+        try {
+          const restarted = await api.RestartService();
+          showNodeSettingsOutput(restarted);
+          await loadService();
+        } catch (error) {
+          if (sequence > nodeSettingsApplied) {
+            nodeSettingsApplied = sequence;
+            applyNodeSettings(view, await fetchLocalAddresses());
+          }
+          banner(
+            `設定已儲存，但重新啟動背景服務失敗：${error}。` +
+            "節點還在用舊設定跑，請自己重啟它，或到上面的背景服務區看狀態。",
+          );
+          return;
+        }
       }
 
       if (!installed) {
@@ -2819,8 +2851,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // been replaced, so its `settings`, `sources` and `restartRequired` are
       // all about a dead node — the form would still say "restart to apply"
       // after the restart, and name a command line that is gone.
-      //
-      // The re-read is also the only way to see the case below.
       const after = await readNodeSettingsAfterRestart();
       if (sequence > nodeSettingsApplied) {
         nodeSettingsApplied = sequence;
@@ -2833,21 +2863,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         applyNodeSettings(painted, await fetchLocalAddresses());
       }
 
-      // A flag in the service unit is given on EVERY start, so it overrides
-      // whatever was saved — `ah service install` says so in its own report
-      // (internal/cli/service.go). The node has just been restarted by this
-      // window, so a value still arriving as a flag and still differing from
-      // what is stored is one the unit is pinning: the save went in and changed
-      // nothing about the running node.
-      const pinned = after.view.error ? [] : pinnedByUnit(after.view);
-      if (pinned.length > 0) {
+      // Did what the owner asked for survive the restart?
+      //
+      // A flag in the service unit is given on every start and the node stores
+      // what it was given, so a setting the unit carries is silently replaced a
+      // second or two after being saved. Nothing in the node's answer says that
+      // happened — the values simply are not the ones that were sent — so the
+      // only honest check is to compare them.
+      const lost = after.view.error ? [] : didNotStick(patch, after.view.saved);
+      if (lost.length > 0) {
         banner(
-          `設定已儲存，服務也重新啟動了，但 ${pinned.join("、")} 仍然被背景服務的啟動旗標蓋過去——` +
-          "單元檔每次啟動都會帶那些旗標，所以這幾項存了也不會生效。" +
-          "要讓它們生效，請在上面「安裝為背景服務」重裝一次（重裝只會帶資料庫路徑）。",
+          `設定已儲存，服務也重新啟動了，但重啟後 ${lost.join("、")} 又變回原來的值。` +
+          "最可能的原因是背景服務的單元檔帶著這些啟動旗標：它每次啟動都會給，節點也會把它記下來，" +
+          "所以從這裡存的值會被蓋掉。請在上面「安裝為背景服務」重裝一次（重裝只會帶資料庫路徑），再改一次。",
         );
         return;
       }
+
       // What `ah service status` says afterwards, not what was sent.
       //
       // This is the moment a node is most likely not to come back: the values
@@ -2883,12 +2915,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
-  // pinnedByUnit names the settings a freshly restarted node is still taking
-  // from a command line rather than from its own store.
-  function pinnedByUnit(view) {
-    const running = view.settings ?? {};
-    const saved = view.saved ?? {};
-    const sources = view.sources ?? {};
+  // didNotStick names the fields the owner asked for that the node is not
+  // holding once it has restarted.
+  //
+  // Observed, not inferred. The obvious cause is a flag baked into the service
+  // unit — it is given on every start and the node writes what it was given
+  // back into its own store (cmd/agenthub-node/main.go), so after the restart
+  // the stored value IS the unit's and nothing in the answer distinguishes it
+  // from a value the owner saved. An earlier version tried to spot it by
+  // comparing the running value against the stored one and could never fire,
+  // because the restart had already made them agree. Comparing what was asked
+  // for against what is there needs no theory about why.
+  function didNotStick(patch, savedAfter) {
     const labels = {
       peerListen: "對外位址",
       allowLan: "允許區網連線",
@@ -2896,9 +2934,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       treatAsPrivate: "視為私有網段",
       autoWake: "自動喚醒",
     };
-    return Object.keys(labels)
-      .filter((key) => sources[key] === "flag" && describeStored(running[key]) !== describeStored(saved[key]))
-      .map((key) => labels[key]);
+    return Object.keys(patch)
+      .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
+      .map((key) => labels[key] ?? key);
+  }
+
+  // sameSettingValue compares one field the way the node does: a list of ranges
+  // is a set, so the same ranges in another order are the same setting, and an
+  // empty peerListen is the default rather than a different address.
+  function sameSettingValue(asked, held, key) {
+    if (key === "treatAsPrivate") {
+      const left = [...(asked ?? [])].map((value) => String(value).trim()).sort();
+      const right = [...(held ?? [])].map((value) => String(value).trim()).sort();
+      return left.length === right.length && left.every((value, index) => value === right[index]);
+    }
+    if (key === "peerListen") {
+      return (asked || LOOPBACK_LISTEN) === (held || LOOPBACK_LISTEN);
+    }
+    return Boolean(asked) === Boolean(held);
   }
 
   function showNodeSettingsOutput(result) {
@@ -2944,7 +2997,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
     };
   }
-  el("node-settings-reload").onclick = () => loadNodeSettings().catch((error) => banner(`讀取節點設定失敗：${error}`));
+  el("node-settings-reload").onclick = () => (state.nodeSettingsTried = true, loadNodeSettings()).catch((error) => banner(`讀取節點設定失敗：${error}`));
   el("node-settings-save").onclick = () => saveNodeSettings().catch((error) => banner(`儲存節點設定失敗：${error}`));
   // Changing the address is the one moment this form offers a value; every
   // other handler only re-explains what is already on screen.
@@ -2993,7 +3046,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer, pinnedByUnit,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
