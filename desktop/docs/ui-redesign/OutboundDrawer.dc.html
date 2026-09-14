@@ -1,0 +1,107 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #0f1115; color: #e6e9ef; font: 13px/1.5 -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang TC", sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #4f8cff; } a:hover { color: #3f7bef; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; }
+    .muted { color: #8b93a5; }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font-size: 12.5px; white-space: nowrap; }
+    .btn.primary { background: #4f8cff; border-color: #4f8cff; color: #fff; }
+    .btn.ghost { background: transparent; }
+    .btn.danger { background: transparent; border-color: #5a3330; color: #f0908a; }
+    .pill { display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 999px; font-size: 11px; border: 1px solid #272c38; color: #8b93a5; }
+    .pill.active { color: #35c07a; border-color: rgba(53,192,122,.4); }
+    .pill.idle { color: #e0a33e; border-color: rgba(224,163,62,.4); }
+    .pill.public { color: #4f8cff; border-color: rgba(79,140,255,.45); background: rgba(79,140,255,.1); }
+    .pill.bad { color: #f0908a; border-color: rgba(229,84,75,.45); }
+    .titlebar { display: flex; align-items: center; gap: 14px; height: 52px; padding: 0 16px; border-bottom: 1px solid #272c38; background: #161920; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #35c07a; box-shadow: 0 0 0 3px rgba(53,192,122,.15); }
+    .tabs { display: flex; gap: 2px; margin-left: 18px; }
+    .tab { padding: 0 12px; height: 30px; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; color: #8b93a5; font-size: 12.5px; }
+    .tab.on { background: #1c202a; color: #e6e9ef; }
+    .tab .n { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: #272c38; color: #8b93a5; }
+    .statusbar { height: 26px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-top: 1px solid #272c38; font-size: 11px; color: #8b93a5; background: #161920; }
+    .stale { padding: 8px 10px; border-radius: 6px; border: 1px solid rgba(224,163,62,.35); background: rgba(224,163,62,.07); color: #e6e9ef; font-size: 12px; }
+    .fingerprint { font-family: "SF Mono", ui-monospace, Menlo, monospace; letter-spacing: .06em; }
+    .claimed { font-family: "SF Mono", ui-monospace, Menlo, monospace; color: #e0a33e; }
+    input.field, .field { height: 28px; padding: 0 10px; border-radius: 6px; border: 1px solid #272c38; background: #1c202a; color: #e6e9ef; font: inherit; font-size: 12.5px; }
+    .check { width: 14px; height: 14px; border-radius: 3px; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .check.on { background: #4f8cff; border-color: #4f8cff; }
+    .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #3a4152; background: #1c202a; display: inline-block; flex: none; }
+    .radio.on { border: 4px solid #4f8cff; background: #fff; }
+    .kbd { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid #272c38; color: #8b93a5; }
+  </style>
+</helmet>
+<div style="width: 520px; height: 800px; display: flex; flex-direction: column; background: #161920; border: 1px solid #272c38; border-radius: 10px; overflow: hidden; box-shadow: 0 24px 60px rgba(0,0,0,.5);">
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #272c38;">
+    <div class="mono" style="font-size: 13px; font-weight: 600;">claude:8f3a2c1e-agenthub</div>
+    <span class="btn ghost" style="height: 24px; padding: 0 8px;">關閉</span>
+  </div>
+
+  <div style="display: flex; gap: 2px; padding: 10px 18px 0;">
+    <span class="tab">收件匣 <span class="n">3</span></span>
+    <span class="tab on">送出紀錄</span>
+    <span class="tab">喚醒紀錄</span>
+  </div>
+
+  <div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; flex: 1;">
+    <div style="display: grid; grid-template-columns: 90px 1fr 78px 46px 70px; padding: 0 10px; height: 26px; align-items: center; font-size: 10px; letter-spacing: .08em; color: #8b93a5; font-weight: 600;">
+      <div>目的節點</div><div>目的 session</div><div>狀態</div><div>嘗試</div><div>更新</div>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1;">
+      <div style="border: 1px solid #272c38; border-radius: 6px; background: #0f1115; padding: 8px 10px;">
+        <div style="display: grid; grid-template-columns: 90px 1fr 78px 46px 70px; align-items: center;">
+          <div>ubuntu-lab</div>
+          <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">claude:3f1e…-node</div>
+          <div><span class="pill" style="color: #35c07a; border-color: rgba(53,192,122,.4);">delivered</span></div>
+          <div class="muted" style="font-size: 12px;">2</div>
+          <div class="muted" style="font-size: 12px;">20 秒前</div>
+        </div>
+      </div>
+      <div style="border: 1px solid #272c38; border-radius: 6px; background: #0f1115; padding: 8px 10px;">
+        <div style="display: grid; grid-template-columns: 90px 1fr 78px 46px 70px; align-items: center;">
+          <div>ubuntu-lab</div>
+          <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">codex:77ab…-bench</div>
+          <div><span class="pill">pending</span></div>
+          <div class="muted" style="font-size: 12px;">1</div>
+          <div class="muted" style="font-size: 12px;">2 分鐘前</div>
+        </div>
+      </div>
+      <div style="border: 1px solid rgba(229,84,75,.45); border-radius: 6px; background: rgba(229,84,75,.06); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: grid; grid-template-columns: 90px 1fr 78px 46px 70px; align-items: center;">
+          <div>win-bench</div>
+          <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">claude:9a4c…-fw</div>
+          <div><span class="pill bad">refused</span></div>
+          <div class="muted" style="font-size: 12px;">3</div>
+          <div class="muted" style="font-size: 12px;">6 分鐘前</div>
+        </div>
+        <div class="mono muted" style="font-size: 11px; line-height: 1.5;">
+          rate limit: node_04f7b2c9d1e8a3560b7d exceeded pair window (5/5 in 60s); last attempt at 2026-09-11T09:14:02Z from peer handshake retry loop, backing off with jitter before next send, see outbound queue depth 12, dropping after 3 attempts…
+          <span style="color: #4f8cff; font-size: 11px; margin-left: 4px;">展開</span>
+        </div>
+      </div>
+      <div style="border: 1px solid #272c38; border-radius: 6px; background: #0f1115; padding: 8px 10px;">
+        <div style="display: grid; grid-template-columns: 90px 1fr 78px 46px 70px; align-items: center;">
+          <div>ubuntu-lab</div>
+          <div class="mono" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">claude:3f1e…-node</div>
+          <div><span class="pill" style="color: #35c07a; border-color: rgba(53,192,122,.4);">delivered</span></div>
+          <div class="muted" style="font-size: 12px;">1</div>
+          <div class="muted" style="font-size: 12px;">41 分鐘前</div>
+        </div>
+      </div>
+    </div>
+
+    <span class="btn ghost" style="width: 100%; justify-content: center;">載入更多</span>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

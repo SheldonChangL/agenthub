@@ -488,3 +488,72 @@ func isLoopbackHost(host string) bool {
 	}
 	return strings.HasPrefix(host, "127.")
 }
+
+// OutboundView is the send log as the owner sees it: one page, plus whether it
+// could be read at all.
+//
+// Error is separate from an empty list for the same reason it is on InboxView.
+// "Nothing has been sent from this machine" and "this node did not answer" are
+// different facts, and they arrive on the wire as the same empty table unless
+// something says which one happened.
+type OutboundView struct {
+	OutboundPage
+	Error string `json:"error,omitempty"`
+}
+
+// Outbound reads what this node has queued for peers, newest first.
+//
+// `ah send` answers "queued" and nothing more, so without this an owner who has
+// closed that terminal has no way to ask what became of a message. A session
+// narrows the list to what that local session sent; empty asks for every
+// session on this node. A limit of zero asks for the node's page size; after is
+// the `next` cursor from the previous page, empty to start at the newest — and
+// a continuation must repeat the same session, or the second page is the
+// node-wide one.
+//
+// A failure is returned in Error rather than thrown, because a thrown error
+// reaches a banner while the table below it keeps showing the last good page as
+// though it were current.
+func (a *App) Outbound(session string, limit int, after string) OutboundView {
+	view := OutboundView{OutboundPage: OutboundPage{Messages: []OutboundMessage{}}}
+	activeClient, _ := a.current()
+	page, err := activeClient.outbound(a.ctx, session, limit, after)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.OutboundPage = page
+	if view.Messages == nil {
+		view.Messages = []OutboundMessage{}
+	}
+	return view
+}
+
+// WakesView is the wake trail plus the limits that produced its refusals, and
+// whether the read succeeded.
+type WakesView struct {
+	WakesPage
+	Error string `json:"error,omitempty"`
+}
+
+// Wakes reads what has woken agents on this node, newest first, optionally for
+// one local session.
+//
+// The refusals are part of the answer: a quiet trail and a limit doing its job
+// look the same from outside and call for different actions. The session id is
+// passed to the node as given — the node refuses one that is not local, which
+// is a better answer than an empty list that reads as "nothing happened".
+func (a *App) Wakes(session string, limit int) WakesView {
+	view := WakesView{WakesPage: WakesPage{Wakes: []WakeEvent{}}}
+	activeClient, _ := a.current()
+	page, err := activeClient.wakes(a.ctx, session, limit)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.WakesPage = page
+	if view.Wakes == nil {
+		view.Wakes = []WakeEvent{}
+	}
+	return view
+}

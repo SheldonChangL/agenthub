@@ -6,31 +6,24 @@
 // governed what could be read; one of them now starts turns in an agent with
 // nobody watching.
 //
-//   node frontend/test/audience-dialog.mjs [path-to-main.js]
+//   node frontend/test/audience-dialog.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+const { configure, boot } = await import("../src/app.js");
 
 const failures = [];
 const el = (id) => document.getElementById(id);
 const noop = async () => ({});
-const Overview = async () => ({ sessions: [], nodes: [], node: {} });
-
-const module = new Function(
-  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing",
-  source + "\nreturn { openAudienceModal, readAudienceForm, state };",
-)(document, () => 0, Overview, noop, noop, noop, noop, noop,
-  async () => ({ availability: "unknown", candidates: [] }), noop, noop);
+configure({
+  Overview: async () => ({ sessions: [], nodes: [], node: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }),
+  OpenPairing: noop, ClosePairing: noop,
+});
+const module = boot({ start: false });
 
 const flags = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
 
