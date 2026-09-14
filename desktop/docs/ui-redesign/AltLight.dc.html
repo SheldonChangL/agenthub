@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #f4f4f2; color: #1f2328; font: 12px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", "PingFang TC", sans-serif; }
+    a { color: #0b5cad; } a:hover { color: #08447f; }
+    .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11px; }
+    .muted { color: #6b7280; }
+    .wf { border: 1.5px solid #8a8f98; border-radius: 3px; background: #fff; }
+    .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 3px; border: 1.5px solid #8a8f98; font-size: 11px; }
+    .tag.on { background: #1f2328; color: #fff; border-color: #1f2328; }
+  </style>
+</helmet>
+<div style="width: 900px; height: 560px; display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #f4f4f2; overflow: hidden;">
+  <div style="display: flex; align-items: center; gap: 12px;">
+    <div style="font-weight: 700; font-size: 13px;">AgentHub</div>
+    <div class="wf" style="display: flex; gap: 2px; padding: 2px;"><span class="tag on">本機</span><span class="tag" style="border: none;">區網</span><span class="tag" style="border: none;">設定</span></div>
+    <div style="flex: 1;"></div>
+    <div class="wf" style="width: 220px; height: 26px; display: flex; align-items: center; padding: 0 8px;" ><span class="muted">搜尋…</span></div>
+    <div class="wf" style="height: 26px; padding: 0 10px; display: flex; align-items: center;">重新掃描</div>
+  </div>
+
+  <div style="display: flex; gap: 10px; flex: 1; overflow: hidden;">
+    <div class="wf" style="width: 170px; padding: 10px; display: flex; flex-direction: column; gap: 12px;">
+      <div><div class="muted" style="font-size: 10px; font-weight: 700; letter-spacing: .06em;">PROVIDER</div><div style="display: flex; flex-direction: column; gap: 4px; margin-top: 6px;"><div style="display: flex; justify-content: space-between;"><span>☑ Claude</span><span class="muted">9</span></div><div style="display: flex; justify-content: space-between;"><span>☐ Codex</span><span class="muted">5</span></div></div></div>
+      <div><div class="muted" style="font-size: 10px; font-weight: 700; letter-spacing: .06em;">狀態</div><div style="display: flex; flex-direction: column; gap: 4px; margin-top: 6px;"><div style="display: flex; justify-content: space-between;"><span>☑ active</span><span class="muted">3</span></div><div style="display: flex; justify-content: space-between;"><span>☑ idle</span><span class="muted">4</span></div><div style="display: flex; justify-content: space-between;"><span>☐ inactive</span><span class="muted">2</span></div></div></div>
+      <div><div class="muted" style="font-size: 10px; font-weight: 700; letter-spacing: .06em;">公開對象</div><div style="display: flex; flex-direction: column; gap: 4px; margin-top: 6px;"><div style="display: flex; justify-content: space-between;"><span>☐ 所有已配對</span><span class="muted">2</span></div><div style="display: flex; justify-content: space-between;"><span>☐ 指定節點</span><span class="muted">3</span></div><div style="display: flex; justify-content: space-between;"><span>☐ 不公開</span><span class="muted">4</span></div></div></div>
+      <div style="flex: 1;"></div>
+      <div class="muted" style="font-size: 11px;">符合 7 / 14 · 清除</div>
+    </div>
+
+    <div class="wf" style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 26px; align-items: center; padding: 0 8px; border-bottom: 1.5px solid #8a8f98; font-size: 10px; font-weight: 700; letter-spacing: .06em; color: #6b7280;"><div>☐</div><div>SESSION</div><div>狀態</div><div>公開對象</div><div>工作目錄</div><div>最後活動 ▼</div><div></div></div>
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 28px; align-items: center; padding: 0 8px; border-bottom: 1px solid #d6d8dc; background: #e8eef7;"><div>☑</div><div class="mono">claude · 8f3a2c1e-agenthub</div><div>active</div><div>所有已配對</div><div class="mono muted">~/Projects/others/agenthub</div><div class="muted">12 秒前</div><div>✉ 3</div></div>
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 28px; align-items: center; padding: 0 8px; border-bottom: 1px solid #d6d8dc; background: #e8eef7;"><div>☑</div><div class="mono">claude · 41d9e7b0-prm-flow</div><div>active</div><div>2 個節點</div><div class="mono muted">~/Projects/jet/prm-tools</div><div class="muted">1 分鐘前</div><div>✉</div></div>
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 28px; align-items: center; padding: 0 8px; border-bottom: 1px solid #d6d8dc;"><div>☐</div><div class="mono">codex · c2b8d114-serialwrap</div><div>active</div><div class="muted">不公開</div><div class="mono muted">~/Projects/others/serialwrap</div><div class="muted">3 分鐘前</div><div>✉</div></div>
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 28px; align-items: center; padding: 0 8px; border-bottom: 1px solid #d6d8dc;"><div>☐</div><div class="mono">claude · 7e02aa93-desktop</div><div>idle</div><div>所有已配對</div><div class="mono muted">~/Projects/others/agenthub/desktop</div><div class="muted">18 分鐘前</div><div>✉ 1</div></div>
+      <div style="display: grid; grid-template-columns: 28px 1fr 70px 110px 1fr 80px 40px; height: 28px; align-items: center; padding: 0 8px; border-bottom: 1px solid #d6d8dc;"><div>☐</div><div class="mono">claude · b61f0d5c-patents</div><div>idle</div><div class="muted">指定節點（無）</div><div class="mono muted">~/Projects/jet/patent-search</div><div class="muted">42 分鐘前</div><div>✉</div></div>
+      <div style="flex: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-top: 1.5px solid #8a8f98; background: #fafafa;"><span>已選取 2</span><span class="muted">全選 7</span><div style="flex: 1;"></div><span class="tag on">設定公開對象…</span><span class="tag">收回</span></div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

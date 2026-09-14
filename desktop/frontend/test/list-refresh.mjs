@@ -11,20 +11,12 @@
 // intervals and load() itself — rather than a renderer in isolation, since the
 // defect lived in the wiring.
 //
-//   node frontend/test/list-refresh.mjs [path-to-main.js]
+//   node frontend/test/list-refresh.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-
-let source = fs.readFileSync(target, "utf8");
-source = source
-  .replace(/^import[\s\S]*?;\s*$/m, "")
-  .replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
+globalThis.document = document;
+globalThis.confirm = () => true;
 
 const failures = [];
 const el = (id) => document.getElementById(id);
@@ -35,6 +27,7 @@ const fakeSetInterval = (fn, ms) => {
   ticks.push({ fn, ms });
   return ticks.length;
 };
+globalThis.setInterval = fakeSetInterval;
 
 const session = (id) => ({
   id,
@@ -86,12 +79,12 @@ const Overview = async () => {
 const noop = async () => ({});
 const Pairing = async () => ({ availability: "unknown", candidates: [] });
 
-const scope = new Function(
-  "document", "setInterval", "Overview", "Discover", "SetAudience", "TrustNode", "RevokeNode",
-  "Heartbeat", "Pairing", "OpenPairing", "ClosePairing", "Inbox", "ClearInbox", "confirm",
-  source + "\nreturn { state, load, render };"
-)(document, fakeSetInterval, Overview, noop, noop, noop, noop, noop, Pairing, noop, noop,
-  noop, noop, () => true);
+const { configure, boot } = await import("../src/app.js");
+configure({
+  Overview, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+  Heartbeat: noop, Pairing, OpenPairing: noop, ClosePairing: noop, Inbox: noop, ClearInbox: noop,
+});
+const scope = boot();
 
 const { state } = scope;
 // replaceChildren takes a fragment, so the rows are one level down. Counted off

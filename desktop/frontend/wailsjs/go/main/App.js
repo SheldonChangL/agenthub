@@ -38,12 +38,20 @@ export function MCPConfig(arg1) {
   return window['go']['main']['App']['MCPConfig'](arg1);
 }
 
+export function NodeSettings() {
+  return window['go']['main']['App']['NodeSettings']();
+}
+
 export function NodeURL() {
   return window['go']['main']['App']['NodeURL']();
 }
 
 export function OpenPairing(arg1) {
   return window['go']['main']['App']['OpenPairing'](arg1);
+}
+
+export function Outbound(arg1, arg2, arg3) {
+  return window['go']['main']['App']['Outbound'](arg1, arg2, arg3);
 }
 
 export function Overview() {
@@ -54,8 +62,16 @@ export function Pairing() {
   return window['go']['main']['App']['Pairing']();
 }
 
+export function RestartService() {
+  return window['go']['main']['App']['RestartService']();
+}
+
 export function RevokeNode(arg1) {
   return window['go']['main']['App']['RevokeNode'](arg1);
+}
+
+export function SaveNodeSettings(arg1) {
+  return window['go']['main']['App']['SaveNodeSettings'](arg1);
 }
 
 export function ServiceStatus() {
@@ -84,4 +100,8 @@ export function TrustNode(arg1, arg2, arg3, arg4, arg5) {
 
 export function UninstallService() {
   return window['go']['main']['App']['UninstallService']();
+}
+
+export function Wakes(arg1, arg2) {
+  return window['go']['main']['App']['Wakes'](arg1, arg2);
 }
