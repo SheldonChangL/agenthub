@@ -92,6 +92,17 @@ Section
 
     !insertmacro wails.webview2runtime
 
+    # A running agenthub-node.exe holds its own file open, and Windows refuses
+    # to overwrite a running executable — so on a reinstall or an upgrade the
+    # copy below fails unless the old one is stopped first. /F because the node
+    # has no window to close politely; it keeps no unflushed state of its own.
+    # Both are expected to fail on a first install, where there is nothing to
+    # stop, which is why neither result is checked.
+    nsExec::Exec 'taskkill /F /IM agenthub-node.exe'
+    Pop $0
+    nsExec::Exec 'taskkill /F /IM agenthub-desktop.exe'
+    Pop $0
+
     SetOutPath $INSTDIR
 
     !insertmacro wails.files
@@ -134,11 +145,28 @@ Section
     CreateShortCut "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk" "$INSTDIR\agenthub-node.exe" "" "" 0 SW_SHOWMINIMIZED
     !insertmacro wails.setShellContext
 
+    # Started here as well as at login, or the first thing after a successful
+    # install is a desktop app that says the node is unreachable until the user
+    # logs out and back in. The Startup shortcut above covers every later boot;
+    # this covers the only boot that has already happened.
+    #
+    # Exec, not ExecWait: the node runs until it is stopped, so waiting for it
+    # would hang the installer on its last page forever.
+    Exec '"$INSTDIR\agenthub-node.exe"'
+
     !insertmacro wails.writeUninstaller
 SectionEnd
 
 Section "uninstall"
     !insertmacro wails.setShellContext
+
+    # RMDir /r cannot remove a directory holding a running executable, so an
+    # uninstall with the node still running leaves the install directory and
+    # its binaries behind while reporting success.
+    nsExec::Exec 'taskkill /F /IM agenthub-node.exe'
+    Pop $0
+    nsExec::Exec 'taskkill /F /IM agenthub-desktop.exe'
+    Pop $0
 
     RMDir /r "$AppData\${PRODUCT_EXECUTABLE}" # Remove the WebView2 DataPath
 
