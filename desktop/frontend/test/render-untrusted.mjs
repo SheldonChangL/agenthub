@@ -5,29 +5,19 @@
 // holds live bindings to the Go process, so a working directory or session ID
 // containing HTML must render as text. Run with:
 //
-//   node frontend/test/render-untrusted.mjs [path-to-main.js]
+//   node frontend/test/render-untrusted.mjs
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const target = process.argv[2] ?? path.join(here, "..", "src", "main.js");
-
-let source = fs.readFileSync(target, "utf8");
-// Drop the module imports: the stylesheet and the Wails bindings do not exist
-// under node, and neither participates in rendering.
-source = source.replace(/^import[\s\S]*?;\s*$/m, "").replace(/^import\s+\{[\s\S]*?\}\s+from\s+".*?";\s*$/m, "");
-// Stop before the event wiring, which binds to elements the shim does not model.
-const wiring = source.indexOf("/* ---------------- wiring ---------------- */");
-if (wiring > 0) source = source.slice(0, wiring);
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+const { configure, boot } = await import("../src/app.js");
 
 const noop = async () => ({});
-const { renderRows } = new Function(
-  "document", "Overview", "Discover", "SetVisibility", "Heartbeat",
-  source + "\nreturn { renderRows };"
-)(document, noop, noop, noop, noop);
+configure({
+  Overview: noop, Discover: noop, SetAudience: noop, Heartbeat: noop,
+});
+const { renderRows } = boot({ start: false });
 
 const hostile = [
   {

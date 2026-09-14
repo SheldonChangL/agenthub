@@ -477,3 +477,151 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 	}
 	return data, nil
 }
+
+// OutboundMessage is one message this node has queued for a peer, as the list
+// endpoint reports it — which is without the body. The list exists to answer
+// "what became of what I sent", and a page of thirty-two-kilobyte bodies would
+// be a page this app refuses to read; the body stays where the single-message
+// endpoint serves it.
+type OutboundMessage struct {
+	ID                string    `json:"id"`
+	DestinationNodeID string    `json:"destinationNodeId"`
+	To                string    `json:"to"`
+	From              string    `json:"from,omitempty"`
+	State             string    `json:"state"`
+	Attempts          int       `json:"attempts"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+	// LastError is the node's own words about why delivery failed, and it is
+	// unbounded — whatever the transport said. A view that renders it has to
+	// assume it is long.
+	LastError string `json:"lastError,omitempty"`
+	WakeHops  int    `json:"wakeHops,omitempty"`
+}
+
+// OutboundPage is one page of the send log, newest first.
+type OutboundPage struct {
+	Messages []OutboundMessage `json:"messages"`
+	// Next is where the following page begins, empty when this page is the
+	// end. The node issues one whenever a page comes back full, so it is not
+	// by itself proof that another message exists.
+	Next string `json:"next,omitempty"`
+}
+
+// WakeEvent is one thing that woke — or failed to wake — an agent on this node.
+//
+// The refusals are here too, and deliberately: an owner seeing nothing may be
+// looking at a quiet node or at a limit doing its job, and those need different
+// actions. SourceSession is a label the sender chose for itself and identifies
+// nobody; only SourceNodeID is proven, by the envelope's signature.
+type WakeEvent struct {
+	ID                 string    `json:"id"`
+	MessageID          string    `json:"messageId"`
+	SourceNodeID       string    `json:"sourceNodeId,omitempty"`
+	SourceSession      string    `json:"sourceSession,omitempty"`
+	DestinationSession string    `json:"destinationSession"`
+	Hops               int       `json:"hops"`
+	Outcome            string    `json:"outcome"`
+	Detail             string    `json:"detail,omitempty"`
+	At                 time.Time `json:"at"`
+}
+
+// WakeLimits are the rules the refusals in the trail came from. Carried beside
+// the trail because a refusal is only legible next to the rule that produced
+// it. The windows are Go durations as strings, as the node formats them.
+type WakeLimits struct {
+	Hops          int    `json:"hops"`
+	Pair          int    `json:"pair"`
+	PairWindow    string `json:"pairWindow"`
+	Session       int    `json:"session"`
+	SessionWindow string `json:"sessionWindow"`
+	Node          int    `json:"node"`
+	NodeWindow    string `json:"nodeWindow"`
+}
+
+type WakesPage struct {
+	Wakes []WakeEvent `json:"wakes"`
+	// A pointer, so a node that answers without limits yields null rather than
+	// an all-zero rule set the UI would print as real numbers.
+	Limits *WakeLimits `json:"limits,omitempty"`
+}
+
+// defaultPageLimit is what the node uses when a caller names no limit, repeated
+// here so the request this app sends says the size it expects rather than
+// leaving it to whatever the node's default happens to be.
+const defaultPageLimit = 50
+
+// maxPageLimit is the node's ceiling. A larger ask is refused with HTTP 400
+// rather than clamped, so it is clamped here: a view asking for too much should
+// get the most the node will give, not an error page.
+const maxPageLimit = 200
+
+func clampPageLimit(limit int) int {
+	if limit <= 0 {
+		return defaultPageLimit
+	}
+	if limit > maxPageLimit {
+		return maxPageLimit
+	}
+	return limit
+}
+
+// outbound reads what this node has queued for peers, newest first, optionally
+// for one local session.
+//
+// The session id goes to the node rather than being filtered here: the node
+// resolves it and refuses one that is not local, and a page it narrowed is a
+// page whose `next` cursor still means something. Filtering a node-wide page in
+// this process instead would make an empty page ambiguous — nothing sent, or
+// nothing of this session's among the newest fifty.
+//
+// Trimmed, and omitted when empty: a `session` of only spaces is trimmed to
+// empty by the node too and silently answers with the node-wide list, which
+// would read here as "this session sent all of that" (agenthub#127).
+func (c *client) outbound(ctx context.Context, session string, limit int, after string) (OutboundPage, error) {
+	query := url.Values{}
+	query.Set("limit", fmt.Sprintf("%d", clampPageLimit(limit)))
+	if session = strings.TrimSpace(session); session != "" {
+		query.Set("session", session)
+	}
+	if after = strings.TrimSpace(after); after != "" {
+		query.Set("after", after)
+	}
+	body, err := c.request(ctx, http.MethodGet, "/v1/outbound?"+query.Encode(), nil)
+	if err != nil {
+		return OutboundPage{}, err
+	}
+	var page OutboundPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		return OutboundPage{}, fmt.Errorf("decode outbound page: %w", err)
+	}
+	if page.Messages == nil {
+		page.Messages = []OutboundMessage{}
+	}
+	return page, nil
+}
+
+// wakes reads the wake trail, newest first, optionally for one local session.
+//
+// The session id is passed through as the owner gave it: the node resolves it
+// and refuses one that is not local, which is a better answer than an empty
+// list that reads as "nothing happened".
+func (c *client) wakes(ctx context.Context, session string, limit int) (WakesPage, error) {
+	query := url.Values{}
+	query.Set("limit", fmt.Sprintf("%d", clampPageLimit(limit)))
+	if session = strings.TrimSpace(session); session != "" {
+		query.Set("session", session)
+	}
+	body, err := c.request(ctx, http.MethodGet, "/v1/wakes?"+query.Encode(), nil)
+	if err != nil {
+		return WakesPage{}, err
+	}
+	var page WakesPage
+	if err := json.Unmarshal(body, &page); err != nil {
+		return WakesPage{}, fmt.Errorf("decode wake trail: %w", err)
+	}
+	if page.Wakes == nil {
+		page.Wakes = []WakeEvent{}
+	}
+	return page, nil
+}

@@ -19,13 +19,43 @@ that reason.
    loopback `AGENTHUB_URL` before launching the desktop app.
 2. Install Wails v2 for development builds.
 
+## Window layout
+
+Three views behind the title-bar tabs:
+
+- **本機 session** — the table. Filters are three titled groups (provider,
+  status, audience): chips within a group OR, groups AND, and each chip's count
+  is what it would match with the other groups still applied. Column headers
+  sort; the default is last activity, newest first. Filters, sort and search
+  persist in `localStorage`. Selecting rows floats an action bar over the
+  table. Each row has three actions: the inbox drawer (with 送出紀錄 and
+  喚醒紀錄 tabs reading `/v1/outbound` and `/v1/wakes`), 「MCP 設定」 (copies
+  the row's `.mcp.json`), and `resume` (copies `claude --resume <id>` or
+  `codex resume <id>`).
+- **區網** — paired nodes with presence and a red mark when a node has no
+  recorded address; the pairing window and the advertising machines open as a
+  drawer from the list's foot.
+- **設定** — the background service panel, this node's identity (id,
+  fingerprint, copyable public key) and appearance switches for the backdrop
+  photo and the falling digits (which also stop under `prefers-reduced-motion`).
+
+The functional contract the redesign was built against, including the copy the
+tests assert verbatim, is `docs/ui-contract.md`; the design canvas sources are
+under `docs/ui-redesign/`.
+
 ## Develop and build
 
 ```sh
-go test ./...
+go test ./...          # includes the frontend static checks and runs the node tests
 wails dev
 wails build
 ```
+
+Frontend tests import `frontend/src/app.js` directly: `configure()` injects
+fake bindings and `boot({ start: false })` wires the DOM without starting the
+intervals. Run them with `npm test` in `frontend/`. To look at the window
+without a node, `npx vite` in `frontend/` and open `/dev/mock.html`, which
+boots the real markup and `app.js` against fake data.
 
 The desktop app is a separate Go module so Wails and CGo do not affect the
 cross-platform node or CLI builds.
