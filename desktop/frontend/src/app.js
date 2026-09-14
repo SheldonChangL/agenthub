@@ -3090,6 +3090,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   applyBackdrop();
   buildRain();
   if (backdropUrl) el("backdrop-photo").src = backdropUrl;
+  // macOS draws the window buttons over the page's top-left corner, so the
+  // title bar has to leave room for them. Asked of the host rather than guessed
+  // from the node's platform: they are different facts, and the node's is
+  // missing exactly when it cannot be reached.
+  api.HostPlatform?.()
+    .then((platform) => {
+      if (platform === "darwin") document.body?.classList?.add("mac");
+    })
+    .catch(() => {});
   // The rain is pure CSS, but the compositor still pays for it while the
   // window is hidden; pause it there and let it resume on return.
   if (typeof document.addEventListener === "function") {
