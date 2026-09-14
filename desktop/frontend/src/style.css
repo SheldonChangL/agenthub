@@ -679,6 +679,14 @@ tbody tr.sel { background: var(--accent-dim); }
 .serviceform .flagrows .why { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
 .serviceform .flagrows .why.warn { color: var(--amber); }
 .serviceform code { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+/* Where a settings value came from, beside the field it belongs to: a
+   "remembered" value and one pinned by this start-up's command line behave
+   differently on the next restart, and the form is the only place that shows
+   which is which. */
+.sourcetag { margin-left: 6px; color: var(--dim); font-weight: 400; }
+#node-settings-notice > div { margin-bottom: 8px; }
+#node-settings-state { font-size: 11.5px; }
 .serviceoutput {
   margin: 0;
   padding: 10px 12px;
