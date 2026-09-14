@@ -31,7 +31,7 @@ let settingsAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
 let saveAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
 let saveCalls = [];
 let restartCalls = 0;
-let serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l" };
+let serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
 
 configure({
   Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
@@ -117,6 +117,35 @@ if (!el("node-settings-hint").textContent.includes("重新啟動")) {
   failures.push("restartRequired did not reach the owner");
 }
 if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
+if (!el("banner").textContent.includes("回應中")) {
+  failures.push(`a restart that came back was not confirmed from the re-read status: ${el("banner").textContent}`);
+}
+
+// 4b. A node that does not come back is not announced as restarted. This is the
+//     moment it is most likely to happen: the values just saved are what it
+//     reads at start-up, and a service set to restart on failure crash-loops on
+//     a combination it refuses.
+serviceStatus = { supported: true, installed: true, running: false, pid: 0, unitPath: "/u", logHint: "/var/log/agenthub-node.log" };
+app.state.service = serviceStatus;
+el("node-autowake").checked = true;
+saveAnswer = async () => ({ settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: {}, restartRequired: true });
+await app.saveNodeSettings();
+await tick();
+const afterFailedRestart = el("banner").textContent;
+if (afterFailedRestart.includes("回應中")) {
+  failures.push("a node that never came back was announced as answering");
+}
+if (!afterFailedRestart.includes("沒有在執行")) {
+  failures.push(`a stopped service was not reported: ${afterFailedRestart}`);
+}
+if (!afterFailedRestart.includes("/var/log/agenthub-node.log")) {
+  failures.push("the log path was not offered when the node failed to come back");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a failed restart was marked successful, so it fades off screen");
+}
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
 
 // 5. A refusal keeps the node's words and leaves the form as typed.
 el("node-allow-lan").checked = false;

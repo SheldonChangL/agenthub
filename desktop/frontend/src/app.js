@@ -2553,8 +2553,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
       const result = await api.RestartService();
       showNodeSettingsOutput(result);
+      // What `ah service status` says afterwards, not what was sent.
+      //
+      // This is the moment a node is most likely not to come back: the values
+      // that were just saved are the ones it reads at start-up, and a service
+      // set to restart on failure will crash-loop on a combination it refuses.
+      // Announcing "restarted" because the restart command returned would be a
+      // claim about the one thing this window can actually check and did not.
       await loadService();
-      banner("設定已儲存，背景服務已重新啟動。", true);
+      const status = state.service ?? {};
+      if (status.running && status.nodeAnswering) {
+        banner("設定已儲存，背景服務已重新啟動並回應中。", true);
+        return;
+      }
+      // Not marked successful, so it stays on screen: the settings just saved
+      // are the first thing to suspect, and they are still on the form above.
+      banner(
+        status.running
+          ? "設定已儲存，服務在跑但節點還沒有回應。剛改的設定是第一個要懷疑的地方；" +
+            `看 log：${status.logHint || "（節點沒有給路徑）"}`
+          : "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；" +
+            `看 log：${status.logHint || "（節點沒有給路徑）"}`,
+      );
     });
   }
 
