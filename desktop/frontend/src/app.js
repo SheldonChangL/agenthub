@@ -2110,34 +2110,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("service-output").classList.add("hidden");
   }
 
-  // A non-loopback address needs allowLan, and a non-private one needs the
-  // range declared: filled in for the owner, and said out loud, rather than
-  // left for the node to refuse.
-  //
-  // The suggestion is the interface's own subnet, never a wider guess: the
-  // range governs who the node will deliver to, so it should be what the cable
-  // actually carries. It is remembered, so switching addresses replaces a
-  // suggestion the owner did not touch and leaves alone one they edited.
-  function syncNodeSettingsForm() {
-    const select = el("node-peerlisten");
-    const option = select.options[select.selectedIndex];
-    const lan = Boolean(option && option.value);
-    if (lan) el("node-allow-lan").checked = true;
-    el("node-lan-note").classList.toggle("hidden", !el("node-allow-lan").checked);
-    const privateField = el("node-private");
-    const note = el("node-private-note");
-    const untouched = privateField.value.trim() === "" || privateField.value.trim() === state.nodePrivateSuggested;
-    const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
-    if (untouched && suggestion) {
-      privateField.value = suggestion;
-      state.nodePrivateSuggested = suggestion;
-    }
-    note.textContent = suggestion
-      ? `已帶入這個介面自己的網段 ${suggestion}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
-      : "";
-    note.classList.toggle("hidden", !suggestion);
-  }
-
   function readServiceForm() {
     return {
       dbPath: el("service-db").value.trim(),
@@ -2386,6 +2358,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let host = value.slice(0, cut).trim().toLowerCase();
     if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
     if (host === "localhost" || host === "::1") return true;
+    // ::ffff:127.0.0.1 is what net.ParseIP gives an IPv4-mapped address, and
+    // Go's IsLoopback accepts it; the rule this follows is the node's.
+    if (host.startsWith("::ffff:")) host = host.slice(7);
     return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
   }
 
@@ -2398,18 +2373,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     } catch (error) {
       view = { error: String(error) };
     }
+    // Both awaits happen before anything is touched. Painting used to await in
+    // the middle of itself, so two overlapping reads ran interleaved: the
+    // baseline ended up from one and the form from the other, and the next save
+    // wrote fields the owner never touched.
+    const addresses = view.error ? { list: [], failure: "" } : await fetchLocalAddresses();
     if (sequence <= nodeSettingsApplied) return;
     nodeSettingsApplied = sequence;
-    await applyNodeSettings(view);
+    applyNodeSettings(view, addresses);
   }
 
-  // applyNodeSettings paints the WHOLE form from the node's answer.
+  // fetchLocalAddresses never throws: a failure is a thing to say, not a thing
+  // to stop the form appearing.
+  async function fetchLocalAddresses() {
+    try {
+      return { list: (await api.LocalAddresses()) ?? [], failure: "" };
+    } catch (error) {
+      return { list: [], failure: String(error) };
+    }
+  }
+
+  // applyNodeSettings paints the WHOLE form from the node's answer, in one go.
   //
   // Never a merge of just what was sent: turning allowLan off pulls peerListen
   // back to loopback in the same write, and since #134 any write does it when
   // the stored allowLan is already false. A form that kept its own idea of the
   // fields it did not send would show a LAN address the node no longer has.
-  async function applyNodeSettings(view) {
+  //
+  // Synchronous on purpose — see loadNodeSettings.
+  function applyNodeSettings(view, addresses = { list: [], failure: "" }) {
     const notice = el("node-settings-notice");
     notice.replaceChildren();
 
@@ -2435,11 +2427,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const saved = view.saved ?? {};
     el("node-settings-state").textContent = "";
 
-    await fillPeerListenOptions(settings.peerListen ?? "");
+    fillPeerListenOptions(settings.peerListen ?? "", addresses.list);
     el("node-allow-lan").checked = Boolean(settings.allowLan);
     el("node-discover").checked = Boolean(settings.discover);
     el("node-autowake").checked = Boolean(settings.autoWake);
     el("node-private").value = (settings.treatAsPrivate ?? []).join(", ");
+    // Whatever the node holds is the owner's, not a suggestion of ours.
     state.nodePrivateSuggested = "";
 
     for (const [id, key] of [
@@ -2462,9 +2455,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         "這台機器啟動時把記住的區網位址收回了本機，那個位址救不回來。" +
         "要再對外服務，請在上面重新選一個位址並把「允許區網連線」打開。"));
     }
+    // Said out loud rather than swallowed: without the list the owner sees only
+    // 「只在本機」 and no way to pick the address they are looking for, which
+    // reads as the app having decided for them.
+    if (addresses.failure) {
+      notice.append(
+        element("div", "stale", "讀不到這台機器的網路位址，所以上面只有本機選項可以選。"),
+        element("div", "muted", addresses.failure),
+      );
+    }
     el("node-settings-hint").textContent = view.restartRequired
       ? "節點只在啟動時讀這些值，存檔後要重新啟動才生效。"
       : "節點只在啟動時讀這些值。";
+    // A suggestion belongs to a change the owner makes, never to a repaint:
+    // the node's own ranges are on screen and must not be edited behind them.
     syncNodeSettingsForm();
   }
 
@@ -2504,14 +2508,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // An address the node has but this machine no longer offers is kept
   // selectable: a cable unplugged right now has not changed what the node is
   // configured to serve.
-  async function fillPeerListenOptions(current) {
+  function fillPeerListenOptions(current, addresses) {
     const select = el("node-peerlisten");
     select.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = `只在本機（${LOOPBACK_LISTEN}）`;
     placeholder.dataset.private = "1";
-    placeholder.dataset.loopback = "1";
     select.append(placeholder);
 
     const value = String(current ?? "");
@@ -2523,19 +2526,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       option.value = value;
       option.textContent = `${value} · 只在本機（非預設埠）`;
       option.dataset.private = "1";
-      option.dataset.loopback = "1";
       select.append(option);
     }
 
-    let addresses = [];
-    let failure = "";
-    try {
-      addresses = (await api.LocalAddresses()) ?? [];
-    } catch (error) {
-      failure = String(error);
-    }
     const offered = new Set();
-    for (const item of addresses) {
+    for (const item of addresses ?? []) {
       const address = `${item.address}:7463`;
       offered.add(address);
       const option = document.createElement("option");
@@ -2553,29 +2548,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       select.append(option);
     }
     select.value = isDefault ? "" : value;
-    // Said out loud rather than swallowed: without the list the owner sees only
-    // 「只在本機」 and no way to pick the address they are looking for, which
-    // reads as the app having decided for them.
-    if (failure) {
-      el("node-settings-notice").append(
-        element("div", "stale", "讀不到這台機器的網路位址，所以上面只有本機選項可以選。"),
-        element("div", "muted", failure),
-      );
-    }
   }
 
-  // syncNodeSettingsForm explains the combination on screen. It never changes a
-  // box the owner controls.
+  // syncNodeSettingsForm explains the combination on screen. It writes no field
+  // the owner controls.
   //
   // An earlier version ticked allowLan whenever a LAN address was selected, and
   // it was wired to allowLan's own onchange — so the box could not be unticked,
   // which made the node's headline behaviour (turn it off, the listener is
-  // withdrawn) unreachable from this window. Predicting the node's answer is
-  // this function's job; making the owner's choice for them is not.
+  // withdrawn) unreachable from this window. A later one auto-filled the
+  // private range from here, so clearing that field was undone on the same
+  // keystroke and a range suggested for one address outlived it. Predicting the
+  // node's answer is this function's job; making the owner's choice for them is
+  // not — the one suggestion this form offers lives in suggestPrivateRange,
+  // which runs only when the owner changes the address.
   function syncNodeSettingsForm() {
-    const select = el("node-peerlisten");
-    const option = select.options[select.selectedIndex];
-    const address = select.value || LOOPBACK_LISTEN;
+    const address = el("node-peerlisten").value || LOOPBACK_LISTEN;
     const lanAddress = !isLoopbackListen(address);
     const allowLan = el("node-allow-lan").checked;
 
@@ -2605,18 +2593,53 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         "而且收回的位址救不回來。"));
     }
 
-    const privateField = el("node-private");
-    const note = el("node-private-note");
-    const untouched = privateField.value.trim() === "" || privateField.value.trim() === state.nodePrivateSuggested;
-    const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
-    if (untouched && suggestion) {
-      privateField.value = suggestion;
-      state.nodePrivateSuggested = suggestion;
+    // A non-private address needs its range declared or the node refuses it.
+    // Said, not filled in: the ranges on screen are the owner's, and a form
+    // that edits them to make its own warning go away has taken the decision.
+    const select = el("node-peerlisten");
+    const option = select.options[select.selectedIndex];
+    const subnet = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
+    const declared = el("node-private").value.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+    if (subnet && !declared.includes(subnet)) {
+      warning.append(element("div", "stale",
+        `「${address}」不在私有網段，節點會拒絕它，除非「視為私有網段」裡有涵蓋它的範圍。` +
+        `這個介面自己的網段是 ${subnet}。`));
     }
-    note.textContent = suggestion
-      ? `已帶入這個介面自己的網段 ${suggestion}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
+
+    // The note explains the field's current contents, so it is shown whenever
+    // those contents are the suggestion — never left behind after the address
+    // that justified it is gone.
+    const note = el("node-private-note");
+    const showing = state.nodePrivateSuggested !== "" &&
+      el("node-private").value.trim() === state.nodePrivateSuggested;
+    note.textContent = showing
+      ? `已帶入這個介面自己的網段 ${state.nodePrivateSuggested}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
       : "";
-    note.classList.toggle("hidden", !suggestion);
+    note.classList.toggle("hidden", !showing);
+  }
+
+  // suggestPrivateRange runs when the owner picks a different address, and only
+  // then.
+  //
+  // A non-private address needs its range declared or the node refuses it, so
+  // the interface's own subnet is offered — never a wider guess, because the
+  // range decides who the node will deliver to. What the owner typed is left
+  // alone, and an empty field stays empty: clearing it is how a declared range
+  // is withdrawn, and a form that refills it has taken that away.
+  function suggestPrivateRange() {
+    const select = el("node-peerlisten");
+    const option = select.options[select.selectedIndex];
+    const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
+    const field = el("node-private");
+    const previous = state.nodePrivateSuggested;
+    const holdsPrevious = previous !== "" && field.value.trim() === previous;
+
+    if (suggestion === previous) return;
+    // The old suggestion goes with the address that justified it; anything the
+    // owner typed stays.
+    if (holdsPrevious) field.value = suggestion;
+    else if (suggestion !== "" && field.value.trim() === "" && previous === "") field.value = suggestion;
+    state.nodePrivateSuggested = field.value.trim() === suggestion ? suggestion : "";
   }
 
   // readNodeSettingsPatch sends only what the owner changed.
@@ -2697,7 +2720,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
       if (sequence > nodeSettingsApplied) {
         nodeSettingsApplied = sequence;
-        await applyNodeSettings(view);
+        // With the address list: applyNodeSettings rebuilds the whole select,
+        // so painting without it would leave the owner with only 「只在本機」
+        // after every successful save.
+        applyNodeSettings(view, await fetchLocalAddresses());
       }
 
       if (!installed) {
@@ -2773,8 +2799,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   el("node-settings-reload").onclick = () => loadNodeSettings().catch((error) => banner(`讀取節點設定失敗：${error}`));
   el("node-settings-save").onclick = () => saveNodeSettings().catch((error) => banner(`儲存節點設定失敗：${error}`));
-  // Both only re-explain the combination on screen; neither changes the other.
-  el("node-peerlisten").onchange = syncNodeSettingsForm;
+  // Changing the address is the one moment this form offers a value; every
+  // other handler only re-explains what is already on screen.
+  el("node-peerlisten").onchange = () => {
+    suggestPrivateRange();
+    syncNodeSettingsForm();
+  };
   el("node-allow-lan").onchange = syncNodeSettingsForm;
   el("node-private").oninput = syncNodeSettingsForm;
 
@@ -2818,7 +2848,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
-    isLoopbackListen, syncNodeSettingsForm,
+    isLoopbackListen, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
