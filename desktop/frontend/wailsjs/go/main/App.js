@@ -38,6 +38,10 @@ export function MCPConfig(arg1) {
   return window['go']['main']['App']['MCPConfig'](arg1);
 }
 
+export function NodeSettings() {
+  return window['go']['main']['App']['NodeSettings']();
+}
+
 export function NodeURL() {
   return window['go']['main']['App']['NodeURL']();
 }
@@ -58,8 +62,16 @@ export function Pairing() {
   return window['go']['main']['App']['Pairing']();
 }
 
+export function RestartService() {
+  return window['go']['main']['App']['RestartService']();
+}
+
 export function RevokeNode(arg1) {
   return window['go']['main']['App']['RevokeNode'](arg1);
+}
+
+export function SaveNodeSettings(arg1) {
+  return window['go']['main']['App']['SaveNodeSettings'](arg1);
 }
 
 export function ServiceStatus() {

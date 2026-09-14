@@ -17,6 +17,11 @@ class Node {
   constructor(tag) {
     // Inline style writes land here, as on a real element; nothing reads it.
     this.style = {};
+    // What a <select> carries. Kept on every node rather than only on selects,
+    // because the shim never learns an element's tag from the markup — the code
+    // under test builds options with createElement("option") and appends them,
+    // and `options` has to be the same list `append` wrote to.
+    this.dataset = {};
     this.tagName = tag;
     this.children = [];
     this.attrs = {};
@@ -64,6 +69,45 @@ class Node {
     this._text = "";
     this._raw = undefined;
     this.append(...kids);
+  }
+
+  // A <select>'s own view of its children. Reading it, rather than storing a
+  // second list, keeps append/remove and options from drifting apart.
+  get options() {
+    return this.children.filter((child) => child && child.tagName === "option");
+  }
+
+  // -1 when nothing matches, as a browser reports for a select whose value was
+  // set to a string no option carries. Falling back to 0 here would make
+  // `options[selectedIndex]` resolve to whatever happens to be first, so a test
+  // would read a LAN option where a browser reads the loopback placeholder —
+  // and a form bug that turns on LAN access would pass.
+  get selectedIndex() {
+    const options = this.options;
+    if (this._value === undefined) return options.length > 0 ? 0 : -1;
+    return options.findIndex((option) => option.value === this._value);
+  }
+
+  // remove(index) drops one option, as HTMLSelectElement does.
+  remove(index) {
+    const option = this.options[index];
+    if (!option) return;
+    this.children = this.children.filter((child) => child !== option);
+  }
+
+  get value() {
+    if (this._value === undefined) {
+      const options = this.options;
+      return options.length > 0 ? options[0].value ?? "" : "";
+    }
+    // A real select drops a value no option carries and reports "".
+    const options = this.options;
+    if (options.length > 0 && !options.some((option) => option.value === this._value)) return "";
+    return this._value;
+  }
+
+  set value(next) {
+    this._value = String(next);
   }
 
   querySelector() {

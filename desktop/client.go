@@ -566,6 +566,87 @@ func clampPageLimit(limit int) int {
 	return limit
 }
 
+// NodeSettings is what the node remembers for its own start-up, and where each
+// effective value came from.
+//
+// Settings are the values in force; Saved is what the database holds, which is
+// what a flag on the running node's command line can differ from. Sources says
+// which of the two, or a default, each field came from — "flag", "remembered"
+// or "default" (internal/nodeconfig).
+type NodeSettings struct {
+	Settings NodeSettingValues `json:"settings"`
+	Sources  map[string]string `json:"sources"`
+	Saved    NodeSettingValues `json:"saved"`
+
+	// RestartRequired is always true on a write: the node reads these at
+	// start-up and has no hot reload.
+	RestartRequired bool `json:"restartRequired"`
+
+	// PeerListenWithdrawn is present only while a LAN listener that was
+	// withdrawn at start-up has not been replaced. Absent means no withdrawal
+	// stands — never read it as anything but that.
+	PeerListenWithdrawn bool `json:"peerListenWithdrawn,omitempty"`
+
+	// Message is the node's own sentence about what a write did, including the
+	// case where turning allowLan off pulled peerListen back to loopback.
+	Message string `json:"message,omitempty"`
+}
+
+// NodeSettingValues is one set of the five fields the node remembers.
+type NodeSettingValues struct {
+	PeerListen     string   `json:"peerListen"`
+	AllowLAN       bool     `json:"allowLan"`
+	Discover       bool     `json:"discover"`
+	TreatAsPrivate []string `json:"treatAsPrivate"`
+	AutoWake       bool     `json:"autoWake"`
+}
+
+// NodeSettingsPatch is a partial write. Every field is a pointer so that
+// "leave it alone" and "set it to the zero value" stay different things, which
+// is what the node's own Partial does; an empty (not nil) TreatAsPrivate is how
+// the owner withdraws a declared range.
+type NodeSettingsPatch struct {
+	PeerListen     *string   `json:"peerListen,omitempty"`
+	AllowLAN       *bool     `json:"allowLan,omitempty"`
+	Discover       *bool     `json:"discover,omitempty"`
+	TreatAsPrivate *[]string `json:"treatAsPrivate,omitempty"`
+	AutoWake       *bool     `json:"autoWake,omitempty"`
+}
+
+func (c *client) nodeSettings(ctx context.Context) (NodeSettings, error) {
+	body, err := c.request(ctx, http.MethodGet, "/v1/node/settings", nil)
+	if err != nil {
+		return NodeSettings{}, err
+	}
+	return decodeNodeSettings(body)
+}
+
+func (c *client) saveNodeSettings(ctx context.Context, patch NodeSettingsPatch) (NodeSettings, error) {
+	body, err := c.request(ctx, http.MethodPut, "/v1/node/settings", patch)
+	if err != nil {
+		return NodeSettings{}, err
+	}
+	return decodeNodeSettings(body)
+}
+
+func decodeNodeSettings(body []byte) (NodeSettings, error) {
+	var settings NodeSettings
+	if err := json.Unmarshal(body, &settings); err != nil {
+		return NodeSettings{}, fmt.Errorf("decode node settings: %w", err)
+	}
+	// Never nil across the bridge: the form iterates both without checking.
+	if settings.Sources == nil {
+		settings.Sources = map[string]string{}
+	}
+	if settings.Settings.TreatAsPrivate == nil {
+		settings.Settings.TreatAsPrivate = []string{}
+	}
+	if settings.Saved.TreatAsPrivate == nil {
+		settings.Saved.TreatAsPrivate = []string{}
+	}
+	return settings, nil
+}
+
 // outbound reads what this node has queued for peers, newest first, optionally
 // for one local session.
 //

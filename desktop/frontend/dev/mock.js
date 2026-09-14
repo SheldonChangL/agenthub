@@ -50,6 +50,12 @@ const pairing = () => ({
   full: false, notice: "這份清單是同網段任何人都能寫入的廣播，只能當線索。",
 });
 const log = (...a) => console.log("[mock]", ...a);
+const nodeSettings = {
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  sources: { peerListen: "remembered", allowLan: "remembered", discover: "flag", treatAsPrivate: "remembered", autoWake: "default" },
+  saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  restartRequired: false,
+};
 configure({
   Overview: async () => ({ reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions, nodes, peers, counts }),
   Discover: async () => ({ claude: 7, codex: 3, total: 10, skipped: 0 }),
@@ -70,6 +76,31 @@ configure({
   ClearInbox: async () => ({ removed: 3 }),
   MCPConfig: async (sessionId) => ({ text: JSON.stringify({ mcpServers: { agenthub: { command: "/usr/local/bin/agenthub-mcp", args: ["-as", sessionId, "-url", "http://127.0.0.1:7462"] } } }, null, 2) }),
   CopyText: async (text) => log("CopyText", text),
+  // The node remembers its own start-up settings (#116). The fake keeps them in
+  // a variable so a save really changes what the next read answers, including
+  // the rule that turning allowLan off pulls peerListen back to loopback.
+  NodeSettings: async () => ({ ...nodeSettings }),
+  SaveNodeSettings: async (patch) => {
+    const next = { ...nodeSettings.settings, ...patch };
+    let message = "";
+    if (next.allowLan === false && next.peerListen !== "127.0.0.1:7463") {
+      next.peerListen = "127.0.0.1:7463";
+      nodeSettings.peerListenWithdrawn = true;
+      message = "allowLan is off, so peerListen was pulled back to 127.0.0.1:7463";
+    }
+    if (next.allowLan && next.peerListen && next.peerListen !== "127.0.0.1:7463") {
+      nodeSettings.peerListenWithdrawn = false;
+    }
+    nodeSettings.settings = next;
+    nodeSettings.saved = { ...next };
+    nodeSettings.sources = Object.fromEntries(Object.keys(next).map((k) => [k, "remembered"]));
+    if (next.peerListen === "127.0.0.1:7463") nodeSettings.sources.peerListen = "default";
+    nodeSettings.restartRequired = true;
+    nodeSettings.message = message;
+    log("SaveNodeSettings", patch);
+    return { ...nodeSettings };
+  },
+  RestartService: async () => { log("RestartService"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   ServiceStatus: async () => ({ tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462" }),
   InstallService: async () => ({ command: "ah service install --peer-listen 192.168.50.10:7463 --allow-lan", output: "installed (pid 41872)" }),
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),

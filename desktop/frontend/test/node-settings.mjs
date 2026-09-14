@@ -1,0 +1,1219 @@
+// The node settings form (#116), and the three rules that bite.
+//
+// 1. The node's answer repaints the WHOLE form. Turning allowLan off pulls
+//    peerListen back to loopback in the same write, and since #134 any write
+//    does it when the stored allowLan is already false — so a form that kept
+//    its own idea of the fields it did not send would show a LAN address the
+//    node no longer has.
+// 2. `peerListenWithdrawn` absent means no withdrawal stands. It is omitempty
+//    at the node, so nothing may be said unless the node says it.
+// 3. A refused write leaves the form as the owner typed it and shows the
+//    node's own sentence, which names the address and what to send with it.
+//
+// Also: the patch carries only what changed (a full write would make an
+// untouched LAN peerListen part of a write that turns allowLan off, which the
+// node refuses), and saving on a node that is not a service does not pretend
+// to have restarted it.
+//
+//   node frontend/test/node-settings.mjs
+
+import { document } from "./dom-shim.mjs";
+
+globalThis.document = document;
+globalThis.setInterval = () => 0;
+const { configure, boot } = await import("../src/app.js");
+
+const failures = [];
+const el = (id) => document.getElementById(id);
+const noop = async () => ({});
+
+let settingsAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
+let saveAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
+let saveCalls = [];
+let restartCalls = 0;
+let serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus,
+  InstallService: noop, UninstallService: noop,
+  LocalAddresses: async () => [
+    { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+    { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false },
+  ],
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+});
+const app = boot({ start: false });
+app.state.service = serviceStatus;
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// The form only offers a range when the owner changes the address; the tests
+// below drive that moment directly, so they clear the remembered offer first.
+const state_nodePrivateReset = () => { app.state.nodePrivateSuggested = ""; };
+// After a save the window restarts the service and reads the node again, so a
+// test that saves has to say what that fresh read answers. Without this the
+// re-read would hand back the pre-save fixture and contradict the write.
+const afterRestart = (view) => { settingsAnswer = async () => view; };
+
+// 1. A read fills the form, and each field says where its value came from.
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  sources: { peerListen: "remembered", allowLan: "remembered", discover: "flag", treatAsPrivate: "remembered", autoWake: "default" },
+  saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  restartRequired: false,
+});
+await app.loadNodeSettings();
+await tick();
+if (el("node-peerlisten").value !== "192.168.50.10:7463") {
+  failures.push(`the address field shows ${el("node-peerlisten").value}, want the node's`);
+}
+// The form shows what the NEXT start will use. This fixture has discover
+// pinned true by a command-line flag over a stored false, so the box is
+// unticked and the tag says what is running instead — a form that showed the
+// running value could never write the stored one.
+if (!el("node-allow-lan").checked) failures.push("a saved true did not reach its box");
+if (el("node-discover").checked) {
+  failures.push("the box shows the running value, not the one a save would write");
+}
+if (!el("node-discover-source").textContent.includes("目前執行中的是 開")) {
+  failures.push(`the running value was not named: ${el("node-discover-source").textContent}`);
+}
+if (el("node-private").value !== "192.168.50.0/24") failures.push(`ranges = ${el("node-private").value}`);
+if (!el("node-discover-source").textContent.includes("命令列")) {
+  failures.push(`a flag-sourced value is not marked as such: ${el("node-discover-source").textContent}`);
+}
+if (!el("node-peerlisten-source").textContent.includes("記住")) failures.push("a remembered value is not marked as such");
+if (el("node-settings-notice").serialize().includes("收回")) failures.push("a withdrawal was announced when none stands");
+
+// 2. Only what changed is sent, measured against what is saved. Ticking the
+//    box that a flag is already forcing on is still a change to the stored
+//    configuration, and has to reach the node — otherwise a value pinned by
+//    this start-up can never be made permanent from this window.
+el("node-discover").checked = true;
+let patch = app.readNodeSettingsPatch();
+if (Object.keys(patch).length !== 1 || patch.discover !== true) {
+  failures.push(`patch = ${JSON.stringify(patch)}, want only discover:true`);
+}
+el("node-discover").checked = false;
+if (Object.keys(app.readNodeSettingsPatch()).length !== 0) {
+  failures.push("a box matching the saved value was still sent");
+}
+
+// 3. Clearing the ranges sends an empty array, not an omitted key: an omitted
+//    key means "leave it alone", which would never withdraw anything.
+el("node-private").value = "";
+patch = app.readNodeSettingsPatch();
+if (!Array.isArray(patch.treatAsPrivate) || patch.treatAsPrivate.length !== 0) {
+  failures.push(`cleared ranges sent as ${JSON.stringify(patch.treatAsPrivate)}, want []`);
+}
+
+// 4. A write repaints the whole form, including a field nobody sent, and the
+//    standing withdrawal is announced in the node's own words.
+saveCalls = [];
+restartCalls = 0;
+el("node-private").value = "192.168.50.0/24";
+el("node-allow-lan").checked = false;
+const withdrawnView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  sources: { peerListen: "default", allowLan: "remembered", discover: "remembered", treatAsPrivate: "remembered", autoWake: "default" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  restartRequired: true,
+  peerListenWithdrawn: true,
+  message: "allowLan is off, so peerListen was pulled back to 127.0.0.1:7463",
+};
+saveAnswer = async () => withdrawnView;
+afterRestart(withdrawnView);
+await app.saveNodeSettings();
+await tick();
+if (saveCalls.length !== 1 || saveCalls[0].peerListen !== undefined) {
+  failures.push(`the write sent ${JSON.stringify(saveCalls[0])}, want no peerListen (it was not touched)`);
+}
+if (el("node-peerlisten").value !== "") {
+  failures.push(`the address field still shows ${el("node-peerlisten").value}; the node pulled it back to loopback`);
+}
+const notice = el("node-settings-notice").serialize();
+if (!notice.includes("pulled back")) failures.push("the node's own sentence about the write was dropped");
+if (!notice.includes("收回")) failures.push("a standing withdrawal was not announced");
+if (!el("node-settings-hint").textContent.includes("重新啟動")) {
+  failures.push("restartRequired did not reach the owner");
+}
+if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
+if (!el("banner").textContent.includes("回應中")) {
+  failures.push(`a restart that came back was not confirmed from the re-read status: ${el("banner").textContent}`);
+}
+
+// 4b. A node that does not come back is not announced as restarted. This is the
+//     moment it is most likely to happen: the values just saved are what it
+//     reads at start-up, and a service set to restart on failure crash-loops on
+//     a combination it refuses.
+serviceStatus = { supported: true, installed: true, running: false, pid: 0, unitPath: "/u", logHint: "/var/log/agenthub-node.log" };
+app.state.service = serviceStatus;
+el("node-autowake").checked = true;
+const cameBackView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, autoWake: true }, restartRequired: true };
+saveAnswer = async () => cameBackView;
+// The settings did stick; what did not happen is the node coming back.
+afterRestart(cameBackView);
+await app.saveNodeSettings();
+await tick();
+const afterFailedRestart = el("banner").textContent;
+if (afterFailedRestart.includes("回應中")) {
+  failures.push("a node that never came back was announced as answering");
+}
+if (!afterFailedRestart.includes("沒有在執行")) {
+  failures.push(`a stopped service was not reported: ${afterFailedRestart}`);
+}
+if (!afterFailedRestart.includes("/var/log/agenthub-node.log")) {
+  failures.push("the log path was not offered when the node failed to come back");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a failed restart was marked successful, so it fades off screen");
+}
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+
+// 5. A refusal keeps the node's words and leaves the form as typed.
+el("node-allow-lan").checked = false;
+el("node-peerlisten").value = "192.168.50.10:7463";
+saveAnswer = async () => ({
+  error: "allowLan is off, so peerListen has to be a loopback address, and it was sent as 192.168.50.10:7463; " +
+    "to serve that address, send allowLan true in the same write",
+});
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const refused = el("node-settings-notice").serialize();
+if (!refused.includes("to serve that address, send allowLan true in the same write")) {
+  failures.push(`the refusal was not shown verbatim: ${refused}`);
+}
+if (el("node-peerlisten").value !== "192.168.50.10:7463") {
+  failures.push("a refused write threw away what the owner had typed");
+}
+if (restartCalls !== 0) failures.push("a refused write restarted the service anyway");
+
+// 6. Saving on a node that is not a service does not claim to have restarted it.
+//
+//    The status is re-read rather than taken from whatever this window last
+//    saw, so the fake itself has to say "not installed" — setting state alone
+//    would be overwritten by the read, which is the point of the read.
+serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+app.state.service = null;
+el("node-allow-lan").checked = true;
+const notAServiceView = { settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true }, restartRequired: true };
+saveAnswer = async () => notAServiceView;
+afterRestart(notAServiceView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+if (restartCalls !== 0) failures.push("a node that is not a service was 'restarted'");
+if (!el("banner").textContent.includes("自己重新啟動")) {
+  failures.push(`the owner was not told to restart it themselves: ${el("banner").textContent}`);
+}
+
+// 6b. A status this window cannot read is not evidence that the node is not a
+//     service. `ah` missing leaves it unknown, and a node that IS a service
+//     would then never be restarted while its owner is told otherwise.
+serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "", toolError: "找不到 ah：exec: \"ah\": executable file not found in $PATH" };
+app.state.service = null;
+el("node-allow-lan").checked = false;
+const unknownView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false }, restartRequired: true };
+saveAnswer = async () => unknownView;
+afterRestart(unknownView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const unknownBanner = el("banner").textContent;
+if (restartCalls !== 0) failures.push("a service whose status could not be read was restarted anyway");
+if (unknownBanner.includes("不是背景服務")) {
+  failures.push(`an unreadable status was reported as "not a service": ${unknownBanner}`);
+}
+if (!unknownBanner.includes("讀不到背景服務狀態") || !unknownBanner.includes("找不到 ah")) {
+  failures.push(`the owner was not told the status could not be read: ${unknownBanner}`);
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save whose effect could not be confirmed was marked successful");
+}
+
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+
+/* ---- what the fresh-context review of PR #144 found, each pinned here ---- */
+
+// R1. allowLan is the owner's box. An earlier version ticked it whenever a LAN
+//     address was selected, wired to the box's own onchange, so it could not be
+//     unticked — which made the node's headline behaviour (turn it off and the
+//     listener is withdrawn) unreachable from this window.
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-allow-lan").checked = false;
+el("node-allow-lan").onchange?.();
+if (el("node-allow-lan").checked) {
+  failures.push("unticking 允許區網連線 was undone by the form; the node's withdrawal can never be asked for");
+}
+let p1 = app.readNodeSettingsPatch();
+if (p1.allowLan !== false) {
+  failures.push(`after unticking, patch = ${JSON.stringify(p1)}, want allowLan:false`);
+}
+// And the form says what the node will do with it, before the owner finds out
+// by losing the address.
+if (!el("node-settings-combination").serialize().includes("收回本機")) {
+  failures.push("turning allowLan off did not warn that the address will be withdrawn");
+}
+
+// R2. A loopback listener on a non-default port is not LAN. nodeconfig's rule
+//     is the host, never the port: treating 127.0.0.1:9999 as LAN is how a form
+//     opens a node to the network with a write nobody made.
+for (const address of ["127.0.0.1:9999", "localhost:7463", "[::1]:7463", "127.2.3.4:1"]) {
+  if (!app.isLoopbackListen(address)) failures.push(`${address} was not recognised as loopback`);
+}
+for (const address of ["192.168.50.10:7463", "10.0.0.5:7463", "122.122.0.7:7463"]) {
+  if (app.isLoopbackListen(address)) failures.push(`${address} was treated as loopback`);
+}
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:9999", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {}, saved: { peerListen: "127.0.0.1:9999", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (el("node-allow-lan").checked) {
+  failures.push("a loopback listener on a non-default port turned allowLan on");
+}
+el("node-autowake").checked = true;
+app.syncNodeSettingsForm();
+const p2 = app.readNodeSettingsPatch();
+if (p2.allowLan !== undefined) {
+  failures.push(`touching an unrelated field wrote allowLan: ${JSON.stringify(p2)}`);
+}
+if (el("node-peerlisten").value !== "127.0.0.1:9999") {
+  failures.push(`the non-default loopback address was lost: ${el("node-peerlisten").value}`);
+}
+
+// R3. A failed read must not become the diff baseline. The form still shows the
+//     last good values, so adopting an empty answer would make every field look
+//     changed: the next save would write fields nobody touched and drop the
+//     ones they did.
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true },
+  sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+const goodBaseline = app.state.nodeSettings;
+settingsAnswer = async () => ({ error: "connection refused" });
+await app.loadNodeSettings();
+await tick();
+if (app.state.nodeSettings !== goodBaseline) {
+  failures.push("a failed read replaced the baseline the next save diffs against");
+}
+el("node-discover").checked = false;
+el("node-autowake").checked = false;
+const p3 = app.readNodeSettingsPatch();
+if (p3.discover !== false || p3.autoWake !== false || Object.keys(p3).length !== 2) {
+  failures.push(`after a failed read the patch is ${JSON.stringify(p3)}, want exactly the two boxes that were unticked`);
+}
+if (!el("node-settings-notice").serialize().includes("上次成功讀到")) {
+  failures.push("a failed read did not say the values on screen may be stale");
+}
+
+// R4. A write that landed is restarted even if a newer read came back while it
+//     was out. The node is holding settings it has not read; skipping the
+//     restart leaves that true with nothing on screen saying so.
+saveCalls = [];
+restartCalls = 0;
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+app.state.nodeSettings = goodBaseline;
+await app.applyNodeSettings(goodBaseline);
+await tick();
+el("node-discover").checked = false;
+// The node once the write has landed and it has restarted. It agrees with the
+// write: this section is about the restart happening at all, not about a value
+// failing to survive — a fixture where the read disagreed would land in the
+// didNotStick branch instead and prove nothing about the restart.
+const afterR4 = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  restartRequired: false,
+};
+saveAnswer = async () => {
+  // A reload lands while the write is in flight.
+  await app.loadNodeSettings();
+  return { ...afterR4, restartRequired: true };
+};
+settingsAnswer = async () => afterR4;
+await app.saveNodeSettings();
+await tick();
+if (saveCalls.length !== 1) failures.push(`wrote ${saveCalls.length} times, want 1`);
+if (restartCalls !== 1) {
+  failures.push(`a write that landed was restarted ${restartCalls} times, want 1 — the node is holding unread settings`);
+}
+// And nothing in that sequence may be reported as a value that failed to stick:
+// the node holds what was asked for.
+if (el("banner").textContent.includes("又變回原來的值")) {
+  failures.push(`a save that did stick was reported as replaced: ${el("banner").textContent}`);
+}
+if (el("node-discover").checked) {
+  failures.push("the form shows a value the owner had turned off");
+}
+saveAnswer = async () => ({ settings: {}, sources: {}, saved: {}, restartRequired: true });
+
+// R5. A value pinned by this start-up's command line names what the database
+//     still holds, so an owner does not save an unrelated field and find the
+//     address changed after a restart they thought was unrelated.
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.1.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { peerListen: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+const tag = el("node-peerlisten-source").textContent;
+if (!tag.includes("命令列")) failures.push(`a flag-sourced value is not marked: ${tag}`);
+if (!tag.includes("192.168.1.10:7463")) {
+  failures.push(`the address actually running was not named: ${tag}`);
+}
+// And the field itself holds the stored address, because that is what a save
+// writes and what the next start uses.
+if (el("node-peerlisten").value !== "") {
+  failures.push(`the field shows ${el("node-peerlisten").value}, want the stored loopback`);
+}
+
+// R6/R7. The address list is filled before the form is explained, and a failure
+//     to read this machine's addresses is said out loud rather than leaving the
+//     owner with only 「只在本機」 and no reason.
+let addressesThrow = false;
+const realAddresses = [
+  { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false },
+];
+configure({
+  ...{
+    Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+    Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+    Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+    Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+    ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+    NodeSettings: (...a) => settingsAnswer(...a),
+    SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+    RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  },
+  LocalAddresses: async () => {
+    if (addressesThrow) throw new Error("no route to host");
+    return realAddresses;
+  },
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "122.122.0.7:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {}, saved: { peerListen: "122.122.0.7:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+// A repaint never edits the ranges the node holds — they are the owner's. What
+// the form owes them is the warning that this address will be refused without
+// one, and the subnet to use.
+if (el("node-private").value.trim() !== "") {
+  failures.push(`a repaint wrote into the ranges field: ${el("node-private").value}`);
+}
+const publicWarn = el("node-settings-combination").serialize();
+if (!publicWarn.includes("不在私有網段") || !publicWarn.includes("122.122.0.0/16")) {
+  failures.push(`a non-private address was not flagged with its subnet: ${publicWarn}`);
+}
+// Changing the address is the one moment a suggestion is offered, and only
+// into a field the owner has not filled.
+el("node-private").value = "";
+state_nodePrivateReset();
+app.suggestPrivateRange();
+app.syncNodeSettingsForm();
+if (el("node-private").value.trim() !== "122.122.0.0/16") {
+  failures.push(`picking the address did not offer its subnet: ${el("node-private").value}`);
+}
+if (el("node-private-note").classList.contains("hidden")) {
+  failures.push("the offered range was not explained");
+}
+// Clearing it stays cleared: that is how a declared range is withdrawn.
+el("node-private").value = "";
+el("node-private").oninput?.();
+if (el("node-private").value.trim() !== "") {
+  failures.push(`clearing the ranges field was undone: ${el("node-private").value}`);
+}
+// And a range offered for one address does not outlive it.
+el("node-private").value = "";
+state_nodePrivateReset();
+app.suggestPrivateRange();
+const offered = el("node-private").value.trim();
+el("node-peerlisten").value = "";
+app.suggestPrivateRange();
+app.syncNodeSettingsForm();
+if (offered !== "122.122.0.0/16") failures.push("the suggestion was not offered before switching away");
+if (el("node-private").value.trim() !== "") {
+  failures.push(`a public range outlived the address that justified it: ${el("node-private").value}`);
+}
+addressesThrow = true;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+const failedList = el("node-settings-notice").serialize();
+if (!failedList.includes("no route to host")) {
+  failures.push(`a failure to read local addresses was swallowed: ${failedList}`);
+}
+
+// R8. A save is refused outright while no good read stands: without a baseline
+//     there is no honest answer to "what changed".
+app.state.nodeSettings = null;
+saveCalls = [];
+await app.saveNodeSettings();
+if (saveCalls.length !== 0) failures.push("a save went out with no baseline to diff against");
+if (!el("banner").textContent.includes("重新讀取")) {
+  failures.push(`the owner was not told to reload first: ${el("banner").textContent}`);
+}
+
+// R9. Two overlapping reads must not interleave. Painting used to await in the
+//     middle of itself, so the baseline came from one read and the form from
+//     the other, and the next save wrote fields nobody touched.
+let slowFirst = true;
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => {
+    // The first read's address lookup is the slow one, so its paint would land
+    // last if anything were painted after an await.
+    if (slowFirst) {
+      slowFirst = false;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    return [];
+  },
+});
+let answers = [
+  // In BOTH fixtures every field differs between running and saved, so an
+  // assertion that reads the running block fails whichever read wins rather
+  // than passing by coincidence.
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, sources: { allowLan: "flag" },
+    saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: true },
+  { settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: true }, sources: { allowLan: "flag" },
+    saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: true },
+];
+settingsAnswer = async () => answers.shift() ?? answers[0];
+app.state.nodeSettings = null;
+const first = app.loadNodeSettings();
+const second = app.loadNodeSettings();
+await Promise.all([first, second]);
+await tick();
+// Whichever read won, the baseline and the form must be the same read.
+// Against `saved`: that is what the form paints from and what a write is
+// merged onto. Asserting the running block here passed against a form painted
+// from it, which is exactly the defect round three removed.
+const baseline = app.state.nodeSettings?.saved ?? {};
+if (el("node-discover").checked !== Boolean(baseline.discover) ||
+    el("node-autowake").checked !== Boolean(baseline.autoWake)) {
+  failures.push("the form and the baseline came from different reads");
+}
+const idle = app.readNodeSettingsPatch();
+if (Object.keys(idle).length !== 0) {
+  failures.push(`with nothing touched the patch is ${JSON.stringify(idle)}, want empty`);
+}
+
+// R10. A successful save repaints from the node AND keeps the address list: a
+//      repaint without it would leave the owner with only 「只在本機」.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }],
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false }, restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true }, restartRequired: true,
+});
+await app.saveNodeSettings();
+await tick();
+if (el("node-peerlisten").options.length < 2) {
+  failures.push("a successful save emptied the address list, leaving only 只在本機");
+}
+if (el("node-peerlisten").value !== "192.168.50.10:7463") {
+  failures.push(`a successful save lost the selected address: ${el("node-peerlisten").value}`);
+}
+
+/* ---- round three ---- */
+
+// R11. The form edits the saved configuration, so a flag that pins something
+//      over a different stored value cannot silently destroy it.
+//
+//      The node merges a write onto `saved` and judges it there. Started with
+//      -allow-lan over a stored allowLan:false and a remembered LAN address,
+//      a form painted from the running values would show the box ticked, send
+//      an unrelated field, and the node would withdraw the address — with the
+//      screen having promised nothing of the sort.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en0", address: "192.168.1.10", subnet: "192.168.1.0/24", private: true }],
+});
+settingsAnswer = async () => ({
+  // running: the flag opened it
+  settings: { peerListen: "192.168.1.10:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { allowLan: "flag", peerListen: "remembered" },
+  // stored: allowLan is off, and the LAN address is remembered beside it
+  saved: { peerListen: "192.168.1.10:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: true,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (el("node-allow-lan").checked) {
+  failures.push("the box shows the flag's value, so a save would write a configuration nobody sees");
+}
+// The form must warn that saving anything withdraws the remembered address.
+if (!el("node-settings-combination").serialize().includes("收回本機")) {
+  failures.push("an unrelated save would withdraw the remembered address with no warning");
+}
+// And ticking the box has to reach the node: it differs from what is stored.
+el("node-allow-lan").checked = true;
+const r11 = app.readNodeSettingsPatch();
+if (r11.allowLan !== true) {
+  failures.push(`ticking allowLan over a stored false sent ${JSON.stringify(r11)}; a LAN listener is unreachable`);
+}
+
+// R12. The refusal prediction, which had no assertion at all.
+//      Naming a non-loopback address while allowLan is off is refused by the
+//      node; leaving the address alone is a withdrawal. The form must say which.
+el("node-allow-lan").checked = false;
+el("node-peerlisten").value = "192.168.1.10:7463";
+app.syncNodeSettingsForm();
+const withdrawal = el("node-settings-combination").serialize();
+if (!withdrawal.includes("收回本機") || withdrawal.includes("會拒絕")) {
+  failures.push(`leaving the address alone was not described as a withdrawal: ${withdrawal}`);
+}
+// Moving to loopback with allowLan off is neither: nothing to withdraw, nothing
+// to refuse.
+el("node-peerlisten").value = "";
+app.syncNodeSettingsForm();
+const backToLoopback = el("node-settings-combination").serialize();
+if (backToLoopback.includes("會拒絕")) {
+  failures.push("moving to loopback with allowLan off was described as a refusal");
+}
+
+// And NAMING a LAN address while allowLan is off is the refusal case — the node
+// answers 400 naming that address. The form has to say so before the owner
+// presses save, and must not call it a withdrawal.
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-allow-lan").checked = false;
+el("node-peerlisten").value = "192.168.1.10:7463";
+app.syncNodeSettingsForm();
+const refusalWarn = el("node-settings-combination").serialize();
+if (!refusalWarn.includes("會拒絕")) {
+  failures.push(`naming a LAN address with allowLan off was not described as a refusal: ${refusalWarn}`);
+}
+if (!refusalWarn.includes("192.168.1.10:7463")) {
+  failures.push("the refusal warning did not name the address the node will name");
+}
+if (refusalWarn.includes("收回本機")) {
+  failures.push("a refusal was also described as a withdrawal");
+}
+// Ticking allowLan is what makes it acceptable, and the warning goes.
+el("node-allow-lan").checked = true;
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("會拒絕")) {
+  failures.push("the refusal warning stayed after allowLan was turned on");
+}
+
+// R13. The address select's real handler offers the range; R6/R7 called the
+//      function directly, so the wiring itself was untested and could be
+//      removed without a failure.
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [{ interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-peerlisten").value = "122.122.0.7:7463";
+el("node-peerlisten").onchange();
+if (el("node-private").value.trim() !== "122.122.0.0/16") {
+  failures.push(`the select's own handler did not offer the range: ${el("node-private").value}`);
+}
+
+// R14. A stored non-private address this machine no longer offers is still
+//      judged: the interface list is a convenience, not the rule.
+settingsAnswer = async () => ({
+  settings: { peerListen: "203.0.113.9:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "203.0.113.9:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+});
+configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [],
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (!el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a stored public address with no interface entry was not flagged");
+}
+// Declaring a range that covers it clears the warning; one that does not, does not.
+el("node-private").value = "203.0.113.0/24";
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a declared range covering the address did not clear the warning");
+}
+el("node-private").value = "198.51.100.0/24";
+app.syncNodeSettingsForm();
+if (!el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("an unrelated declared range was accepted as covering the address");
+}
+
+// R15. Private-by-definition and the loopback spellings, against the node's rule.
+for (const address of ["10.0.0.5:7463", "172.16.0.1:7463", "172.31.255.254:7463", "192.168.1.1:7463", "169.254.1.1:7463"]) {
+  if (!app.isPrivateByDefinition(address)) failures.push(`${address} is private by definition and was not`);
+}
+for (const address of ["172.15.0.1:7463", "172.32.0.1:7463", "203.0.113.9:7463", "122.122.0.7:7463"]) {
+  if (app.isPrivateByDefinition(address)) failures.push(`${address} is not private by definition and was`);
+}
+for (const address of ["[::ffff:7f00:1]:7463", "[::ffff:127.0.0.1]:7463", "[::1]:7463", "localhost:1", "127.5.5.5:9"]) {
+  if (!app.isLoopbackListen(address)) failures.push(`${address} is loopback to the node and was not here`);
+}
+if (app.coversAddress("10.0.0.0/8", "10.1.2.3:7463") !== true) failures.push("a covering range was not recognised");
+if (app.coversAddress("10.0.0.0/8", "11.1.2.3:7463") !== false) failures.push("a range that does not cover was accepted");
+if (app.coversAddress("not-a-range", "10.1.2.3:7463") !== false) failures.push("a malformed range was accepted");
+
+/* ---- round four ---- */
+
+// R16. A setting the service unit pins does not survive the restart, and the
+//      window must not call that a success.
+//
+//      The node writes what it was given on the command line back into its own
+//      store (cmd/agenthub-node/main.go), so after the restart the stored value
+//      IS the unit's flag and `sources`/`saved`/`settings` all agree. Nothing
+//      in the answer says the owner's value was replaced — the only evidence is
+//      that what they asked for is not what is there.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+const withRestart = (restart) => configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: restart,
+  LocalAddresses: async () => [],
+});
+withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
+// Before: the unit carries --auto-wake=false, so that is what is stored.
+const unitPinned = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { autoWake: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+};
+settingsAnswer = async () => unitPinned;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+// The owner turns it on. The PUT succeeds and answers with it on.
+el("node-autowake").checked = true;
+saveAnswer = async () => ({
+  ...unitPinned,
+  settings: { ...unitPinned.settings, autoWake: true },
+  saved: { ...unitPinned.saved, autoWake: true },
+  restartRequired: true,
+});
+// The restart re-applies the unit's flag, and the node stores it again.
+afterRestart(unitPinned);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
+const pinnedBanner = el("banner").textContent;
+if (pinnedBanner.includes("回應中")) {
+  failures.push("a setting the unit replaced after the restart was reported as having taken effect");
+}
+if (!pinnedBanner.includes("自動喚醒")) {
+  failures.push(`the owner was not told which setting did not survive: ${pinnedBanner}`);
+}
+if (!pinnedBanner.includes("單元檔") || !pinnedBanner.includes("重裝")) {
+  failures.push("the owner was not told the likely cause or how to clear it");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save that did not take effect was marked successful");
+}
+// Only what the owner asked for is judged, and each field the way the node
+// compares it.
+if (app.didNotStick({ autoWake: true }, unitPinned.saved).length !== 1) {
+  failures.push("a value that did not survive was not reported");
+}
+if (app.didNotStick({ discover: false }, unitPinned.saved).length !== 0) {
+  failures.push("a value that did survive was reported as lost");
+}
+if (app.didNotStick({ treatAsPrivate: ["10.0.0.0/8", "192.168.0.0/16"] },
+    { treatAsPrivate: ["192.168.0.0/16", "10.0.0.0/8"] }).length !== 0) {
+  failures.push("the same ranges in another order were reported as lost");
+}
+if (app.didNotStick({ treatAsPrivate: [] }, { treatAsPrivate: ["10.0.0.0/8"] }).length !== 1) {
+  failures.push("a withdrawal that did not take was not reported");
+}
+if (app.didNotStick({ peerListen: "127.0.0.1:7463" }, { peerListen: "" }).length !== 0) {
+  failures.push("the default address was reported as lost");
+}
+
+// R16b. A restart that fails is not a save that failed.
+withRestart(async () => { throw new Error("launchctl: Input/output error"); });
+settingsAnswer = async () => unitPinned;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-discover").checked = true;
+saveCalls = [];
+saveAnswer = async () => ({ ...unitPinned, saved: { ...unitPinned.saved, discover: true }, restartRequired: true });
+await app.saveNodeSettings();
+await tick();
+const restartFailed = el("banner").textContent;
+if (restartFailed.includes("儲存節點設定失敗")) {
+  failures.push(`a failed restart was reported as a failed save: ${restartFailed}`);
+}
+if (!restartFailed.includes("設定已儲存")) {
+  failures.push(`the owner was not told the save itself landed: ${restartFailed}`);
+}
+if (!restartFailed.includes("自己重啟")) {
+  failures.push("the owner was not told what to do about the node still running old settings");
+}
+if (saveCalls.length !== 1) failures.push(`the write was sent ${saveCalls.length} times`);
+withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
+
+// R17. The node is read again after the restart, so the form stops describing
+//      the process that has been replaced.
+let reads = 0;
+const freshView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
+  sources: { discover: "remembered" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+};
+settingsAnswer = async () => { reads += 1; return freshView; };
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+const readsBefore = reads;
+el("node-discover").checked = false;
+const savedView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { discover: "remembered" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+  message: "saved; these take effect when the node next starts",
+};
+saveAnswer = async () => savedView;
+// The re-read must agree with the write, or the form would show the owner's
+// change reverted — which is R16's case, not this one. Still counted, because
+// that a re-read happens at all is what this section is about.
+settingsAnswer = async () => { reads += 1; return savedView; };
+await app.saveNodeSettings();
+await tick();
+if (el("node-discover").checked) {
+  failures.push("after the restart the form shows the value the owner had just turned off");
+}
+if (el("banner").textContent.includes("又變回原來的值")) {
+  failures.push("a save that did stick was reported as replaced");
+}
+if (reads <= readsBefore) {
+  failures.push("the node was not read again after the restart, so the form still describes the dead process");
+}
+if (el("node-settings-hint").textContent.includes("存檔後要重新啟動")) {
+  failures.push("the form still asks for a restart that already happened");
+}
+
+// R18. A range the node refuses never counts as covering an address, and a
+//      prediction this window cannot make is not shown at all.
+if (app.coversAddress("0.0.0.0/0", "203.0.113.9:7463") !== false) {
+  failures.push("0.0.0.0/0 was accepted as a declared range; the node refuses it outright");
+}
+if (app.coversAddress("255.255.255.0/24", "255.255.255.9:7463") !== false) {
+  failures.push("a range containing the broadcast address was accepted");
+}
+if (app.coversAddress("224.0.0.0/4", "224.0.0.9:7463") !== false) {
+  failures.push("a multicast range was accepted");
+}
+if (app.canJudgePrivacy("[2001:db8::5]:7463", []) !== false) {
+  failures.push("an IPv6 address was judged, which this window cannot do");
+}
+if (app.canJudgePrivacy("203.0.113.9:7463", ["2001:db8::/32"]) !== false) {
+  failures.push("an IPv6 declared range was judged, which this window cannot do");
+}
+if (app.canJudgePrivacy("203.0.113.9:7463", ["10.0.0.0/8"]) !== true) {
+  failures.push("an all-IPv4 case was not judged");
+}
+
+// R19. A prediction this window cannot make is not shown. An IPv6 peer listener
+//      is legitimate and its ranges are judged by the node, not here, so the
+//      form says nothing about privacy rather than guessing 「會拒絕」.
+settingsAnswer = async () => ({
+  settings: { peerListen: "[2001:db8::5]:7463", allowLan: true, discover: false, treatAsPrivate: ["2001:db8::/32"], autoWake: false },
+  sources: {},
+  saved: { peerListen: "[2001:db8::5]:7463", allowLan: true, discover: false, treatAsPrivate: ["2001:db8::/32"], autoWake: false },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("an IPv6 listener with a declared IPv6 range was wrongly flagged as public");
+}
+el("node-peerlisten").value = "";
+app.syncNodeSettingsForm();
+if (el("node-settings-combination").serialize().includes("不在私有網段")) {
+  failures.push("a loopback address was flagged as public");
+}
+
+/* ---- round six ---- */
+
+const baseBindings = (over = {}) => configure({
+  Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
+  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
+  ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
+  NodeSettings: (...a) => settingsAnswer(...a),
+  SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
+  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  LocalAddresses: async () => [],
+  ...over,
+});
+
+const plainView = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: false,
+};
+
+// R20. A status read that throws is not a save that failed. The write landed;
+//      telling the owner it failed makes them send it again.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+baseBindings({ ServiceStatus: async () => { throw new Error("ah: connection reset"); } });
+settingsAnswer = async () => plainView;
+app.state.service = null;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveCalls = [];
+restartCalls = 0;
+const autoWakeSaved = { ...plainView, saved: { ...plainView.saved, autoWake: true }, restartRequired: true };
+saveAnswer = async () => autoWakeSaved;
+afterRestart(autoWakeSaved);
+await app.saveNodeSettings();
+await tick();
+const statusFailed = el("banner").textContent;
+if (statusFailed.includes("儲存節點設定失敗")) {
+  failures.push(`a status read that threw was reported as a failed save: ${statusFailed}`);
+}
+if (!statusFailed.includes("設定已儲存")) failures.push("the owner was not told the save landed");
+if (!statusFailed.includes("讀不到背景服務狀態")) {
+  failures.push(`the owner was not told why nothing was restarted: ${statusFailed}`);
+}
+if (restartCalls !== 0) failures.push("a service whose status could not be read was restarted");
+if (saveCalls.length !== 1) failures.push(`the write went out ${saveCalls.length} times`);
+
+// R21. A re-read that fails after the restart means the check did not happen.
+//      Saying nothing would read as success, and the commonest reason a save
+//      does not take effect looks exactly like success.
+app.state.service = serviceStatus;
+baseBindings();
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => autoWakeSaved;
+settingsAnswer = async () => ({ error: "connection refused" });
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const unverified = el("banner").textContent;
+if (unverified.includes("回應中")) {
+  failures.push(`a save whose effect was never checked was reported as confirmed: ${unverified}`);
+}
+if (!unverified.includes("無法確認")) {
+  failures.push(`the owner was not told the check did not happen: ${unverified}`);
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("an unverified save was marked successful");
+}
+
+// R22. While a write is in flight the panel's own read and write are held off.
+//      Sequence numbers order by when a read STARTED, so a reload clicked during
+//      a save carries a higher number while answering from before the restart —
+//      it would win the guard and repaint the form with pre-restart values under
+//      a success banner. The button is the thing that stops it.
+app.state.busy = true;
+app.render();
+if (!el("node-settings-reload").disabled) {
+  failures.push("the panel can be re-read while a write is in flight");
+}
+if (!el("node-settings-save").disabled) {
+  failures.push("the panel can be written again while a write is in flight");
+}
+app.state.busy = false;
+app.render();
+if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
+  failures.push("the panel stayed disabled after the write finished");
+}
+
+/* ---- round seven ---- */
+
+// R24. A status read that fails AFTER a successful restart is not a failed
+//      restart. The node did come back on the new settings; saying otherwise
+//      sends the owner to restart something that is already running.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+let statusCalls = 0;
+baseBindings({
+  ServiceStatus: async () => {
+    statusCalls += 1;
+    // The first read (before the restart) works; the one after it does not.
+    if (statusCalls > 1) throw new Error("bridge closed");
+    return serviceStatus;
+  },
+});
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+app.state.service = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+const wokeView = { ...plainView, saved: { ...plainView.saved, autoWake: true }, restartRequired: true };
+saveAnswer = async () => wokeView;
+afterRestart(wokeView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const afterStatusFail = el("banner").textContent;
+if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
+if (afterStatusFail.includes("重新啟動背景服務失敗")) {
+  failures.push(`a status read that failed after a good restart was reported as a failed restart: ${afterStatusFail}`);
+}
+if (!afterStatusFail.includes("讀不到服務狀態")) {
+  failures.push(`the owner was not told the status could not be read: ${afterStatusFail}`);
+}
+
+// R25. A save really does hold the panel off, end to end: the buttons are
+//      disabled while the write is in the air, not merely when state.busy is
+//      set by hand.
+let disabledDuringWrite = null;
+baseBindings({
+  SaveNodeSettings: async (patch) => {
+    saveCalls.push(patch);
+    disabledDuringWrite = {
+      reload: el("node-settings-reload").disabled,
+      save: el("node-settings-save").disabled,
+    };
+    return wokeView;
+  },
+});
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+app.state.service = serviceStatus;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+afterRestart(wokeView);
+saveCalls = [];
+await app.saveNodeSettings();
+await tick();
+if (!disabledDuringWrite || !disabledDuringWrite.reload || !disabledDuringWrite.save) {
+  failures.push(`the panel was still live while the write was out: ${JSON.stringify(disabledDuringWrite)}`);
+}
+if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
+  failures.push("the panel stayed disabled after the write finished");
+}
+
+// R26. A re-read that failed leaves no tag claiming what is "running": that
+//      process has been replaced and this window never saw its replacement.
+baseBindings();
+settingsAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: false },
+  sources: { allowLan: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
+  restartRequired: true,
+});
+app.state.nodeSettings = null;
+app.state.service = serviceStatus;
+await app.loadNodeSettings();
+await tick();
+if (!el("node-allowlan-source").textContent.includes("目前執行中的是")) {
+  failures.push("the running value was not named before the save");
+}
+el("node-autowake").checked = true;
+// The write's own answer still carries the flag provenance — it was computed
+// before the restart — so painting it would put the tag back. Clearing has to
+// happen after the paint, not instead of it.
+saveAnswer = async () => ({
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: { allowLan: "flag" },
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  restartRequired: true,
+});
+settingsAnswer = async () => ({ error: "connection refused" });
+await app.saveNodeSettings();
+await tick();
+if (el("node-allowlan-source").textContent !== "") {
+  failures.push(`a tag still describes the replaced process: ${el("node-allowlan-source").textContent}`);
+}
+if (el("node-settings-hint").textContent.includes("存檔後要重新啟動")) {
+  failures.push("the form still asks for a restart it cannot know is needed");
+}
+
+// R27. A node that is not a service leaves the owner with something to do, so
+//      the banner stays on screen rather than fading like a success.
+serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+app.state.service = null;
+baseBindings();
+settingsAnswer = async () => plainView;
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+el("node-autowake").checked = true;
+saveAnswer = async () => wokeView;
+afterRestart(wokeView);
+await app.saveNodeSettings();
+await tick();
+if (!el("banner").textContent.includes("自己重新啟動")) {
+  failures.push("the owner was not told to restart it themselves");
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save the node has not read yet was marked successful, so it fades off screen");
+}
+
+// R28. A settings read that failed is retried on the next visit to the view.
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
+let visitReads = 0;
+baseBindings();
+settingsAnswer = async () => { visitReads += 1; return { error: "connection refused" }; };
+app.state.nodeSettings = null;
+app.state.nodeSettingsTried = false;
+app.state.view = "settings";
+app.render();
+await tick();
+const readsAfterFirstVisit = visitReads;
+if (readsAfterFirstVisit !== 1) failures.push(`the first visit read ${readsAfterFirstVisit} times, want 1`);
+app.render();
+await tick();
+if (visitReads !== readsAfterFirstVisit) failures.push("a failed read re-fired on the next repaint");
+// Leave the view and come back.
+app.state.view = "local";
+app.render();
+app.state.view = "settings";
+app.render();
+await tick();
+if (visitReads <= readsAfterFirstVisit) {
+  failures.push("returning to the settings view did not try the node again");
+}
+
+// R23 runs last on purpose. It calls paintAfterSave with literal sequence
+// numbers to control which paint finishes first, and that leaves the module's
+// applied-watermark above anything a later section could reach — every read
+// after it would be discarded as stale.
+// R23. Of two paints the newer sequence wins, even when the older one finishes
+//      last. The guard is re-checked AFTER the address lookup rather than
+//      claimed before it: claiming first lets the older paint run to completion
+//      and land on top.
+let addressCalls = 0;
+baseBindings({
+  LocalAddresses: async () => {
+    addressCalls += 1;
+    // The first caller — the older sequence — is the slow one.
+    if (addressCalls === 1) await new Promise((resolve) => setTimeout(resolve, 30));
+    return [];
+  },
+});
+app.state.nodeSettings = null;
+settingsAnswer = async () => plainView;
+await app.loadNodeSettings();
+await tick();
+addressCalls = 0;
+const older = { ...plainView, saved: { ...plainView.saved, autoWake: false } };
+const newer = { ...plainView, saved: { ...plainView.saved, autoWake: true } };
+const slow = app.paintAfterSave(900, older);
+const fast = app.paintAfterSave(901, newer);
+await Promise.all([fast, slow]);
+await tick();
+if (!el("node-autowake").checked) {
+  failures.push("an older paint landed on top of a newer one");
+}
+
+
+if (failures.length > 0) {
+  console.error(failures.join("\n"));
+  process.exit(1);
+}
+console.log("node settings: the answer repaints the whole form, withdrawals and refusals speak the node's words");

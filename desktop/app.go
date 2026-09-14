@@ -501,6 +501,51 @@ type OutboundView struct {
 	Error string `json:"error,omitempty"`
 }
 
+// NodeSettingsView is NodeSettings plus the reason a read or write failed.
+//
+// The node's own refusal text is the useful part of a 400 here — it names the
+// address that was sent and what to send with it — so it is carried verbatim
+// rather than replaced with a sentence of this app's own.
+type NodeSettingsView struct {
+	NodeSettings
+	Error string `json:"error,omitempty"`
+}
+
+// NodeSettings reads what the node remembers for its own start-up.
+func (a *App) NodeSettings() NodeSettingsView {
+	activeClient, _ := a.current()
+	settings, err := activeClient.nodeSettings(a.ctx)
+	if err != nil {
+		return NodeSettingsView{NodeSettings: emptyNodeSettings(), Error: err.Error()}
+	}
+	return NodeSettingsView{NodeSettings: settings}
+}
+
+// SaveNodeSettings writes the fields the owner changed and answers with the
+// whole record as the node now sees it.
+//
+// The answer is the whole record on purpose: turning allowLan off pulls
+// peerListen back to loopback in the same write, and after #134 any write can
+// do it when the stored allowLan is already false — so a caller that updated
+// only the fields it sent would leave a LAN address on screen that the node no
+// longer has.
+func (a *App) SaveNodeSettings(patch NodeSettingsPatch) NodeSettingsView {
+	activeClient, _ := a.current()
+	settings, err := activeClient.saveNodeSettings(a.ctx, patch)
+	if err != nil {
+		return NodeSettingsView{NodeSettings: emptyNodeSettings(), Error: err.Error()}
+	}
+	return NodeSettingsView{NodeSettings: settings}
+}
+
+func emptyNodeSettings() NodeSettings {
+	return NodeSettings{
+		Sources:  map[string]string{},
+		Settings: NodeSettingValues{TreatAsPrivate: []string{}},
+		Saved:    NodeSettingValues{TreatAsPrivate: []string{}},
+	}
+}
+
 // Outbound reads what this node has queued for peers, newest first.
 //
 // `ah send` answers "queued" and nothing more, so without this an owner who has

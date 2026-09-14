@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -433,5 +434,101 @@ func TestFrontendPairingIsCompleteFromInsideTheWindow(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("pairing completeness check failed: %v\n%s", err, output)
+	}
+}
+
+// TestFrontendRunsEverySessionsFilterCheck covers the filter model behind the
+// session table: three groups that OR within and AND across, and counts that
+// answer "how many of what you are already looking at".
+//
+// It has no DOM at all — it imports the module — so it is the cheapest of these
+// and the one most likely to be forgotten.
+func TestFrontendRunsEverySessionsFilterCheck(t *testing.T) {
+	runNodeCheck(t, "sessions-filter.mjs")
+}
+
+// TestFrontendInboxDrawerAsksTheNodeForOneSession covers the send and wake logs
+// beside the inbox. The node filters `/v1/outbound` to one session, and the
+// session has to be repeated on every continuation or the second page is the
+// node-wide list appended under one session's name.
+func TestFrontendInboxDrawerAsksTheNodeForOneSession(t *testing.T) {
+	runNodeCheck(t, "inbox-drawer.mjs")
+}
+
+// TestFrontendNodeSettingsFormSpeaksTheNodesRules covers the settings page.
+//
+// Three of its rules cost real damage when they are wrong: the node's answer
+// repaints the whole form (a write can change a field nobody sent), an absent
+// withdrawal flag means no withdrawal, and a refusal is shown in the node's own
+// words. The form also never makes the owner's choice for them — an earlier
+// version could not untick allowLan, which put the node's own headline
+// behaviour out of reach.
+func TestFrontendNodeSettingsFormSpeaksTheNodesRules(t *testing.T) {
+	runNodeCheck(t, "node-settings.mjs")
+}
+
+// TestFrontendShimSelectDoesNotLie covers the fake <select> the other checks
+// run against.
+//
+// A shim that reports a selected option where a browser reports none lets a
+// form bug pass: two settings-form defects that turned LAN access on did
+// exactly that before its selectedIndex was corrected. The fake's own
+// behaviour is therefore pinned, not left to whichever check leans on it.
+func TestFrontendShimSelectDoesNotLie(t *testing.T) {
+	runNodeCheck(t, "dom-shim-select.mjs")
+}
+
+// runNodeCheck runs one check under frontend/test.
+func runNodeCheck(t *testing.T, name string) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skipf("node is not installed; skipping %s", name)
+	}
+	script := filepath.Join("frontend", "test", name)
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("stat %s: %v", script, err)
+	}
+	output, err := exec.Command(node, script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %v\n%s", name, err, output)
+	}
+}
+
+// TestFrontendEveryNodeCheckIsRunByGo is the reason the list above cannot drift.
+//
+// CI runs the frontend checks only through these wrappers — there is no `npm
+// test` step in the workflow — so a check added under frontend/test and not
+// named here is a check that never runs anywhere but a developer's machine.
+// That already happened: two checks merged with the GUI redesign and were
+// invisible to CI until this test was written.
+func TestFrontendEveryNodeCheckIsRunByGo(t *testing.T) {
+	source, err := os.ReadFile("frontend_test.go")
+	if err != nil {
+		t.Fatalf("read frontend_test.go: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join("frontend", "test"))
+	if err != nil {
+		t.Fatalf("read frontend/test: %v", err)
+	}
+	found := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || filepath.Ext(name) != ".mjs" {
+			continue
+		}
+		// dom-shim.mjs is the fake DOM the checks import, not a check itself.
+		// Its behaviour is covered by dom-shim-select.mjs.
+		if name == "dom-shim.mjs" {
+			continue
+		}
+		found++
+		if !strings.Contains(string(source), strconv.Quote(name)) {
+			t.Errorf("frontend/test/%s is never run by go test, so CI never runs it; "+
+				"add a wrapper that calls runNodeCheck(t, %q)", name, name)
+		}
+	}
+	if found == 0 {
+		t.Fatal("no frontend checks found; this test would pass vacuously")
 	}
 }
