@@ -245,8 +245,29 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		return r.simple(ctx, http.MethodPost, "/v1/messages", body)
 	case "inbox":
+		// `ah inbox <session-id>` reads; `ah inbox delete <session-id>
+		// <message-id>` drops one message. The second is `inbox-clear`'s
+		// single-message mode under the name a reader looks for: the skill that
+		// deletes a message every tick told people to run `curl -X DELETE`,
+		// because nobody finds that mode under `inbox-clear`.
+		//
+		// `delete` cannot collide with a session id: a session id always begins
+		// with a provider name and a colon, which is what makes the two
+		// readings separable at all.
+		if len(args) >= 2 && args[1] == "delete" {
+			if len(args) != 4 {
+				return errors.New("usage: ah inbox delete <session-id> <message-id>")
+			}
+			if !looksLikeSessionID(args[2]) {
+				return errors.New("usage: ah inbox delete <session-id> <message-id>\n" +
+					"  a session id begins with a provider name, as in `claude:` or `codex:`")
+			}
+			return r.simple(ctx, http.MethodDelete,
+				"/v1/inbox/"+url.PathEscape(args[2])+"/"+url.PathEscape(args[3]), nil)
+		}
 		if len(args) != 2 {
-			return errors.New("usage: ah inbox <session-id>")
+			return errors.New("usage: ah inbox <session-id>\n" +
+				"       ah inbox delete <session-id> <message-id>")
 		}
 		return r.inbox(ctx, args[1])
 	case "wakes":
@@ -258,7 +279,14 @@ func (r runner) command(ctx context.Context, args []string) error {
 		}
 		path := "/v1/wakes"
 		if len(args) == 2 {
-			path += "?session=" + url.QueryEscape(args[1])
+			// Blank is caught here rather than sent: the server refuses a
+			// present-but-empty `session` by telling the caller to omit the
+			// parameter, and a CLI user has no parameter to omit.
+			session := strings.TrimSpace(args[1])
+			if session == "" {
+				return errors.New("usage: ah wakes [session-id]")
+			}
+			path += "?session=" + url.QueryEscape(session)
 		}
 		return r.wakes(ctx, path)
 	case "inbox-clear":
@@ -275,19 +303,54 @@ func (r runner) command(ctx context.Context, args []string) error {
 	case "outbound":
 		// A message to another node is queued, not delivered, so there has to
 		// be somewhere to find out what became of it.
-		if len(args) != 2 {
-			return errors.New("usage: ah outbound <message-id>")
+		//
+		// Without an id it lists, newest first. An owner who has lost the id —
+		// the terminal that printed it is closed, or the send came from an
+		// agent rather than from them — otherwise could not ask at all.
+		//
+		// --session narrows the listing to one local sender. It only means
+		// anything while listing: with a message id the answer is that one
+		// message, and silently ignoring the flag would let a caller believe
+		// a filter was applied.
+		rest, session, err := takeSessionFlag(args[1:])
+		if err != nil {
+			return err
 		}
-		return r.simple(ctx, http.MethodGet, "/v1/outbound/"+url.PathEscape(args[1]), nil)
+		if len(rest) > 1 || (len(rest) == 1 && session != "") {
+			return errors.New("usage: ah outbound [message-id] | ah outbound [--session <session-id>]")
+		}
+		if len(rest) == 0 {
+			path := "/v1/outbound"
+			if session != "" {
+				path += "?session=" + url.QueryEscape(session)
+			}
+			return r.simple(ctx, http.MethodGet, path, nil)
+		}
+		return r.simple(ctx, http.MethodGet, "/v1/outbound/"+url.PathEscape(rest[0]), nil)
 	case "node":
 		return r.simple(ctx, http.MethodGet, "/v1/node", nil)
 	case "heartbeat":
 		return r.simple(ctx, http.MethodGet, "/v1/heartbeat", nil)
+	case "settings":
+		return r.settings(ctx, args)
 	case "service":
 		return r.service(ctx, args)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+// looksLikeSessionID reports whether a string reads as a session id rather than
+// as a subcommand or a message id.
+//
+// It is the whole reason `ah inbox delete` can exist: session ids are the only
+// argument `ah inbox` ever took, and they all carry a provider prefix, so a
+// bare word in that position is a mistake rather than an inbox nobody can read.
+// Deliberately not a validity check — the node decides that, and answers with
+// its own reason.
+func looksLikeSessionID(arg string) bool {
+	provider, _, found := strings.Cut(arg, ":")
+	return found && model.KnownProvider(provider)
 }
 
 // pair records a peer whose fingerprint the owner has already compared on both
@@ -688,7 +751,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "       ah --version")
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound,")
-	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, service")
+	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, settings, service")
 	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
 	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
@@ -701,14 +764,22 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
-	_, _ = fmt.Fprintln(output, "  ah outbound <message-id>                     what became of a queued message")
+	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
+	_, _ = fmt.Fprintln(output, "  ah outbound [--session <session-id>]         the listing, narrowed to what one local session sent")
+	_, _ = fmt.Fprintln(output, "  ah inbox <session-id>                        read a session's inbox")
+	_, _ = fmt.Fprintln(output, "  ah inbox delete <session-id> <message-id>    drop one message, once it has been handled")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")
+	_, _ = fmt.Fprintln(output, "  ah settings                                  what this node started with, and where each value came from")
+	_, _ = fmt.Fprintln(output, "  ah settings set [--peer-listen ADDR] [--allow-lan=true|false] [--discover=true|false]")
+	_, _ = fmt.Fprintln(output, "                  [--auto-wake=true|false] [--treat-as-private CIDR]... [--clear-private-ranges]")
+	_, _ = fmt.Fprintln(output, "                                               remember these; they apply when the node next starts")
 	_, _ = fmt.Fprintln(output, "  ah service install [--db PATH] [--listen ADDR] [--peer-listen ADDR] [--allow-lan] [--discover]")
 	_, _ = fmt.Fprintln(output, "                     [--treat-as-private CIDR]... [--auto-wake] [--node-binary PATH]")
 	_, _ = fmt.Fprintln(output, "                                               run the node as a background service that starts at login")
 	_, _ = fmt.Fprintln(output, "                                               and is restarted if it exits; node flags are the node's own")
 	_, _ = fmt.Fprintln(output, "  ah service uninstall                         stop it and remove the registration; identity and data stay")
+	_, _ = fmt.Fprintln(output, "  ah service restart                           restart it, which is how a saved setting takes effect")
 	_, _ = fmt.Fprintln(output, "  ah service status                            is it installed, running, and is the node answering")
 }
 
@@ -783,4 +854,50 @@ func (r runner) wakes(ctx context.Context, path string) error {
 		decoded.Limits.Node, decoded.Limits.NodeWindow)
 	_, _ = fmt.Fprintln(r.stdout, "A message held back by a limit is still in the inbox; `ah inbox <session-id>` reads it.")
 	return nil
+}
+
+// takeSessionFlag pulls an optional `--session <id>` out of a command's
+// arguments and returns what is left.
+//
+// Written as a flag rather than a positional, because `ah outbound` already
+// has a positional and the two mean opposite things: one message, or many
+// narrowed to a sender. A caller that passes both is told so rather than
+// having one of them quietly win.
+//
+// Both spellings are accepted, as `--from` accepts both. `--session=<id>` is
+// the form a person who writes flags reaches for, and reading it as a
+// positional made `ah outbound --session=codex:mine` ask for a message whose
+// id is the flag — answered 404 UNKNOWN_MESSAGE, which says nothing about the
+// real mistake.
+func takeSessionFlag(args []string) (rest []string, session string, err error) {
+	seen := false
+	for index := 0; index < len(args); index++ {
+		argument := args[index]
+		joined := strings.HasPrefix(argument, "--session=")
+		if argument != "--session" && !joined {
+			rest = append(rest, argument)
+			continue
+		}
+		if seen {
+			return nil, "", errors.New("--session was given twice")
+		}
+		seen = true
+		switch {
+		case joined:
+			session = strings.TrimPrefix(argument, "--session=")
+		case index+1 < len(args):
+			session = args[index+1]
+			index++
+		default:
+			return nil, "", errors.New("--session needs a session id")
+		}
+		// Trimmed here rather than left to the node: a value of spaces is
+		// otherwise trimmed away at the far end and answered with the whole
+		// node's listing, which reads as one session's and is not.
+		session = strings.TrimSpace(session)
+		if session == "" {
+			return nil, "", errors.New("--session needs a session id")
+		}
+	}
+	return rest, session, nil
 }

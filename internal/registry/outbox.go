@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/model"
@@ -85,6 +86,8 @@ CREATE TABLE IF NOT EXISTS outbound_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_pending
     ON outbound_messages(state, created_at_ms ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_outbound_recent
+    ON outbound_messages(created_at_ms DESC, id DESC);
 `
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate outbound messages: %w", err)
@@ -153,6 +156,98 @@ ORDER BY created_at_ms ASC, id ASC LIMIT ?`, nodeID, limit)
 	return scanOutbound(rows)
 }
 
+// OutboundCursor marks where a page of the outbound list ended.
+//
+// The same shape and the same wire form as an inbox cursor — a time and an id,
+// which is all either needs — so one encoding is parsed and rendered in one
+// place. What differs is the direction it is walked: this list is newest first,
+// so the page after a cursor is what sorts *before* it.
+type OutboundCursor = InboxCursor
+
+// OutboundStart is the cursor before the newest message.
+var OutboundStart = InboxStart
+
+// OutboundCursorAfter is the cursor that continues past message.
+func OutboundCursorAfter(message OutboundMessage) OutboundCursor {
+	return OutboundCursor{CreatedAtMS: message.CreatedAt.UTC().UnixMilli(), ID: message.ID}
+}
+
+// ParseOutboundCursor reads back what OutboundCursorAfter rendered; "" is the
+// start.
+func ParseOutboundCursor(value string) (OutboundCursor, error) {
+	return ParseInboxCursor(value)
+}
+
+// ListOutbound returns the messages this node has queued for peers, newest
+// first, in pages.
+//
+// Newest first because the question an owner arrives with is "what happened to
+// what I just sent", the same reason the wake trail is ordered that way. Paged
+// by cursor rather than offset: rows are pruned once they have been settled a
+// while, so an offset would skip or repeat rows between two pages.
+//
+// Bodies are not read here. The list answers "where did my messages go", and a
+// page of fifty 32KB bodies is both far more than that question needs and
+// enough to pass a reader's response limit — which is how the answer to
+// "what is jamming my outbox" becomes unreadable exactly when it is wanted.
+//
+// A non-empty session narrows the list to what that local session sent. The
+// filter runs in SQL rather than over a fetched page, because a page filtered
+// after the fact is a page of the wrong size: the caller would be handed two
+// rows where it asked for fifty and no way to tell that from the end of the
+// list.
+func (r *Registry) ListOutbound(ctx context.Context, session string, limit int, after OutboundCursor) ([]OutboundMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := `
+SELECT id, destination_node_id, recipient_session, sender_label, '', state, attempts,
+       created_at_ms, updated_at_ms, last_error, wake_hops
+FROM outbound_messages`
+	// The two conditions are spelled out as constants and combined by a
+	// switch rather than joined from a slice: every fragment of this query is
+	// then a literal in the source, and the only way a value reaches the
+	// database is as a bound parameter.
+	//
+	// bySender matches on the session half of the label, not on the whole
+	// thing. A label is <node-id>/<session-id> — this node's id, since only a
+	// local session may queue — and comparing whole labels would make the
+	// answer depend on the node id still being what it was when the row was
+	// written. The session is what the caller asked about.
+	const bySender = `(CASE WHEN instr(sender_label, ?) > 0
+       THEN substr(sender_label, instr(sender_label, ?) + 1) ELSE sender_label END) = ?`
+	// beforeCursor is strictly before the cursor in the listing's own order,
+	// which is descending. The start cursor is zero and names no row, so it is
+	// not a bound at all — applied as one it would exclude everything.
+	const beforeCursor = `(created_at_ms < ? OR (created_at_ms = ? AND id < ?))`
+
+	arguments := []any{}
+	if session != "" {
+		separator := model.SessionIDSeparator
+		arguments = append(arguments, separator, separator, session)
+	}
+	if after != OutboundStart {
+		arguments = append(arguments, after.CreatedAtMS, after.CreatedAtMS, after.ID)
+	}
+	switch {
+	case session != "" && after != OutboundStart:
+		query += ` WHERE ` + bySender + ` AND ` + beforeCursor
+	case session != "":
+		query += ` WHERE ` + bySender
+	case after != OutboundStart:
+		query += ` WHERE ` + beforeCursor
+	}
+	query += ` ORDER BY created_at_ms DESC, id DESC LIMIT ?`
+	arguments = append(arguments, limit)
+
+	rows, err := r.db.QueryContext(ctx, query, arguments...)
+	if err != nil {
+		return nil, fmt.Errorf("list outbound messages: %w", err)
+	}
+	defer rows.Close()
+	return scanOutbound(rows)
+}
+
 // OutboundFor returns one queued message by id.
 func (r *Registry) OutboundFor(ctx context.Context, messageID string) (OutboundMessage, error) {
 	rows, err := r.db.QueryContext(ctx, `
@@ -173,6 +268,36 @@ FROM outbound_messages WHERE id = ?`, messageID)
 	return messages[0], nil
 }
 
+// MaxOutboundErrorBytes bounds what a delivery failure may write into
+// last_error.
+//
+// The reason is peer-supplied text: an ack's Reason field comes over the wire
+// from the other node. Stored whole, one refused message could carry tens of
+// kilobytes, and GET /v1/outbound?limit=200 would then compose a response no
+// reader can take — the same failure the list avoids by carrying no bodies.
+// Bounded here, at the one place the text is written, so the single lookup is
+// covered by the same rule rather than by a second one.
+const MaxOutboundErrorBytes = 512
+
+// truncateReason cuts a failure reason to MaxOutboundErrorBytes, on a rune
+// boundary.
+//
+// Cut by bytes because the bound is on the stored size, but never through the
+// middle of a rune: a reason is shown to a person, and a trailing half-rune
+// renders as a replacement character that reads as corruption rather than as
+// an abridgement. The ellipsis says the text was cut.
+func truncateReason(reason string) string {
+	if len(reason) <= MaxOutboundErrorBytes {
+		return reason
+	}
+	const ellipsis = "\u2026"
+	cut := MaxOutboundErrorBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut] + ellipsis
+}
+
 // MarkOutbound records the outcome of a delivery attempt.
 //
 // A delivered or refused message is terminal and is never moved back to
@@ -189,7 +314,7 @@ func (r *Registry) MarkOutbound(ctx context.Context, messageID string, state Out
 UPDATE outbound_messages
 SET state = ?, last_error = ?, attempts = attempts + 1, updated_at_ms = ?
 WHERE id = ? AND state = 'pending'`,
-		string(state), reason, time.Now().UTC().UnixMilli(), messageID)
+		string(state), truncateReason(reason), time.Now().UTC().UnixMilli(), messageID)
 	if err != nil {
 		return fmt.Errorf("update outbound message: %w", err)
 	}
@@ -371,7 +496,7 @@ func (r *Registry) RecordAttempt(ctx context.Context, messageID, reason string) 
 UPDATE outbound_messages
 SET attempts = attempts + 1, last_error = ?, updated_at_ms = ?
 WHERE id = ? AND state = 'pending'`,
-		reason, time.Now().UTC().UnixMilli(), messageID); err != nil {
+		truncateReason(reason), time.Now().UTC().UnixMilli(), messageID); err != nil {
 		return fmt.Errorf("record delivery attempt: %w", err)
 	}
 	return nil

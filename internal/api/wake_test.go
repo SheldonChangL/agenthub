@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -729,4 +730,78 @@ func TestNodeEndpointReportsTheNodesAutoWakeFlag(t *testing.T) {
 			t.Errorf("/v1/node says autoWake %v for a node started with %v", *body.AutoWake, autoWake)
 		}
 	}
+}
+
+// TestTheWakeLimitBoundsAreTheDocumentedOnes pins the range the README states
+// and the page size a caller who asks for nothing gets.
+//
+// Surviving mutations: raising the ceiling test to `limit=0` alone left both
+// `parsed > 200` and the default 50 free to be anything — 99 and 7 passed the
+// suite, while the README promised 1–200 and 50. A documented number nothing
+// reads is not a promise.
+func TestTheWakeLimitBoundsAreTheDocumentedOnes(t *testing.T) {
+	ctx := context.Background()
+	store, owner, _, _ := wakingSurfaces(t)
+	session := acceptingLocalSession(t, store, owner, "codex:watched")
+
+	// One more row than the default page, so the default's own value shows:
+	// with 50 or fewer rows a page of everything and a page of 50 look alike.
+	const seeded = 51
+	for i := range seeded {
+		if _, err := store.RecordWake(ctx, registry.WakeEvent{
+			MessageID:          fmt.Sprintf("msg_%d", i),
+			SourceNodeID:       peerNodeID,
+			SourceSession:      peerNodeID + "/codex:theirs",
+			DestinationSession: session,
+			Hops:               1,
+			Outcome:            registry.WakeWoken,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, testCase := range []struct {
+		query string
+		want  int
+	}{
+		{"?limit=0", http.StatusBadRequest},
+		{"?limit=201", http.StatusBadRequest},
+		{"?limit=x", http.StatusBadRequest},
+		{"?limit=-1", http.StatusBadRequest},
+		{"?limit=", http.StatusOK}, // present but empty means unasked
+		{"?limit=1", http.StatusOK},
+		{"?limit=200", http.StatusOK},
+	} {
+		response := perform(t, owner, http.MethodGet, "/v1/wakes"+testCase.query, nil)
+		if response.Code != testCase.want {
+			t.Errorf("GET /v1/wakes%s = %d %s; want %d — the README says 1 to 200",
+				testCase.query, response.Code, response.Body.String(), testCase.want)
+		}
+	}
+
+	// The default is a number, not "everything the node has".
+	if rows := len(readWakes(t, owner, "")); rows != 50 {
+		t.Errorf("the default page carried %d of %d rows; want the documented 50", rows, seeded)
+	}
+	// And the seeding really did exceed it, so the 50 above is the limit
+	// speaking rather than the store running out of rows.
+	if rows := len(readWakes(t, owner, "?limit=51")); rows != seeded {
+		t.Errorf("limit=51 carried %d rows; want the %d that were recorded", rows, seeded)
+	}
+}
+
+// readWakes is the wake trail one query answers with.
+func readWakes(t *testing.T, handler http.Handler, query string) []registry.WakeEvent {
+	t.Helper()
+	response := perform(t, handler, http.MethodGet, "/v1/wakes"+query, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /v1/wakes%s = %d %s", query, response.Code, response.Body.String())
+	}
+	var body struct {
+		Wakes []registry.WakeEvent `json:"wakes"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Wakes
 }

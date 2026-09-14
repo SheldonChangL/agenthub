@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"agenthub.local/agenthub/internal/model"
 )
@@ -588,5 +590,290 @@ func TestTheBoundHoldsUnderConcurrentDeliveries(t *testing.T) {
 	}
 	if held > MaxInboxMessages {
 		t.Fatalf("held = %d; the bound of %d was exceeded by concurrent inserts", held, MaxInboxMessages)
+	}
+}
+
+// queueThree records three messages a couple of milliseconds apart, so that
+// "newest first" is a question the timestamps can actually answer. Queued in
+// one millisecond they would tie, and the tie-break is the id — which is random
+// hex, so the assertion would be about nothing.
+func queueThree(t *testing.T, store *Registry, node string) []OutboundMessage {
+	t.Helper()
+	queued := make([]OutboundMessage, 0, 3)
+	for _, id := range []string{"msg_aaa", "msg_bbb", "msg_ccc"} {
+		message, err := store.QueueOutbound(context.Background(), OutboundMessage{
+			ID: id, DestinationNodeID: node, To: "codex:theirs", Body: "hello " + id,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		queued = append(queued, message)
+		time.Sleep(2 * time.Millisecond)
+	}
+	return queued
+}
+
+// TestListOutboundIsNewestFirst pins the order the listing promises. An owner
+// arrives asking what happened to what they just sent, not what happened when
+// the node was set up.
+func TestListOutboundIsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	queued := queueThree(t, store, node)
+
+	listed, err := store.ListOutbound(ctx, "", 50, OutboundStart)
+	if err != nil {
+		t.Fatalf("ListOutbound() error = %v", err)
+	}
+	got := make([]string, 0, len(listed))
+	for _, message := range listed {
+		got = append(got, message.ID)
+	}
+	want := []string{queued[2].ID, queued[1].ID, queued[0].ID}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ids = %v; want %v, newest first", got, want)
+	}
+	if listed[0].State != OutboundPending || listed[0].To != "codex:theirs" {
+		t.Errorf("row = %#v; state and recipient must survive the listing", listed[0])
+	}
+}
+
+// TestListOutboundPagesByCursor covers what an offset would get wrong. Settled
+// rows are pruned, so the row count under a paging caller changes between
+// pages; a cursor names where it was, not how many rows were before it.
+func TestListOutboundPagesByCursor(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	queued := queueThree(t, store, node)
+
+	first, err := store.ListOutbound(ctx, "", 2, OutboundStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].ID != queued[2].ID || first[1].ID != queued[1].ID {
+		t.Fatalf("first page = %#v", first)
+	}
+	cursor, err := ParseOutboundCursor(OutboundCursorAfter(first[1]).String())
+	if err != nil {
+		t.Fatalf("ParseOutboundCursor() error = %v", err)
+	}
+	second, err := store.ListOutbound(ctx, "", 2, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].ID != queued[0].ID {
+		t.Fatalf("second page = %#v; want only the oldest, with nothing repeated", second)
+	}
+	// And the end is an empty page, not the first one again — which is what a
+	// cursor applied in the wrong direction would produce.
+	third, err := store.ListOutbound(ctx, "", 2, OutboundCursorAfter(second[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third) != 0 {
+		t.Fatalf("page past the end = %#v; want nothing", third)
+	}
+}
+
+// TestListOutboundBoundsItsPage keeps one caller from asking for the whole
+// table, and an empty store from being an error.
+func TestListOutboundBoundsItsPage(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+
+	empty, err := store.ListOutbound(ctx, "", 50, OutboundStart)
+	if err != nil {
+		t.Fatalf("ListOutbound() on an empty store error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty store listed %d rows", len(empty))
+	}
+
+	node := trustedPeer(t, store)
+	queueThree(t, store, node)
+	for _, limit := range []int{0, -1, 1000} {
+		listed, err := store.ListOutbound(ctx, "", limit, OutboundStart)
+		if err != nil {
+			t.Fatalf("ListOutbound(limit=%d) error = %v", limit, err)
+		}
+		if len(listed) != 3 {
+			t.Errorf("limit %d listed %d rows; an out-of-range limit falls back to the default",
+				limit, len(listed))
+		}
+	}
+	if listed, err := store.ListOutbound(ctx, "", 1, OutboundStart); err != nil || len(listed) != 1 {
+		t.Fatalf("limit 1 listed %d rows (err %v)", len(listed), err)
+	}
+}
+
+// queueFrom queues one message labelled with a local sender, the way the API
+// does: <node-id>/<session-id>, never a bare session id.
+func queueFrom(t *testing.T, store *Registry, node, from, id string) OutboundMessage {
+	t.Helper()
+	message, err := store.QueueOutbound(context.Background(), OutboundMessage{
+		ID: id, DestinationNodeID: node, To: "codex:theirs", From: from, Body: "hello " + id,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(2 * time.Millisecond)
+	return message
+}
+
+// TestListOutboundNarrowsToOneSender is the filter the desktop opens from a
+// session's row. Without it a window showing one session's sends has to page
+// the whole node and throw most of it away.
+func TestListOutboundNarrowsToOneSender(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	const local = "node_local"
+	mine := queueFrom(t, store, node, local+"/codex:mine", "msg_mine_1")
+	queueFrom(t, store, node, local+"/codex:theirs", "msg_other")
+	mineToo := queueFrom(t, store, node, local+"/codex:mine", "msg_mine_2")
+
+	listed, err := store.ListOutbound(ctx, "codex:mine", 50, OutboundStart)
+	if err != nil {
+		t.Fatalf("ListOutbound() error = %v", err)
+	}
+	got := make([]string, 0, len(listed))
+	for _, message := range listed {
+		got = append(got, message.ID)
+	}
+	if fmt.Sprint(got) != fmt.Sprint([]string{mineToo.ID, mine.ID}) {
+		t.Fatalf("ids = %v; want only codex:mine's two rows, newest first", got)
+	}
+
+	// A session that sent nothing is an empty list, not everything.
+	none, err := store.ListOutbound(ctx, "codex:silent", 50, OutboundStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a session that sent nothing listed %d rows: %#v", len(none), none)
+	}
+
+	// The label is matched on its session half. A row queued under a different
+	// node id is still this session's — the alternative is a listing that
+	// silently empties if the node is ever renamed.
+	queueFrom(t, store, node, "node_was_called_this/codex:mine", "msg_mine_3")
+	if listed, err := store.ListOutbound(ctx, "codex:mine", 50, OutboundStart); err != nil || len(listed) != 3 {
+		t.Fatalf("listed %d rows (err %v); want the session half to decide", len(listed), err)
+	}
+}
+
+// TestListOutboundPagesWithinTheFilter is the composition, which is where the
+// bug would be: a filter and a cursor are each easy to get right alone, and a
+// cursor from a filtered page must resume inside the same filtered list.
+func TestListOutboundPagesWithinTheFilter(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+	const local = "node_local"
+
+	want := make([]string, 0, 3)
+	for _, step := range []struct{ from, id string }{
+		{"codex:mine", "msg_a"},
+		{"codex:other", "msg_b"},
+		{"codex:mine", "msg_c"},
+		{"codex:other", "msg_d"},
+		{"codex:mine", "msg_e"},
+	} {
+		queueFrom(t, store, node, local+"/"+step.from, step.id)
+		if step.from == "codex:mine" {
+			want = append([]string{step.id}, want...)
+		}
+	}
+
+	seen := make([]string, 0, 3)
+	cursor := OutboundStart
+	for page := 0; page < 4; page++ {
+		listed, err := store.ListOutbound(ctx, "codex:mine", 2, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range listed {
+			seen = append(seen, message.ID)
+		}
+		if len(listed) < 2 {
+			break
+		}
+		cursor = OutboundCursorAfter(listed[len(listed)-1])
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Fatalf("paged ids = %v; want %v — nothing repeated, nothing skipped over the rows the filter drops",
+			seen, want)
+	}
+}
+
+// TestAFailureReasonIsBoundedWhereItIsWritten keeps peer-supplied text from
+// setting the size of this node's answers. The reason in an ack comes over the
+// wire; stored whole, a single refusal could be tens of kilobytes and a page of
+// 200 rows would compose a response no reader can take.
+func TestAFailureReasonIsBoundedWhereItIsWritten(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	node := trustedPeer(t, store)
+
+	// A reason that ends mid-rune if it is cut by bytes alone: the last byte
+	// inside the bound is part of a multi-byte character.
+	huge := strings.Repeat("一", 64*1024)
+
+	attempted, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "one",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAttempt(ctx, attempted.ID, huge); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "two",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkOutbound(ctx, settled.ID, OutboundRefused, huge); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{attempted.ID, settled.ID} {
+		stored, err := store.OutboundFor(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(stored.LastError) > MaxOutboundErrorBytes {
+			t.Errorf("stored reason is %d bytes; want at most %d",
+				len(stored.LastError), MaxOutboundErrorBytes)
+		}
+		if !utf8.ValidString(stored.LastError) {
+			t.Errorf("stored reason is not valid UTF-8: %q", stored.LastError)
+		}
+		if !strings.HasSuffix(stored.LastError, "…") {
+			t.Errorf("a cut reason does not say it was cut: %q", stored.LastError)
+		}
+	}
+
+	// A reason that fits is stored exactly, ellipsis and all absent: the bound
+	// must not rewrite the ordinary case.
+	short, err := store.QueueOutbound(ctx, OutboundMessage{
+		DestinationNodeID: node, To: "codex:theirs", Body: "three",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const plain = "the addressed session does not accept messages"
+	if err := store.MarkOutbound(ctx, short.ID, OutboundRefused, plain); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.OutboundFor(ctx, short.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LastError != plain {
+		t.Errorf("a short reason was rewritten: %q", stored.LastError)
 	}
 }
