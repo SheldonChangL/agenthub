@@ -22,6 +22,10 @@ export function Heartbeat() {
   return window['go']['main']['App']['Heartbeat']();
 }
 
+export function HostPlatform() {
+  return window['go']['main']['App']['HostPlatform']();
+}
+
 export function Inbox(arg1) {
   return window['go']['main']['App']['Inbox'](arg1);
 }

@@ -12,6 +12,8 @@ export function Discover():Promise<Record<string, number>>;
 
 export function Heartbeat():Promise<string>;
 
+export function HostPlatform():Promise<string>;
+
 export function Inbox(arg1:string):Promise<main.InboxView>;
 
 export function InstallService(arg1:main.ServiceForm):Promise<main.ServiceResult>;
