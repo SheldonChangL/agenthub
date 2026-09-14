@@ -440,6 +440,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
+    // A read started during a save answers from before the restart but carries
+    // a higher sequence number, so it would win the guard and repaint the form
+    // with pre-restart values under a success banner. Held off instead.
+    el("node-settings-reload").disabled = state.busy;
+    el("node-settings-save").disabled = state.busy;
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -2430,6 +2435,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (sequence <= nodeSettingsApplied) return;
     nodeSettingsApplied = sequence;
     applyNodeSettings(view, addresses);
+    state.nodeSettingsTried = true;
   }
 
   // fetchLocalAddresses never throws: a failure is a thing to say, not a thing
@@ -2807,42 +2813,34 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // The status read and the restart are both allowed to fail without
       // turning this into "the save failed": the write already landed, and an
       // owner told otherwise will try again and re-send it.
-      let installed = Boolean(state.service?.installed);
-      if (!state.service) {
-        try {
-          await loadService();
-          installed = Boolean(state.service?.installed);
-        } catch {
-          installed = false;
-        }
+      const status = await serviceStatusOrUnknown();
+      if (status.unknown) {
+        // Not the same as "this is not a service". `ah` missing, or a status
+        // command that failed, leaves this window without the fact — and a
+        // node that IS a service then never gets restarted while the owner is
+        // told to restart something they were told is not a service.
+        await paintAfterSave(sequence, view);
+        banner(
+          `設定已儲存，但讀不到背景服務狀態（${status.reason}），所以沒有自動重啟。` +
+          "節點還在用舊設定跑：請自己重啟它，或到上面的背景服務區看狀態。",
+        );
+        return;
       }
-      if (installed) {
-        try {
-          const restarted = await api.RestartService();
-          showNodeSettingsOutput(restarted);
-          await loadService();
-        } catch (error) {
-          if (sequence > nodeSettingsApplied) {
-            nodeSettingsApplied = sequence;
-            applyNodeSettings(view, await fetchLocalAddresses());
-          }
-          banner(
-            `設定已儲存，但重新啟動背景服務失敗：${error}。` +
-            "節點還在用舊設定跑，請自己重啟它，或到上面的背景服務區看狀態。",
-          );
-          return;
-        }
-      }
-
-      if (!installed) {
-        if (sequence > nodeSettingsApplied) {
-          nodeSettingsApplied = sequence;
-          // With the address list: applyNodeSettings rebuilds the whole select,
-          // so painting without it would leave the owner with only 「只在本機」
-          // after every successful save.
-          applyNodeSettings(view, await fetchLocalAddresses());
-        }
+      if (!status.installed) {
+        await paintAfterSave(sequence, view);
         banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。", true);
+        return;
+      }
+      try {
+        const restarted = await api.RestartService();
+        showNodeSettingsOutput(restarted);
+        await loadService();
+      } catch (error) {
+        await paintAfterSave(sequence, view);
+        banner(
+          `設定已儲存，但重新啟動背景服務失敗：${error}。` +
+          "節點還在用舊設定跑，請自己重啟它，或到上面的背景服務區看狀態。",
+        );
         return;
       }
 
@@ -2852,15 +2850,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // all about a dead node — the form would still say "restart to apply"
       // after the restart, and name a command line that is gone.
       const after = await readNodeSettingsAfterRestart();
-      if (sequence > nodeSettingsApplied) {
-        nodeSettingsApplied = sequence;
-        // The re-read is the fresher truth about the node, but only the write's
-        // own answer carries `message` — what this write did, including the
-        // address it pulled back. Merged, so neither is lost.
-        const painted = after.view.error
-          ? view
-          : { ...after.view, message: after.view.message || view.message };
-        applyNodeSettings(painted, await fetchLocalAddresses());
+      // The re-read is the fresher truth about the node, but only the write's
+      // own answer carries `message` — what this write did, including the
+      // address it pulled back. Merged, so neither is lost.
+      await paintAfterSave(sequence, after.view.error
+        ? view
+        : { ...after.view, message: after.view.message || view.message });
+
+      if (after.view.error) {
+        // Without the re-read there is no way to tell whether what was asked
+        // for is what the node now holds, and the most common reason it would
+        // not be — a flag in the service unit — looks exactly like success.
+        // Say the check did not happen rather than implying it passed.
+        banner(
+          `設定已儲存，服務也重新啟動了，但重啟後讀不回節點設定（${after.view.error}），` +
+          "所以無法確認這次的改動真的生效。請按上面的「重新讀取」再看一次。",
+        );
+        return;
       }
 
       // Did what the owner asked for survive the restart?
@@ -2887,19 +2893,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // set to restart on failure will crash-loop on a combination it refuses.
       // Announcing "restarted" because the restart command returned would be a
       // claim about the one thing this window can actually check and did not.
-      const status = state.service ?? {};
-      if (status.running && status.nodeAnswering) {
+      const live = state.service ?? {};
+      if (live.running && live.nodeAnswering) {
         banner("設定已儲存，背景服務已重新啟動並回應中。", true);
         return;
       }
       // Not marked successful, so it stays on screen: the settings just saved
       // are the first thing to suspect, and they are still on the form above.
       banner(
-        status.running
+        live.running
           ? "設定已儲存，服務在跑但節點還沒有回應。剛改的設定是第一個要懷疑的地方；" +
-            `看 log：${status.logHint || "（節點沒有給路徑）"}`
+            `看 log：${live.logHint || "（節點沒有給路徑）"}`
           : "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；" +
-            `看 log：${status.logHint || "（節點沒有給路徑）"}`,
+            `看 log：${live.logHint || "（節點沒有給路徑）"}`,
       );
     });
   }
@@ -2913,6 +2919,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     } catch (error) {
       return { view: { error: String(error) } };
     }
+  }
+
+  // paintAfterSave repaints from `view`, with the address list, and only if
+  // nothing newer has landed.
+  //
+  // The guard is re-checked AFTER the address lookup: checking before it and
+  // assigning the sequence number then would let a read that started later,
+  // and answered from before the restart, paint over this one.
+  async function paintAfterSave(sequence, view) {
+    const addresses = await fetchLocalAddresses();
+    if (sequence <= nodeSettingsApplied) return;
+    nodeSettingsApplied = sequence;
+    applyNodeSettings(view, addresses);
+  }
+
+  // serviceStatusOrUnknown answers what this window knows about the service,
+  // and says so when it knows nothing. `ah` missing or a failed status command
+  // is not evidence that the node is not a service.
+  async function serviceStatusOrUnknown() {
+    try {
+      await loadService();
+    } catch (error) {
+      return { unknown: true, reason: String(error) };
+    }
+    const status = state.service;
+    if (!status) return { unknown: true, reason: "沒有讀到狀態" };
+    if (status.toolError) return { unknown: true, reason: status.toolError };
+    if (!status.supported) return { unknown: false, installed: false };
+    return { unknown: false, installed: Boolean(status.installed) };
   }
 
   // didNotStick names the fields the owner asked for that the node is not
@@ -3047,6 +3082,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue,
+    serviceStatusOrUnknown,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };

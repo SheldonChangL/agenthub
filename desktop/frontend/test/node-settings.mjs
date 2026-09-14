@@ -196,9 +196,16 @@ if (el("node-peerlisten").value !== "192.168.50.10:7463") {
 if (restartCalls !== 0) failures.push("a refused write restarted the service anyway");
 
 // 6. Saving on a node that is not a service does not claim to have restarted it.
-app.state.service = { supported: true, installed: false };
+//
+//    The status is re-read rather than taken from whatever this window last
+//    saw, so the fake itself has to say "not installed" — setting state alone
+//    would be overwritten by the read, which is the point of the read.
+serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+app.state.service = null;
 el("node-allow-lan").checked = true;
-saveAnswer = async () => ({ settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true }, restartRequired: true });
+const notAServiceView = { settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true }, restartRequired: true };
+saveAnswer = async () => notAServiceView;
+afterRestart(notAServiceView);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
@@ -206,6 +213,33 @@ if (restartCalls !== 0) failures.push("a node that is not a service was 'restart
 if (!el("banner").textContent.includes("自己重新啟動")) {
   failures.push(`the owner was not told to restart it themselves: ${el("banner").textContent}`);
 }
+
+// 6b. A status this window cannot read is not evidence that the node is not a
+//     service. `ah` missing leaves it unknown, and a node that IS a service
+//     would then never be restarted while its owner is told otherwise.
+serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "", toolError: "找不到 ah：exec: \"ah\": executable file not found in $PATH" };
+app.state.service = null;
+el("node-allow-lan").checked = false;
+const unknownView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false }, restartRequired: true };
+saveAnswer = async () => unknownView;
+afterRestart(unknownView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const unknownBanner = el("banner").textContent;
+if (restartCalls !== 0) failures.push("a service whose status could not be read was restarted anyway");
+if (unknownBanner.includes("不是背景服務")) {
+  failures.push(`an unreadable status was reported as "not a service": ${unknownBanner}`);
+}
+if (!unknownBanner.includes("讀不到背景服務狀態") || !unknownBanner.includes("找不到 ah")) {
+  failures.push(`the owner was not told the status could not be read: ${unknownBanner}`);
+}
+if (el("banner").className.includes("ok")) {
+  failures.push("a save whose effect could not be confirmed was marked successful");
+}
+
+serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
+app.state.service = serviceStatus;
 
 /* ---- what the fresh-context review of PR #144 found, each pinned here ---- */
 
@@ -303,21 +337,35 @@ app.state.nodeSettings = goodBaseline;
 await app.applyNodeSettings(goodBaseline);
 await tick();
 el("node-discover").checked = false;
+// The node once the write has landed and it has restarted. It agrees with the
+// write: this section is about the restart happening at all, not about a value
+// failing to survive — a fixture where the read disagreed would land in the
+// didNotStick branch instead and prove nothing about the restart.
+const afterR4 = {
+  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  sources: {},
+  saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
+  restartRequired: false,
+};
 saveAnswer = async () => {
   // A reload lands while the write is in flight.
   await app.loadNodeSettings();
-  return { settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true },
-    sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: [], autoWake: true }, restartRequired: true };
+  return { ...afterR4, restartRequired: true };
 };
-settingsAnswer = async () => ({
-  settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true },
-  sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: true }, restartRequired: false,
-});
+settingsAnswer = async () => afterR4;
 await app.saveNodeSettings();
 await tick();
 if (saveCalls.length !== 1) failures.push(`wrote ${saveCalls.length} times, want 1`);
 if (restartCalls !== 1) {
   failures.push(`a write that landed was restarted ${restartCalls} times, want 1 — the node is holding unread settings`);
+}
+// And nothing in that sequence may be reported as a value that failed to stick:
+// the node holds what was asked for.
+if (el("banner").textContent.includes("又變回原來的值")) {
+  failures.push(`a save that did stick was reported as replaced: ${el("banner").textContent}`);
+}
+if (el("node-discover").checked) {
+  failures.push("the form shows a value the owner had turned off");
 }
 saveAnswer = async () => ({ settings: {}, sources: {}, saved: {}, restartRequired: true });
 
