@@ -991,12 +991,19 @@ func TestAnUnpairedNodeStopsBeingExcluded(t *testing.T) {
 
 	// The owner revokes it. Its announcements never stopped arriving.
 	delete(probe.paired, peer)
-	for range 5 {
-		*clock = clock.Add(trustCacheTTL / 4)
+
+	// The clock moves in real seconds, deliberately, not in multiples of
+	// trustCacheTTL: stepping by the constant would make this pass for any
+	// value the constant is given, and the size of that constant is the whole
+	// guarantee here — nothing invalidates a cached "paired" answer on unpair.
+	// Four seconds is the bound trustCacheTTL claims, plus a step.
+	const recovery = 4 * time.Second
+	for elapsed := time.Duration(0); elapsed < recovery; elapsed += time.Second {
+		*clock = clock.Add(time.Second)
 		announce()
 	}
 	if len(c.List()) != 1 {
 		t.Fatalf("an unpaired node is still excluded %v after the revoke; list = %v",
-			trustCacheTTL+trustCacheTTL/4, c.List())
+			recovery, c.List())
 	}
 }
