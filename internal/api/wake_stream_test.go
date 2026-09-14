@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"agenthub.local/agenthub/internal/codexdriver"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
@@ -695,5 +696,32 @@ func TestOneWakeFitsInsideTheContextItRunsUnder(t *testing.T) {
 			"out) inside a %s context; the settle that follows it would run on an "+
 			"expired one and the wake would stay recorded as woken",
 			longest, wake.Handoff, wake.AckWait, wakeTimeout)
+	}
+}
+
+// A Codex wake fits inside the same context, with room for the two calls that
+// follow the wait.
+//
+// The Codex path has the coupling the channel driver's test pins, one step
+// further along: a message may wait codexdriver.MaxWait for the turn in flight,
+// and what is left of wakeTimeout after that is all thread/resume and
+// turn/start have. Run them out of budget and turn/start fails on a deadline
+// with the request already sent — the one failure where this node cannot know
+// whether app-server took the turn, and where it answers by holding the thread
+// until the backstop. Two numbers in two packages, with nothing between them
+// but this.
+func TestOneCodexWakeFitsInsideTheContextItRunsUnder(t *testing.T) {
+	// What the two app-server calls need after the wait. thread/resume is a
+	// local read and turn/start returns as soon as the turn is named; twenty
+	// seconds is generous for both on a cold app-server.
+	const handoverRoom = 20 * time.Second
+	// The settle is one indexed UPDATE, as above.
+	const settleRoom = 10 * time.Second
+	if longest := codexdriver.MaxWait + handoverRoom; longest+settleRoom > wakeTimeout {
+		t.Errorf("a Codex wake can spend %s waiting for the turn in flight and still need "+
+			"%s to resume and start a turn, inside a %s context; past that the deadline "+
+			"lands on a turn/start that has already gone out, and the thread is held to "+
+			"the backstop on a turn nobody here can confirm",
+			codexdriver.MaxWait, handoverRoom, wakeTimeout)
 	}
 }
