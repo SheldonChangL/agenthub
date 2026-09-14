@@ -1028,22 +1028,32 @@ if (el("node-settings-reload").disabled || el("node-settings-save").disabled) {
   failures.push("the panel stayed disabled after the write finished");
 }
 
-// R23. Of two paints, the newer sequence wins whichever finishes first: the
-//      guard is checked after the address lookup, not claimed before it.
-baseBindings();
+// R23. Of two paints the newer sequence wins, even when the older one finishes
+//      last. The guard is re-checked AFTER the address lookup rather than
+//      claimed before it: claiming first lets the older paint run to completion
+//      and land on top.
+let addressCalls = 0;
+baseBindings({
+  LocalAddresses: async () => {
+    addressCalls += 1;
+    // The first caller — the older sequence — is the slow one.
+    if (addressCalls === 1) await new Promise((resolve) => setTimeout(resolve, 30));
+    return [];
+  },
+});
 app.state.nodeSettings = null;
 settingsAnswer = async () => plainView;
 await app.loadNodeSettings();
 await tick();
+addressCalls = 0;
 const older = { ...plainView, saved: { ...plainView.saved, autoWake: false } };
 const newer = { ...plainView, saved: { ...plainView.saved, autoWake: true } };
-// The newer paint is issued second and finishes first.
 const slow = app.paintAfterSave(900, older);
 const fast = app.paintAfterSave(901, newer);
 await Promise.all([fast, slow]);
 await tick();
 if (!el("node-autowake").checked) {
-  failures.push("an older paint overwrote a newer one");
+  failures.push("an older paint landed on top of a newer one");
 }
 
 if (failures.length > 0) {
