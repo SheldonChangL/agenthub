@@ -616,3 +616,39 @@ func TestFrontendLeavesRoomForTheMacWindowButtons(t *testing.T) {
 		t.Error("no frontend source asks for the host platform, so the macOS inset is never applied")
 	}
 }
+
+// TestFrontendKeepsTheWorkingDirectoryReadable pins the one thing that makes
+// that column worth its width.
+//
+// The column answers "which project is this session in", and the answer is at
+// the END of the path. Clipped the ordinary way it showed 「/Us…」 — the same
+// eleven characters for every row on the machine. It is laid out right-to-left
+// so the head is what goes, with the path itself isolated in a <bdi> so its
+// own slashes do not reorder.
+func TestFrontendKeepsTheWorkingDirectoryReadable(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	css := string(stylesheet)
+	rule := regexp.MustCompile(`\ntd\.cwd \{[^}]*\}`).FindString(css)
+	if rule == "" {
+		t.Fatal("style.css has no td.cwd rule, so the working directory is clipped from the end")
+	}
+	if !strings.Contains(rule, "direction: rtl") {
+		t.Error("td.cwd is no longer laid out right-to-left, so a path too long for the column " +
+			"loses its tail — the project name — and every row reads the same")
+	}
+	if !strings.Contains(css, "td.cwd bdi") {
+		t.Error("style.css no longer isolates the path's own direction; the slashes will reorder")
+	}
+
+	var joined strings.Builder
+	for _, source := range frontendSources(t) {
+		joined.WriteString(source)
+	}
+	if !strings.Contains(joined.String(), `element("bdi"`) {
+		t.Error("no frontend source wraps the working directory in a <bdi>, so the right-to-left cell " +
+			"reorders the path itself")
+	}
+}

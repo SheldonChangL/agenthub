@@ -47,6 +47,17 @@ for (const marker of ["<script", "<img", "<iframe", "javascript:"]) {
 if (!html.includes("&lt;script&gt;steal()&lt;/script&gt;")) failures.push("hostile status was not rendered as escaped text");
 if (!html.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;")) failures.push("hostile session ID was not rendered as escaped text");
 
+// The working directory sits in a cell laid out right-to-left, so a path too
+// long for the column loses its head rather than the project name at its tail.
+// The path itself has to be isolated in a <bdi> or that direction reorders its
+// own slashes — and it is still text, never markup.
+if (!html.includes("<bdi>")) {
+  failures.push("the working directory is not wrapped in a <bdi>, so the right-to-left cell reorders the path");
+}
+if (!/<td[^>]*class="[^"]*cwd[^"]*"[^>]*><bdi>/.test(html)) {
+  failures.push(`the cwd cell's own content is not the isolated path: ${html.slice(0, 400)}`);
+}
+
 // An unrecognized status must not reach a class name.
 const pillClass = /class="pill[^"]*"/.exec(html)?.[0] ?? "";
 if (pillClass !== 'class="pill"') failures.push(`unknown status leaked into a class name: ${pillClass}`);
