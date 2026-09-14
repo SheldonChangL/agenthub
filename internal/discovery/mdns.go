@@ -694,10 +694,23 @@ type membership struct {
 	rejoin func() []string
 	every  time.Duration
 	// join is the syscall, injected for the same reason: a test needs to see
-	// which interfaces were offered, and to make one of them fail.
-	join func(*net.Interface, *net.UDPAddr) error
+	// which interfaces were offered, and to make one of them fail. leave is
+	// injected alongside it because the quota this pair exists to keep in
+	// balance — twenty memberships per socket on Linux — cannot be reached
+	// against real hardware in a test, and reaching it is the whole point.
+	join  func(*net.Interface, *net.UDPAddr) error
+	leave func(*net.Interface, *net.UDPAddr) error
+	// interfaces is the enumeration, injected for the same reason again: the
+	// case that leaks a slot is an interface *disappearing*, and no test can
+	// destroy one of this machine's.
+	interfaces func() ([]net.Interface, error)
 
 	mu sync.Mutex
+	// held maps the interface index of every membership this socket took to
+	// the name it had, so a vanished index can be handed to LeaveGroup and its
+	// slot returned. Indexes rather than names because that is what the kernel
+	// matches a membership on, and what survives a rename.
+	held map[int]string
 	// reported is the set of failures already logged, so a condition that
 	// recurs every tick is one line rather than one line a tick.
 	reported map[string]struct{}
@@ -712,28 +725,55 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 		join: func(iface *net.Interface, group *net.UDPAddr) error {
 			return packet.JoinGroup(iface, group)
 		},
+		leave: func(iface *net.Interface, group *net.UDPAddr) error {
+			return packet.LeaveGroup(iface, group)
+		},
+		interfaces: net.Interfaces,
+		held:       map[int]string{},
 	}
 	m.rejoin = m.refresh
 	return m
 }
 
 // refresh attempts every interface that could carry a peer's announcement and
-// reports the ones that were not already joined.
+// reports the ones that were not already joined. Before it joins anything it
+// returns the memberships whose interfaces have gone, because those are a
+// finite resource.
 //
-// No record is kept of what has been joined, because the kernel keeps one: a
-// duplicate join fails, so a repeat call reports nothing and the log stays
-// quiet. A cache here would be an optimisation whose one distinctive behaviour
-// is harmful — an interface destroyed and re-created at the same index would be
-// skipped as already joined, which is precisely the case this refresh exists
-// for.
+// A duplicate join is still what keeps the log quiet: the kernel refuses one,
+// so a repeat call reports nothing, and no cache is consulted to decide whether
+// to try. The index record below is not that cache — refresh offers every
+// interface to join on every tick whether or not it is in the record, so an
+// interface destroyed and re-created at the same index is still joined afresh.
 //
-// What relying on the kernel's record does not cover, and is not covered
-// anywhere yet: on Linux a socket membership is matched on the group and the
-// interface index, while the device-level group is torn down when an interface
-// loses its last IPv4 address. If that is right — measured on macOS, reasoned
-// on Linux, see #93 — then an interface whose DHCP lease lapses and returns
-// stops delivering, and this refresh cannot repair it, because the duplicate
-// join is refused and nothing here leaves the group first.
+// Which situations this has to do anything about, measured on Linux 6.8 in an
+// unprivileged netns and recorded on #93:
+//
+//   - An address coming and going needs nothing. Removing an interface's last
+//     IPv4 address does *not* tear down its device-level group: `ip maddr` and
+//     /proc/net/igmp both still list 224.0.0.251, and delivery to this socket
+//     never stops. Address flap, link down/up, and a full DHCP-shaped cycle
+//     (down, addr flush, up, address back) were all tried; a datagram arrived
+//     throughout every one. An earlier version of this comment guessed the
+//     opposite — that a lapsed lease would leave the socket permanently deaf on
+//     that interface — and the measurement disproves it. Keeping no state was
+//     the right call for this case, and still is.
+//
+//   - Destroying the device and re-creating it is the case that needs the
+//     join. The new device is a new index, JoinGroup returns nil, and delivery
+//     resumes on the next tick. Observed indexes climb monotonically (4, 6, …,
+//     52), so the re-use of an index that the old comment worried about does
+//     not happen in practice, and would be joined anyway per the paragraph
+//     above.
+//
+//   - What that same case breaks is the quota, which is why the index record
+//     exists. A membership on the destroyed index is never released, and Linux
+//     caps a socket at net.ipv4.igmp_max_memberships — twenty by default. After
+//     the twentieth destroy-and-rebuild, JoinGroup returns ENOBUFS for *every*
+//     interface, new ones included, and nothing recovers it short of a restart:
+//     a long-lived daemon goes permanently deaf. So refresh remembers which
+//     indexes its own joins took and leaves the group on the ones the interface
+//     table no longer lists. See #143.
 //
 // Most join failures are expected and are not reported: the membership the
 // system already took refuses to be duplicated, and an interface with no IPv4
@@ -741,16 +781,22 @@ func newMembership(connection *net.UDPConn, group *net.UDPAddr) *membership {
 // decides it — measured on this machine, four address-less interfaces joined
 // while five others refused — so the returned names are filtered by address
 // rather than by whether the join worked. Anything unexpected earns one line,
-// because a machine at its multicast membership limit fails here (Linux allows
-// twenty by default) and the interface just plugged in may be the one refused.
+// because a machine at its multicast membership limit fails here and the
+// interface just plugged in may be the one refused.
 func (m *membership) refresh() []string {
-	interfaces, err := net.Interfaces()
+	interfaces, err := m.interfaces()
 	if err != nil {
+		// No reclaiming either: without a list there is no evidence that
+		// anything has gone, and leaving a group on a guess costs delivery.
 		m.reportOnce("interfaces", fmt.Sprintf(
 			"could not list this machine's interfaces, so no announcement can be heard on one "+
 				"that appears later: %v", err))
 		return nil
 	}
+	// First, so that a slot freed here is available to the join below on this
+	// same tick rather than the next one: the interface that replaces the
+	// destroyed one is usually being offered in the very same list.
+	m.reclaim(interfaces)
 	var added []string
 	for i := range interfaces {
 		iface := &interfaces[i]
@@ -760,6 +806,7 @@ func (m *membership) refresh() []string {
 		err := m.join(iface, m.group)
 		switch {
 		case err == nil:
+			m.record(iface)
 			// Named for the log only when the interface has an IPv4 address of
 			// its own. On this machine four address-less interfaces join
 			// successfully while en0 — the only one with an address, and the
@@ -778,6 +825,81 @@ func (m *membership) refresh() []string {
 		}
 	}
 	return added
+}
+
+// record notes that this socket now holds a membership on an interface, so the
+// slot can be handed back when the interface goes.
+//
+// Only a join that returned nil is recorded. EADDRINUSE is not, because the
+// membership it names is one something else took — ListenMulticastUDP's own
+// join on the default interface is the usual one — and releasing a slot this
+// code did not take is how a socket loses the membership discovery was already
+// running on. Under-recording costs a leaked slot, which is the old behaviour;
+// over-recording costs delivery.
+func (m *membership) record(iface *net.Interface) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.held == nil {
+		m.held = map[int]string{}
+	}
+	m.held[iface.Index] = iface.Name
+}
+
+// reclaim leaves the group on every membership whose interface is no longer in
+// the table, returning its slot.
+//
+// "No longer in the table" is the whole test, and it is deliberately the
+// narrowest one available. An interface that is merely down, or has lost its
+// addresses, or has been renamed, still holds its index and is still listed —
+// so none of those reclaim anything, which is right: #93 measured that delivery
+// survives all three, and leaving the group would throw away a working
+// membership to gain a slot that is not scarce yet. Only a destroyed device
+// drops its index, and a destroyed device's membership can never deliver again.
+//
+// Getting it wrong in each direction costs something different. Reclaiming too
+// eagerly loses delivery on a live interface until the next tick re-joins it,
+// bounded by RejoinInterval. Reclaiming too reluctantly leaks the slot, which
+// is #143 and is not self-healing. So the evidence has to be positive absence
+// from a list that was read successfully, never an inference from an error.
+//
+// The entry is dropped whatever LeaveGroup answers. On Linux the call succeeds
+// even with the device gone — the socket's membership list is keyed on the
+// index and the entry is freed regardless — and EADDRNOTAVAIL means the slot
+// was already not held, which is the outcome wanted. On macOS the leave is
+// expressed with the interface's address rather than its index, so a vanished
+// interface cannot be named at all and the call fails; retrying it every tick
+// would buy nothing and would grow this map with every veth the host has ever
+// churned.
+func (m *membership) reclaim(present []net.Interface) {
+	live := make(map[int]struct{}, len(present))
+	for i := range present {
+		live[present[i].Index] = struct{}{}
+	}
+	m.mu.Lock()
+	var gone []*net.Interface
+	for index, name := range m.held {
+		if _, still := live[index]; still {
+			continue
+		}
+		gone = append(gone, &net.Interface{Index: index, Name: name})
+		delete(m.held, index)
+	}
+	m.mu.Unlock()
+
+	for _, iface := range gone {
+		err := m.leave(iface, m.group)
+		switch {
+		case err == nil,
+			errors.Is(err, syscall.EADDRNOTAVAIL), errors.Is(err, syscall.ENODEV),
+			errors.Is(err, syscall.EINVAL), errors.Is(err, syscall.ENXIO):
+			// Released, or there was nothing left to release.
+		default:
+			m.reportOnce("leave:"+iface.Name, fmt.Sprintf(
+				"could not release the announcement group held for %s, which no longer exists; "+
+					"this machine's multicast membership quota is that much smaller until "+
+					"restart: %v", iface.Name, err))
+		}
+	}
 }
 
 // canCarryAnnouncements reports whether an interface is one a peer's
