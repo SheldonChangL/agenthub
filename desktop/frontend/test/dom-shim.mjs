@@ -77,12 +77,15 @@ class Node {
     return this.children.filter((child) => child && child.tagName === "option");
   }
 
+  // -1 when nothing matches, as a browser reports for a select whose value was
+  // set to a string no option carries. Falling back to 0 here would make
+  // `options[selectedIndex]` resolve to whatever happens to be first, so a test
+  // would read a LAN option where a browser reads the loopback placeholder —
+  // and a form bug that turns on LAN access would pass.
   get selectedIndex() {
     const options = this.options;
-    const found = options.findIndex((option) => option.value === this._value);
-    // A real select with nothing matching shows its first option; -1 is only
-    // right when there are none at all.
-    return found >= 0 ? found : (options.length > 0 ? 0 : -1);
+    if (this._value === undefined) return options.length > 0 ? 0 : -1;
+    return options.findIndex((option) => option.value === this._value);
   }
 
   // remove(index) drops one option, as HTMLSelectElement does.
@@ -93,9 +96,14 @@ class Node {
   }
 
   get value() {
-    if (this._value !== undefined) return this._value;
+    if (this._value === undefined) {
+      const options = this.options;
+      return options.length > 0 ? options[0].value ?? "" : "";
+    }
+    // A real select drops a value no option carries and reports "".
     const options = this.options;
-    return options.length > 0 ? options[0].value ?? "" : "";
+    if (options.length > 0 && !options.some((option) => option.value === this._value)) return "";
+    return this._value;
   }
 
   set value(next) {
