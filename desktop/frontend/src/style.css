@@ -117,11 +117,18 @@ body.no-backdrop .backdrop .rain { display: none; }
   gap: 14px;
   height: 52px;
   padding: 0 16px;
+  /* Room for the window buttons on macOS is added by body.mac below: the title
+     bar is TitleBarHiddenInset(), so the traffic lights are drawn over this
+     element's top-left and would otherwise sit on top of the app's name. */
   border-bottom: 1px solid var(--line);
   background: var(--panel);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
+/* 78px clears the three window buttons; the padding is on the bar rather than
+   a spacer element so the whole strip stays one draggable region. */
+body.mac .titlebar { padding-left: 78px; }
+
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand h1 { font-size: 13px; margin: 0; font-weight: 600; line-height: 1.2; }
 .brand p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.2; }
@@ -289,14 +296,23 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .tablescroll { flex: 1; min-height: 0; overflow: auto; }
 
-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+/* min-width is what makes .tablescroll actually scroll. Without it the table is
+   always exactly as wide as the card, so a narrow window squeezes the columns
+   until the last one is cut off at the card's edge with no way to reach it —
+   the resume button was half outside the window and unclickable. */
+table { width: 100%; min-width: 1090px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 36px; }
+col.c-session { width: 210px; }
 col.c-status { width: 84px; }
 col.c-mgmt { width: 128px; }
 col.c-audience { width: 112px; }
 col.c-flags { width: 138px; }
 col.c-last { width: 92px; }
-col.c-actions { width: 214px; }
+/* Wide enough for all three buttons plus the cell's padding: measured at 241px
+   (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font
+   that renders the labels wider. At 214px the third button was cut off by the
+   cell's own `overflow: hidden` at EVERY window width, not only narrow ones. */
+col.c-actions { width: 264px; }
 
 thead th {
   position: sticky; top: 0; z-index: 1;
@@ -329,7 +345,19 @@ tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 tbody tr.sel { background: var(--accent-dim); }
 
 .col-check { width: 36px; text-align: center; }
-.col-actions { text-align: right; }
+/* Pinned to the right edge of the scroller: the row can scroll horizontally
+   under it, and the three actions stay where they can be clicked however narrow
+   the window is. Opaque because scrolled content passes beneath. */
+.col-actions {
+  text-align: right;
+  position: sticky;
+  right: 0;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--line);
+}
+thead th.col-actions { z-index: 2; }
+tbody tr:hover td.col-actions { background: #1a2027; }
+tbody tr.sel td.col-actions { background: #16261d; }
 
 .sid { color: var(--muted); }
 .sid .providertag {

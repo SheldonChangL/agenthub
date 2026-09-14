@@ -6,10 +6,22 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	runtimepkg "runtime"
 	"sort"
 	"strings"
 	"sync"
 )
+
+// HostPlatform is the operating system this window is running on.
+//
+// The window needs it for one thing the node cannot answer: on macOS the title
+// bar is `mac.TitleBarHiddenInset()`, so the traffic lights are drawn over the
+// top-left of the page and the content has to leave room for them. Asking the
+// node's platform instead would be wrong twice — it is a different fact, and it
+// is unavailable exactly when the window has nothing else to show.
+func (a *App) HostPlatform() string {
+	return runtimepkg.GOOS
+}
 
 const defaultNodeURL = "http://127.0.0.1:7462"
 
