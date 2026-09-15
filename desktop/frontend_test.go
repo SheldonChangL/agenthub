@@ -564,10 +564,12 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	}
 	css := string(stylesheet)
 
-	// The measured content is 154px: two buttons (收件匣 63 + resume 67), one
-	// 4px gap, and 10px of cell padding each side. The floor leaves room for a
-	// font that renders the labels wider than the machine this was measured on.
-	// It was 241px for three, before the MCP button was taken off the row.
+	// The content works out to 154px: two buttons (收件匣 63 + resume 67), one
+	// 4px gap, and 10px of cell padding each side. Arithmetic, not a fresh
+	// measurement — the per-button widths are the ones measured when there were
+	// three of them (241px total), and this layout has not been measured since.
+	// The floor leaves room for a font that renders the labels wider than the
+	// machine those buttons were measured on.
 	const actionsFloor = 160
 	width := regexp.MustCompile(`col\.c-actions \{ width: (\d+)px; \}`).FindStringSubmatch(css)
 	if width == nil {

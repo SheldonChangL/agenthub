@@ -1,12 +1,21 @@
 # Build Directory
 
-The build directory is used to house all the build files and assets for your application. 
+The build directory is used to house all the build files and assets for your application.
 
 The structure is:
 
 * bin - Output directory
 * darwin - macOS specific files
 * windows - Windows specific files
+* `bundle-binaries.sh` - **not from the Wails template.** A `postBuildHook`
+  (see `desktop/wails.json`) that builds `ah`, `agenthub-node` and
+  `agenthub-mcp` for the same target and copies them in beside the app
+  executable, then re-seals the macOS bundle. The app resolves those three
+  beside its own executable and never falls back to PATH, so whatever this
+  script fails to copy, the app cannot find at all — see `desktop/README.md`.
+  It is callable on its own, which is how the release workflow packages
+  without going through `wails build`.
+* `appicon.png` - the source the platform icons are generated from.
 
 ## Mac
 
