@@ -123,11 +123,17 @@
         <div class="settingsbody">
           <section id="settings-service">
             <h2>背景服務</h2>
-            <p class="muted">節點會由作業系統在登入時啟動、意外結束時重啟，不再跟著哪個視窗或終端機活著。</p>
+            <p class="muted">
+              節點會由作業系統在登入時啟動，不再跟著哪個視窗或終端機活著。
+              <strong>意外結束時會自己回來的只有 macOS 與 Linux</strong>：Windows 的排程工作
+              只負責在登入時啟動，節點停了就會一直停著，要用下面的「重新啟動節點」把它叫回來。
+              同一個人在兩台機器上會拿到不同的可靠性，所以這裡講明，而不是讓人自己撞見。
+            </p>
             <div id="service-panel" class="hidden">
               <div class="service-head">
                 <div id="service-line" class="line">背景服務狀態讀取中…</div>
                 <button id="service-refresh" class="ghost">重新讀取</button>
+                <button id="service-restart" class="ghost hidden">重新啟動節點</button>
                 <button id="service-open" class="ghost">安裝為背景服務…</button>
                 <button id="service-uninstall" class="ghost danger">移除服務…</button>
               </div>

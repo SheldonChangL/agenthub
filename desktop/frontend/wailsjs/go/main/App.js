@@ -66,6 +66,10 @@ export function Pairing() {
   return window['go']['main']['App']['Pairing']();
 }
 
+export function RestartNode() {
+  return window['go']['main']['App']['RestartNode']();
+}
+
 export function RestartService() {
   return window['go']['main']['App']['RestartService']();
 }
