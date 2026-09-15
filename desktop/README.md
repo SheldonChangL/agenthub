@@ -74,8 +74,9 @@ because installing a launchd job or a systemd unit must not mean running
 whatever binary of that name happened to come first there. The checkout
 fallback is taken only from `desktop/build/bin` (or a `.app` under it): the
 `go.mod` check alone would have accepted any world-writable directory an app
-was dropped into. An override has to be a regular file with the execute bit,
-or it is passed over.
+was dropped into. An override has to be a regular file, and on macOS and Linux
+one with the execute bit; Windows decides by extension and has no mode bit to
+check, so there a regular file is enough.
 
 The install also passes `--node-binary` explicitly, so the `ExecStart` written
 into the launchd job or systemd unit names the bundled `agenthub-node` rather
