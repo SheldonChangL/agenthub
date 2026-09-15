@@ -150,6 +150,11 @@ advertisement.
   is a different risk from the same content read on request. `autoWake` (#59) is
   a third gate for exactly that reason, and #59 is a merge condition for Step 8,
   not a follow-up.
+  **Amended 2026-09-15:** this has since landed. `autoWake` exists as that third
+  gate, closed by default and needing the node's own `-auto-wake` as well, and
+  #59's limits merged with it. What none of this bounds — that a paired peer
+  decides *when* a turn starts here — and what the mechanical approval refusal
+  does bound, is recorded in [ADR-003](003-waking-with-nobody-present.md).
 - **Provider injection.** Nothing here writes into a provider's session files
   or process, and nothing will: that is this project's boundary, drawn in the
   multi-node plan as Step 6's acceptance criterion, carried into #16, confirmed
@@ -189,12 +194,20 @@ advertisement.
   exploiting JSON expansion against the client's read cap (#78, #79). None of
   these read another owner's data; they degrade or mislead this one. They are
   open, and they are the reason this section exists.
+  **Amended 2026-09-15:** all four have since been closed. The section stays as
+  written because what it records is the shape of the risk, and that a peer can
+  lie about its own state is still true of anything this node has not checked.
 
 ## Consequences
 
 - Two independent flags today, both closed by default: `acceptMessages`
   (inbound) and `allowOutbound` (outbound). A third for unattended handling,
-  `autoWake`, is planned in #59 and does not exist. Each answers a different
+  `autoWake`, is planned in #59 and does not exist.
+  **Amended 2026-09-15:** it exists, so there are three per-session flags, all
+  closed by default, and `autoWake` additionally needs the node's `-auto-wake`.
+  `SetVisibility` accordingly resets all three, not two: it writes a whole
+  audience and every other flag takes its zero value.
+  Each answers a different
   question, and no call that cannot express a choice may make one —
   `SetVisibility` resets both, which means publishing a session closes a gate
   the owner had opened. That is the safe direction and it is tested in both
