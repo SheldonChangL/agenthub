@@ -449,6 +449,13 @@ func TestFrontendRunsEverySessionsFilterCheck(t *testing.T) {
 	runNodeCheck(t, "sessions-filter.mjs")
 }
 
+// TestFrontendShowsSessionTitles covers the SESSION column: a named
+// conversation reads as its name, an unnamed one still shows its ID, and the
+// ID stays reachable in the tooltip because resuming a session needs it.
+func TestFrontendShowsSessionTitles(t *testing.T) {
+	runNodeCheck(t, "session-title.mjs")
+}
+
 // TestFrontendInboxDrawerAsksTheNodeForOneSession covers the send and wake logs
 // beside the inbox. The node filters `/v1/outbound` to one session, and the
 // session has to be repeated on every continuation or the second page is the

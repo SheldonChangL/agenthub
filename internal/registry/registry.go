@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/label"
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     auto_wake INTEGER NOT NULL DEFAULT 0 CHECK (auto_wake IN (0, 1)),
     status TEXT NOT NULL CHECK (status IN ('active', 'idle', 'inactive', 'unknown')),
     status_source TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
     cwd TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
     metadata_path TEXT NOT NULL DEFAULT '',
@@ -309,6 +311,11 @@ func (r *Registry) addSessionPolicyColumns(ctx context.Context) error {
 		// would let messages already sitting in an inbox start turns nobody
 		// asked for, on a machine whose owner never agreed to that.
 		{"auto_wake", "INTEGER NOT NULL DEFAULT 0 CHECK (auto_wake IN (0, 1))"},
+		// Added with session titles. The default is empty rather than the ID:
+		// a row with no title is one the next scan will fill in or leave
+		// blank on purpose, and writing an ID into a name column would make
+		// those two cases impossible to tell apart.
+		{"title", "TEXT NOT NULL DEFAULT ''"},
 	}
 
 	existing := map[string]bool{}
@@ -590,14 +597,15 @@ func (r *Registry) UpsertSession(ctx context.Context, session model.Session) (mo
 	const query = `
 INSERT INTO sessions (
     id, provider, provider_session_id, management, status,
-    status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    status_source, title, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     provider = excluded.provider,
     provider_session_id = excluded.provider_session_id,
     management = excluded.management,
     status = excluded.status,
     status_source = excluded.status_source,
+    title = excluded.title,
     cwd = excluded.cwd,
     source = excluded.source,
     metadata_path = excluded.metadata_path,
@@ -606,7 +614,7 @@ ON CONFLICT(id) DO UPDATE SET
 `
 	_, err := r.db.ExecContext(ctx, query,
 		session.ID, session.Provider, session.ProviderSessionID, session.Management,
-		session.Status, session.StatusSource, session.CWD, session.Source,
+		session.Status, session.StatusSource, session.Title, session.CWD, session.Source,
 		session.MetadataPath, session.LastSeenAt.UTC().UnixMilli(), session.UpdatedAt.UTC().UnixMilli(),
 	)
 	if err != nil {
@@ -618,7 +626,7 @@ ON CONFLICT(id) DO UPDATE SET
 func (r *Registry) GetSession(ctx context.Context, id string) (model.Session, error) {
 	const query = `
 SELECT id, provider, provider_session_id, management, status,
-       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
+       status_source, title, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
        audience_mode, export_cwd, accept_messages, allow_outbound, auto_wake,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
@@ -639,7 +647,7 @@ FROM sessions WHERE id = ?`
 func (r *Registry) ListSessions(ctx context.Context, options ListOptions) ([]model.Session, error) {
 	query := `
 SELECT id, provider, provider_session_id, management, status,
-       status_source, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
+       status_source, title, cwd, source, metadata_path, last_seen_at_ms, updated_at_ms,
        audience_mode, export_cwd, accept_messages, allow_outbound, auto_wake,
        (audience_mode = 'all_paired'
         OR (audience_mode = 'selected'
@@ -858,7 +866,7 @@ func scanSession(row rowScanner) (model.Session, error) {
 	var grants string
 	err := row.Scan(
 		&session.ID, &session.Provider, &session.ProviderSessionID, &session.Management,
-		&session.Status, &session.StatusSource, &session.CWD,
+		&session.Status, &session.StatusSource, &session.Title, &session.CWD,
 		&session.Source, &session.MetadataPath, &lastSeenMS, &updatedMS,
 		&session.Audience.Mode, &exportCWD, &acceptMessages, &allowOutbound, &autoWake, &published, &grants,
 	)
@@ -920,6 +928,16 @@ func validateSessionFields(session model.Session) error {
 	}
 	if session.LastSeenAt.IsZero() || session.UpdatedAt.IsZero() {
 		return errors.New("last seen and updated timestamps are required")
+	}
+	// A title is provider-written text that ends up in a one-line cell. The
+	// ingest path already strips control characters and bounds the length;
+	// this is the store refusing to hold what it was told never to hold, so a
+	// second ingest path cannot smuggle a newline into the list view.
+	if strings.ContainsFunc(session.Title, unicode.IsControl) {
+		return fmt.Errorf("session title contains control characters")
+	}
+	if len([]rune(session.Title)) > model.MaxTitleLength {
+		return fmt.Errorf("session title is longer than %d characters", model.MaxTitleLength)
 	}
 	return nil
 }

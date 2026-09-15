@@ -1,15 +1,18 @@
 package adapter
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"agenthub.local/agenthub/internal/model"
 	statusmodel "agenthub.local/agenthub/internal/status"
@@ -105,7 +108,57 @@ func walkJSONL(root string, visit func(string, *os.File, fs.FileInfo) (model.Ses
 	return sessions, nil
 }
 
-func discoveredSession(provider model.Provider, providerID, cwd, source, metadataPath string, modifiedAt time.Time, process ProcessState, now time.Time) model.Session {
+// sanitizeTitle makes a provider-written title safe to store and to show.
+//
+// Control characters are removed rather than the title refused: a newline or
+// an escape sequence in a name would break the one-line cell it lands in, but
+// the rest of the name is still the only human-readable handle that row has.
+func sanitizeTitle(raw string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, raw)
+	cleaned = strings.TrimSpace(cleaned)
+	if runes := []rune(cleaned); len(runes) > model.MaxTitleLength {
+		cleaned = strings.TrimSpace(string(runes[:model.MaxTitleLength]))
+	}
+	return cleaned
+}
+
+// tailLines returns the complete lines in the last window bytes of file.
+//
+// Providers rewrite a session's title as the conversation goes on, so the
+// current name is at the end of the file, not at the front. Reading the whole
+// file to find it would mean reading every megabyte of transcript on every
+// scan; reading a fixed window from the end finds the same line for any
+// session whose title is re-stated as it runs, and the caller keeps whatever
+// the head scan found for one whose title is not.
+//
+// The first line in the window is dropped unless the window is the whole
+// file: a read that starts mid-file starts mid-line, and half a JSON object
+// is not a record.
+func tailLines(file io.ReaderAt, size int64, window int64) ([][]byte, error) {
+	if size <= 0 {
+		return nil, nil
+	}
+	offset := int64(0)
+	if size > window {
+		offset = size - window
+	}
+	buffer := make([]byte, size-offset)
+	if _, err := file.ReadAt(buffer, offset); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	lines := bytes.Split(buffer, []byte("\n"))
+	if offset > 0 && len(lines) > 0 {
+		lines = lines[1:]
+	}
+	return lines, nil
+}
+
+func discoveredSession(provider model.Provider, providerID, title, cwd, source, metadataPath string, modifiedAt time.Time, process ProcessState, now time.Time) model.Session {
 	status, statusSource := statusmodel.Infer(statusmodel.Evidence{
 		Management:     model.Unmanaged,
 		MetadataAt:     modifiedAt,
@@ -120,6 +173,7 @@ func discoveredSession(provider model.Provider, providerID, cwd, source, metadat
 		Visibility:        model.VisibilityPrivate,
 		Status:            status,
 		StatusSource:      statusSource,
+		Title:             sanitizeTitle(title),
 		CWD:               cwd,
 		Source:            source,
 		MetadataPath:      metadataPath,

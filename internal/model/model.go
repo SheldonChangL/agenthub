@@ -140,6 +140,12 @@ func (a Audience) PublishesToAnyone() bool {
 	}
 }
 
+// MaxTitleLength bounds the conversation title a session may carry. A title
+// is written by whoever typed into that session, so the length it happens to
+// have is not a promise; the ingest path cuts rather than drops, because a
+// clipped title still tells the owner which conversation a row is.
+const MaxTitleLength = 120
+
 type Session struct {
 	ID                string     `json:"id"`
 	Provider          Provider   `json:"provider"`
@@ -151,11 +157,16 @@ type Session struct {
 	Audience     Audience        `json:"audience"`
 	Status       LifecycleStatus `json:"status"`
 	StatusSource string          `json:"statusSource"`
-	CWD          string          `json:"cwd,omitempty"`
-	Source       string          `json:"source,omitempty"`
-	MetadataPath string          `json:"-"`
-	LastSeenAt   time.Time       `json:"lastSeenAt"`
-	UpdatedAt    time.Time       `json:"updatedAt"`
+	// Title is what the provider's own UI calls this conversation, read from
+	// the session's metadata file. It is conversation content, so it stays on
+	// the owner's machine: protocol.SessionSummary has no field for it, and
+	// nothing here should give it one.
+	Title        string    `json:"title,omitempty"`
+	CWD          string    `json:"cwd,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	MetadataPath string    `json:"-"`
+	LastSeenAt   time.Time `json:"lastSeenAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 func SessionID(provider Provider, providerSessionID string) string {
