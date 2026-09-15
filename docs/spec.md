@@ -100,6 +100,7 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
 - Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
 - Ask first: weaken an export default, or expand the remote metadata allowlist.
+- Local only: the conversation title read from provider metadata. It is stored and displayed on the owner's machine and is not part of the export shape.
 - Never: write into a provider's session files or process, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active. Wake-up (issue #60) goes through each provider's own API and does not move that boundary — see [architecture](architecture.md).
 
 ## Success criteria
