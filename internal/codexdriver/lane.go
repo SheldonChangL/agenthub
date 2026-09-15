@@ -136,11 +136,3 @@ func (l *lane) recordTurn(turnID string) (repeated bool) {
 	}
 	return repeated
 }
-
-// idle reports whether the lane holds nobody. Used only to decide that a
-// thread's lane can be forgotten.
-func (l *lane) idle() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return !l.busy && len(l.queue) == 0
-}
