@@ -303,7 +303,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    the resume button was half outside the window and unclickable. */
 table { width: 100%; min-width: 1200px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 36px; }
-col.c-session { width: 210px; }
+col.c-session { width: 264px; }
 col.c-status { width: 84px; }
 col.c-mgmt { width: 128px; }
 col.c-audience { width: 112px; }
@@ -378,6 +378,12 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   color: var(--muted);
 }
 .sid b { color: var(--text); font-weight: 500; font-family: var(--mono); font-size: 11.5px; }
+/* A title is prose, not an identifier, so it reads in the UI font. It is left
+   as plain inline text on purpose: the cell already clips with an ellipsis,
+   and an inline-block with its own width here was wider than the space left
+   beside the provider tag, so the cell clipped the whole box and every titled
+   row rendered as a bare 「…」. */
+.sid b.title { font-family: inherit; font-size: 12px; font-weight: 500; }
 
 .pill {
   display: inline-flex; align-items: center;

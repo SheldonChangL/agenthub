@@ -24,6 +24,7 @@ const hostile = [
     id: 'claude:<img src=x onerror="alert(1)">',
     provider: "claude",
     status: '"><script>steal()</script>',
+    title: '</b><iframe onload="steal()"></iframe>',
     management: "unmanaged",
     visibility: "private",
     cwd: '</td><script>window.go.main.App.SetVisibility(["*"],"public")</script>',
@@ -46,6 +47,12 @@ for (const marker of ["<script", "<img", "<iframe", "javascript:"]) {
 // The values must still be visible to the owner, as escaped text.
 if (!html.includes("&lt;script&gt;steal()&lt;/script&gt;")) failures.push("hostile status was not rendered as escaped text");
 if (!html.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;")) failures.push("hostile session ID was not rendered as escaped text");
+
+// The conversation title is provider-written text too, and it is the most
+// prominent thing in the row, so it gets the same treatment as the ID.
+if (!html.includes("&lt;/b&gt;&lt;iframe onload=&quot;steal()&quot;&gt;")) {
+  failures.push("hostile session title was not rendered as escaped text");
+}
 
 // The working directory sits in a cell laid out right-to-left, so a path too
 // long for the column loses its head rather than the project name at its tail.

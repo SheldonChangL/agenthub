@@ -11,20 +11,20 @@ document.body.innerHTML = body; // dev-only page; app.js itself never does this
 const now = Date.now();
 const ago = (s) => new Date(now - s * 1000).toISOString();
 const aud = (mode, nodes = [], f = {}) => ({ mode, nodes, exportCwd: !!f.cwd, acceptMessages: !!f.msg, allowOutbound: !!f.out, autoWake: !!f.wake });
-const S = (id, provider, status, cwd, audience, at, management = "由 CLI 管理") => ({
-  id: `${provider}:${id}`, provider, providerSessionId: id, status, cwd, audience, management, lastSeenAt: ago(at), updatedAt: ago(at),
+const S = (id, provider, status, cwd, audience, at, management = "由 CLI 管理", title = "") => ({
+  id: `${provider}:${id}`, provider, providerSessionId: id, status, cwd, audience, management, title, lastSeenAt: ago(at), updatedAt: ago(at),
 });
 const sessions = [
-  S("8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", "claude", "active", "/Users/sheldon/Projects/others/agenthub", aud("all_paired", [], { cwd: 1, msg: 1, out: 1, wake: 1 }), 12),
-  S("41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", "claude", "active", "/Users/sheldon/Projects/jet/prm-tools", aud("selected", ["node_a91c3e7b2d5f8046c0e1", "node_c30d8e2f4a6b19d571fa"], { cwd: 1, msg: 1 }), 60),
-  S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/Users/sheldon/Projects/others/serialwrap", aud("none"), 180, "由 app-server 管理"),
-  S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/Users/sheldon/Projects/others/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60),
+  S("8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", "claude", "active", "/Users/sheldon/Projects/others/agenthub", aud("all_paired", [], { cwd: 1, msg: 1, out: 1, wake: 1 }), 12, "由 CLI 管理", "節點設定改完由 App 自己重啟"),
+  S("41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", "claude", "active", "/Users/sheldon/Projects/jet/prm-tools", aud("selected", ["node_a91c3e7b2d5f8046c0e1", "node_c30d8e2f4a6b19d571fa"], { cwd: 1, msg: 1 }), 60, "由 CLI 管理", "PRM 議題狀態推進流程"),
+  S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/Users/sheldon/Projects/others/serialwrap", aud("none"), 180, "由 app-server 管理", "Build frontend testing workflows"),
+  S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/Users/sheldon/Projects/others/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60, "由 CLI 管理", "列表主欄改顯示對話標題，沒有標題才回落 session id"),
   S("b61f0d5c-2b3c-4d4e-9f0a-patents00005", "claude", "idle", "/Users/sheldon/Projects/jet/patent-search", aud("selected", []), 42 * 60),
-  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/Users/sheldon/Projects/jet/fw-bootloader", aud("none"), 2 * 3600, "由 app-server 管理"),
-  S("d05e3b21-3c4d-4e5f-a0b1-docs00000007", "claude", "idle", "", aud("selected", ["node_a91c3e7b2d5f8046c0e1"], { cwd: 1 }), 5 * 3600),
-  S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/Users/sheldon/Projects/old/thing", aud("none"), 3 * 86400),
+  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/Users/sheldon/Projects/jet/fw-bootloader", aud("none"), 2 * 3600, "由 app-server 管理", "Improve auth flows and profile"),
+  S("d05e3b21-3c4d-4e5f-a0b1-docs00000007", "claude", "idle", "", aud("selected", ["node_a91c3e7b2d5f8046c0e1"], { cwd: 1 }), 5 * 3600, "由 CLI 管理", "文件版本、分支狀態與開發進度"),
+  S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/Users/sheldon/Projects/old/thing", aud("none"), 3 * 86400, "由 CLI 管理", "OTA 更新 .bin 檔案"),
   S("f28a5d43-thread-inactive-00000000009", "codex", "inactive", "/Users/sheldon/Projects/old/other", aud("none"), 9 * 86400, "由 app-server 管理"),
-  S("0a1b2c3d-hostile-<img src=x onerror=\"alert(1)\">", "claude", "<script>steal()</script>", "/tmp/<b>x</b>", aud("none"), 99),
+  S("0a1b2c3d-hostile-<img src=x onerror=\"alert(1)\">", "claude", "<script>steal()</script>", "/tmp/<b>x</b>", aud("none"), 99, "由 CLI 管理", "</b><iframe onload=\"steal()\"></iframe>"),
 ];
 const counts = { total: sessions.length, claude: 7, codex: 3, active: 3, idle: 4, inactive: 2, all_paired: 2, selected: 3, none: 5 };
 const nodes = [

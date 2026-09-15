@@ -187,6 +187,14 @@ Audience and export flags are stored in AgentHub, not provider files. Discovery
 uses an upsert that never updates those owner-controlled fields, so provider
 rescans cannot undo the owner's choice.
 
+The conversation title is the one field that stays behind entirely. Discovery
+reads the name each provider gives a session — Claude's `custom-title` lines in
+the transcript, Codex's `session_index.jsonl` — because a list of UUIDs is not
+something a person can read. That name is written by whoever typed into the
+session, so it is stored locally and shown locally only: `SessionSummary` has
+no field for it, the wire schema refuses unknown fields, and a test asserts a
+serialised summary carries neither the title nor a field named for one.
+
 There are two views:
 
 - Owner-local view: all local sessions, including private sessions.

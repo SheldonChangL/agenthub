@@ -1,6 +1,7 @@
 package protocol_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -157,5 +158,24 @@ func TestSummarizeRefusesAudiencesThatReachNobody(t *testing.T) {
 				t.Errorf("Summarize() produced %+v", summary)
 			}
 		})
+	}
+}
+
+// A conversation's title is what its owner typed into that conversation, so it
+// stays on the owner's machine. The export shape has no field for it, and a
+// serialised summary must not carry it under any name.
+func TestSummarizeNeverExportsTheConversationTitle(t *testing.T) {
+	session := exportable()
+	session.Title = "錄影檔和alert遺失問題"
+	summary, err := protocol.Summarize("node_0123456789abcdef0123", session)
+	if err != nil {
+		t.Fatalf("Summarize() error = %v", err)
+	}
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(encoded), session.Title) || strings.Contains(string(encoded), "title") {
+		t.Fatalf("the export shape carried the session title: %s", encoded)
 	}
 }
