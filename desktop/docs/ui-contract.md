@@ -41,7 +41,7 @@
 - InboxView 有 loading、error、cleared、full、more 五個獨立狀態，加上空清單。
   loading 和空清單**不能長一樣**。
 
-## 2. 後端綁定 → UI 入口（18 個，每個都要有）
+## 2. 後端綁定 → UI 入口（27 個，每個都要有）
 
 | 綁定 | 現在的入口 | 觸發後必須發生的事 |
 |---|---|---|
@@ -55,7 +55,7 @@
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
 | `OpenPairing(0)` | `btn-pairing-on` | **一定傳 0**（用節點預設時長） |
 | `ClosePairing()` | `btn-pairing-off` | |
-| `Inbox(sessionId)` | 每列的「收件匣」 | 開對話框，先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
+| `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `confirm` 後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
 | `InstallService(form)` | 服務表單「安裝為背景服務」 | 顯示 `$ command` + output；失敗把錯誤放進 output 區 |
@@ -63,24 +63,43 @@
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
 
-## 3. 畫面與元件清單（現況）
+| `Outbound(session, limit, after)` | 收件匣抽屜的「送出紀錄」分頁 | 分頁載入；序號守衛；`next` 為空表示沒有更多 |
+| `Wakes(session, limit)` | 收件匣抽屜的「喚醒紀錄」分頁 | 分頁載入；序號守衛；`limits` 顯示節點端的上限 |
+| `NodeSettings()` | 進入設定頁的節點設定區 | 讀回 `settings`（執行中）與 `saved`（存下來的）兩份；規則見 §7.8 |
+| `SaveNodeSettings(patch)` | 節點設定區的「儲存」 | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
+| `RestartService()` | 節點設定區的「重新啟動服務」 | 走 `ah service restart`；**Windows 上 `internal/service` 回 `ErrUnsupported`，這顆會失敗** |
+| `SetNodeAddress(...)` | 節點詳情的位址欄 | 草稿欄位，`interactionInProgress()` 期間不被背景重畫蓋掉 |
+| `SetNodeURL(url)` | 設定頁的節點 URL | 之後所有讀寫都對這個 URL |
+| `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
+| `CopyText(text)` | MCP 設定、resume 指令、指紋等所有「複製」 | 寫入剪貼簿；結果顯示在原地（對話框內或列上），不是 banner |
+
+## 3. 畫面與元件清單（現況，2026-09-15 對照 main 的 index.html 與 src/ 重寫）
+
+> 這一節在改版期間停在改版前的狀態，寫著「無排序」「表格 8 欄」「chip 帶全域計數」「安裝表單六個欄位」，
+> 全部與程式不符，而且 §7.6 自己就寫著安裝表單只剩資料庫路徑。以下每一條都對照過原始碼。
 
 ### 3.1 全域
 
-- 標題列：連線點（ok/bad）、節點名稱 · 平台 · URL；視圖切換（本機／區網）；
-  三個按鈕：預覽 heartbeat、重新掃描、重新整理。標題列是 Wails 拖曳區。
+- 標題列：連線點（ok/bad）、`node-line`（節點名稱 · 平台 · URL）；三個分頁 `本機 session` / `區網` / `設定`
+  （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
+  重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
 - Banner：一則，錯誤或成功（ok），成功會自動消失。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。
 
 ### 3.2 本機視圖
 
-- 搜尋框：比對 `id` 與 `cwd`，大小寫不敏感。
-- 8 個篩選 chip，三組（provider、status、audience），組內單選切換、組間 AND，每個 chip 帶全域計數。
+- 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
+- **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。
+  **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
+  搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - 選取列：全選目前篩選結果（含 indeterminate）、已選取 N 個、「設定公開對象…」「收回選取」。
-- 表格 8 欄：勾選、SESSION（含收件匣按鈕）、PROVIDER、狀態、管理、公開對象、工作目錄、最後活動。
+- **表格 9 欄**：勾選、SESSION（含 provider badge）、狀態、管理、公開對象、**旗標**、工作目錄、最後活動、**動作**。
+- **有排序**：6 個表頭可排序（`id`、`status`、`management`、`audience`、`cwd`、`lastSeenAt`），
+  預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
+  all_paired→selected→none）。排序與篩選都寫進 localStorage。
+- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 176px。MCP 入口已移除，見 §10。
 - 空狀態：「沒有符合條件的 session。」
-- **無排序。**
 
 ### 3.3 區網視圖
 
@@ -94,16 +113,30 @@
 - 節點詳情：名稱、完整指紋、核對說明、節點 ID／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
 - 「這個節點公開給我的 session」：四種 presence 狀態 + `sessionsWithheld` + 空 + 表格（SESSION／節點／PROVIDER／狀態／最後活動）。
 
-### 3.4 背景服務面板（目前嵌在主流程）
+### 3.4 設定頁
 
-狀態行、重新讀取、安裝／重新安裝、移除；展開表單：資料庫路徑、對外位址下拉、允許區網、`-discover`、視為私有網段、自動喚醒；安裝說明；輸出區 `<pre>`。節點沒在跑且未安裝時表單自動展開一次。
+三個區塊，由 `settingsSection` 決定捲到哪一個：
 
-### 3.5 對話框（4 個）
+- **背景服務**：狀態行、重新讀取、安裝／重新安裝、移除；展開表單**只有一個欄位：資料庫路徑**
+  （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
+  第二份設定來源。安裝說明；輸出區 `<pre>`。節點沒在跑且未安裝時表單自動展開一次。
+- **節點設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。存的是節點**下次啟動**才讀的值，
+  規則見 §7.8。
+- **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9。
 
-- 收件匣：警語（資料不是指令；「自稱」後是寄件者自選）、meta、訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
-- 配對新節點：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
-- 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。**每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
-- Heartbeat 預覽：說明 + `<pre>`。
+### 3.5 覆蓋層（6 個：2 個抽屜 + 4 個對話框）
+
+抽屜（`.drawer`，從右側滑出）：
+- `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
+  訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
+- `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
+
+對話框（`.modal`）：
+- `pair-modal` 配對新節點：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
+- `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
+  **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
+- `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
+- `modal` Heartbeat 預覽：說明 + `<pre>`。
 
 ## 4. 安全與文案契約（測試逐字斷言的，不可改寫）
 
@@ -130,7 +163,8 @@
 
 行為契約：
 - 倒數 tick **不得**重建候選列元素（測試比對 element identity）。
-- 模組只能註冊**兩個** `setInterval`：5 秒 pairing 輪詢、1 秒倒數。
+- 模組只能註冊**三個** `setInterval`：5 秒 pairing 輪詢（僅區網視圖）、1 秒倒數、
+  15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
 - 公開對象對話框每次開啟四個旗標為 false，且 `readAudienceForm()` 回傳四個 false。
@@ -179,6 +213,10 @@
 
 ## 7. 並行中的變更（2026-09-11 記錄）
 
+> **這一節是 2026-09-11 當下的快照，不是現況。**裡面的「未開 PR」「尚未動工」「尚未合併」
+> 講的是那一天的狀態，之後全部完成了。要看現況請看 §1–§3 與 §9、§10；這裡留著是為了記住
+> 當時的判斷與理由。已經明顯與現況牴觸、又不帶日期的句子已就地更正。
+
 另一個 session 在 `feat/112-copy-mcp-config` 分支上加了一個功能，重新設計實作時必須納入，
 否則就是缺功能：
 
@@ -187,8 +225,8 @@
 | `MCPConfig(sessionId)` | **列上沒有入口**（2026-09-15 移除，見 §10）；綁定與 `mcp-modal` 都保留，由 `openMCPConfig(sessionId)` 呼叫 | 開 `mcp-modal`：`<pre id="mcp-text">` 顯示這一列的 `.mcp.json` 片段、`mcp-status` 顯示複製結果；文案說明 per-project 與 `--outbound` 的限制 |
 
 - `MODAL_IDS` 多了 `mcp-modal`；新設計若把對話框改成抽屜，這個一起改。
-- 設計稿的對應：Main 與 MainHacker 的「收件匣」動作欄應擴成兩個圖示（收件匣、MCP 設定），
-  或改成一個「⋯」列選單。**目前設計稿尚未畫入，實作前補。**
+- 設計稿的對應：這條已被 §10 取代——MCP 入口 2026-09-15 從列上移除，動作欄是「收件匣」與「resume」兩顆，
+  不需要第三個圖示或「⋯」選單。
 - 該分支合併前不要開始改 `frontend/`，否則同一份工作樹會互相覆蓋（見下）。
 
 ### 7.1 兩個 session 共用同一個工作樹
@@ -226,8 +264,8 @@
 
 ### 7.5 #111 端點形狀（#125 已合併，main `a742023`；欄位已對照原始碼核實）
 
-新 UI 的「送出紀錄」「喚醒紀錄」視圖接這兩個端點。desktop 端還沒有對應的 Go 綁定，
-實作時要在 `app.go` / `client.go` 加 `Outbound(limit, after)` 與 `Wakes(session, limit)`。
+新 UI 的「送出紀錄」「喚醒紀錄」視圖接這兩個端點。**已實作**：`Outbound(session, limit, after)` 與
+`Wakes(session, limit)` 都在 `app.go` / `client.go`，畫在收件匣抽屜的第二、三個分頁（§3.5）。
 
 **`GET /v1/outbound?limit=50[&after=<cursor>]`** — 本節點排給 peer 的訊息，最新在前。
 `limit` 1–200，預設 50。回應 `{"messages":[…],"next":"<cursor>"}`；空清單無 `next`，滿頁才有。
@@ -263,7 +301,7 @@
 `limits` 帶 `hops`、`pair`+`pairWindow`、`session`+`sessionWindow`、`node`+`nodeWindow`，
 拒絕理由要跟產生它的規則並排顯示。對應 CLI：`ah outbound`、`ah wakes [session]`。
 
-**#116 設定端點（尚未合併，先照此設計）**：一個 `GET /v1/node/settings` 回各欄位＋來源，
+**#116 設定端點**（當時未合併，現已在 main，見本節標題的日期說明）：一個 `GET /v1/node/settings` 回各欄位＋來源，
 一個 `PUT` 部分更新回 `restartRequired: true`；欄位 `peerListen`、`allowLan`、`discover`、
 `treatAsPrivate[]`、`autoWake`。設定頁的主按鈕由「重新安裝（改旗標）」改為「儲存並重啟服務」。
 
@@ -295,7 +333,7 @@
 
 - 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
 - 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
-- 與「收件匣」「MCP 設定」並排為三個列動作；設計稿與實作都要有。
+- 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 
 ### 4.2 Go 端靜態測試的硬性要求（`desktop/frontend_test.go`）
 
@@ -313,7 +351,7 @@
 - index.html 至少一個 `<p class="warning">`。
 - **版面（#153／#155，實機才看得到）**：清單卡片**不設 `max-width`**（填滿視窗；原本的 1120px 讓背景只露一條、
   又壓縮了最長的欄）；工作目錄欄 `td.cwd` 用 `direction: rtl` 從左邊裁，路徑本身包在 `<bdi>` 裡隔離方向，
-  因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 250px（三顆列動作量到 241px，
+  因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 160px（見 §10；原本三顆列動作時是 250px／量到 241px，
   儲存格 `overflow: hidden` 會把裝不下的裁掉，**任何視窗寬度都一樣**）；`table` 要有 `min-width`
   （沒有的話 `width: 100%` 讓它永遠等於容器寬，窄視窗只會壓縮欄位而不會捲動）；`.col-actions`
   要 `position: sticky`；`style.css` 要有 `body.mac .titlebar` 的左內縮，因為 `main.go` 用
@@ -399,5 +437,8 @@
 
 1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `resume` 各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
 2. `openMCPConfig(sessionId)` 產生的設定必須帶**傳進去的那個** session。這條保護不能跟著入口一起拿掉：綁錯 session 之後從任何一側都看不出來（server 起得來、四個工具都回答，只是回答別人的 session）。2026-09-10 就發生過把另一台的 session id 手貼進設定。
-3. `col.c-actions` 寬度下限從 250px 降到 **160px**（兩顆按鈕實測 154px）。`TestFrontendKeepsTheRowActionsReachable` 守這條。
+3. `col.c-actions` 寬度下限從 250px 降到 **160px**，實際寬度 176px。
+   154px 是**算**出來的不是量出來的：沿用三顆按鈕那次量到的單顆寬度（收件匣 63、resume 67），
+   加一個 4px gap 與兩側各 10px padding。兩顆的版面沒有重新量過，所以這個數字只保證算術正確。
+   `TestFrontendKeepsTheRowActionsReachable` 守這條。
 4. `ah` **沒有**產生 `.mcp.json` 的指令，所以移除入口之後，UI 上不再有任何地方拿得到那份設定。要恢復可得性，選項是放回按鈕、移到設定頁、或補一個 `ah mcp-config <session>`。
