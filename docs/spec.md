@@ -45,19 +45,32 @@ go run ./cmd/ah list
 ## Project structure
 
 ```text
-cmd/agenthub-node/   node daemon entrypoint
-cmd/ah/              user CLI entrypoint
-cmd/agenthub-mcp/    MCP server entrypoint, bound to one session
-desktop/             Wails desktop management app (separate Go module)
-internal/adapter/    provider discovery adapters
-internal/api/        local HTTP API
-internal/identity/   persistent node identity
-internal/model/      normalized contracts
-internal/mcpserver/  the four MCP tools an agent calls
-internal/protocol/   signed broker envelopes, addressing, and export projection
-internal/registry/   SQLite persistence
-internal/status/     lifecycle inference
-docs/                architecture and protocol contracts
+cmd/agenthub-node/    node daemon entrypoint
+cmd/ah/               user CLI entrypoint
+cmd/agenthub-mcp/     MCP server entrypoint, bound to one session
+desktop/              Wails desktop management app (separate Go module)
+internal/adapter/     provider discovery adapters
+internal/address/     qualified <node-id>/<provider>:<id> parsing
+internal/api/         local HTTP API, and the separate peer mux
+internal/cli/         the ah subcommands, including settings and service
+internal/codexapp/    Codex App Server JSON-RPC client and its supervisor
+internal/codexdriver/ waking a Codex thread: resume, start a turn, one at a time
+internal/discovery/   mDNS announcements, candidates, and the trust cache
+internal/hub/         the discovery pass: provider roots in, registry rows out
+internal/identity/    persistent node identity
+internal/label/       bounded, normalized human-readable labels crossing the network
+internal/mcpserver/   the four MCP tools an agent calls
+internal/model/       normalized contracts
+internal/nodeconfig/  listen-address validation and the private-range rules
+internal/pairing/     pairing mode, announcements and announceable addresses
+internal/process/     platform process enumeration
+internal/protocol/    signed broker envelopes, addressing, and export projection
+internal/registry/    SQLite persistence
+internal/service/     launchd and systemd --user registration
+internal/status/      lifecycle inference
+internal/transport/   delivering presence and messages to peers over pinned TLS
+internal/wake/        the wake gate: limits, hops, drivers, and the channel
+docs/                 architecture and protocol contracts
 ```
 
 ## Code style
@@ -87,7 +100,7 @@ Errors add operation context. Public JSON uses lower camel case. Time values use
 - Always: default sessions to audience `none`, preserve audience/export flags on upsert, validate external JSON, use parameterized SQL, bind locally by default, and run tests/build.
 - Implemented: the peer listener authenticates and consumes signed envelopes, enforces expiry and replay protection, and is separate from the owner-local API, which stays on loopback.
 - Ask first: weaken an export default, or expand the remote metadata allowlist.
-- Never: write into a provider's session files or process, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active. Wake-up (issue #60), when it comes, goes through each provider's own API — see [architecture](architecture.md).
+- Never: write into a provider's session files or process, store prompt/transcript bodies, copy provider credentials, auto-publish, or treat process presence alone as proof that a specific session is active. Wake-up (issue #60) goes through each provider's own API and does not move that boundary — see [architecture](architecture.md).
 
 ## Success criteria
 
@@ -108,8 +121,8 @@ and tracked from issue #1.
 
 - Automated pairing exchange (issue #63); LAN transport and presence are implemented
 - Remote presence subscriptions and retries
-- Provider-specific live APIs
+- Provider-specific live APIs as a *discovery* source: the Codex App Server
+  client is used for waking, but `thread/list` is not on the scan path
 - Session launch and supervision
-- Wake-up: nothing hands a message to an agent (issue #60)
 - Policy groups and aliases
 - Windows real-host acceptance (issue #21); a two-host macOS/Ubuntu run is recorded in [verification.md](verification.md)

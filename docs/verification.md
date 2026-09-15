@@ -388,6 +388,18 @@ outbound sequence monotonicity and exhaustion, node identity and trust
 invariants, message inbox policy, HTTP origin rejection, pagination, qualified
 addressing, CLI calls, and listener address validation.
 
+It also covers what landed after that list was written (2026-09-15): the wake
+gate's three limits and hop count, the Codex driver's approval refusals and its
+one-turn-at-a-time lane, the MCP channel's frame and capability, remembered
+start-up settings and the withdrawn peer listener, mDNS announcement and
+candidate handling including the group-membership release, the discovery trust
+cache, and the service install/status/uninstall paths.
+
+Both modules were re-run on 2026-09-15 at `940da4f`: `go build ./...`,
+`go vet ./...` and `go test ./...` pass in the root module, `go vet ./...` and
+`go test ./...` pass in `desktop/`, and all six targets in the matrix below
+cross-compile with `CGO_ENABLED=0`.
+
 ## Build matrix
 
 | Target | Compile | Runtime smoke |
@@ -640,7 +652,8 @@ then on without a fingerprint, since its sender is no longer in the trust store.
 ### Not covered
 
 - Wake-up: nothing hands a message to an agent unprompted (#60). Every read here
-  was asked for.
+  was asked for. (Waking landed later; see *Waking a Codex thread, 2026-09-09*
+  below. — annotated 2026-09-15)
 - B's side of revocation, above.
 - The outbound gate was enforced in `agenthub-mcp`, not the node, at the time
   of this run (#75; closed by #85).
@@ -756,7 +769,8 @@ hosts ran the merged tree.
 - **The MCP path.** Both sides were driven with `ah`. The four MCP tools go
   through the same node API and are covered by their own tests, but no Claude
   Code or Codex session drove this exchange, and no message was handed to an
-  agent — that remains the documented boundary (Step 8, #60).
+  agent — that was the documented boundary at the time (Step 8, #60). It moved
+  the next day; see the two wake sections below. (annotated 2026-09-15)
 - The automated `pair.*` handshake (#62). Trust was established with `ah pair`
   on each side after a person compared the six fingerprint groups on both
   screens, which is the property #62 automates rather than replaces.
@@ -831,7 +845,9 @@ No shell call was made — the rollout holds no `function_call` or
   on. `allowOutbound` was closed throughout, so no reply could have left this
   machine either way.
 - One host and one provider. Nothing here says anything about Claude Code,
-  whose transport (#57) is not built.
+  whose transport (#57) was not built at the time of this run. It was built the
+  same day — the next section is that run, and it is the one that did not
+  succeed. (annotated 2026-09-15)
 - No reconnect was exercised: the app-server did not fail during the run.
 - The rate limits were not reached — three wakes in total.
 
@@ -926,3 +942,67 @@ PUSH at +86.0s: arrived in the second poll window
 
 The node recorded it `woken`. A second message, sent after that MCP server had
 exited, recorded `failed (no agent is subscribed…)` and stayed in the inbox.
+
+## Multicast group membership, 2026-09-13 (#93, #143)
+
+`membership.refresh()` never released a membership, so an interface destroyed
+and re-created stranded a slot on the old ifindex. `net.ipv4.igmp_max_memberships`
+is 20 by default: after the twentieth rebuild `JoinGroup` answers `ENOBUFS` for
+every interface, new ones included, and nothing short of a restart recovers it.
+`refresh` now records the ifindex of every join it takes and leaves the group on
+the ones the interface table has stopped listing.
+
+**#93's concern was disproved by measurement.** #93 asked whether an interface
+that lost and regained its address leaves this socket permanently deaf. Measured
+on Linux 6.8 in an unprivileged netns: removing an interface's last IPv4 address
+does not tear down its device-level group. `ip maddr` and `/proc/net/igmp` went
+on listing `224.0.0.251` at every step — while the interface had no address, and
+while it was down — and delivery was confirmed on the far side of an address
+flap, a link down/up, and a full DHCP-shaped cycle without any re-join.
+
+**What those runs do not show**, and is recorded as not shown rather than
+rounded up: nothing probed with a datagram *from inside* the address-less window
+or the down window. What the logs show throughout is the **membership
+standing**; delivery was observed at each cycle's far side, once the address was
+back and the link up. The rename case is an **inference**, not a measurement —
+the #93 runs never renamed an interface — following from the same fact the rest
+of this code rests on, that a membership is matched on the index.
+
+**Release is evidence-based, and deliberately reluctant.** An index is released
+only after two consecutive *successful* enumerations omit it, and being listed
+again resets the count. `net.Interfaces()` can return a short list with
+`err == nil`: it answers from `syscall.NetlinkRIB`, which dumps `RTM_GETLINK` and
+never inspects `NLM_F_DUMP_INTR`, so a dump interrupted by the link table
+changing underneath it comes back truncated with no error reported — and the
+host that does the interrupting is exactly the host this change exists for. When
+the enumeration itself fails, `refresh` reclaims nothing. The two errors are not
+symmetric: reclaiming too eagerly costs delivery on a live interface until the
+next tick (bounded by `RejoinInterval`, 10s), reclaiming too reluctantly leaks a
+slot, which is not self-healing.
+
+**`LeaveGroup` is keyed on the index on macOS too**, against an earlier claim
+that it needed the interface's address. Measured on darwin/arm64, go1.27,
+x/net v0.58.0:
+
+```
+LeaveGroup(index 9999)      -> EADDRNOTAVAIL   (reaches the kernel, keyed on the index)
+live iface en0 idx 14: join -> nil
+  leave                     -> nil
+  leave again               -> EADDRNOTAVAIL
+  leave by index only, carrying a name that interface has never had -> nil
+```
+
+The last line is the direct proof that the name never reaches the kernel. That
+is why a release is attempted once and not retried: the call is a pure function
+of an index that is gone and will still be gone next tick.
+
+**Left unknown, and written down as unknown:** whether xnu frees the
+`inp_moptions` slot once `ifindex2ifnet[idx]` is already NULL. Confirming it
+needs a synthetic `feth` interface and root, and was not done. It is accepted as
+a platform limit rather than chased, because macOS caps a socket at
+`IP_MAX_MEMBERSHIPS` = 4095 against Linux's default of twenty, so the churn that
+is fatal on Linux is two orders of magnitude from mattering there.
+
+Fourteen mutations across two rounds were confirmed red, including dropping the
+reclaim entirely (the #143 defect restored), lowering the two-enumeration rule
+to one, and matching on interface name instead of index.

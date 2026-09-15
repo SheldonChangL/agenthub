@@ -25,7 +25,7 @@ flowchart TB
     API["Loopback HTTP API<br/>127.0.0.1:7462"]
 
     subgraph Node["agenthub-node"]
-        Registry[("SQLite<br/>sessions · audience · trust<br/>inbox · outbox")]
+        Registry[("SQLite<br/>sessions · audience · trust<br/>inbox · outbox<br/>wake events · node settings")]
         Key[["node.key - Ed25519<br/>DPAPI-protected on Windows"]]
         Scan["Filesystem discovery<br/>~/.claude · ~/.codex - read only"]
     end
@@ -42,8 +42,8 @@ flowchart TB
     Node --> Peer
 ```
 
-The MCP layer exists as of Step 7 (#56); only the wake-up edges are still
-dashed.
+The MCP layer exists as of Step 7 (#56), and the wake-up edges as of Step 8
+(#60).
 
 The agent starts `agenthub-mcp` as its own child process, which is why that
 process cannot know which session called it unless it is told at startup — hence
@@ -68,7 +68,7 @@ flowchart LR
         PresB[("presence<br/>sequence and expiry checked")]
         InB{{"acceptMessages<br/>implemented<br/>per session"}}
         InboxB[("inbox")]
-        WakeB{{"autoWake<br/>Step 8 - issue 59<br/>default off"}}
+        WakeB{{"autoWake<br/>implemented<br/>per session, default off<br/>node -auto-wake also required"}}
         AgentB[Agent on B]
     end
 
@@ -79,8 +79,8 @@ flowchart LR
     NodeA -- "agent.message over TLS<br/>certificate pinned to the key<br/>recorded at pairing" --> InB
     InB --> InboxB
     InboxB -- "a person asks the agent to look" --> AgentB
-    InboxB -.-> WakeB
-    WakeB -. "Step 8 - arrives on its own" .-> AgentB
+    InboxB --> WakeB
+    WakeB -- "arrives on its own, through<br/>the provider's own API" --> AgentB
 ```
 
 Three gates sit on that path and are independent of each other, because willing
@@ -90,7 +90,7 @@ to receive is not willing to send, and neither is willing to act unattended:
 |---|---|---|
 | `acceptMessages` | on the recipient | implemented |
 | `allowOutbound` | on the sender | implemented, default off, enforced by the node in `POST /v1/messages`; `agenthub-mcp` also checks it first for the sends it makes |
-| `autoWake` | on the recipient | Step 8, #59, default off |
+| `autoWake` | on the recipient | implemented, default off, and needs the node's own `-auto-wake` open as well; neither alone wakes anything |
 
 TLS is pinned to the public key recorded when the two nodes paired, verified
 through `VerifyConnection` so a resumed TLS 1.3 handshake is checked too. A
@@ -99,8 +99,8 @@ middlebox that substitutes its own certificate cannot complete the connection.
 ### How a message reaches an agent
 
 Delivery to the inbox works today and has been exercised between two machines,
-and an agent can now read and send through `agenthub-mcp`. What does not exist
-is anything that hands a message to an agent without a person asking.
+an agent can read and send through `agenthub-mcp`, and a message can now start a
+turn on its own when the owner has opened both wake switches.
 
 | Leg | Mechanism | State |
 |---|---|---|
@@ -108,29 +108,32 @@ is anything that hands a message to an agent without a person asking.
 | Node to node | signed envelope over pinned TLS | implemented; a two-host run is described in PR #40/#41 and recorded in verification.md |
 | Into the inbox | `acceptMessages`, deduplicated, bounded at 500 | implemented |
 | Agent reads on request | `agent_inbox` over MCP | implemented |
-| Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | Step 8, #57 |
-| Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | Step 8, #58 |
+| Arrives unprompted, Codex | `thread/resume` then `turn/start` on the Codex App Server | implemented; a turn observed at the other end (verification.md, 2026-09-09) |
+| Arrives unprompted, Claude Code | MCP channel, `claude/channel` capability | implemented; the push has **not** been observed arriving in a real session, see [channel-push-not-observed.md](channel-push-not-observed.md) |
 
-The rest of this section records findings from planning Step 8 (#57, #58),
-checked in 2026-09 against Claude Code's published documentation and
-`codex-cli 0.147.0`. Both providers change often; re-check before relying on any
-of it.
+The two wake-up paths are asymmetric, and that is why one is verified and the
+other is not. The Claude Code path runs through `agenthub-mcp`, which the agent
+itself launched: nothing can be pushed unless that session is already running
+and its server has subscribed, and the push it then makes is unacknowledged, so
+this node cannot tell a delivered notification from a dropped one. The Codex
+path has `agenthub-node` connect outwards to the Codex App Server over
+supervised stdio — the node spawns the App Server itself — and `turn/start`
+returns a turn id, which is an answer.
 
-The two intended wake-up paths are asymmetric. The Claude Code path would run
-through `agenthub-mcp`, which the agent itself launched, so nothing can be pushed
-unless that session is already running. The Codex path would have
-`agenthub-node` connect outwards to the Codex App Server — though #58 has not yet
-chosen the transport, and a supervised-stdio choice would mean the node spawns
-the App Server itself rather than attaching to one.
-
-For Claude Code a channel appears to be the only workable mechanism: MCP
+For Claude Code a channel was the only workable mechanism: MCP
 `sampling/createMessage` and `notifications/resources/updated` are not documented
 as implemented, no hook fires on a timer, and hooks cannot raise a turn on their
 own.
 
-Neither path is intended to inject text into a provider's files or process, so
-`#16`'s boundary is intended to hold: the Codex path calls Codex's own API, and
-the Claude Code path uses a documented MCP capability.
+Neither path injects text into a provider's files or process, so `#16`'s
+boundary holds: the Codex path calls Codex's own API, and the Claude Code path
+uses a documented MCP capability. The 2026-09-09 Codex run confirmed it by
+measurement — exactly one rollout file changed, the thread's own, and no second
+thread was created.
+
+Both providers change often. What is recorded here was checked against
+`codex-cli 0.153.4` and Claude Code's published documentation in 2026-09;
+re-check before relying on any of it.
 
 The trust boundary this surface creates, what each defence does, and what none
 of them do, is recorded in
@@ -140,13 +143,13 @@ of them do, is recorded in
 
 | Boundary | Current state |
 |---|---|
-| Provider session -> node | Filesystem discovery is enabled; Codex App Server parsing exists but is not wired into the daemon |
+| Provider session -> node | Filesystem discovery is enabled. The Codex App Server client is wired into the daemon for waking only — the node starts its supervisor under `-auto-wake` — while `thread/list` parsing is implemented and schema-tested without being on the scan path |
 | Owner -> node | `ah`, desktop app, and loopback HTTP API are implemented |
 | Node -> node | Implemented and exercised between two hosts: pinned TLS, recipient-bound signed envelopes, a persisted heartbeat sequence, presence with expiry, and message routing with acks. Bound to loopback unless `-allow-lan` is set and `-peer-listen` names a private address |
 | MCP client -> node | `agenthub-mcp` serves `agent_list`, `agent_status`, `agent_inbox` and `agent_send` over stdio, bound to one session by `-as`. Remote data comes from presence only; outbound needs the owner's `allowOutbound`, enforced by the node and checked earlier in this process |
-| Node -> agent | An agent reads its inbox when asked. Nothing hands it a message unprompted. Step 8, #60 |
+| Node -> agent | An agent reads its inbox when asked, and — with the node's `-auto-wake` and that session's `autoWake` both open — a message can start a turn on its own through the provider's own API. Both switches are closed by default. Three rate limits and a hop count bound it, and one woken turn runs at a time per Codex thread. See [ADR-003](decisions/003-waking-with-nobody-present.md) |
 | Pairing | Trust still takes five arguments including a base64 public key, and a compared fingerprint. What is automatic is finding the other machine: with `-discover`, a node can open a timed window in which it announces its id, name, platform and fingerprint — never its key — and lists others doing the same. Appearing in that list grants nothing. The handshake that would carry the key is #62. Step 9, #61 and #62 |
-| Distribution | CI builds all three binaries for six platforms and uploads them with checksums, so a reviewer can download one. No release workflow, no installer, and nothing tagged: a build reports the revision it came from, not a version. Step 10, #64 and #67 |
+| Distribution | CI builds all three binaries for six platforms and uploads them with checksums, so a reviewer can download one. A tag-triggered release workflow packages and publishes them, and `desktop/build/bundle-binaries.sh` puts the three inside the desktop app. No installer, and nothing tagged yet: a build still reports the revision it came from rather than a version. Step 10, #64 and #67 |
 
 ## Platform boundary
 
@@ -469,9 +472,9 @@ a discovery record aimed at the wrong node and a peer whose key has rotated.
 A heartbeat carries metadata this node observed. A message carries what a person
 wrote, which is a different kind of data and is treated as one: it is queued for
 the owner to read, and **nothing writes it into a provider's files or
-process**. Wake-up will hand it to an agent through the provider's own API
-(#60); what will not happen is this node reaching into a session behind the
-provider's back.
+process**. Wake-up hands it to an agent through the provider's own API (#60);
+what does not happen is this node reaching into a session behind the provider's
+back.
 
 `ah send --from <local-session-id> <node-id>/<provider>:<id> <message>` records
 the message in a local queue and answers `202 Accepted`. That status is the
