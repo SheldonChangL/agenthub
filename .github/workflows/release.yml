@@ -264,6 +264,12 @@ jobs:
             cat dist/SHA256SUMS
             echo '```'
             echo
+            # Unsigned is a choice (issue #66), so the page says so rather
+            # than letting the first warning be a surprise. It sits right after
+            # the hashes because the checksum is what stands in for a
+            # signature here, and a reader should meet both at once.
+            echo "These binaries are **not code-signed**. Windows SmartScreen will call the publisher unknown, and macOS Gatekeeper will refuse to open them until you allow it in System Settings → Privacy & Security. That is expected. Check the hash above before you override either warning — it is the only evidence you have that the download is what this workflow built."
+            echo
             echo "\`agenthub-node\` serves the owner's API on loopback only. Sharing with another machine is the peer listener, with \`-allow-lan\` and \`-peer-listen\`; see the README."
           } > "$notes"
           echo "notes=$notes" >> "$GITHUB_ENV"
