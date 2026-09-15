@@ -31,7 +31,10 @@ var newServiceManager = func() (service.Manager, error) {
 	if err != nil {
 		return service.Manager{}, fmt.Errorf("find current user: %w", err)
 	}
-	return service.Manager{GOOS: runtime.GOOS, Home: home, UID: current.Uid, Runner: service.ExecRunner{}}, nil
+	return service.Manager{
+		GOOS: runtime.GOOS, Home: home, UID: current.Uid, UserName: current.Username,
+		Runner: service.ExecRunner{},
+	}, nil
 }
 
 // service installs, removes or inspects the node as a background service.
@@ -40,6 +43,7 @@ var newServiceManager = func() (service.Manager, error) {
 //	ah service restart
 //	ah service uninstall
 //	ah service status
+//	ah service run-node --node-binary PATH --log PATH [-- NODE FLAGS]
 //
 // Install still takes the node's own network flags by the node's own names,
 // and still writes them into the unit, because installations out there were
@@ -53,6 +57,11 @@ func (r runner) service(ctx context.Context, args []string) error {
 		return errors.New("usage: ah service install [--db PATH] [--listen ADDR] [--node-binary PATH] | restart | uninstall | status\n" +
 			"the node's network settings are remembered in its database: `ah settings set ...` records them, " +
 			"`ah service restart` applies them")
+	}
+	// Before the manager is built: this one starts a process and asks no
+	// service manager anything, so it works on a platform that has none.
+	if args[1] == "run-node" {
+		return r.serviceRunNode(args[2:])
 	}
 	manager, err := newServiceManager()
 	if err != nil {
@@ -79,8 +88,47 @@ func (r runner) service(ctx context.Context, args []string) error {
 	case "status":
 		return r.serviceStatus(ctx, manager)
 	default:
-		return fmt.Errorf("unknown service command %q; want install, restart, uninstall or status", args[1])
+		return fmt.Errorf("unknown service command %q; want install, restart, uninstall, status or run-node", args[1])
 	}
+}
+
+// serviceRunNode starts the node and returns, leaving it running.
+//
+// This is what the Windows scheduled task runs. It exists so that the task's
+// own process is this one — short-lived, its console window a flicker at logon
+// — rather than the node, whose console window would otherwise sit in the
+// taskbar for as long as the node runs. agenthub-node.exe keeps its console
+// subsystem, so running it by hand to find out why it will not start still
+// prints; that diagnosis is the only one a Windows owner has.
+//
+// It is not part of the owner's vocabulary, and the usage line does not offer
+// it. Nothing stops someone running it, and it does something sensible if they
+// do, but the commands a person is meant to type are install, restart,
+// uninstall and status.
+func (r runner) serviceRunNode(args []string) error {
+	flags := flag.NewFlagSet("ah service run-node", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	nodeBinary := flags.String("node-binary", "", "path to agenthub-node (default: beside ah, then PATH)")
+	logPath := flags.String("log", "", "file the node's output is appended to")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("ah service run-node: %w", err)
+	}
+	binary, err := resolveNodeBinary(*nodeBinary)
+	if err != nil {
+		return err
+	}
+	// Whatever follows the flags is the node's own command line, carried
+	// verbatim. `--` is how the installer keeps the node's flags from being
+	// read as this command's.
+	pid, err := service.StartDetached(binary, flags.Args(), *logPath)
+	if err != nil {
+		return fmt.Errorf("start %s: %w", binary, err)
+	}
+	if r.json {
+		return r.printJSONValue(map[string]any{"started": binary, "pid": pid, "log": *logPath})
+	}
+	fmt.Fprintf(r.stdout, "started %s (pid %d); output: %s\n", binary, pid, *logPath)
+	return nil
 }
 
 func (r runner) serviceInstall(ctx context.Context, manager service.Manager, args []string) error {
@@ -179,7 +227,18 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	if err != nil {
 		return err
 	}
-	report, err := manager.Install(ctx, service.Config{NodeBinary: binary, Args: nodeArgs})
+	// Which ah the task should run, on the platform whose task runs one. The
+	// path this process was started from, not one looked up on PATH: a task
+	// registered to start "whatever ah comes first" would be registered to run
+	// a program nobody has chosen, at every logon.
+	launcher, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate this executable, which the scheduled task runs: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(launcher); err == nil {
+		launcher = resolved
+	}
+	report, err := manager.Install(ctx, service.Config{NodeBinary: binary, Args: nodeArgs, Launcher: launcher})
 	if err != nil {
 		return err
 	}

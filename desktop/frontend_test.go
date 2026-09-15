@@ -476,6 +476,18 @@ func TestFrontendNodeSettingsFormSpeaksTheNodesRules(t *testing.T) {
 	runNodeCheck(t, "node-settings.mjs")
 }
 
+// TestFrontendServicePanelOffersTheRestartWhereItIsSafe covers the background
+// service panel on a platform that has none.
+//
+// On Windows the node runs but nothing this app can ask holds it, so a setting
+// the node reads only at start-up was unappliable from the window and the panel
+// amounted to advice about Task Manager. The app restarts the node itself
+// there — and must not do it where a service manager would start a second one
+// behind its back, which is the case this pins.
+func TestFrontendServicePanelOffersTheRestartWhereItIsSafe(t *testing.T) {
+	runNodeCheck(t, "service-panel.mjs")
+}
+
 // TestFrontendShimSelectDoesNotLie covers the fake <select> the other checks
 // run against.
 //

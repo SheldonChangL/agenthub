@@ -150,8 +150,9 @@ unit file full of flags was a second copy of the configuration: changing one
 switch meant reinstalling the service, and the desktop app could not change it
 at all.
 
-`install` registers the node with launchd (macOS) or `systemd --user` (Linux):
-it starts at login and is restarted if it exits. `agenthub-node` is looked for
+`install` registers the node with launchd (macOS), `systemd --user` (Linux) or
+Task Scheduler (Windows): it starts at login. On macOS and Linux it is also
+restarted if it exits; Windows is the exception, and says so below. `agenthub-node` is looked for
 beside `ah`, then on `PATH`; pass `--node-binary` to name it. A relative `--db`
 is made absolute, because a service has no working directory of yours. The
 command ends by asking the node whether it answers, and says so either way.
@@ -167,7 +168,7 @@ over any later rename.
 
 ```sh
 bin/ah service status      # installed? running? is the node answering?
-bin/ah service restart     # apply a saved setting: launchctl kickstart -k / systemctl --user restart
+bin/ah service restart     # apply a saved setting: launchctl kickstart -k / systemctl --user restart / schtasks /Run
 bin/ah service uninstall   # stop it and remove the registration
 ```
 
@@ -179,11 +180,33 @@ restart`; `install` is needed again only for a new binary path or database.
 On Linux a user service starts when you log in. For a machine that should run
 the node with nobody logged in, `loginctl enable-linger <user>` is the one
 extra step, and `install` prints it. Logs: `~/Library/Logs/agenthub/node.log`
-on macOS, `journalctl --user -u agenthub-node` on Linux. Windows is not
-supported yet; `install` says so rather than guessing.
+on macOS, `journalctl --user -u agenthub-node` on Linux,
+`%LOCALAPPDATA%\agenthub\node.log` on Windows.
 
-The desktop app offers the same three actions as buttons, so nobody has to
-know what launchd is.
+On Windows the registration is a Task Scheduler task called `AgentHub Node`, in
+your own account, triggered by your logon. Two differences from the other two
+platforms, both of which `install` prints rather than leaving you to discover:
+
+- **It runs only while you are logged on.** "Run whether user is logged on or
+  not" would mean storing your password and running the node in session 0,
+  where it could neither open `node.key` (sealed with DPAPI against your
+  account) nor read the `~/.claude` and `~/.codex` that tell it which sessions
+  exist.
+- **Task Scheduler does not restart the node if it exits.** What the task runs
+  is `ah service run-node`, a launcher that starts the node detached and
+  returns, so that the node gets no console window while `agenthub-node.exe`
+  keeps its console subsystem — run it by hand in a terminal and it still
+  prints, which is how you find out why it will not start. The cost of that
+  choice is that the process Task Scheduler watches is the launcher, not the
+  node. A node that stops stays stopped until your next logon, or until you
+  press **重新啟動節點** in the app.
+
+The desktop app offers the same actions as buttons, so nobody has to know what
+launchd is. Its **重新啟動節點** button is also the answer for a node that no
+service manager holds — one started from a terminal, or by an installer that
+predates this registration: there the app stops the node and starts the one
+beside it itself, which is the only way a setting saved in the window can take
+effect on such a machine.
 
 ## Two machines
 
