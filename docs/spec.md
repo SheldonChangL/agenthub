@@ -66,7 +66,7 @@ internal/pairing/     pairing mode, announcements and announceable addresses
 internal/process/     platform process enumeration
 internal/protocol/    signed broker envelopes, addressing, and export projection
 internal/registry/    SQLite persistence
-internal/service/     launchd and systemd --user registration
+internal/service/     launchd, systemd --user and Task Scheduler registration
 internal/status/      lifecycle inference
 internal/transport/   delivering presence and messages to peers over pinned TLS
 internal/wake/        the wake gate: limits, hops, drivers, and the channel
