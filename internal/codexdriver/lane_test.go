@@ -385,6 +385,18 @@ func (d *Driver) queued() int {
 	return total
 }
 
+// idle reports whether the lane holds nobody.
+//
+// A test helper, and deliberately not a method on the production type: no
+// production caller ever asks, because lanes are kept rather than reaped once
+// made (see Driver.lane). It lives here so that the tests can state "the thread
+// came back" without the tree carrying an accessor nothing ships.
+func (l *lane) idle() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return !l.busy && len(l.queue) == 0
+}
+
 // idleLanes reports whether no thread is held.
 func (d *Driver) idleLanes() bool {
 	d.mu.Lock()
