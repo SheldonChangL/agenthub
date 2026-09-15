@@ -184,7 +184,7 @@
 
 | 綁定 | 入口 | 行為 |
 |---|---|---|
-| `MCPConfig(sessionId)` | 每列的「MCP 設定」按鈕（目前放在 SESSION 欄，與「收件匣」並排） | 開 `mcp-modal`：`<pre id="mcp-text">` 顯示這一列的 `.mcp.json` 片段、`mcp-status` 顯示複製結果；文案說明 per-project 與 `--outbound` 的限制 |
+| `MCPConfig(sessionId)` | **列上沒有入口**（2026-09-15 移除，見 §10）；綁定與 `mcp-modal` 都保留，由 `openMCPConfig(sessionId)` 呼叫 | 開 `mcp-modal`：`<pre id="mcp-text">` 顯示這一列的 `.mcp.json` 片段、`mcp-status` 顯示複製結果；文案說明 per-project 與 `--outbound` 的限制 |
 
 - `MODAL_IDS` 多了 `mcp-modal`；新設計若把對話框改成抽屜，這個一起改。
 - 設計稿的對應：Main 與 MainHacker 的「收件匣」動作欄應擴成兩個圖示（收件匣、MCP 設定），
@@ -385,3 +385,19 @@
 4. 設定頁那句話兩種狀態都要講出成本，字串含「CPU」；關閉時另含「預設關閉」。`frontend/test/backdrop-switches.mjs` 逐字斷言。
 5. `index.html` 的 `#toggle-motion` 不得帶 `checked`（`TestFrontendMotionToggleStartsUnchecked`）。
 6. `style.css` 不得有任何 `backdrop-filter:`（`TestFrontendDoesNotBlurOverMovingPixels`）。注意：毛玻璃**沒有**被單獨量過，這條靠推論成立，不要對外宣稱它有數字。
+
+
+## 10. 列動作只剩兩顆：MCP 入口已移除（2026-09-15，owner 指定）
+
+`收件匣 ｜ MCP 設定 ｜ resume` 改成 `收件匣 ｜ resume`。
+
+為什麼移除，而不是留著：MCP 那四個工具（`agent_list`、`agent_status`、`agent_send`、`agent_inbox`）在 `ah` 都有等價指令（`ah list`、`ah status`、`ah send`、`ah inbox`），而 `agenthub-watch` skill 本來就是走 `ah` 而不是 MCP。所以沒有設定 MCP 的新使用者，功能上不缺任何東西。一個 owner 可能一輩子用一次的設定，不該出現在一千列的每一列上。
+
+保留了什麼：`MCPConfig` 綁定、`openMCPConfig()`、`mcp-modal` 的 markup 與全部文案。放回入口只要在 `renderRows` 加一行 `rowActionButton`。
+
+契約：
+
+1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `resume` 各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
+2. `openMCPConfig(sessionId)` 產生的設定必須帶**傳進去的那個** session。這條保護不能跟著入口一起拿掉：綁錯 session 之後從任何一側都看不出來（server 起得來、四個工具都回答，只是回答別人的 session）。2026-09-10 就發生過把另一台的 session id 手貼進設定。
+3. `col.c-actions` 寬度下限從 250px 降到 **160px**（兩顆按鈕實測 154px）。`TestFrontendKeepsTheRowActionsReachable` 守這條。
+4. `ah` **沒有**產生 `.mcp.json` 的指令，所以移除入口之後，UI 上不再有任何地方拿得到那份設定。要恢復可得性，選項是放回按鈕、移到設定頁、或補一個 `ah mcp-config <session>`。

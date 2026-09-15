@@ -313,7 +313,7 @@ col.c-last { width: 92px; }
    (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font
    that renders the labels wider. At 214px the third button was cut off by the
    cell's own `overflow: hidden` at EVERY window width, not only narrow ones. */
-col.c-actions { width: 264px; }
+col.c-actions { width: 176px; }
 
 thead th {
   position: sticky; top: 0; z-index: 1;
