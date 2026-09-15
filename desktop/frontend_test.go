@@ -384,18 +384,20 @@ func TestFrontendMainListRefreshesAndSurvivesAFailedRead(t *testing.T) {
 	}
 }
 
-// TestFrontendMCPConfigButtonCarriesItsOwnRowsSession drives the per-row button
-// that hands over a `.mcp.json`.
+// TestFrontendMCPConfigNamesItsOwnSession drives openMCPConfig and the dialog.
 //
-// What the snippet binds is an agent to a session, and a wrong id in it is
-// invisible afterwards: the server starts, the four tools answer, and they
-// answer for somebody else's session. That is the mistake the button exists to
-// prevent — a session id from another machine was pasted into a config by hand
-// on 2026-09-10 — so the path from the row to the call is followed with more
-// than one row on screen. The check also pins the two warnings the snippet
-// cannot carry itself: an MCP config is per-project (issue #104), and reading
-// is all it buys until the owner opens the session's outbound gate.
-func TestFrontendMCPConfigButtonCarriesItsOwnRowsSession(t *testing.T) {
+// The per-row button it used to be driven through is gone: `ah` covers all four
+// MCP tools, the agenthub-watch skill uses `ah`, and a control an owner needs
+// once does not belong on every row. The check stayed, because what the snippet
+// binds is an agent to a session, and a wrong id in it is invisible afterwards:
+// the server starts, the four tools answer, and they answer for somebody else's
+// session. A session id from another machine was pasted into a config by hand
+// on 2026-09-10, which is what this is still guarding. It also pins that the
+// row is down to two actions, so putting the button back is deliberate, and the
+// two warnings the snippet cannot carry itself: an MCP config is per-project
+// (issue #104), and reading is all it buys until the owner opens the session's
+// outbound gate.
+func TestFrontendMCPConfigNamesItsOwnSession(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed; skipping the MCP config check")
@@ -550,10 +552,11 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	}
 	css := string(stylesheet)
 
-	// The measured content is 241px: three buttons (63 + 83 + 67), two 4px
-	// gaps, and 10px of cell padding each side. The floor leaves room for a
+	// The measured content is 154px: two buttons (收件匣 63 + resume 67), one
+	// 4px gap, and 10px of cell padding each side. The floor leaves room for a
 	// font that renders the labels wider than the machine this was measured on.
-	const actionsFloor = 250
+	// It was 241px for three, before the MCP button was taken off the row.
+	const actionsFloor = 160
 	width := regexp.MustCompile(`col\.c-actions \{ width: (\d+)px; \}`).FindStringSubmatch(css)
 	if width == nil {
 		t.Fatal("style.css no longer sets a width for col.c-actions; the row actions have no reserved space")
@@ -563,7 +566,7 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 		t.Fatalf("parse col.c-actions width %q: %v", width[1], err)
 	}
 	if pixels < actionsFloor {
-		t.Errorf("col.c-actions is %dpx, want at least %dpx: the three row actions need 241px and the cell "+
+		t.Errorf("col.c-actions is %dpx, want at least %dpx: the two row actions need 154px and the cell "+
 			"clips what does not fit, at every window width", pixels, actionsFloor)
 	}
 

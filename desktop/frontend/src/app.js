@@ -324,22 +324,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       );
       flags.append(chips);
 
-      // Row actions. Opening an inbox is a read; the other two write the
-      // clipboard and say so. Class tokens `inbox` / `mcp` and the label
-      // 「MCP 設定」 are what test/mcp-config.mjs looks for.
+      // Row actions. Opening an inbox is a read; resume writes the clipboard
+      // and says so.
+      //
+      // There is no MCP button here on purpose. It used to sit between these
+      // two, and it produced the `.mcp.json` that binds one agent to one
+      // session (#112) — but that is a thing an owner needs once, if ever,
+      // while this button was on all thousand rows. Everything the four MCP
+      // tools do, `ah` does too (list, status, send, inbox), and the
+      // agenthub-watch skill already goes through `ah` rather than MCP, so a
+      // new owner who never sees this loses nothing they were using.
+      //
+      // openMCPConfig and the mcp-modal it fills are still here and still
+      // tested, so restoring the entry point is one rowActionButton call.
       const actions = element("td", "col-actions");
       const group = element("span", "rowactions");
       group.append(
         rowActionButton("inbox", "收件匣", "這個 session 收到的訊息、送出紀錄與喚醒紀錄", () => {
           openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
         }),
-        // The `.mcp.json` for this row, on the clipboard. Assembling it by hand
-        // means finding one id among a thousand and an absolute path the owner
-        // has no reason to know; getting either wrong binds an agent to
-        // somebody else's session, which nothing downstream can detect (#112).
-        // The promise is returned, not swallowed, so a test can await it.
-        rowActionButton("mcp", "MCP 設定", "複製這個 session 的 .mcp.json", () =>
-          openMCPConfig(session.id).catch((error) => banner(`產生 MCP 設定失敗：${error}`))),
         rowActionButton("resume", "resume", `複製 ${resumeCommand(session)}`, () =>
           copyResumeCommand(session)),
       );
