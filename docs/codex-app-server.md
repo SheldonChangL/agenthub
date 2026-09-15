@@ -74,6 +74,40 @@ prompt the owner never saw. That is also why the reader takes a request id as
 raw JSON — `RequestId` is `string | int64`, and decoding it as a number dropped
 a string-id request as unreadable, answering nothing.
 
+**One turn at a time, per thread.** A thread can only have one turn, so the
+driver holds a lane per thread id and the second message waits for the first.
+The lane is keyed on the *thread*, not the session or the sender: two peers
+addressing the same thread queue behind each other, which is the fact the API
+imposes.
+
+| | value | where |
+|---|---|---|
+| how long a message waits for the turn ahead | 90s | `codexdriver.MaxWait` |
+| how many may wait | 2 | `defaultQueueDepth` |
+| how long a thread stays held for a turn that never reports finishing | 30m | `defaultMaxTurn` |
+
+`MaxWait` is exported because it is a coupling and not a coincidence: it sits
+under the budget the API layer gives a whole wake, so what is left after the
+wait is what `thread/resume` and `turn/start` have to finish in.
+
+Past those bounds the drive returns `ErrThreadBusy`, the wake settles as
+`failed`, and the message stays in the inbox — the same outcome as any other
+failed wake. Because only `woken` rows are counted, a message turned away this
+way spends none of the rate limits.
+
+**Why the lane exists rather than trusting app-server to serialise.** Measured
+against codex-cli 0.153.4, a `turn/start` into a busy thread neither opens a
+second turn nor fails: the input is appended to the running turn's queue, and
+several landing together are merged into one model call that answers only the
+last of them — one of three probe messages got no reply at all. So the lane is
+what keeps a message from being silently swallowed. When app-server answers
+with a turn id this lane has already recorded, the drive reports
+`ErrTurnCoalesced`, because a repeated id means this message may have been
+merged into a turn that was already running, and saying so is the only honest
+thing to record. That catches this node letting go of a thread too early; a
+turn the owner started in their own Codex window is invisible to it, and
+holding the thread rather than this check is what covers that.
+
 ## Managed or unmanaged
 
 A thread this node did not start is **unmanaged**, and stays unmanaged after

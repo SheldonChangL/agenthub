@@ -125,6 +125,22 @@ limit cannot see: A to B to C to A.
 Anyone reasoning about whether a loop is bounded should reason about the pair
 limit. The hop count is a second net with holes in it.
 
+**Amended 2026-09-15 (#101).** A third mechanism has since been added, and it
+is not a rate limit: a woken Codex turn now takes a lane keyed on the thread,
+so one turn runs at a time there. It was added because app-server does not
+refuse a `turn/start` into a busy thread — it merges the input into the running
+turn, which may then answer only the last of them, silently losing the rest.
+Serialisation is orthogonal to this section: the limits are counted before the
+driver is reached, and a message the lane turns away settles as `failed`, which
+the counters do not count. So a busy thread costs no allowance, and a full
+queue does not buy one. What the lane bounds is *concurrency*; what this
+section bounds is *rate*, and neither substitutes for the other.
+
+The row written at reservation is also what refuses the **fourth** message in a
+pair window, not the second one arriving while the first is still running —
+three landing together all reserve, all pass, and all drive. The lane is what
+decides what happens to them next.
+
 ### 5. Refusals are recorded, and the absence of a record means something else
 
 Every wake and every refusal is a row. A limit that silently swallows what it
