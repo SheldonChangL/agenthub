@@ -547,6 +547,7 @@ export namespace main {
 	    audience: Audience;
 	    status: string;
 	    statusSource: string;
+	    title?: string;
 	    cwd?: string;
 	    source?: string;
 	    // Go type: time
@@ -568,6 +569,7 @@ export namespace main {
 	        this.audience = this.convertValues(source["audience"], Audience);
 	        this.status = source["status"];
 	        this.statusSource = source["statusSource"];
+	        this.title = source["title"];
 	        this.cwd = source["cwd"];
 	        this.source = source["source"];
 	        this.lastSeenAt = this.convertValues(source["lastSeenAt"], null);
