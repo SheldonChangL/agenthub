@@ -1,4 +1,13 @@
-// Drives the per-row "MCP 設定" button and the dialog it opens.
+// Drives openMCPConfig and the dialog it opens.
+//
+// The per-row "MCP 設定" button is gone on purpose: `ah` does everything the
+// four MCP tools do, the agenthub-watch skill goes through `ah`, and a button
+// an owner needs once does not belong on all thousand rows. What it produced
+// still has to be right for anyone who restores it or calls it another way,
+// and getting the session wrong binds an agent to somebody else's session
+// with nothing downstream able to detect it (#112) — so this drives the same
+// function the button called. Section 1 also holds the row to two actions, so
+// putting the button back is a deliberate act and not an accident.
 //
 // The snippet this dialog hands over binds an agent to a session. Getting the
 // wrong row's id into it is the failure the button exists to prevent (issue
@@ -61,36 +70,34 @@ function findButtons(node, className, found = []) {
   return found;
 }
 
-// 1. Every row has the button, and it asks about its own row.
+// 1. No MCP button on the rows, and the two that remain still work.
 scope.state.selected = new Set();
 const row = (id) => ({
   id, provider: "claude", status: "idle", management: "unmanaged",
   audience: { mode: "none" }, cwd: "/tmp", lastSeenAt: new Date().toISOString(),
 });
 renderRows([row("claude:not-this-one"), row("claude:the-one-clicked")]);
-const buttons = findButtons(document.getElementById("rows"), "mcp");
-if (buttons.length !== 2) {
-  failures.push(`rendered ${buttons.length} MCP buttons for two rows, want 2`);
+const mcpButtons = findButtons(document.getElementById("rows"), "mcp");
+if (mcpButtons.length !== 0) {
+  failures.push(`rendered ${mcpButtons.length} MCP buttons; the row action was removed`);
 }
-if (!findButtons(document.getElementById("rows"), "inbox").length) {
+if (findButtons(document.getElementById("rows"), "inbox").length !== 2) {
   failures.push("the inbox button disappeared from the row");
 }
-const button = buttons[1];
-if (!button) {
-  failures.push("no MCP config button was rendered on a session row");
-} else {
-  if (button.textContent !== "MCP 設定") {
-    failures.push(`the button reads ${JSON.stringify(button.textContent)}`);
-  }
-  await button.onclick({ stopPropagation() {} });
-  if (calls.length !== 1) {
-    failures.push(`clicking the button asked the node ${calls.length} times, want 1`);
-  } else if (calls[0] !== "claude:the-one-clicked") {
-    failures.push(`the button asked about ${calls[0]}, not the row it belongs to`);
-  }
-  if (el("mcp-modal").classList.contains("hidden")) {
-    failures.push("clicking the button did not open the dialog");
-  }
+if (findButtons(document.getElementById("rows"), "resume").length !== 2) {
+  failures.push("the resume button disappeared from the row");
+}
+
+// The config still has to name the session it was asked about: an agent bound
+// to the wrong session looks fine from every side.
+await openMCPConfig("claude:the-one-clicked");
+if (calls.length !== 1) {
+  failures.push(`openMCPConfig asked the node ${calls.length} times, want 1`);
+} else if (calls[0] !== "claude:the-one-clicked") {
+  failures.push(`the node was asked about ${calls[0]}, not the session given`);
+}
+if (el("mcp-modal").classList.contains("hidden")) {
+  failures.push("openMCPConfig did not open the dialog");
 }
 
 // 2. The snippet is on screen, as text, and the title names the session.
@@ -223,4 +230,4 @@ if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("the MCP config button carries its own row's session, and the dialog says what the snippet does not");
+console.log("no MCP button on the rows; openMCPConfig still names its own session and the dialog says what the snippet does not");
