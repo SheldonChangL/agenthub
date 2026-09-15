@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 // fakeRunner records every command and answers from a script keyed on the
@@ -323,7 +324,7 @@ func TestStatusReadsTheManagersAnswer(t *testing.T) {
 }
 
 func TestUnsupportedPlatformIsRefusedNotGuessed(t *testing.T) {
-	manager := Manager{GOOS: "windows", Home: t.TempDir(), UID: "0", Runner: &fakeRunner{}, Sleep: noSleep}
+	manager := Manager{GOOS: "plan9", Home: t.TempDir(), UID: "0", Runner: &fakeRunner{}, Sleep: noSleep}
 	if _, err := manager.Install(context.Background(), Config{NodeBinary: writeFakeNode(t)}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("install: err = %v", err)
 	}
@@ -334,6 +335,291 @@ func TestUnsupportedPlatformIsRefusedNotGuessed(t *testing.T) {
 	if err != nil || status.Supported {
 		t.Errorf("status = %+v, %v; want unsupported without error", status, err)
 	}
+}
+
+// windowsManager is the manager under test for the Task Scheduler path, with
+// the scripted runner standing in for schtasks and tasklist.
+func windowsManager(t *testing.T, runner *fakeRunner) Manager {
+	t.Helper()
+	// LOCALAPPDATA is what a real Windows session has and what the paths are
+	// built from; set here so the test's answers do not depend on this
+	// machine's environment.
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "Local"))
+	return Manager{GOOS: "windows", Home: t.TempDir(), UID: "0", UserName: `DESK\me`, Runner: runner, Sleep: noSleep}
+}
+
+// The install an owner gets on Windows: a task registered from the XML, and
+// then run, because the trigger it carries is a logon that already happened.
+func TestWindowsInstallRegistersTheTaskAndStartsIt(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := windowsManager(t, runner)
+	node := writeFakeNode(t)
+
+	report, err := manager.Install(context.Background(), Config{
+		NodeBinary: node, Args: []string{"--db", `C:\Users\me\agenthub.db`}, Launcher: `C:\Program Files\AgentHub\ah.exe`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitPath, _ := manager.UnitPath()
+	want := []string{
+		"schtasks /Create /TN " + TaskName + " /XML " + unitPath + " /F",
+		"schtasks /Run /TN " + TaskName,
+	}
+	if strings.Join(runner.calls, " | ") != strings.Join(want, " | ") {
+		t.Errorf("calls = %v, want %v", runner.calls, want)
+	}
+	// /F, or a reinstall fails on "the task already exists" — and install is
+	// how a changed flag is applied.
+	if !strings.Contains(runner.calls[0], " /F") {
+		t.Error("the registration was not forced, so a reinstall would fail")
+	}
+	definition, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definition[0] != 0xFF || definition[1] != 0xFE {
+		t.Error("the XML was not written as UTF-16LE with a BOM, which is the only thing schtasks /XML reads")
+	}
+	// The report has to say what this platform does NOT do, or an owner reads
+	// launchd's promises into it.
+	notes := strings.Join(report.Notes, "\n")
+	if !strings.Contains(notes, "does not restart the node if it exits") {
+		t.Errorf("the report does not say the node is not supervised here:\n%s", notes)
+	}
+	if !strings.Contains(notes, "logged out") {
+		t.Errorf("the report does not say it only runs while logged on:\n%s", notes)
+	}
+}
+
+// The migration nobody would diagnose: an installer before this registration
+// existed left a shortcut in the Startup folder, and with the task registered
+// too, the next logon starts two nodes on one database. The second fails to
+// bind the port and exits, so the node works on some logons and not others.
+func TestWindowsInstallRemovesTheOldStartupShortcut(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := windowsManager(t, runner)
+	roaming := t.TempDir()
+	t.Setenv("APPDATA", roaming)
+	startup := filepath.Join(roaming, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+	if err := os.MkdirAll(startup, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shortcut := filepath.Join(startup, "agenthub-desktop Node.lnk")
+	if err := os.WriteFile(shortcut, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Somebody else's shortcut, which is not this package's to delete.
+	theirs := filepath.Join(startup, "Notepad.lnk")
+	if err := os.WriteFile(theirs, []byte("theirs"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := manager.Install(context.Background(), Config{
+		NodeBinary: writeFakeNode(t), Launcher: `C:\ah.exe`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(shortcut); !os.IsNotExist(err) {
+		t.Errorf("the old startup shortcut survived the install: %v", err)
+	}
+	if _, err := os.Stat(theirs); err != nil {
+		t.Errorf("it deleted a shortcut that was not ours: %v", err)
+	}
+	if !strings.Contains(strings.Join(report.Steps, "\n"), "removed the old startup shortcut") {
+		t.Errorf("the removal was not reported: %v", report.Steps)
+	}
+}
+
+// The XML is the whole configuration, so the things that are bugs at their
+// defaults are asserted on the document rather than assumed.
+func TestWindowsTaskXMLRunsAsTheOwnerAndNeverExpires(t *testing.T) {
+	definition, err := TaskXML(Config{
+		NodeBinary: `C:\Program Files\AgentHub\agenthub-node.exe`,
+		Args:       []string{"--db", `C:\Users\me & co\agenthub.db`},
+		LogPath:    `C:\Users\me\AppData\Local\agenthub\node.log`,
+		Launcher:   `C:\Program Files\AgentHub\ah.exe`,
+	}, `DESK\me`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := decodeUTF16(t, definition)
+	for _, want := range []string{
+		// Only while the owner is logged on, as the owner: node.key is sealed
+		// with DPAPI against this user and the provider scan reads their home.
+		"<LogonType>InteractiveToken</LogonType>",
+		"<RunLevel>LeastPrivilege</RunLevel>",
+		"<UserId>DESK\\me</UserId>",
+		// The default is 72 hours, after which Task Scheduler would terminate
+		// a node that had been running since Monday.
+		"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>",
+		// A second logon must not start a second node on the same database.
+		"<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>",
+		// A laptop on battery is the ordinary case, not a reason not to run.
+		"<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>",
+		"<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>",
+		// The action is the launcher, so the node gets no console window while
+		// agenthub-node.exe keeps its own console subsystem.
+		"service run-node",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the task definition is missing %q:\n%s", want, text)
+		}
+	}
+	// Quoted, or Windows splits the path at the space and the task runs
+	// something that does not exist.
+	if !strings.Contains(text, `&#34;C:\Program Files\AgentHub\agenthub-node.exe&#34;`) {
+		t.Errorf("the node path was not quoted:\n%s", text)
+	}
+	// The node's own flags, after a -- that keeps them from being read as the
+	// launcher's, and escaped as XML rather than interpolated raw.
+	if !strings.Contains(text, "--") || !strings.Contains(text, "me &amp; co") {
+		t.Errorf("the node's arguments did not survive intact:\n%s", text)
+	}
+	if strings.Contains(text, "me & co") {
+		t.Errorf("an argument reached the document as unescaped markup:\n%s", text)
+	}
+}
+
+func TestWindowsTaskXMLRefusesWhatItCannotName(t *testing.T) {
+	if _, err := TaskXML(Config{NodeBinary: "n", Launcher: ""}, `DESK\me`); err == nil {
+		t.Error("a task with no launcher to run was rendered")
+	}
+	if _, err := TaskXML(Config{NodeBinary: "", Launcher: "ah.exe"}, `DESK\me`); err == nil {
+		t.Error("a task that starts no node was rendered")
+	}
+	if _, err := TaskXML(Config{NodeBinary: "n", Launcher: "ah.exe"}, "  "); err == nil {
+		t.Error("a task with nobody to run as was rendered")
+	}
+}
+
+// Restart stops the NODE, not the task. The task is the launcher, which exited
+// seconds after it started the node; /End would end nothing and the /Run that
+// followed would find the old node still holding the port.
+func TestWindowsRestartStopsTheNodeNotTheLauncher(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := windowsManager(t, runner)
+	unitPath, _ := manager.UnitPath()
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("<Task/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Restart(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"taskkill /F /IM agenthub-node.exe", "schtasks /Run /TN " + TaskName}
+	if strings.Join(runner.calls, " | ") != strings.Join(want, " | ") {
+		t.Errorf("calls = %v, want %v", runner.calls, want)
+	}
+}
+
+// Nothing registered is not something to report as restarted.
+func TestWindowsRestartSaysWhenNothingIsRegistered(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := windowsManager(t, runner)
+	_, err := manager.Restart(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "ah service install") {
+		t.Fatalf("err = %v; it has to say how to register it", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("it touched the machine anyway: %v", runner.calls)
+	}
+}
+
+// An uninstall has to survive the half-finished install: no task, nothing
+// running. Both are ordinary, and neither may fail the removal.
+func TestWindowsUninstallToleratesAnAbsentTask(t *testing.T) {
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		"schtasks /Delete /TN " + TaskName + " /F": {
+			out: "ERROR: The system cannot find the file specified.",
+			err: errors.New("exit status 1"),
+		},
+	}}
+	manager := windowsManager(t, runner)
+	report, err := manager.Uninstall(context.Background())
+	if err != nil {
+		t.Fatalf("an uninstall with no task registered failed: %v", err)
+	}
+	if !strings.Contains(strings.Join(report.Steps, "\n"), "already removed") {
+		t.Errorf("steps = %v", report.Steps)
+	}
+	// The node the task started outlives the task, so removing the task is not
+	// removing the node.
+	if !strings.Contains(strings.Join(runner.calls, " | "), "taskkill /F /IM agenthub-node.exe") {
+		t.Errorf("the node was left running: %v", runner.calls)
+	}
+}
+
+// Status answers about the node, not about the task. The task is "Ready" a
+// second after a healthy start, and reporting that as not running would make
+// every working node look stopped.
+func TestWindowsStatusReportsTheNodeNotTheTask(t *testing.T) {
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		`tasklist /FI IMAGENAME eq agenthub-node.exe /FO CSV /NH`: {
+			out: `"agenthub-node.exe","4242","Console","1","31,000 K"`,
+		},
+	}}
+	manager := windowsManager(t, runner)
+	unitPath, _ := manager.UnitPath()
+	if err := os.MkdirAll(filepath.Dir(unitPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unitPath, []byte("<Task/>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Supported || !status.Installed || !status.Running || status.PID != 4242 {
+		t.Errorf("status = %+v", status)
+	}
+	if status.LogHint == "" {
+		t.Error("the owner was not told where the log is, which is the only account of a node that will not start")
+	}
+}
+
+// tasklist prints a sentence when its filter matches nothing. That is the node
+// not running, and it must not be read as a pid.
+func TestWindowsStatusReadsAnEmptyTasklistAsStopped(t *testing.T) {
+	runner := &fakeRunner{answers: map[string]struct {
+		out string
+		err error
+	}{
+		`tasklist /FI IMAGENAME eq agenthub-node.exe /FO CSV /NH`: {
+			out: "INFO: No tasks are running which match the specified criteria.",
+		},
+	}}
+	manager := windowsManager(t, runner)
+	status, err := manager.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Running || status.PID != 0 {
+		t.Errorf("status = %+v, want a stopped node", status)
+	}
+}
+
+// decodeUTF16 reads back what schtasks would read.
+func decodeUTF16(t *testing.T, encoded []byte) string {
+	t.Helper()
+	if len(encoded) < 2 || encoded[0] != 0xFF || encoded[1] != 0xFE {
+		t.Fatalf("no UTF-16LE byte order mark: % x", encoded[:min(4, len(encoded))])
+	}
+	units := make([]uint16, 0, (len(encoded)-2)/2)
+	for index := 2; index+1 < len(encoded); index += 2 {
+		units = append(units, uint16(encoded[index])|uint16(encoded[index+1])<<8)
+	}
+	return string(utf16.Decode(units))
 }
 
 // The reinstall that the desktop app hit: bootout returns while launchd is
@@ -542,11 +828,11 @@ func TestRestartSaysWhenThereIsNothingRegistered(t *testing.T) {
 	}
 }
 
-// Windows has no manager this package drives, and restart must say so rather
+// A platform with no manager this package drives: restart must say so rather
 // than running nothing and reporting success.
 func TestRestartRefusesAnUnsupportedPlatform(t *testing.T) {
 	runner := &fakeRunner{}
-	manager := Manager{GOOS: "windows", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
+	manager := Manager{GOOS: "plan9", Home: t.TempDir(), UID: "501", Runner: runner, Sleep: noSleep}
 	if _, err := manager.Restart(context.Background()); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("error = %v, want ErrUnsupported", err)
 	}
