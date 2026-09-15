@@ -27,9 +27,10 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
   [channel-push-not-observed.md](docs/channel-push-not-observed.md)
 - Nothing writes into a provider's session files or process, by design
 - Pairing still needs the peer's public key by hand, though a node can now announce itself for a while and see who else is announcing (Step 9, issues #61 and #62)
-- No installer, and nothing tagged yet: installing means building from source.
-  CI uploads a build of every binary for six platforms, and a tag-triggered
-  release workflow packages them (Step 10, issues #64 and #67)
+- No installer: installing means downloading the archive for your platform from
+  [Releases](https://github.com/SheldonChangL/agenthub/releases) and putting the
+  binaries somewhere on your PATH, or building from source. The archives are
+  **unsigned** — see [Install a release](#install-a-release) (Step 10, issue #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
@@ -52,9 +53,59 @@ else to install this. Those are Steps 9 and 10, tracked from
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
 | Automated pairing exchange | Planned; the `pair.*` envelopes are defined and schema-tested with no producer or consumer | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63) |
-| Distribution | Tag-triggered release workflow; no installer, nothing tagged | issue [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
+| Distribution | Tag-triggered release workflow, unsigned archives; no installer | issue [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
+
+## Install a release
+
+A release is six archives — `linux`, `darwin` and `windows`, each `amd64` and
+`arm64` — holding `agenthub-node`, `ah` and `agenthub-mcp`. Unpack the one for
+your platform and put the binaries somewhere on your PATH. There is no
+installer, and nothing here needs administrator rights.
+
+### The downloads are not signed, and your machine will say so
+
+This is a deliberate choice, not an oversight: code-signing certificates are a
+recurring cost, and AgentHub is not distributed widely enough yet to have paid
+for one. The consequence is that you will be asked to override a warning:
+
+| Platform | What you see | How to proceed |
+|---|---|---|
+| Windows | SmartScreen: "Windows protected your PC", unknown publisher | More info → Run anyway |
+| macOS | Gatekeeper refuses to open the binary | System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine <file>` |
+| Linux | Nothing; there is no equivalent gate | `chmod +x` |
+
+Take the warning seriously rather than clicking through it by reflex. It is
+telling you the truth: nothing vouches for this download. Which is why the
+checksum below is not optional decoration — it is the only evidence you have.
+
+### Check the download before you run it
+
+Every release attaches a `SHA256SUMS` file, and the same hashes are printed in
+the release notes on the page itself, so you can compare without downloading
+anything first.
+
+```sh
+# Linux
+sha256sum -c SHA256SUMS --ignore-missing
+
+# macOS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+```powershell
+# Windows PowerShell — compare the output with the line in SHA256SUMS
+Get-FileHash .\agenthub_<tag>_windows_amd64.zip -Algorithm SHA256
+```
+
+What this proves and what it does not: a matching hash means the file you have
+is the file the release workflow built and published. It does not prove that
+the release page itself is honest — the archive and the hash come from the same
+place, so anyone who could replace one could replace the other. What backs the
+page is that the workflow builds from a tag in this repository, on GitHub's
+runners, with the run linked from the notes, and that the tree is public. If
+you want more than that, build from source; the next section is how.
 
 ## Build and test
 
