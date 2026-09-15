@@ -21,20 +21,25 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Manual fingerprint pairing, trust storage, revocation, and desktop management
 - Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
-- No wake-up: an agent reads its inbox when asked, and nothing hands it a message (Step 8, issue #60)
+- Wake-up: a message can start a turn on its own, behind two switches that are
+  both closed by default (Step 8, issue #60). The Codex path has been observed
+  starting a turn; the Claude Code channel push has not — see
+  [channel-push-not-observed.md](docs/channel-push-not-observed.md)
 - Nothing writes into a provider's session files or process, by design
 - Pairing still needs the peer's public key by hand, though a node can now announce itself for a while and see who else is announcing (Step 9, issues #61 and #62)
-- No release or installer: installing means building from source, though CI now
-  uploads a build of every binary for six platforms (Step 10, issues #64 and #67)
+- No installer, and nothing tagged yet: installing means building from source.
+  CI uploads a build of every binary for six platforms, and a tag-triggered
+  release workflow packages them (Step 10, issues #64 and #67)
 
 The remote export contract, per-node audience model, signing identity, manual
 trust workflow, and the authenticated peer transport between nodes are all
 implemented and have been exercised between two machines
 ([verification.md](docs/verification.md)), and `agenthub-mcp` gives an agent four
 tools over those pipes — also exercised between two machines, each running its
-own Claude Code. What is missing is wake-up, so a message waits until someone
-asks their agent to look, and everything needed for someone else to install
-this. Those are Steps 8 to 10, tracked from
+own Claude Code. Waking is implemented on top of them: see
+[Waking an agent](#waking-an-agent) for what is verified and what is not. What
+is missing is the automated pairing exchange and everything needed for someone
+else to install this. Those are Steps 9 and 10, tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
 ## Roadmap and release gates
@@ -45,7 +50,9 @@ this. Those are Steps 8 to 10, tracked from
 | Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
 | Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
-| Automated pairing, wake-up, distribution | Planned | issues [#60](https://github.com/SheldonChangL/agenthub/issues/60), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
+| Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
+| Automated pairing exchange | Planned; the `pair.*` envelopes are defined and schema-tested with no producer or consumer | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63) |
+| Distribution | Tag-triggered release workflow; no installer, nothing tagged | issue [#67](https://github.com/SheldonChangL/agenthub/issues/67) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
 
@@ -386,10 +393,11 @@ Reading has a button: 收件匣 on any session row in the app, or
 bin/ah inbox <session-id>
 ```
 
-**6. Give an agent the tools.** That is the next section. What no version of
-this does is hand a message to an agent — it waits in the inbox until something
-asks for it, whether that is you pressing 收件匣 or an agent calling
-`agent_inbox`. Making it arrive is Step 8 (issue #60).
+**6. Give an agent the tools.** That is the next section. By default a message
+waits in the inbox until something asks for it, whether that is you pressing
+收件匣 or an agent calling `agent_inbox`. Making it arrive on its own is
+[Waking an agent](#waking-an-agent), and it is off until two switches are
+opened.
 
 ## Give an agent the four tools
 
@@ -549,6 +557,21 @@ permissions a stranger's message can invoke without asking anyone. AgentHub
 does not shrink those permissions and cannot; that combination is yours to
 avoid.
 
+### One turn at a time, per thread
+
+A Codex thread runs one woken turn at a time. A second message for the same
+thread waits behind the one in flight for at most 90 seconds; at most two may
+wait. Beyond that the wake is refused as `failed`, and — as with every other
+refusal — the message stays in the inbox to be read by hand. A turn that never
+reports finishing releases the thread after 30 minutes, so a wedged turn cannot
+hold it forever.
+
+The lock is on the thread, not the session or the sender, because a turn is
+what a thread can only have one of. This is orthogonal to the limits below: the
+limits are counted before the driver is reached, and a wake the driver then
+refuses settles as `failed` — and only `woken` rows are counted, so a message
+turned away by a busy thread costs no allowance.
+
 ### Loops and limits
 
 Two machines that both wake automatically would answer each other until someone
@@ -614,6 +637,13 @@ wails dev     # live-reload development
 wails build   # produces build/bin/agenthub-desktop.app
 ```
 
+`wails build` also runs `desktop/build/bundle-binaries.sh` as a post-build hook
+(`desktop/wails.json`), which builds `ah`, `agenthub-node` and `agenthub-mcp`
+for the target and copies them beside the app executable — `Contents/MacOS` on
+macOS, the unpacked directory on Linux and Windows. That is the only place the
+app looks for them, so a build without that step produces an app that cannot
+install the service or write an MCP config.
+
 The app requires a running node and talks to it over the same local HTTP API as the CLI. It refuses non-loopback node URLs, because the owner's API has no authentication and stays on loopback for that reason.
 
 When the node is not running, the panel under the header offers to install it
@@ -624,8 +654,20 @@ lets anything leave the machine, and a non-private address pre-fills
 `--treat-as-private` with that interface's own subnet — the range the cable
 carries, not a wider guess. When the node is running, the same panel says whether it
 is a service and offers to remove it. Both buttons run `ah service`, so the
-app and the CLI cannot disagree; the app looks for `ah` beside itself, in the
-source tree, then on `PATH`, and `AGENTHUB_AH` names it explicitly.
+app and the CLI cannot disagree.
+
+**`PATH` is not one of the places the app looks.** What it finds there would be
+run to install a launchd job or a systemd unit, and "whatever binary named `ah`
+came first on this machine's `PATH`" is not an acceptable answer to that. The
+search is `AGENTHUB_AH` if set, then beside the app's own executable —
+`Contents/MacOS` or `Contents/Resources` in a bundle, the unpacked directory
+elsewhere, which is where the packaging step puts it — then a source-tree
+checkout, accepted only when this executable really sits at
+`desktop/build/bin` (or `desktop/build/bin/<x>.app/Contents/MacOS`) above a
+`go.mod` for this module, so an app somebody unpacked at a matching depth does
+not qualify. `agenthub-node` and `agenthub-mcp` are found the same way, with
+`AGENTHUB_NODE` and `AGENTHUB_MCP`. The app passes what it found to
+`ah service install --node-binary`, rather than letting `ah` search again.
 
 ## Privacy model
 
@@ -667,11 +709,11 @@ at audience `none`, including rows previously marked public: that flag controlle
 a local preview at a time when no remote peer existed, so it was never consent to
 share with one.
 
-Queued AgentHub messages are stored in the local SQLite database. They are not written into a Claude or Codex session's files or process — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later, and nothing hands the message to an agent.
+Queued AgentHub messages are stored in the local SQLite database. They are not written into a Claude or Codex session's files or process — that is a decision, not a stage — and a successful `ah send` means queued. For a remote destination `ah outbound <message-id>` reports what became of it later. Handing the message to an agent happens only if the owner opened both wake switches, and then it goes through that provider's own API — see [Waking an agent](#waking-an-agent).
 
 See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [multi-node plan](docs/multinode-plan.md), [broker protocol](docs/broker-protocol.schema.json), and [MCP tool contract](docs/mcp-tools.json).
 
-The Codex App Server client boundary is implemented and schema-tested, but is not enabled in the node's default scan path yet. See [Codex App Server notes](docs/codex-app-server.md).
+The Codex App Server client is what waking a Codex session runs through, and the node starts its supervisor when `--auto-wake` is on. Discovery does not use it: the scan path is still the filesystem, and `thread/list` is implemented and schema-tested without being enabled there. See [Codex App Server notes](docs/codex-app-server.md).
 
 ## Local API
 
@@ -700,6 +742,7 @@ The Codex App Server client boundary is implemented and schema-tested, but is no
 | `GET` | `/v1/outbound?limit=50` | What this node has queued for peers, newest first: `limit` (1–200), `after` (the `next` value a full page carries) and `session` (a local session id, narrowing the list to what that session sent — a present but blank `session` is refused (400); giving it twice is too). No bodies — state, attempts and the last error |
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
 | `GET` | `/v1/wakes?limit=50` | What has woken agents on this node, newest first, with the refusals and the limits that produced them: `limit` (1–200) and `session` (a local session id, narrowing the trail to that session — a present but blank `session` is refused (400); giving it twice is too). `ah wakes` renders it |
+| `GET` | `/v1/sessions/{id}/wake-stream` | Where an agent's own MCP server waits to be told that session has a message. `agenthub-mcp -channel` holds this long poll; the node answers just short of its write deadline and says how long it held in `Agenthub-Wake-Wait` |
 | `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
 | `DELETE` | `/v1/pairing` | Stop advertising now |
@@ -732,7 +775,14 @@ right, with a matching fingerprint, and get a refused connection.
 A node with `-discover` joins the group on every interface that can carry it,
 re-checked every ten seconds so an adapter plugged in after startup is picked up
 without a restart — which is how a peer whose own listener is on a direct cable
-gets heard rather than silently missed. `GET /v1/pairing` carries `announcing`
+gets heard rather than silently missed. The same pass gives a membership back:
+each join is remembered by interface index, and an index absent from two
+consecutive *successful* enumerations is handed to `LeaveGroup`, so a long-lived
+daemon on a machine that cycles interfaces does not leak the kernel's membership
+slots. Two, and only on a list that was read successfully, because releasing on
+one bad read would drop a membership that was never gone.
+
+`GET /v1/pairing` carries `announcing`
 because an open window and a machine that is actually sending packets are
 separate facts: it reports how many addresses this node can announce, when it
 last tried and last succeeded, and why nothing is going out.
