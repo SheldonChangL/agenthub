@@ -28,10 +28,11 @@ Three views behind the title-bar tabs:
   is what it would match with the other groups still applied. Column headers
   sort; the default is last activity, newest first. Filters, sort and search
   persist in `localStorage`. Selecting rows floats an action bar over the
-  table. Each row has three actions: the inbox drawer (with 送出紀錄 and
-  喚醒紀錄 tabs reading `/v1/outbound` and `/v1/wakes`), 「MCP 設定」 (copies
-  the row's `.mcp.json`), and `resume` (copies `claude --resume <id>` or
-  `codex resume <id>`).
+  table. Each row has two actions: the inbox drawer (with 送出紀錄 and
+  喚醒紀錄 tabs reading `/v1/outbound` and `/v1/wakes`) and `resume` (copies
+  `claude --resume <id>` or `codex resume <id>`). The MCP config it used to
+  offer is still reachable as `openMCPConfig`, with no entry point on the row:
+  everything the four MCP tools do, `ah` does too.
 - **區網** — paired nodes with presence and a red mark when a node has no
   recorded address; the pairing window and the advertising machines open as a
   drawer from the list's foot.
@@ -74,8 +75,9 @@ because installing a launchd job or a systemd unit must not mean running
 whatever binary of that name happened to come first there. The checkout
 fallback is taken only from `desktop/build/bin` (or a `.app` under it): the
 `go.mod` check alone would have accepted any world-writable directory an app
-was dropped into. An override has to be a regular file with the execute bit,
-or it is passed over.
+was dropped into. An override has to be a regular file, and on macOS and Linux
+one with the execute bit; Windows decides by extension and has no mode bit to
+check, so there a regular file is enough.
 
 The install also passes `--node-binary` explicitly, so the `ExecStart` written
 into the launchd job or systemd unit names the bundled `agenthub-node` rather
@@ -106,8 +108,14 @@ the app executable.
 - The Network view shows paired nodes with their presence: remote sessions they
   have authorised for this node, and online or offline from the last snapshot's
   expiry. An agent sees the same authorised sessions through `agenthub-mcp`
-  (#56), though not the node list or presence; provider wake-up is not
-  implemented, so a message waits to be read (Step 8, #60).
+  (#56), though not the node list or presence. Provider wake-up is half done,
+  and which half decides what an owner sees: Codex sessions are woken through
+  the app-server's `thread/resume` + `turn/start` (#58, `internal/codexdriver`),
+  gated by `-auto-wake` and the session's own flag. Claude Code has no working
+  push — `agenthub-mcp -channel` writes a well-formed frame that never arrives,
+  measured on real machines four times and recorded in
+  `docs/channel-push-not-observed.md` (#57) — so for a Claude session a message
+  waits in the inbox until something reads it (Step 8, #60).
 - Provider metadata is rendered through DOM text APIs and covered by a hostile
   metadata regression test; see closed
   [issue #19](https://github.com/SheldonChangL/agenthub/issues/19).
