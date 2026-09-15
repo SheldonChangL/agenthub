@@ -34,7 +34,7 @@ const UnitName = "agenthub-node"
 
 // ErrUnsupported means this operating system has no service manager this
 // package knows how to drive.
-var ErrUnsupported = errors.New("background service is supported on macOS (launchd) and Linux (systemd --user) only")
+var ErrUnsupported = errors.New("background service is supported on macOS (launchd), Linux (systemd --user) and Windows (Task Scheduler) only")
 
 // Config is what the service will run.
 type Config struct {
@@ -45,9 +45,14 @@ type Config struct {
 	// Args are the node's own flags, verbatim, in the order they will be
 	// passed. The node validates them; this package only carries them.
 	Args []string
-	// LogPath receives stdout and stderr on launchd. Empty means the
-	// platform's own facility (the journal on systemd).
+	// LogPath receives stdout and stderr on launchd, and on Windows, where the
+	// launcher redirects the node's output into it. Empty means the platform's
+	// own facility (the journal on systemd).
 	LogPath string
+	// Launcher is the absolute path to ah, which the Windows scheduled task
+	// runs to start the node. Unused on the other two platforms, where the
+	// service manager runs the node itself.
+	Launcher string
 }
 
 // Runner executes the platform's service manager. It is an interface so the
@@ -65,6 +70,9 @@ type Manager struct {
 	Home string
 	// UID is the numeric user id launchd addresses a per-user domain by.
 	UID string
+	// UserName is who the Windows task runs as, in the form Task Scheduler
+	// expects (DOMAIN\user, or the local account name). Unused elsewhere.
+	UserName string
 	// Runner drives launchctl or systemctl.
 	Runner Runner
 	// Sleep replaces real waiting between retries; nil means time.Sleep.
@@ -99,16 +107,42 @@ func (m Manager) UnitPath() (string, error) {
 		return filepath.Join(m.Home, "Library", "LaunchAgents", Label+".plist"), nil
 	case "linux":
 		return filepath.Join(m.Home, ".config", "systemd", "user", UnitName+".service"), nil
+	case "windows":
+		// The task itself lives in the Task Scheduler library, not on disk.
+		// This is the definition it was registered from, kept so that Status
+		// has the same question to ask as the other two platforms — is there a
+		// registration this app made — and so a reinstall is a diff.
+		return filepath.Join(m.windowsDataDir(), "node-task.xml"), nil
 	}
 	return "", ErrUnsupported
 }
 
-// DefaultLogPath is where launchd output goes. systemd has the journal.
+// DefaultLogPath is where the node's output goes on the platforms that have
+// nowhere else to put it. systemd has the journal.
+//
+// The Windows path is the one the desktop app writes to as well
+// (desktop/nodeprocess.go), deliberately: a node started at logon by the task
+// and a node restarted from the window are the same node, and an owner looking
+// for "the log" should not have to know which of the two started this one.
 func (m Manager) DefaultLogPath() string {
-	if m.GOOS == "darwin" {
+	switch m.GOOS {
+	case "darwin":
 		return filepath.Join(m.Home, "Library", "Logs", "agenthub", "node.log")
+	case "windows":
+		return filepath.Join(m.windowsDataDir(), "node.log")
 	}
 	return ""
+}
+
+// windowsDataDir is this app's own directory under the owner's profile.
+// LOCALAPPDATA when the environment has it, which is every real Windows
+// session; the fallback keeps the path derivable on a machine (or a test)
+// without it.
+func (m Manager) windowsDataDir() string {
+	if base := os.Getenv("LOCALAPPDATA"); base != "" {
+		return filepath.Join(base, "agenthub")
+	}
+	return filepath.Join(m.Home, "AppData", "Local", "agenthub")
 }
 
 // Install writes the unit, registers it and starts it. An existing
@@ -200,6 +234,54 @@ func (m Manager) Install(ctx context.Context, config Config) (Report, error) {
 		report.Notes = append(report.Notes,
 			"log: journalctl --user -u "+UnitName,
 			"a user service starts when you log in; to have it start at boot with nobody logged in, run: loginctl enable-linger "+userName())
+	case "windows":
+		if config.LogPath == "" {
+			config.LogPath = m.DefaultLogPath()
+		}
+		// 0700: the log carries the node id, fingerprint and session counts,
+		// which are the owner's to share, not the machine's.
+		if err := os.MkdirAll(filepath.Dir(config.LogPath), 0o700); err != nil {
+			return report, fmt.Errorf("create log directory: %w", err)
+		}
+		definition, err := TaskXML(config, m.UserName)
+		if err != nil {
+			return report, err
+		}
+		if err := writeUnit(unitPath, definition); err != nil {
+			return report, err
+		}
+		report.Steps = append(report.Steps, "wrote "+unitPath)
+		// /F, so a reinstall replaces the registration instead of failing on
+		// "the task already exists" — install is also how a changed flag is
+		// applied, the same as on the other two platforms.
+		if out, err := m.Runner.Run(ctx, "schtasks", "/Create", "/TN", TaskName, "/XML", unitPath, "/F"); err != nil {
+			return report, fmt.Errorf("schtasks /Create: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "registered with Task Scheduler as "+TaskName+" (starts at your next logon)")
+		// Registered is not running, and the task's own trigger is a logon
+		// that has already happened. Without this the owner installs and finds
+		// the node still absent until they log out and back in.
+		if out, err := m.Runner.Run(ctx, "schtasks", "/Run", "/TN", TaskName); err != nil {
+			return report, fmt.Errorf("schtasks /Run: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "started it")
+		// Installers before this registration existed started the node from a
+		// shortcut in the owner's Startup folder. Left in place, that shortcut
+		// and this task each start a node at the next logon: two processes on
+		// one database, one of which fails to bind the port and exits. The
+		// symptom is a node that works on some logons and not others, which is
+		// the worst kind to be handed. Removing it here rather than only in the
+		// installer, because an owner who runs `ah service install` on a
+		// machine that already has the shortcut has the same problem.
+		for _, step := range m.removeLegacyStartupShortcuts() {
+			report.Steps = append(report.Steps, step)
+		}
+		report.Notes = append(report.Notes,
+			"log: "+config.LogPath,
+			"the task starts the node when you log on and runs as you; it does not run while you are logged out",
+			"unlike launchd and systemd, Task Scheduler does not restart the node if it exits: "+
+				"it starts the launcher, which starts the node and returns. A node that stops stays stopped "+
+				"until the next logon, or until the app restarts it")
 	default:
 		return report, ErrUnsupported
 	}
@@ -225,6 +307,26 @@ func (m Manager) Uninstall(ctx context.Context) (Report, error) {
 			return report, fmt.Errorf("systemctl disable --now: %w: %s", err, strings.TrimSpace(out))
 		}
 		report.Steps = append(report.Steps, "stopped and disabled "+UnitName)
+	case "windows":
+		// Neither result is checked. /End fails when nothing is running and
+		// /Delete fails when there is no task, and both are the ordinary state
+		// of a half-finished install — an uninstall that reported failure for
+		// them would leave the owner with an app they cannot remove.
+		_, _ = m.Runner.Run(ctx, "schtasks", "/End", "/TN", TaskName)
+		out, err := m.Runner.Run(ctx, "schtasks", "/Delete", "/TN", TaskName, "/F")
+		switch {
+		case err == nil:
+			report.Steps = append(report.Steps, "removed the scheduled task "+TaskName)
+		case taskAbsent(out, err):
+			report.Steps = append(report.Steps, "no scheduled task called "+TaskName+" (already removed)")
+		default:
+			return report, fmt.Errorf("schtasks /Delete: %w: %s", err, strings.TrimSpace(out))
+		}
+		// The task starts the node and returns, so ending the task does not
+		// stop the node it started. Killing it by name is what actually stops
+		// the thing the owner asked to be rid of.
+		_, _ = m.Runner.Run(ctx, "taskkill", "/F", "/IM", "agenthub-node.exe")
+		report.Steps = append(report.Steps, "stopped agenthub-node")
 	default:
 		return report, ErrUnsupported
 	}
@@ -283,6 +385,23 @@ func (m Manager) Restart(ctx context.Context) (Report, error) {
 			return report, fmt.Errorf("systemctl restart: %w: %s", err, strings.TrimSpace(out))
 		}
 		report.Steps = append(report.Steps, "restarted "+UnitName)
+	case "windows":
+		if _, err := os.Stat(unitPath); err != nil {
+			return report, fmt.Errorf("%s is not registered with Task Scheduler, so there is nothing to restart; "+
+				"`ah service install --db PATH` registers it", TaskName)
+		}
+		// Stopping the node, not the task: the task is the launcher, which
+		// exited seconds after it started the node. /End would end nothing.
+		_, _ = m.Runner.Run(ctx, "taskkill", "/F", "/IM", "agenthub-node.exe")
+		report.Steps = append(report.Steps, "stopped agenthub-node")
+		if out, err := m.Runner.Run(ctx, "schtasks", "/Run", "/TN", TaskName); err != nil {
+			if taskAbsent(out, err) {
+				return report, fmt.Errorf("%s is not registered with Task Scheduler, so there is nothing to restart; "+
+					"`ah service install --db PATH` registers it", TaskName)
+			}
+			return report, fmt.Errorf("schtasks /Run: %w: %s", err, strings.TrimSpace(out))
+		}
+		report.Steps = append(report.Steps, "ran "+TaskName+", which starts it again")
 	default:
 		return report, ErrUnsupported
 	}
@@ -321,6 +440,18 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 		if match := systemdPID.FindStringSubmatch(out); match != nil {
 			status.PID, _ = strconv.Atoi(match[1])
 		}
+	case "windows":
+		status.LogHint = m.DefaultLogPath()
+		// Whether the NODE is running, not whether the task is. The task is
+		// the launcher: it is "Ready" a second after a successful start, and
+		// reporting that as not running would make every healthy node look
+		// stopped.
+		out, _ := m.Runner.Run(ctx, "tasklist", "/FI", "IMAGENAME eq agenthub-node.exe", "/FO", "CSV", "/NH")
+		status.Raw = strings.TrimSpace(out)
+		if match := tasklistPID.FindStringSubmatch(out); match != nil {
+			status.Running = true
+			status.PID, _ = strconv.Atoi(match[1])
+		}
 	}
 	return status, nil
 }
@@ -328,7 +459,66 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 var (
 	launchdPID = regexp.MustCompile(`\bpid = (\d+)`)
 	systemdPID = regexp.MustCompile(`MainPID=(\d+)`)
+	// tasklist /FO CSV /NH answers `"agenthub-node.exe","1234","Console",...`.
+	// A filter that matches nothing prints a sentence instead, which this does
+	// not match — deliberately, since that sentence is the node not running.
+	tasklistPID = regexp.MustCompile(`"agenthub-node\.exe","(\d+)"`)
 )
+
+// legacyStartupShortcuts are the names this product's own installers have put
+// in the Startup folder. Only these: a shortcut someone else made, or one an
+// owner wrote themselves, is not this package's to delete.
+var legacyStartupShortcuts = []string{"AgentHub Node.lnk", "agenthub-desktop Node.lnk"}
+
+// removeLegacyStartupShortcuts deletes them and says which it removed.
+//
+// A failure is not reported as an install failure. The task is registered by
+// this point and the node will start; a shortcut that could not be deleted is
+// a double start at the next logon, which `ah service status` shows as a node
+// running with a pid nobody asked for — worth saying, not worth refusing an
+// install over.
+func (m Manager) removeLegacyStartupShortcuts() []string {
+	directory := filepath.Join(m.Home, "AppData", "Roaming", "Microsoft", "Windows",
+		"Start Menu", "Programs", "Startup")
+	if base := os.Getenv("APPDATA"); base != "" {
+		directory = filepath.Join(base, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+	}
+	var steps []string
+	for _, name := range legacyStartupShortcuts {
+		path := filepath.Join(directory, name)
+		// #nosec G703 -- the only variable part of this path is APPDATA, which
+		// belongs to the user this process is already running as; the file
+		// names come from legacyStartupShortcuts, which is a constant list in
+		// this package. Nothing from the network, the window or the node's
+		// database reaches it.
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		// #nosec G703 -- same path, same reasoning: our own installer's
+		// shortcut, in the owner's own Startup folder, named by this package.
+		if err := os.Remove(path); err != nil {
+			steps = append(steps, "could not remove the old startup shortcut "+path+
+				" ("+err.Error()+"); delete it by hand, or two nodes will start at your next logon")
+			continue
+		}
+		steps = append(steps, "removed the old startup shortcut "+path+
+			" (the task above replaces it; both would start a node)")
+	}
+	return steps
+}
+
+// taskAbsent recognises Task Scheduler saying there was no such task. Its
+// wording differs between Windows versions and locales, so the exit status
+// alone is not enough and neither is one sentence.
+func taskAbsent(out string, err error) bool {
+	text := strings.ToLower(out + " " + err.Error())
+	for _, marker := range []string{"cannot find the file specified", "does not exist", "the system cannot find", "not found"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // waitUntilUnloaded polls launchctl until it says the job is not loaded, for
 // a bounded time. Only that answer ends the wait early: a print that fails

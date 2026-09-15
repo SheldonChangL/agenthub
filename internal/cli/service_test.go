@@ -288,8 +288,53 @@ func TestServiceUnknownSubcommandIsRefused(t *testing.T) {
 	if code := Run(context.Background(), []string{"service", "reload"}, &stdout, &stderr); code == 0 {
 		t.Fatal("accepted an unknown service command")
 	}
-	if !strings.Contains(stderr.String(), "install, restart, uninstall or status") {
+	if !strings.Contains(stderr.String(), "install, restart, uninstall, status or run-node") {
 		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// `ah service run-node` is what the Windows scheduled task runs: it starts the
+// node, leaves it running, and returns. The point of it is that the task's own
+// process is short-lived, so this asserts the return — and that the node it
+// started really was started, by making the fake node write to its log.
+//
+// Run here on whatever CI is, not only on Windows: the behaviour is the same
+// on both spawn implementations, and a launcher that never returned would hang
+// this test rather than pass it.
+func TestServiceRunNodeStartsTheNodeAndReturns(t *testing.T) {
+	directory := t.TempDir()
+	node := filepath.Join(directory, "agenthub-node")
+	script := "#!/bin/sh\necho started with: \"$@\"\n"
+	if err := os.WriteFile(node, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(directory, "logs", "node.log")
+
+	var stdout, stderr bytes.Buffer
+	code := Run(context.Background(), []string{
+		"service", "run-node", "--node-binary", node, "--log", logPath, "--", "--db", "/tmp/x.db",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "started ") || !strings.Contains(stdout.String(), logPath) {
+		t.Errorf("stdout = %q; it has to say what was started and where its output goes", stdout.String())
+	}
+
+	// The node is detached, so its first line lands after this process has
+	// moved on. Waiting for the file is the whole assertion: an empty log
+	// after a second means nothing was started.
+	deadline := time.Now().Add(5 * time.Second)
+	var content []byte
+	for time.Now().Before(deadline) {
+		content, _ = os.ReadFile(logPath)
+		if len(content) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(string(content), "--db /tmp/x.db") {
+		t.Errorf("the node's own flags did not reach it; log = %q", string(content))
 	}
 }
 
