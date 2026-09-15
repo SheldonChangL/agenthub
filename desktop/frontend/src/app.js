@@ -295,9 +295,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       };
       checkCell.append(checkbox);
 
+      // The name the session's own app gives the conversation is what a
+      // person recognises a row by; the UUID is only ever needed to resume or
+      // to quote one, and the copy button and the tooltip both still carry
+      // it. Sessions the provider never named keep showing the ID, because a
+      // row with no handle at all is worse than a row with an ugly one.
       const idCell = element("td", "sid");
-      idCell.append(element("span", "providertag", session.provider), element("b", "", rest));
-      idCell.title = session.id;
+      const label = session.title
+        ? element("b", "title", session.title)
+        : element("b", "", rest);
+      idCell.append(element("span", "providertag", session.provider), label);
+      idCell.title = session.title ? `${session.title}\n${session.id}` : session.id;
 
       // The path goes in a <bdi> because the cell is laid out right-to-left so
       // that a path too long for the column loses its head rather than its

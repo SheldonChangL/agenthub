@@ -25,18 +25,21 @@ type Audience struct {
 }
 
 type Session struct {
-	ID                string    `json:"id"`
-	Provider          string    `json:"provider"`
-	ProviderSessionID string    `json:"providerSessionId"`
-	Management        string    `json:"management"`
-	Visibility        string    `json:"visibility"`
-	Audience          Audience  `json:"audience"`
-	Status            string    `json:"status"`
-	StatusSource      string    `json:"statusSource"`
-	CWD               string    `json:"cwd,omitempty"`
-	Source            string    `json:"source,omitempty"`
-	LastSeenAt        time.Time `json:"lastSeenAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                string   `json:"id"`
+	Provider          string   `json:"provider"`
+	ProviderSessionID string   `json:"providerSessionId"`
+	Management        string   `json:"management"`
+	Visibility        string   `json:"visibility"`
+	Audience          Audience `json:"audience"`
+	Status            string   `json:"status"`
+	StatusSource      string   `json:"statusSource"`
+	// Title is the name the provider's own UI gives this conversation. It
+	// comes from the local node only; a peer's sessions never carry one.
+	Title      string    `json:"title,omitempty"`
+	CWD        string    `json:"cwd,omitempty"`
+	Source     string    `json:"source,omitempty"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 // TrustedNode is a peer this owner has paired with.

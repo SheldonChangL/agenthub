@@ -47,6 +47,7 @@ export function matchesSearch(session, term) {
   if (!term) return true;
   const haystack = [
     session.id,
+    session.title,
     session.cwd,
     session.management,
     session.provider,
@@ -130,10 +131,13 @@ function sortValue(session, key) {
       const nodes = mode === "selected" ? (session.audience?.nodes?.length ?? 0) : 0;
       return (AUDIENCE_RANK[mode] ?? 9) * 1000 - nodes;
     }
+    // The SESSION column sorts by what it shows: a titled row sorts under its
+    // name, an untitled one under the ID that is standing in for the name.
+    case "id":
+      return String(session.title || session.id || "").toLowerCase();
     case "provider":
     case "management":
     case "cwd":
-    case "id":
       return String(session[key] ?? "").toLowerCase();
     default:
       return "";
