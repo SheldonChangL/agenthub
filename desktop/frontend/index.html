@@ -123,11 +123,16 @@
         <div class="settingsbody">
           <section id="settings-service">
             <h2>背景服務</h2>
-            <p class="muted">節點會由作業系統在登入時啟動、意外結束時重啟，不再跟著哪個視窗或終端機活著。</p>
+            <p class="muted">
+              節點會由作業系統在登入時啟動、意外結束時重啟，不再跟著哪個視窗或終端機活著。
+              Windows 還沒有這個（節點由安裝程式放進「啟動」資料夾），但改了節點設定之後，
+              這裡的「重新啟動節點」一樣能把它套用上去。
+            </p>
             <div id="service-panel" class="hidden">
               <div class="service-head">
                 <div id="service-line" class="line">背景服務狀態讀取中…</div>
                 <button id="service-refresh" class="ghost">重新讀取</button>
+                <button id="service-restart" class="ghost hidden">重新啟動節點</button>
                 <button id="service-open" class="ghost">安裝為背景服務…</button>
                 <button id="service-uninstall" class="ghost danger">移除服務…</button>
               </div>

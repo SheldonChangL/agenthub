@@ -46,7 +46,7 @@ configure({
   ],
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
 });
 const app = boot({ start: false });
 app.state.service = serviceStatus;
@@ -195,12 +195,20 @@ if (el("node-peerlisten").value !== "192.168.50.10:7463") {
 }
 if (restartCalls !== 0) failures.push("a refused write restarted the service anyway");
 
-// 6. Saving on a node that is not a service does not claim to have restarted it.
+// 6. A node no service manager holds is restarted by the app itself, and the
+//    only evidence that it worked is that the node answers.
+//
+//    This is Windows, where the node is started from the Startup folder and
+//    `ah service` has nothing to restart. What used to happen here was a
+//    sentence telling the owner to restart the node themselves, which on that
+//    platform means Task Manager. `running` is not asked about: the process the
+//    app starts is registered with nothing, so it would be false on every
+//    successful restart.
 //
 //    The status is re-read rather than taken from whatever this window last
 //    saw, so the fake itself has to say "not installed" — setting state alone
 //    would be overwritten by the read, which is the point of the read.
-serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true };
 app.state.service = null;
 el("node-allow-lan").checked = true;
 const notAServiceView = { settings: { peerListen: "192.168.50.10:7463", allowLan: true }, sources: {}, saved: { peerListen: "192.168.50.10:7463", allowLan: true }, restartRequired: true };
@@ -209,9 +217,29 @@ afterRestart(notAServiceView);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
-if (restartCalls !== 0) failures.push("a node that is not a service was 'restarted'");
-if (!el("banner").textContent.includes("自己重新啟動")) {
-  failures.push(`the owner was not told to restart it themselves: ${el("banner").textContent}`);
+if (restartCalls !== 1) failures.push(`a node that is not a service was restarted ${restartCalls} times, want 1`);
+if (!el("banner").textContent.includes("節點已重新啟動並回應中")) {
+  failures.push(`a node that came back was not confirmed: ${el("banner").textContent}`);
+}
+
+// 6a. The same restart, on a node that did not come back. Nothing about the
+//     service manager applies, so the banner has to point at the node's own
+//     log instead of a unit that does not exist.
+serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: false };
+app.state.service = null;
+el("node-allow-lan").checked = false;
+const goneView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false }, restartRequired: true };
+saveAnswer = async () => goneView;
+afterRestart(goneView);
+restartCalls = 0;
+await app.saveNodeSettings();
+await tick();
+const goneBanner = el("banner").textContent;
+if (goneBanner.includes("回應中")) {
+  failures.push(`a node that never answered was reported as back: ${goneBanner}`);
+}
+if (!goneBanner.includes("沒有回應") || !goneBanner.includes("log")) {
+  failures.push(`the owner was not pointed at the log: ${goneBanner}`);
 }
 
 // 6b. A status this window cannot read is not evidence that the node is not a
@@ -219,7 +247,7 @@ if (!el("banner").textContent.includes("自己重新啟動")) {
 //     would then never be restarted while its owner is told otherwise.
 serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "", toolError: "找不到 ah：exec: \"ah\": executable file not found in $PATH" };
 app.state.service = null;
-el("node-allow-lan").checked = false;
+el("node-autowake").checked = true;
 const unknownView = { settings: { peerListen: "127.0.0.1:7463", allowLan: false }, sources: {}, saved: { peerListen: "127.0.0.1:7463", allowLan: false }, restartRequired: true };
 saveAnswer = async () => unknownView;
 afterRestart(unknownView);
@@ -408,7 +436,7 @@ configure({
     ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
     NodeSettings: (...a) => settingsAnswer(...a),
     SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-    RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+    RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   },
   LocalAddresses: async () => {
     if (addressesThrow) throw new Error("no route to host");
@@ -493,7 +521,7 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => {
     // The first read's address lookup is the slow one, so its paint would land
     // last if anything were painted after an await.
@@ -543,7 +571,7 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }],
 });
 settingsAnswer = async () => ({
@@ -585,7 +613,7 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.1.10", subnet: "192.168.1.0/24", private: true }],
 });
 settingsAnswer = async () => ({
@@ -675,7 +703,7 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => [{ interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
 });
 settingsAnswer = async () => ({
@@ -709,7 +737,7 @@ configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => [],
 });
 app.state.nodeSettings = null;
@@ -764,7 +792,7 @@ const withRestart = (restart) => configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: restart,
+  RestartNode: restart,
   LocalAddresses: async () => [],
 });
 withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
@@ -843,8 +871,8 @@ if (restartFailed.includes("儲存節點設定失敗")) {
 if (!restartFailed.includes("設定已儲存")) {
   failures.push(`the owner was not told the save itself landed: ${restartFailed}`);
 }
-if (!restartFailed.includes("自己重啟")) {
-  failures.push("the owner was not told what to do about the node still running old settings");
+if (!restartFailed.includes("重新啟動節點失敗") || !restartFailed.includes("背景服務區")) {
+  failures.push(`the owner was not told what to do about the node still running old settings: ${restartFailed}`);
 }
 if (saveCalls.length !== 1) failures.push(`the write was sent ${saveCalls.length} times`);
 withRestart(async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; });
@@ -943,7 +971,7 @@ const baseBindings = (over = {}) => configure({
   ServiceStatus: async () => serviceStatus, InstallService: noop, UninstallService: noop,
   NodeSettings: (...a) => settingsAnswer(...a),
   SaveNodeSettings: (...a) => { saveCalls.push(a[0]); return saveAnswer(...a); },
-  RestartService: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
+  RestartNode: async () => { restartCalls += 1; return { command: "ah service restart", output: "restarted" }; },
   LocalAddresses: async () => [],
   ...over,
 });
@@ -1061,7 +1089,7 @@ if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`)
 if (afterStatusFail.includes("重新啟動背景服務失敗")) {
   failures.push(`a status read that failed after a good restart was reported as a failed restart: ${afterStatusFail}`);
 }
-if (!afterStatusFail.includes("讀不到服務狀態")) {
+if (!afterStatusFail.includes("讀不到狀態")) {
   failures.push(`the owner was not told the status could not be read: ${afterStatusFail}`);
 }
 
@@ -1132,9 +1160,10 @@ if (el("node-settings-hint").textContent.includes("存檔後要重新啟動")) {
   failures.push("the form still asks for a restart it cannot know is needed");
 }
 
-// R27. A node that is not a service leaves the owner with something to do, so
-//      the banner stays on screen rather than fading like a success.
-serviceStatus = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
+// R27. A node the app restarted that is not answering leaves the owner with
+//      something to do, so the banner stays on screen rather than fading like a
+//      success. `nodeAnswering` absent is the node saying nothing.
+serviceStatus = { supported: false, installed: false, running: false, pid: 0, unitPath: "", logHint: "" };
 app.state.service = null;
 baseBindings();
 settingsAnswer = async () => plainView;
@@ -1146,8 +1175,8 @@ saveAnswer = async () => wokeView;
 afterRestart(wokeView);
 await app.saveNodeSettings();
 await tick();
-if (!el("banner").textContent.includes("自己重新啟動")) {
-  failures.push("the owner was not told to restart it themselves");
+if (!el("banner").textContent.includes("沒有回應")) {
+  failures.push(`the owner was not told the node did not come back: ${el("banner").textContent}`);
 }
 if (el("banner").className.includes("ok")) {
   failures.push("a save the node has not read yet was marked successful, so it fades off screen");
