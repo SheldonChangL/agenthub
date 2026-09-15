@@ -126,8 +126,19 @@ address.
    on the destination node, and the destination provider's session file was
    confirmed unmodified — still not injected into any provider.
 
-Step 7 (#56, the MCP server) is done. Steps 8 to 10 continue in #60 (wake-up),
-#63 (pairing), and #67 (distribution).
+7. **The MCP server** (#56) — done. Four tools over stdio, bound to one session
+   by `-as`.
+8. **Wake-up** (#60) — implemented, and #60 stays open for the half that is not
+   verified. A message can start a turn through the provider's own API, behind
+   a node switch and a per-session switch that are both closed by default, with
+   three rate limits (#59), a hop count, and one turn at a time per Codex
+   thread (#101). The Codex driver (#58) is done and a turn was observed at the
+   other end on 2026-09-09 (verification.md). The Claude Code channel (#57) is
+   built and its frame is correct on the wire, but the push has never been
+   observed arriving in a real session (channel-push-not-observed.md), so #57
+   is open.
+
+Steps 9 and 10 continue in #63 (automated pairing) and #67 (distribution).
 
 ## Boundaries for this increment
 
@@ -152,7 +163,8 @@ Step 7 (#56, the MCP server) is done. Steps 8 to 10 continue in #60 (wake-up),
   trust-record views.
 - Policy groups and aliases. The audience table is the primitive they would be
   built from; it is enough on its own for the first release.
-- Session launch and supervision, and wake-up (#60), which goes through each
-  provider's own API rather than writing into its files or process — that
-  boundary does not move. `agenthub-mcp` serves the MCP surface over stdio;
-  Streamable HTTP would put it on a socket, a separate decision not taken.
+- Session launch and supervision. Wake-up (#60) has since landed, and went
+  through each provider's own API rather than writing into its files or
+  process — that boundary did not move. `agenthub-mcp` serves the MCP surface
+  over stdio; Streamable HTTP would put it on a socket, a separate decision not
+  taken.
