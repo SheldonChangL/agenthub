@@ -138,33 +138,41 @@ Section "AgentHub" SecCore
     !insertmacro wails.associateCustomProtocols
 
     # agenthub-node is the part that has to keep running; the desktop app is
-    # only its front end. On macOS and Linux the app installs a launchd job or
-    # a systemd user unit through `ah service`, but internal/service answers
-    # Supported: false on Windows (#65), so the installer is what arranges
-    # start-up here.
+    # only its front end. `ah service install` is what registers it — on
+    # Windows a Task Scheduler job that runs at logon as this user (#65) — and
+    # it also starts the node, so there is nothing to launch separately here.
     #
-    # Current user, not all users, and deliberately: node.key is sealed with
-    # DPAPI against the user who created it, so a copy started under anyone
-    # else cannot open it. SetShellVarContext current pins $SMSTARTUP to this
-    # user's own Startup folder even when the install scope is machine-wide.
-    #
-    # agenthub-node is a console program, so this leaves a console window in
-    # the taskbar. Minimised rather than hidden: hiding it would need the
-    # binary built with -H windowsgui, which also takes away the only place its
-    # log is visible, and that trade is not worth making before anyone has run
-    # this on a real Windows machine.
-    SetShellVarContext current
-    CreateShortCut "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk" "$INSTDIR\agenthub-node.exe" "" "" 0 SW_SHOWMINIMIZED
-    !insertmacro wails.setShellContext
-
-    # Started here as well as at login, or the first thing after a successful
-    # install is a desktop app that says the node is unreachable until the user
-    # logs out and back in. The Startup shortcut above covers every later boot;
-    # this covers the only boot that has already happened.
-    #
-    # Exec, not ExecWait: the node runs until it is stopped, so waiting for it
-    # would hang the installer on its last page forever.
-    Exec '"$INSTDIR\agenthub-node.exe"'
+    # Through ah rather than by writing the registration here, because the same
+    # command has to work for someone who never ran this installer, and two
+    # implementations of one registration drift.
+    nsExec::ExecToStack '"$INSTDIR\ah.exe" service install'
+    Pop $0
+    Pop $1
+    DetailPrint "ah service install: $1"
+    ${If} $0 != 0
+        # Registration failed. The install itself is fine — every file is in
+        # place and the app runs — so this does not abort it; what is missing
+        # is only the part that starts the node at the next logon, and a
+        # Startup shortcut still does that much. It cannot do Restart or
+        # Status, which is why it is the fallback and not the plan.
+        #
+        # Current user, not all users: node.key is sealed with DPAPI against
+        # the user who created it, so a copy started as anyone else cannot open
+        # it. SetShellVarContext current pins $SMSTARTUP to this user's own
+        # Startup folder even when the install scope is machine-wide.
+        #
+        # Minimised rather than hidden: agenthub-node is a console program, and
+        # hiding it would need the binary built with -H windowsgui, which also
+        # takes away the only place a Windows owner can see why it will not
+        # start. `ah service install` avoids the window a different way — the
+        # task runs `ah service run-node`, which starts the node detached and
+        # returns — but that route is exactly what has just failed.
+        SetShellVarContext current
+        CreateShortCut "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk" "$INSTDIR\agenthub-node.exe" "" "" 0 SW_SHOWMINIMIZED
+        !insertmacro wails.setShellContext
+        Exec '"$INSTDIR\agenthub-node.exe"'
+        MessageBox MB_ICONEXCLAMATION|MB_OK "AgentHub is installed and will run.$\r$\n$\r$\nRegistering the node with Task Scheduler did not succeed, so it has been set to start from your Startup folder instead. The app's background-service panel will not be able to restart it or report its status.$\r$\n$\r$\nWhat the command said:$\r$\n$1"
+    ${EndIf}
 
     !insertmacro wails.writeUninstaller
 SectionEnd
@@ -196,6 +204,16 @@ Section "uninstall"
     # RMDir /r cannot remove a directory holding a running executable, so an
     # uninstall with the node still running leaves the install directory and
     # its binaries behind while reporting success.
+    # Before the files go: `ah service uninstall` ends the task and removes the
+    # registration, and it needs ah.exe to still be there to do it. A failure
+    # is not allowed to stop the uninstall — a machine that cannot deregister
+    # is still a machine the owner asked to be rid of this — so the result is
+    # only printed.
+    nsExec::ExecToStack '"$INSTDIR\ah.exe" service uninstall'
+    Pop $0
+    Pop $1
+    DetailPrint "ah service uninstall: $1"
+
     nsExec::Exec 'taskkill /F /IM agenthub-node.exe'
     Pop $0
     nsExec::Exec 'taskkill /F /IM agenthub-desktop.exe'
@@ -208,17 +226,20 @@ Section "uninstall"
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"
 
-    # Removed under the same context it was created under, or it is left behind
-    # pointing at a directory that no longer exists.
-    SetShellVarContext current
-    Delete "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk"
-
     # Only the copy this installer wrote, identified by the marker it left. A
     # skill directory without the marker is the user's own — possibly a newer
     # one they cloned or edited — and removing it would be deleting their work
     # to tidy up after ours.
     IfFileExists "$PROFILE\.claude\skills\agenthub-watch\.installed-by-agenthub" 0 +2
         RMDir /r "$PROFILE\.claude\skills\agenthub-watch"
+
+    # Either this installer's fallback wrote it, or an installer from before
+    # the Task Scheduler registration existed did. `ah service install` removes
+    # it too; both deleting it is idempotent, and neither of them running is
+    # what leaves two nodes starting at logon.
+    SetShellVarContext current
+    Delete "$SMSTARTUP\${INFO_PRODUCTNAME} Node.lnk"
+    Delete "$SMSTARTUP\AgentHub Node.lnk"
     !insertmacro wails.setShellContext
 
     !insertmacro wails.unassociateFiles
