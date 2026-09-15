@@ -44,7 +44,7 @@ configure({
   Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
   ServiceStatus: async () => ({ supported: true, installed: false }), InstallService: noop, UninstallService: noop,
   LocalAddresses: async () => [], NodeSettings: async () => ({ error: "not needed" }), SaveNodeSettings: noop,
-  RestartService: noop, HostPlatform: async () => "linux",
+  RestartNode: noop, HostPlatform: async () => "linux",
 });
 const app = boot({ start: false });
 const UI_KEY = "agenthub.desktop.ui.v1";
