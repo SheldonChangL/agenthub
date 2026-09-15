@@ -34,6 +34,8 @@ export function Overview():Promise<main.Overview>;
 
 export function Pairing():Promise<main.Pairing>;
 
+export function RestartNode():Promise<main.ServiceResult>;
+
 export function RestartService():Promise<main.ServiceResult>;
 
 export function RevokeNode(arg1:string):Promise<void>;

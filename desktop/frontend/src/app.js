@@ -2134,32 +2134,54 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const line = el("service-line");
     const open = el("service-open");
     const uninstall = el("service-uninstall");
+    const restart = el("service-restart");
     line.className = "line";
+    // Shown only where this panel says it is; every branch below decides.
+    restart.classList.add("hidden");
     if (status.toolError) {
       line.textContent = `找不到 ah，無法管理背景服務：${status.toolError}`;
       line.classList.add("warn");
       open.classList.add("hidden");
       uninstall.classList.add("hidden");
+      // Deliberately not offered: without ah this window cannot find out
+      // whether a service holds the node, and restarting the process behind a
+      // launchd job or a systemd unit is how one node becomes two.
       return;
     }
     if (!status.supported) {
-      line.textContent = "這個作業系統還不支援背景服務（目前支援 macOS 與 Linux）。";
+      // Windows, today. The node still runs here — the installer starts it and
+      // puts a shortcut in the Startup folder — it is just not registered with
+      // anything this app can ask. So the one thing an owner actually needs
+      // from this panel, applying a setting the node only reads at start-up,
+      // is done by this app itself (desktop/nodeprocess.go).
+      line.textContent = state.nodeReachable
+        ? "這個作業系統還沒有背景服務（目前支援 macOS 與 Linux）。節點在執行中，改了節點設定可以用下面的「重新啟動節點」套用。"
+        : "這個作業系統還沒有背景服務（目前支援 macOS 與 Linux），而且節點沒有在執行。按下面的「重新啟動節點」把它啟動起來。";
+      line.classList.add(state.nodeReachable ? "ok" : "warn");
       open.classList.add("hidden");
       uninstall.classList.add("hidden");
+      restart.classList.remove("hidden");
+      restart.textContent = state.nodeReachable ? "重新啟動節點" : "啟動節點";
       return;
     }
     if (status.installed && status.running) {
       line.textContent = `背景服務：已安裝、正在執行（pid ${status.pid}）· ${status.unitPath}`;
       line.classList.add("ok");
       open.textContent = "重新安裝（改旗標）…";
+      restart.classList.remove("hidden");
+      restart.textContent = "重新啟動節點";
     } else if (status.installed) {
       line.textContent = `背景服務：已安裝但沒有在執行 · 看 log：${status.logHint}`;
       line.classList.add("warn");
       open.textContent = "重新安裝…";
+      restart.classList.remove("hidden");
+      restart.textContent = "啟動節點";
     } else if (state.nodeReachable) {
       line.textContent = "節點在執行，但不是背景服務：關掉啟動它的視窗或終端機，它就停了，送到這台的訊息會等在對方那邊。";
       line.classList.add("warn");
       open.textContent = "安裝為背景服務…";
+      restart.classList.remove("hidden");
+      restart.textContent = "重新啟動節點";
     } else {
       line.textContent = "節點沒有在執行，也沒有安裝成背景服務。";
       line.classList.add("warn");
@@ -2211,6 +2233,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       showServiceOutput(result);
       el("service-form").classList.add("hidden");
       banner("背景服務已安裝。", true);
+      await load();
+    });
+  }
+
+  // restartNode applies settings the node only reads at start-up, by whatever
+  // means this machine has: a registered service through ah, and otherwise the
+  // app stopping and starting the node itself. Which of the two happened is
+  // the Go side's decision (desktop/nodeprocess.go); what comes back names the
+  // command either way, and it goes on screen verbatim.
+  async function restartNode() {
+    await withBusy("重新啟動節點", async () => {
+      let result;
+      try {
+        result = await api.RestartNode();
+      } catch (error) {
+        // The failures here are the ones an owner has to act on — a node that
+        // would not stop, or one that did not come back because of the setting
+        // they just saved — and each names where to look. Too long for the
+        // banner, so they go where every other command's words go.
+        const output = el("service-output");
+        output.textContent = String(error);
+        output.classList.remove("hidden");
+        throw error;
+      }
+      showServiceOutput(result);
+      banner("節點已重新啟動。", true);
       await load();
     });
   }
@@ -2874,21 +2922,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         );
         return;
       }
-      if (!status.installed) {
-        await paintAfterSave(sequence, view);
-        // Not marked successful: like the unknown-status case, the node is
-        // still running the old settings until the owner does something.
-        banner("設定已儲存。這個節點不是背景服務，請自己重新啟動它才會生效。");
-        return;
-      }
+      // A node no service manager holds is restarted by this app itself, which
+      // is the only way a setting saved here takes effect on Windows: the
+      // installer starts the node from the Startup folder, and what used to be
+      // here told the owner to go and restart it — a sentence whose only
+      // meaning on that platform was Task Manager.
       try {
-        const restarted = await api.RestartService();
+        const restarted = await api.RestartNode();
         showNodeSettingsOutput(restarted);
       } catch (error) {
         await paintAfterSave(sequence, view);
         banner(
-          `設定已儲存，但重新啟動背景服務失敗：${error}。` +
-          "節點還在用舊設定跑，請自己重啟它，或到上面的背景服務區看狀態。",
+          `設定已儲存，但重新啟動節點失敗：${error}。` +
+          "節點還在用舊設定跑，請到上面的背景服務區看狀態。",
         );
         return;
       }
@@ -2956,12 +3002,27 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // claim about the one thing this window can actually check and did not.
       if (live.unknown) {
         banner(
-          `設定已儲存，服務也重新啟動了，但重啟後讀不到服務狀態（${live.reason}），` +
+          `設定已儲存，節點也重新啟動了，但重啟後讀不到狀態（${live.reason}），` +
           "所以無法確認節點是否正常回來。請看上面的背景服務區。",
         );
         return;
       }
       const back = state.service ?? {};
+      // Without a service manager there is no `running` to ask about — the
+      // process this app started is registered with nothing — so whether the
+      // node answers is the whole of the question. Asking for `running` too
+      // would report every successful restart on Windows as a failure.
+      if (!live.installed) {
+        if (back.nodeAnswering) {
+          banner("設定已儲存，節點已重新啟動並回應中。", true);
+          return;
+        }
+        banner(
+          "設定已儲存，節點也重新啟動了，但它沒有回應。剛改的設定是第一個要懷疑的地方；" +
+          "節點的 log 路徑在上面那行重啟輸出裡。",
+        );
+        return;
+      }
       if (back.running && back.nodeAnswering) {
         banner("設定已儲存，背景服務已重新啟動並回應中。", true);
         return;
@@ -3158,7 +3219,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
-    serviceStatusOrUnknown,
+    serviceStatusOrUnknown, loadService, renderService, restartNode,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
@@ -3214,6 +3275,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
   el("service-install").onclick = installService;
   el("service-uninstall").onclick = uninstallService;
+  el("service-restart").onclick = restartNode;
 
   return internals;
 }
