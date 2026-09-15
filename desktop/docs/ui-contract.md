@@ -98,7 +98,7 @@
 - **有排序**：6 個表頭可排序（`id`、`status`、`management`、`audience`、`cwd`、`lastSeenAt`），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
-- 列動作三顆：`收件匣 ｜ MCP 設定 ｜ resume`，靠右 sticky，`col.c-actions` 264px（見 §7.x 的版面決定）。
+- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 176px。MCP 入口已移除，見 §10。
 - 空狀態：「沒有符合條件的 session。」
 
 ### 3.3 區網視圖
@@ -135,7 +135,7 @@
 - `pair-modal` 配對新節點：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
-- `mcp-modal` MCP 設定：由列動作的「MCP 設定」開啟，顯示這一列的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
+- `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
 
 ## 4. 安全與文案契約（測試逐字斷言的，不可改寫）
@@ -213,6 +213,10 @@
 
 ## 7. 並行中的變更（2026-09-11 記錄）
 
+> **這一節是 2026-09-11 當下的快照，不是現況。**裡面的「未開 PR」「尚未動工」「尚未合併」
+> 講的是那一天的狀態，之後全部完成了。要看現況請看 §1–§3 與 §9、§10；這裡留著是為了記住
+> 當時的判斷與理由。已經明顯與現況牴觸、又不帶日期的句子已就地更正。
+
 另一個 session 在 `feat/112-copy-mcp-config` 分支上加了一個功能，重新設計實作時必須納入，
 否則就是缺功能：
 
@@ -221,8 +225,8 @@
 | `MCPConfig(sessionId)` | **列上沒有入口**（2026-09-15 移除，見 §10）；綁定與 `mcp-modal` 都保留，由 `openMCPConfig(sessionId)` 呼叫 | 開 `mcp-modal`：`<pre id="mcp-text">` 顯示這一列的 `.mcp.json` 片段、`mcp-status` 顯示複製結果；文案說明 per-project 與 `--outbound` 的限制 |
 
 - `MODAL_IDS` 多了 `mcp-modal`；新設計若把對話框改成抽屜，這個一起改。
-- 設計稿的對應：Main 與 MainHacker 的「收件匣」動作欄應擴成兩個圖示（收件匣、MCP 設定），
-  或改成一個「⋯」列選單。**目前設計稿尚未畫入，實作前補。**
+- 設計稿的對應：這條已被 §10 取代——MCP 入口 2026-09-15 從列上移除，動作欄是「收件匣」與「resume」兩顆，
+  不需要第三個圖示或「⋯」選單。
 - 該分支合併前不要開始改 `frontend/`，否則同一份工作樹會互相覆蓋（見下）。
 
 ### 7.1 兩個 session 共用同一個工作樹
@@ -260,8 +264,8 @@
 
 ### 7.5 #111 端點形狀（#125 已合併，main `a742023`；欄位已對照原始碼核實）
 
-新 UI 的「送出紀錄」「喚醒紀錄」視圖接這兩個端點。desktop 端還沒有對應的 Go 綁定，
-實作時要在 `app.go` / `client.go` 加 `Outbound(limit, after)` 與 `Wakes(session, limit)`。
+新 UI 的「送出紀錄」「喚醒紀錄」視圖接這兩個端點。**已實作**：`Outbound(session, limit, after)` 與
+`Wakes(session, limit)` 都在 `app.go` / `client.go`，畫在收件匣抽屜的第二、三個分頁（§3.5）。
 
 **`GET /v1/outbound?limit=50[&after=<cursor>]`** — 本節點排給 peer 的訊息，最新在前。
 `limit` 1–200，預設 50。回應 `{"messages":[…],"next":"<cursor>"}`；空清單無 `next`，滿頁才有。
@@ -297,7 +301,7 @@
 `limits` 帶 `hops`、`pair`+`pairWindow`、`session`+`sessionWindow`、`node`+`nodeWindow`，
 拒絕理由要跟產生它的規則並排顯示。對應 CLI：`ah outbound`、`ah wakes [session]`。
 
-**#116 設定端點（尚未合併，先照此設計）**：一個 `GET /v1/node/settings` 回各欄位＋來源，
+**#116 設定端點**（當時未合併，現已在 main，見本節標題的日期說明）：一個 `GET /v1/node/settings` 回各欄位＋來源，
 一個 `PUT` 部分更新回 `restartRequired: true`；欄位 `peerListen`、`allowLan`、`discover`、
 `treatAsPrivate[]`、`autoWake`。設定頁的主按鈕由「重新安裝（改旗標）」改為「儲存並重啟服務」。
 
@@ -329,7 +333,7 @@
 
 - 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
 - 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
-- 與「收件匣」「MCP 設定」並排為三個列動作；設計稿與實作都要有。
+- 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 
 ### 4.2 Go 端靜態測試的硬性要求（`desktop/frontend_test.go`）
 
@@ -347,7 +351,7 @@
 - index.html 至少一個 `<p class="warning">`。
 - **版面（#153／#155，實機才看得到）**：清單卡片**不設 `max-width`**（填滿視窗；原本的 1120px 讓背景只露一條、
   又壓縮了最長的欄）；工作目錄欄 `td.cwd` 用 `direction: rtl` 從左邊裁，路徑本身包在 `<bdi>` 裡隔離方向，
-  因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 250px（三顆列動作量到 241px，
+  因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 160px（見 §10；原本三顆列動作時是 250px／量到 241px，
   儲存格 `overflow: hidden` 會把裝不下的裁掉，**任何視窗寬度都一樣**）；`table` 要有 `min-width`
   （沒有的話 `width: 100%` 讓它永遠等於容器寬，窄視窗只會壓縮欄位而不會捲動）；`.col-actions`
   要 `position: sticky`；`style.css` 要有 `body.mac .titlebar` 的左內縮，因為 `main.go` 用
@@ -433,5 +437,8 @@
 
 1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `resume` 各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
 2. `openMCPConfig(sessionId)` 產生的設定必須帶**傳進去的那個** session。這條保護不能跟著入口一起拿掉：綁錯 session 之後從任何一側都看不出來（server 起得來、四個工具都回答，只是回答別人的 session）。2026-09-10 就發生過把另一台的 session id 手貼進設定。
-3. `col.c-actions` 寬度下限從 250px 降到 **160px**（兩顆按鈕實測 154px）。`TestFrontendKeepsTheRowActionsReachable` 守這條。
+3. `col.c-actions` 寬度下限從 250px 降到 **160px**，實際寬度 176px。
+   154px 是**算**出來的不是量出來的：沿用三顆按鈕那次量到的單顆寬度（收件匣 63、resume 67），
+   加一個 4px gap 與兩側各 10px padding。兩顆的版面沒有重新量過，所以這個數字只保證算術正確。
+   `TestFrontendKeepsTheRowActionsReachable` 守這條。
 4. `ah` **沒有**產生 `.mcp.json` 的指令，所以移除入口之後，UI 上不再有任何地方拿得到那份設定。要恢復可得性，選項是放回按鈕、移到設定頁、或補一個 `ah mcp-config <session>`。
