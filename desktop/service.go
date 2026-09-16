@@ -20,19 +20,23 @@ import (
 // the node's flags, and carrying ah's words back to the screen.
 
 // ServiceForm is what the owner fills in before installing.
+//
+// One field, and deliberately. The node remembers its own five settings and
+// re-reads them on every start, so a unit that also carried them would be a
+// second copy of the configuration — one the settings page cannot reach and
+// that silently wins over every save made there. This app installed units like
+// that once; the panel had no way to say so, and an owner who changed the
+// address on screen watched it have no effect.
+//
+// Making that unreachable is the point of there being nothing else here: the
+// GUI cannot register a pinned unit because it has nowhere to put the values.
+// `ah service install` still takes them, for a caller who means it.
 type ServiceForm struct {
-	// DBPath is the node's database. Empty means the node's own default.
+	// DBPath is the node's database. Empty means the node's own default — a
+	// different database, and therefore a different node identity, from
+	// whatever the machine was running before. The panel prefills this from the
+	// installed unit and confirms any change for that reason.
 	DBPath string `json:"dbPath"`
-	// PeerListen is the address other machines connect to. Empty means the
-	// node's default, loopback — reachable by nothing but this machine.
-	PeerListen string `json:"peerListen"`
-	// AllowLAN is the one switch that lets anything leave this machine.
-	AllowLAN bool `json:"allowLan"`
-	Discover bool `json:"discover"`
-	// TreatAsPrivate declares ranges the node should trust despite their
-	// addresses, one CIDR per entry; a direct cable often needs it.
-	TreatAsPrivate []string `json:"treatAsPrivate"`
-	AutoWake       bool     `json:"autoWake"`
 }
 
 // ServiceStatus is `ah --json service status`, plus where ah was found — or
@@ -48,6 +52,24 @@ type ServiceStatus struct {
 	LogHint       string `json:"logHint"`
 	NodeAnswering bool   `json:"nodeAnswering"`
 	Node          string `json:"node"`
+
+	// DBPath is the database the registered unit starts the node on, read from
+	// the unit file rather than from the node, so it is there on exactly the
+	// machine that needs it: one where nothing is running.
+	//
+	// Empty has two meanings and the panel has to tell them apart, which is why
+	// DBPathKnown exists: no unit installed, or a unit that names no database
+	// and therefore runs the node on its default. The second is the state that
+	// cost this project a node identity — a reinstall form that offered an
+	// empty field, and an owner who read the blank as "unchanged".
+	DBPath      string `json:"dbPath"`
+	DBPathKnown bool   `json:"dbPathKnown"`
+
+	// PinnedSettings names the settings this unit passes on every start, which
+	// therefore override anything saved from the settings page. Empty is the
+	// healthy shape: the node remembers its own configuration and the unit says
+	// only where the database is.
+	PinnedSettings []string `json:"pinnedSettings,omitempty"`
 }
 
 // ServiceResult is what an install or uninstall said.
@@ -293,6 +315,8 @@ func (a *App) ServiceStatus() ServiceStatus {
 			PID       int
 			UnitPath  string
 			LogHint   string
+			Program   string
+			Arguments []string
 		} `json:"service"`
 		NodeAnswering bool   `json:"nodeAnswering"`
 		Node          string `json:"node"`
@@ -300,11 +324,68 @@ func (a *App) ServiceStatus() ServiceStatus {
 	if err := json.Unmarshal([]byte(output), &decoded); err != nil {
 		return ServiceStatus{Tool: tool, ToolError: fmt.Sprintf("decode ah service status: %v: %s", err, strings.TrimSpace(output))}
 	}
-	return ServiceStatus{
+	status := ServiceStatus{
 		Tool: tool, Supported: decoded.Service.Supported, Installed: decoded.Service.Installed,
 		Running: decoded.Service.Running, PID: decoded.Service.PID, UnitPath: decoded.Service.UnitPath,
 		LogHint: decoded.Service.LogHint, NodeAnswering: decoded.NodeAnswering, Node: decoded.Node,
 	}
+	if decoded.Service.Installed && decoded.Service.Program != "" {
+		// Known because the unit was read, whatever it turned out to say. A
+		// unit that names no database is a node on its default, which the form
+		// must state rather than leave to a blank field.
+		status.DBPathKnown = true
+		status.DBPath = argumentValue(decoded.Service.Arguments, "db")
+		status.PinnedSettings = pinnedSettings(decoded.Service.Arguments)
+	}
+	return status
+}
+
+// pinnedSettings names the node settings this unit passes on every start.
+//
+// They win over anything the settings page saves — the node's own log says
+// "(flag)" beside them — and a panel that cannot see them shows an owner a form
+// whose writes go into a database the next start will ignore. That is not a
+// hypothesis: a unit installed before the node remembered its own settings kept
+// pinning a peer listener through every save, and the panel had nothing to say
+// about it.
+// The five the node remembers, spelled as flags. Listed here rather than
+// imported because this module deliberately shares no code with the node — the
+// isolation that keeps Wails' CGo out of a cross-compiled binary. The list is
+// checked against the node's own by a test in this package, so a sixth setting
+// cannot appear on one side alone.
+var nodeSettingFlags = []string{"peer-listen", "allow-lan", "discover", "treat-as-private", "auto-wake"}
+
+func pinnedSettings(args []string) []string {
+	var pinned []string
+	for _, flag := range nodeSettingFlags {
+		for _, argument := range args {
+			trimmed := strings.TrimLeft(argument, "-")
+			if trimmed == flag || strings.HasPrefix(trimmed, flag+"=") {
+				pinned = append(pinned, flag)
+				break
+			}
+		}
+	}
+	return pinned
+}
+
+// argumentValue is the value of a named flag in an argument list, in both
+// spellings a Go flag accepts: `--db path` and `--db=path`, single dash or
+// double. Empty when the flag is absent.
+func argumentValue(args []string, name string) string {
+	for index, argument := range args {
+		trimmed := strings.TrimLeft(argument, "-")
+		if trimmed == name {
+			if index+1 < len(args) {
+				return args[index+1]
+			}
+			return ""
+		}
+		if value, found := strings.CutPrefix(trimmed, name+"="); found {
+			return value
+		}
+	}
+	return ""
 }
 
 // InstallService turns the form into `ah service install` and runs it.
@@ -357,33 +438,6 @@ func installArgs(form ServiceForm) ([]string, error) {
 	args := []string{"service", "install", "--node-binary", node}
 	if path := strings.TrimSpace(form.DBPath); path != "" {
 		args = append(args, "--db", path)
-	}
-	if address := strings.TrimSpace(form.PeerListen); address != "" {
-		if _, _, err := net.SplitHostPort(address); err != nil {
-			return nil, fmt.Errorf("peer listen address must be host:port: %w", err)
-		}
-		args = append(args, "--peer-listen", address)
-	}
-	if form.AllowLAN {
-		args = append(args, "--allow-lan")
-	}
-	if form.Discover {
-		args = append(args, "--discover")
-	}
-	for _, cidr := range form.TreatAsPrivate {
-		cidr = strings.TrimSpace(cidr)
-		if cidr == "" {
-			continue
-		}
-		// Shape only; whether the range is acceptable is ah's call, with the
-		// node's own rule, and its message comes back to the panel verbatim.
-		if _, _, err := net.ParseCIDR(cidr); err != nil {
-			return nil, fmt.Errorf("treat-as-private entries must be CIDR blocks such as 122.122.0.0/16: %w", err)
-		}
-		args = append(args, "--treat-as-private", cidr)
-	}
-	if form.AutoWake {
-		args = append(args, "--auto-wake")
 	}
 	return args, nil
 }

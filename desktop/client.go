@@ -590,9 +590,31 @@ type NodeSettings struct {
 	// stands — never read it as anything but that.
 	PeerListenWithdrawn bool `json:"peerListenWithdrawn,omitempty"`
 
+	// PeerListenProblem is present only while this node is running with an
+	// outward listener it could not bind: the address on the form is the
+	// owner's and is still correct, and the node is serving loopback instead.
+	//
+	// It is what turns a panel that looks healthy into one that can be acted
+	// on. Without it the settings page shows a running node whose peerListen is
+	// a default and whose saved value differs, which reads as "saved, restart
+	// to apply" — and restarting into the same address is the loop this field
+	// exists to break.
+	PeerListenProblem *PeerListenProblem `json:"peerListenProblem,omitempty"`
+
 	// Message is the node's own sentence about what a write did, including the
 	// case where turning allowLan off pulled peerListen back to loopback.
 	Message string `json:"message,omitempty"`
+}
+
+// PeerListenProblem is a peer listener the node could not bind, and what it is
+// serving instead. Reason is what the panel switches on to offer the repair
+// that fits: an address this machine actually holds, or a different port.
+type PeerListenProblem struct {
+	Address   string `json:"address"`
+	Reason    string `json:"reason"`
+	Detail    string `json:"detail,omitempty"`
+	RunningOn string `json:"runningOn"`
+	Message   string `json:"message"`
 }
 
 // NodeSettingValues is one set of the five fields the node remembers.

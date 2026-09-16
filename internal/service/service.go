@@ -98,6 +98,15 @@ type Status struct {
 	LogHint   string
 	// Raw is the manager's own words, for when the summary is not enough.
 	Raw string
+	// Program and Arguments are what the registered unit actually starts, read
+	// from the unit file. Present whether or not the node is running, which is
+	// the point: the caller that needs them most is a reinstall form on a
+	// machine where nothing is up.
+	//
+	// Empty where the unit is absent, or on Windows, where the scheduled task's
+	// XML is not read back.
+	Program   string   `json:",omitempty"`
+	Arguments []string `json:",omitempty"`
 }
 
 // UnitPath is where the unit file lives for this user.
@@ -419,6 +428,7 @@ func (m Manager) Status(ctx context.Context) (Status, error) {
 	status := Status{Supported: true, UnitPath: unitPath}
 	if _, err := os.Stat(unitPath); err == nil {
 		status.Installed = true
+		status.Program, status.Arguments = m.InstalledCommand()
 	}
 	switch m.GOOS {
 	case "darwin":

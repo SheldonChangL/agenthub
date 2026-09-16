@@ -672,3 +672,52 @@ func TestStoringALoopbackListenerEndsTheWithdrawalSentence(t *testing.T) {
 		})
 	}
 }
+
+// A node that could not bind its peer listener is up, answering, and serving an
+// address nobody chose. That last fact has exactly one carrier: the running
+// settings say loopback and the saved ones say the address the owner wants,
+// which on its own reads as "saved but not restarted yet" — the state where the
+// right thing to do is restart, and restarting is the one thing that will not
+// help.
+func TestNodeSettingsReportsAPeerListenerThatCouldNotBind(t *testing.T) {
+	configured := "122.122.122.1:7463"
+	running := nodeconfig.Settings{PeerListen: nodeconfig.DefaultPeerListen, AllowLAN: true}
+	sources := map[string]string{nodeconfig.SettingPeerListen: nodeconfig.SourceDefault}
+	problem := PeerListenProblem{
+		Address:   configured,
+		Reason:    nodeconfig.ListenAddressGone,
+		Detail:    "listen tcp 122.122.122.1:7463: bind: can't assign requested address",
+		RunningOn: nodeconfig.DefaultPeerListen,
+		Message: nodeconfig.ListenFailureReason(nodeconfig.ListenAddressGone,
+			configured, nodeconfig.DefaultPeerListen),
+	}
+	store, handler := settingsServer(t, running, sources, WithPeerListenProblem(problem))
+	// The owner's address is untouched in the database: a cable unplugged has
+	// not changed what this node is configured to serve.
+	storeSettings(t, store, nodeconfig.Partial{PeerListen: &configured, AllowLAN: boolSetting(true)})
+
+	response := perform(t, handler, http.MethodGet, "/v1/node/settings", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	view := readSettings(t, response.Body.Bytes())
+	if view.PeerListenProblem == nil {
+		t.Fatalf("a degraded listener is indistinguishable from a healthy one: %s", response.Body.String())
+	}
+	if view.PeerListenProblem.Address != configured {
+		t.Errorf("problem names %q, want the address that failed, %q", view.PeerListenProblem.Address, configured)
+	}
+	if view.PeerListenProblem.Reason != nodeconfig.ListenAddressGone {
+		t.Errorf("reason = %q, want %q", view.PeerListenProblem.Reason, nodeconfig.ListenAddressGone)
+	}
+	// The saved address is still the owner's, so the form keeps showing it.
+	if view.Saved.PeerListen != configured {
+		t.Errorf("saved peerListen = %q; the degradation must not rewrite what the owner configured",
+			view.Saved.PeerListen)
+	}
+	// And this is not the withdrawal: that one is a decision about a
+	// contradictory configuration, and it was written down.
+	if view.PeerListenWithdrawn {
+		t.Error("a bind failure was reported as a withdrawal; they have different fixes")
+	}
+}
