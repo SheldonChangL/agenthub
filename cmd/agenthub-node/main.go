@@ -524,10 +524,16 @@ type settingsStore interface {
 // after a failure would be serving the owner's sessions somewhere they never
 // agreed to.
 //
-// Loopback failing too is the end of the road and is reported as such. It means
-// something already holds this node's own port, which is almost always a second
-// instance of this node — and the owner's API on the neighbouring port is about
-// to fail for the same reason.
+// Loopback's own port being taken is not the end of it either. A machine
+// running a second node holds that port, and the first node's owner still has to
+// be able to open their settings page — so the last resort is loopback on any
+// free port, which serves nobody and is exactly what a degraded node needs: a
+// listener that exists, and a process that lives. The address it landed on is
+// reported, because "127.0.0.1:53418" on screen is what tells an owner they are
+// looking at a node that is not being reached by anyone.
+//
+// Only if that fails too does the start end, and then something is wrong with
+// this machine's networking that no button on a settings page can fix.
 //
 // fallback is passed rather than read from nodeconfig so a test can degrade
 // onto a port the machine it runs on is not already serving. run() gives the
@@ -549,10 +555,15 @@ func bindPeerListener(address, fallback string, logf func(string, ...any)) (net.
 	}
 	fallbackListener, fallbackErr := net.Listen("tcp", fallback)
 	if fallbackErr != nil {
-		// Both named: the second failure alone would send the owner looking at
-		// loopback, which is not the address they configured.
-		return nil, nil, fmt.Errorf("peer listener %s: %w; and the loopback default %s: %v",
-			address, err, fallback, fallbackErr)
+		lastResort, lastResortErr := net.Listen("tcp", anyLoopbackPort)
+		if lastResortErr != nil {
+			// All three named: the last failure alone would send the owner
+			// looking at a port nobody chose, which is not the address they
+			// configured and not the one they would recognise.
+			return nil, nil, fmt.Errorf("peer listener %s: %w; the loopback default %s: %v; "+
+				"and loopback on any free port: %v", address, err, fallback, fallbackErr, lastResortErr)
+		}
+		fallbackListener = lastResort
 	}
 	// The listener's own address rather than the string asked for: they differ
 	// wherever the fallback names a port the machine chose, and an owner told
@@ -572,6 +583,10 @@ func bindPeerListener(address, fallback string, logf func(string, ...any)) (net.
 		Message:   message,
 	}, nil
 }
+
+// anyLoopbackPort is the last resort: a listener that exists so the process
+// does, on an address no peer was ever told about.
+const anyLoopbackPort = "127.0.0.1:0"
 
 // probeListen asks whether this machine will serve an address at all, by taking
 // one and giving it straight back. Separated so a test can classify without

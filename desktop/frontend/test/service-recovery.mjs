@@ -216,6 +216,35 @@ if (text("service-repair") !== "") {
   failures.push("a service that pins nothing was offered a repair");
 }
 
+// 11. The same panel, against what a real node actually answered.
+//
+// The fixture beside this file is the body of GET /v1/node/settings, captured
+// from an agenthub-node started against an address this machine does not hold —
+// not written by hand. Everything above uses a stub, and a stub is a copy of
+// what this test's author believed the node sends: a field renamed on the Go
+// side would leave all ten checks above green and the window blank.
+const real = JSON.parse(
+  await (await import("node:fs/promises")).readFile(new URL("./fixtures/degraded-node-settings.json", import.meta.url), "utf8"),
+);
+el("node-settings-notice").replaceChildren();
+app.applyNodeSettings(real, addresses);
+const realNotice = text("node-settings-notice");
+if (!realNotice.includes(real.peerListenProblem.address)) {
+  failures.push(`the real payload rendered no address: ${realNotice}`);
+}
+if (!realNotice.includes(real.peerListenProblem.runningOn)) {
+  failures.push(`the real payload did not say where the node actually is: ${realNotice}`);
+}
+// And the form still shows the address the owner configured, not the loopback
+// one the node fell back to: nothing was written, and offering the fallback as
+// their setting would turn a cable being unplugged into a lost configuration.
+if (el("node-peerlisten").value !== real.saved.peerListen) {
+  failures.push(`the form shows ${el("node-peerlisten").value}, want the saved ${real.saved.peerListen}`);
+}
+if (app.peerListenRepairs(real.peerListenProblem, addresses, true).length < 2) {
+  failures.push("the real payload produced no way out");
+}
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(failure);
   process.exit(1);
