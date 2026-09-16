@@ -298,6 +298,26 @@ export namespace main {
 	        this.autoWake = source["autoWake"];
 	    }
 	}
+	export class PeerListenProblem {
+	    address: string;
+	    reason: string;
+	    detail?: string;
+	    runningOn: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PeerListenProblem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.reason = source["reason"];
+	        this.detail = source["detail"];
+	        this.runningOn = source["runningOn"];
+	        this.message = source["message"];
+	    }
+	}
 	export class NodeSettingValues {
 	    peerListen: string;
 	    allowLan: boolean;
@@ -326,6 +346,8 @@ export namespace main {
 	    saved: any;
 	    restartRequired: boolean;
 	    peerListenWithdrawn?: boolean;
+	    // Go type: PeerListenProblem
+	    peerListenProblem?: any;
 	    message?: string;
 	    error?: string;
 	
@@ -340,6 +362,7 @@ export namespace main {
 	        this.saved = this.convertValues(source["saved"], null);
 	        this.restartRequired = source["restartRequired"];
 	        this.peerListenWithdrawn = source["peerListenWithdrawn"];
+	        this.peerListenProblem = this.convertValues(source["peerListenProblem"], null);
 	        this.message = source["message"];
 	        this.error = source["error"];
 	    }
@@ -732,11 +755,6 @@ export namespace main {
 	
 	export class ServiceForm {
 	    dbPath: string;
-	    peerListen: string;
-	    allowLan: boolean;
-	    discover: boolean;
-	    treatAsPrivate: string[];
-	    autoWake: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ServiceForm(source);
@@ -745,11 +763,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dbPath = source["dbPath"];
-	        this.peerListen = source["peerListen"];
-	        this.allowLan = source["allowLan"];
-	        this.discover = source["discover"];
-	        this.treatAsPrivate = source["treatAsPrivate"];
-	        this.autoWake = source["autoWake"];
 	    }
 	}
 	export class ServiceResult {
@@ -777,6 +790,9 @@ export namespace main {
 	    logHint: string;
 	    nodeAnswering: boolean;
 	    node: string;
+	    dbPath: string;
+	    dbPathKnown: boolean;
+	    pinnedSettings?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new ServiceStatus(source);
@@ -794,6 +810,9 @@ export namespace main {
 	        this.logHint = source["logHint"];
 	        this.nodeAnswering = source["nodeAnswering"];
 	        this.node = source["node"];
+	        this.dbPath = source["dbPath"];
+	        this.dbPathKnown = source["dbPathKnown"];
+	        this.pinnedSettings = source["pinnedSettings"];
 	    }
 	}
 	
