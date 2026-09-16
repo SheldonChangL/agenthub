@@ -756,6 +756,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function withBusy(label, fn) {
+    // Ignored while another one is running. Disabling buttons covers only the
+    // ids render() knows about, and the repair buttons are created on the fly —
+    // so the ones most likely to be pressed twice were the ones not covered.
+    // Two of these overlapping is two save-and-restart sequences whose results
+    // land on top of each other, and the second answer describes a node the
+    // first one has already replaced.
+    if (state.busy) return;
     state.busy = true;
     render();
     try {
@@ -2261,10 +2268,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       "節點身分與配對不受影響。"
     );
     if (!ok) return;
+    const previousPid = state.service?.pid ?? 0;
     await withBusy("重新登記背景服務", async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
       showServiceOutput(result);
-      const up = await waitForNode();
+      const up = await waitForNode({ previousPid });
       await load();
       banner(up.answering ? "服務已重新登記，節點設定現在說了算。" : "服務已重新登記，但節點還沒有回應，請看上面的狀態。", up.answering);
     });
@@ -2283,21 +2291,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const status = state.service ?? {};
     const note = el("service-db-note");
     note.replaceChildren();
-    if (status.installed && status.dbPathKnown) {
-      el("service-db").value = status.dbPath;
-      state.serviceDBInstalled = status.dbPath;
-      note.textContent = status.dbPath
+    // Three states, and they are not two. "There is no service" and "there is a
+    // service and this window cannot read what database it uses" both leave the
+    // field empty, and only the first of them is safe to install from without
+    // asking: the second is a reinstall that would move a running node onto the
+    // default database. That is not an edge case — it is every Windows machine,
+    // where the scheduled task's XML is not read back.
+    state.serviceDB = {
+      installed: Boolean(status.installed),
+      known: Boolean(status.installed && status.dbPathKnown),
+      path: status.installed && status.dbPathKnown ? status.dbPath : "",
+    };
+    // Cleared, not left: this element outlives the panel it was filled for, so
+    // an install form opened after reading a machine that had a unit would
+    // otherwise propose that machine's database on a machine with none.
+    el("service-db").value = state.serviceDB.path;
+    if (state.serviceDB.known) {
+      note.textContent = state.serviceDB.path
         ? "這是目前服務正在使用的資料庫，已經填好。改掉它等於換一個節點身分。"
         : "目前的服務沒有指定資料庫，所以節點用的是預設位置。填上路徑會換成那一個，也就是換一個節點身分。";
       return;
     }
-    // Cleared, not left: this element outlives the panel it was filled for, so
-    // an install form opened after reading a machine that had a unit would
-    // otherwise propose that machine's database on a machine with none.
-    el("service-db").value = "";
-    state.serviceDBInstalled = null;
     note.textContent = status.installed
-      ? "讀不到目前服務使用的資料庫路徑，請自己確認要用哪一個。"
+      ? "讀不到目前服務使用的資料庫路徑，所以無法先告訴你這次會不會換掉節點身分——按下安裝前會再問一次。"
       : "第一次安裝：留空就用節點的預設位置。";
   }
 
@@ -2327,12 +2343,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // itself: the panel would go green and the 區網 page would simply be empty.
     // So it is said before it happens, with both paths named, and only when the
     // owner actually changed the field.
-    const installed = state.serviceDBInstalled;
+    const baseline = state.serviceDB ?? { installed: false, known: false, path: "" };
     const wanted = el("service-db").value.trim();
-    if (installed !== null && installed !== undefined && wanted !== installed) {
+    if (baseline.installed && !baseline.known) {
+      // Asked without being able to say what the current value is, because the
+      // alternative is installing over a running node's database on a guess.
+      // The question names that uncertainty rather than hiding it.
+      const ok = confirm(
+        "重新安裝背景服務？\n\n" +
+        "這台機器已經有一個登記過的服務，但這個視窗讀不到它目前使用的資料庫路徑，" +
+        `所以無法判斷這次會不會換掉。\n\n這次會用：${wanted || "節點預設位置"}\n\n` +
+        "如果那不是它原本用的那一個，這台機器就會換一個節點身分：在對方眼中變成陌生人，" +
+        "已經配對過的節點要重新配對一次。"
+      );
+      if (!ok) return;
+    } else if (baseline.installed && wanted !== baseline.path) {
       const ok = confirm(
         "換掉資料庫路徑？\n\n" +
-        `目前：${installed || "節點預設位置"}\n` +
+        `目前：${baseline.path || "節點預設位置"}\n` +
         `要改成：${wanted || "節點預設位置"}\n\n` +
         "換資料庫等於換一個節點身分：這台機器在對方眼中會變成陌生人，" +
         "已經配對過的節點要重新配對一次。\n\n" +
@@ -2365,6 +2393,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // the Go side's decision (desktop/nodeprocess.go); what comes back names the
   // command either way, and it goes on screen verbatim.
   async function restartNode() {
+    // Read before anything is asked of the service manager: it is what says
+    // whether the node answering afterwards is a new one.
+    const previousPid = state.service?.pid ?? 0;
     await withBusy("重新啟動節點", async () => {
       let result;
       try {
@@ -2385,7 +2416,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // later leaves that sentence on screen as the only thing anyone said —
       // which is how a machine came to restart into the same failure 107 times
       // with the panel showing one unchanging line.
-      const up = await waitForNode();
+      const up = await waitForNode({ previousPid });
       await load();
       if (up.answering) {
         banner(up.degraded ? "節點已啟動，但對外位址沒有綁起來：看下面的「節點設定」。" : "節點已重新啟動。", !up.degraded);
@@ -2405,15 +2436,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The answer also says whether it came back degraded — up, serving loopback,
   // and unreachable by every peer — which is a success that must not be
   // reported as an ordinary one.
-  async function waitForNode({ attempts = 8, delay = 750 } = {}) {
+  async function waitForNode({ attempts = 8, delay = 750, previousPid = 0 } = {}) {
     for (let attempt = 0; attempt < attempts; attempt++) {
+      // The wait comes first. `ah service restart` answers as soon as the
+      // service manager accepts the job, and the process being replaced is
+      // still up for a moment after that — so an immediate probe is answered by
+      // the node that is on its way out, and the restart is reported as a
+      // success on the strength of the settings the old process was running.
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (previousPid) {
+        // And a pid still equal to the one from before is that same process,
+        // whatever it answers. This is the difference between "it came back"
+        // and "it has not gone yet", and reporting the second as the first is
+        // how a machine restarting into the same failure every ten seconds
+        // reads as a machine that is fine.
+        const status = await serviceStatusOrUnknown();
+        if (!status.unknown && state.service?.pid === previousPid) continue;
+      }
       try {
         const view = await api.NodeSettings();
         if (!view.error) return { answering: true, degraded: Boolean(view.peerListenProblem) };
       } catch {
         // Not there yet, or not there at all. The loop decides which.
       }
-      await new Promise((resolve) => setTimeout(resolve, delay));
     }
     return { answering: false, seconds: Math.round((attempts * delay) / 1000) };
   }
@@ -2843,14 +2888,33 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (problem.reason === "port_in_use") {
       const host = problem.address.slice(0, problem.address.lastIndexOf(":"));
       const next = Number(port) + 1;
-      if (Number.isFinite(next) && next < 65536) {
-        repairs.push({ label: `改用 ${host}:${next}`, peerListen: `${host}:${next}`, allowLan: true, primary: true });
+      // Not offered below 1024. Down there the more likely refusal is
+      // permission rather than a neighbour — the node classifies by asking
+      // whether this machine will serve the address at all, and an ephemeral
+      // port answers yes for a process that still cannot have 443 — and the
+      // next port up is just as privileged, so the button would land on the
+      // identical failure.
+      if (Number.isFinite(next) && next < 65536 && Number(port) >= 1024) {
+        repairs.push({
+          label: `改用 ${host}:${next}`,
+          peerListen: `${host}:${next}`,
+          // Carried, not set. A port number is not a decision about whether
+          // anything may leave this machine, and turning that switch on here
+          // would be the silent tick the address branch goes out of its way to
+          // avoid: a listener on 127.0.0.1:9001 with allowLan off is off the
+          // network, and clicking "use the next port" must not change that.
+          allowLan: allowLanAlreadyOn,
+          primary: true,
+        });
       }
     } else {
-      for (const item of (addresses.list ?? []).slice(0, 3)) {
-        if (!item.private) continue;
+      // Filtered before it is trimmed, not after. A Mac with a few utun VPN
+      // interfaces enumerates them ahead of en0, so taking the first three and
+      // then dropping the non-private ones can leave nothing at all — on a
+      // machine that has a perfectly good Wi-Fi address.
+      const usable = (addresses.list ?? []).filter((item) => item.private && `${item.address}:${port}` !== problem.address);
+      for (const item of usable.slice(0, 3)) {
         const address = `${item.address}:${port}`;
-        if (address === problem.address) continue;
         repairs.push({
           // The switch is named only when clicking this would turn it on. This
           // window does not tick that box behind anyone, and a button that did

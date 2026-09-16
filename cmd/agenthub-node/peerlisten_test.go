@@ -121,10 +121,15 @@ func TestBindPeerListenerFallsBackAgainWhenTheDefaultPortIsTaken(t *testing.T) {
 	}
 }
 
-// Asked for loopback, failed on loopback: there is nothing to fall back to, and
-// a degradation that reported the same address as its own remedy would be a
-// loop with a reassuring message on it.
-func TestBindPeerListenerDoesNotDegradeOntoTheAddressThatFailed(t *testing.T) {
+// Asking for the default loopback port and finding it taken is the ordinary way
+// a second node on one machine cannot start, and that owner needs the settings
+// page as much as anyone — so it degrades like every other failure rather than
+// ending the start, which is what it used to do.
+//
+// The fallback itself is skipped here: it is the address that just failed, and
+// retrying it would fail again. What must never happen is that address being
+// reported as its own remedy — a loop with a reassuring message on it.
+func TestBindPeerListenerDegradesWhenTheConfiguredAddressIsTheFallback(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -132,12 +137,21 @@ func TestBindPeerListenerDoesNotDegradeOntoTheAddressThatFailed(t *testing.T) {
 	defer occupied.Close()
 	address := occupied.Addr().String()
 	listener, problem, err := bindPeerListener(address, address, func(string, ...any) {})
-	if err == nil {
-		listener.Close()
-		t.Fatal("the fallback was the address that just failed, and it was reported as recovery")
+	if err != nil {
+		t.Fatalf("a taken default port ended the start: %v", err)
 	}
-	if problem != nil {
-		t.Errorf("a failed start reported a problem to publish: %+v", problem)
+	defer listener.Close()
+	if problem == nil {
+		t.Fatal("degraded onto another port without saying so")
+	}
+	if problem.RunningOn == address {
+		t.Error("the address that just failed was reported as the one being served")
+	}
+	if problem.RunningOn != listener.Addr().String() {
+		t.Errorf("problem says %q, listener is on %q", problem.RunningOn, listener.Addr().String())
+	}
+	if problem.Reason != nodeconfig.ListenPortInUse {
+		t.Errorf("reason = %q, want %q", problem.Reason, nodeconfig.ListenPortInUse)
 	}
 }
 

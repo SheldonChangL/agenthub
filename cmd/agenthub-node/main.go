@@ -543,9 +543,6 @@ func bindPeerListener(address, fallback string, logf func(string, ...any)) (net.
 	if err == nil {
 		return listener, nil, nil
 	}
-	if address == fallback {
-		return nil, nil, fmt.Errorf("peer listener: %w", err)
-	}
 	reason := nodeconfig.ListenUnusable
 	// An enumeration failure is not a reason: it would make every address read
 	// as gone. The generic reason is the honest one when this process cannot
@@ -553,7 +550,16 @@ func bindPeerListener(address, fallback string, logf func(string, ...any)) (net.
 	if interfaces, addressErr := nodeconfig.InterfaceAddresses(); addressErr == nil {
 		reason = nodeconfig.ClassifyListenFailure(address, interfaces, probeListen)
 	}
-	fallbackListener, fallbackErr := net.Listen("tcp", fallback)
+	// The fallback is skipped when it is the address that just failed: trying it
+	// again would fail again, and a degradation naming its own failure as the
+	// remedy is a loop with a reassuring message on it. The last resort below
+	// still applies, and has to — "the default loopback port is taken" is the
+	// ordinary way a second node on one machine cannot start, and that node's
+	// owner needs the settings page as much as anyone.
+	fallbackListener, fallbackErr := net.Listener(nil), err
+	if address != fallback {
+		fallbackListener, fallbackErr = net.Listen("tcp", fallback)
+	}
 	if fallbackErr != nil {
 		lastResort, lastResortErr := net.Listen("tcp", anyLoopbackPort)
 		if lastResortErr != nil {

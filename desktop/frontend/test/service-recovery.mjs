@@ -26,6 +26,7 @@ const el = (id) => document.getElementById(id);
 const noop = async () => ({});
 const text = (id) => el(id).textContent ?? "";
 
+let serviceAnswer = null;
 let installed = [];
 let saved = [];
 let restarts = 0;
@@ -64,7 +65,7 @@ configure({
   Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
   Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
   Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
-  ServiceStatus: async () => app.state.service ?? {},
+  ServiceStatus: async () => serviceAnswer ?? app.state.service ?? {},
   InstallService: async (form) => { installed.push(form); return { command: "ah service install", output: "registered" }; },
   UninstallService: noop,
   NodeSettings: async () => app.state.nodeSettingsAnswer ?? degraded,
@@ -275,6 +276,87 @@ app.state.nodeSettingsAnswer = busy;
 await app.applyPeerListenRepair(portRepair);
 if (saved.length !== 1 || saved[0].peerListen !== "192.168.161.1:7464") {
   failures.push(`clicking 改用 ${portRepair?.peerListen} saved ${JSON.stringify(saved[0])} instead`);
+}
+
+// 13. A service whose database this window cannot read is the dangerous one,
+//     and it used to be the one that skipped the question.
+//
+//     Windows is not an edge case here: the scheduled task's XML is not read
+//     back, so dbPathKnown is false on every Windows machine. The old guard
+//     skipped the confirmation whenever the current path was unknown — which is
+//     exactly when installing might move a running node onto a fresh database.
+app.state.service = {
+  supported: true, installed: true, running: true, pid: 7, unitPath: "/u", logHint: "/log",
+  dbPath: "", dbPathKnown: false,
+};
+app.renderService();
+await app.openServiceForm();
+installed = [];
+confirmations = [];
+confirmed = false;
+await app.installService();
+if (confirmations.length !== 1) {
+  failures.push("a reinstall over a service whose database is unknown asked nothing");
+}
+if (installed.length !== 0) {
+  failures.push("a refused confirmation installed anyway");
+}
+if (confirmations[0] && !confirmations[0].includes("讀不到")) {
+  failures.push(`the question hides its own uncertainty: ${confirmations[0]}`);
+}
+
+// 14. "The node answered" is not "the node came back". The process being
+//     replaced is still up for a moment after the service manager accepts the
+//     job, and it answers.
+serviceAnswer = { supported: true, installed: true, running: true, pid: 7, unitPath: "/u", logHint: "/log" };
+app.state.nodeSettingsAnswer = { ...degraded, peerListenProblem: undefined };
+const stillOld = await app.waitForNode({ attempts: 2, delay: 5, previousPid: 7 });
+if (stillOld.answering) {
+  failures.push("the process on its way out was accepted as the one that came back");
+}
+serviceAnswer = { ...serviceAnswer, pid: 9 };
+const cameBack = await app.waitForNode({ attempts: 2, delay: 5, previousPid: 7 });
+if (!cameBack.answering) {
+  failures.push("a genuinely new process was not recognised");
+}
+serviceAnswer = null;
+
+// 15. Changing a port is not a decision about whether anything may leave this
+//     machine, so it must not tick 允許區網連線 on the way past.
+const loopbackBusy = {
+  address: "127.0.0.1:9000", reason: "port_in_use", detail: "address already in use",
+  runningOn: "127.0.0.1:41000", message: "",
+};
+const portRepairs = app.peerListenRepairs(loopbackBusy, addresses, false);
+const portPrimary = portRepairs.find((r) => r.primary);
+if (!portPrimary || portPrimary.peerListen !== "127.0.0.1:9001") {
+  failures.push(`a busy loopback port was offered ${portPrimary?.peerListen}`);
+}
+if (portPrimary.allowLan !== false) {
+  failures.push("changing a port turned on the switch that lets data leave the machine");
+}
+// Below 1024 the likelier refusal is permission, and the next port up is just
+// as privileged: the button would land on the identical failure.
+const privileged = app.peerListenRepairs({ ...loopbackBusy, address: "127.0.0.1:443" }, addresses, false);
+if (privileged.some((repair) => repair.peerListen === "127.0.0.1:444")) {
+  failures.push("a privileged port was offered the next privileged port as a repair");
+}
+
+// 16. The usable addresses are chosen before the list is trimmed. A Mac with a
+//     few VPN interfaces enumerates them first, and taking three then dropping
+//     the non-private ones can leave nothing at all.
+const vpnFirst = {
+  list: [
+    { interface: "utun0", address: "100.64.0.2", subnet: "100.64.0.0/10", private: false },
+    { interface: "utun1", address: "100.64.0.3", subnet: "100.64.0.0/10", private: false },
+    { interface: "utun2", address: "100.64.0.4", subnet: "100.64.0.0/10", private: false },
+    { interface: "en0", address: "192.168.161.1", subnet: "192.168.161.0/24", private: true },
+  ],
+  failure: "",
+};
+const behindVPN = app.peerListenRepairs(degraded.peerListenProblem, vpnFirst, true);
+if (!behindVPN.some((repair) => repair.peerListen === "192.168.161.1:7463")) {
+  failures.push("the only usable address was trimmed away by interfaces listed before it");
 }
 
 if (failures.length > 0) {
