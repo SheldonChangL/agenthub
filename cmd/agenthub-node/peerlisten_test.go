@@ -86,9 +86,14 @@ func TestBindPeerListenerDegradesInsteadOfFailing(t *testing.T) {
 	}
 }
 
-// Loopback failing too is the end of the road: something already holds this
-// node's own port. Reported rather than degraded onto a third guess.
-func TestBindPeerListenerReportsWhenTheFallbackFailsToo(t *testing.T) {
+// The loopback fallback's own port being taken must not end the start either.
+//
+// Found by running it: a second node on this machine holds 127.0.0.1:7463, so
+// the degrade path failed and the node died anyway — on exactly the machine
+// where the owner most needs the settings page, one already running a node they
+// care about. The last resort is loopback on any free port: it serves nobody,
+// which is what a degraded node already is, and the process lives.
+func TestBindPeerListenerFallsBackAgainWhenTheDefaultPortIsTaken(t *testing.T) {
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -96,20 +101,23 @@ func TestBindPeerListenerReportsWhenTheFallbackFailsToo(t *testing.T) {
 	defer occupied.Close()
 	listener, problem, err := bindPeerListener("203.0.113.1:7463", occupied.Addr().String(),
 		func(string, ...any) {})
-	if err == nil {
-		listener.Close()
-		t.Fatal("both listeners failed and the start continued")
+	if err != nil {
+		t.Fatalf("a busy fallback port ended the start: %v", err)
 	}
-	if problem != nil {
-		t.Errorf("a failed start reported a problem to publish: %+v", problem)
+	defer listener.Close()
+	if problem == nil {
+		t.Fatal("degraded twice over without saying so")
 	}
-	// Both named. The fallback's failure alone would send the owner looking at
-	// loopback, which is not the address they configured.
-	if !strings.Contains(err.Error(), "203.0.113.1:7463") {
-		t.Errorf("error does not name the configured address: %v", err)
+	// The address it actually landed on, which is the one on screen and the one
+	// that tells an owner nobody is reaching this node.
+	if problem.RunningOn != listener.Addr().String() {
+		t.Errorf("problem says %q, listener is on %q", problem.RunningOn, listener.Addr().String())
 	}
-	if !strings.Contains(err.Error(), occupied.Addr().String()) {
-		t.Errorf("error does not name the fallback that also failed: %v", err)
+	if problem.RunningOn == occupied.Addr().String() {
+		t.Error("the node reported the port it could not have as the one it is serving")
+	}
+	if !strings.Contains(problem.Message, "203.0.113.1:7463") {
+		t.Errorf("the address that failed is not named: %q", problem.Message)
 	}
 }
 
@@ -132,3 +140,7 @@ func TestBindPeerListenerDoesNotDegradeOntoTheAddressThatFailed(t *testing.T) {
 		t.Errorf("a failed start reported a problem to publish: %+v", problem)
 	}
 }
+
+// Asking for loopback and failing is the one case with no way out: the fallback
+// would be the address that just failed, and the last resort is the same
+// interface. The start ends and says all of it.
