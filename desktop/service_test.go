@@ -29,29 +29,38 @@ func TestInstallArgsCarryOnlyWhatTheOwnerSet(t *testing.T) {
 		t.Errorf("empty form should pass no node flags beyond the pinned binary, got %v", args)
 	}
 
-	args, err = installArgs(ServiceForm{
-		DBPath: " /Users/me/data/agenthub.db ", PeerListen: "122.122.122.1:7463", AllowLAN: true, Discover: true,
-		TreatAsPrivate: []string{"122.122.0.0/16", " ", "10.9.0.0/16"}, AutoWake: true,
-	})
+	args, err = installArgs(ServiceForm{DBPath: " /Users/me/data/agenthub.db "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "service install --node-binary " + node + " --db /Users/me/data/agenthub.db --peer-listen 122.122.122.1:7463 --allow-lan --discover --treat-as-private 122.122.0.0/16 --treat-as-private 10.9.0.0/16 --auto-wake"
+	want := "service install --node-binary " + node + " --db /Users/me/data/agenthub.db"
 	if got := strings.Join(args, " "); got != want {
 		t.Errorf("args:\n%s\nwant:\n%s", got, want)
 	}
 }
 
-func TestInstallArgsRefuseWhatAhCouldOnlyRefuseLater(t *testing.T) {
-	withFakeNode(t)
-	if _, err := installArgs(ServiceForm{PeerListen: "122.122.122.1"}); err == nil || !strings.Contains(err.Error(), "host:port") {
-		t.Errorf("address without port: err = %v", err)
+// The unit this app registers says where the database is and nothing else.
+//
+// Asserted on the whole command rather than on the absence of one flag: the
+// failure being guarded against is a unit that pins a node setting, and a test
+// that named the settings it knew about would pass a sixth one straight
+// through. A unit that carries any of them overrides the settings page on every
+// start, which is a panel whose saves do nothing.
+func TestInstallArgsPinNoNodeSetting(t *testing.T) {
+	node := withFakeNode(t)
+	args, err := installArgs(ServiceForm{DBPath: "/Users/me/data/agenthub.db"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := installArgs(ServiceForm{TreatAsPrivate: []string{"122.122.0.0"}}); err == nil || !strings.Contains(err.Error(), "CIDR") {
-		t.Errorf("range without prefix length: err = %v", err)
+	if got := strings.Join(args, " "); got != "service install --node-binary "+node+" --db /Users/me/data/agenthub.db" {
+		t.Fatalf("the install command carries more than the database: %s", got)
 	}
-	if _, err := installArgs(ServiceForm{TreatAsPrivate: []string{"999.1.1.1/40"}}); err == nil {
-		t.Error("an out-of-range CIDR was accepted")
+	for _, flag := range nodeSettingFlags {
+		for _, argument := range args {
+			if strings.TrimLeft(argument, "-") == flag {
+				t.Errorf("the unit would pin %s, which the settings page could then never change", flag)
+			}
+		}
 	}
 }
 
@@ -121,11 +130,11 @@ func TestInstallServiceCarriesAhsWordsBackOnFailure(t *testing.T) {
 	findTool = func() (string, error) { return "/fake/ah", nil }
 	app := NewApp()
 	app.ctx = context.Background()
-	result, err := app.InstallService(ServiceForm{PeerListen: "122.122.122.1:7463", AllowLAN: true})
+	result, err := app.InstallService(ServiceForm{DBPath: "/Users/me/data/agenthub.db"})
 	if err == nil || !strings.Contains(err.Error(), "private network") {
 		t.Fatalf("err = %v, want ah's message", err)
 	}
-	if !strings.Contains(result.Command, "--peer-listen 122.122.122.1:7463 --allow-lan") {
+	if !strings.Contains(result.Command, "--db /Users/me/data/agenthub.db") {
 		t.Errorf("command = %q", result.Command)
 	}
 }
