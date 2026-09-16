@@ -245,6 +245,38 @@ if (app.peerListenRepairs(real.peerListenProblem, addresses, true).length < 2) {
   failures.push("the real payload produced no way out");
 }
 
+// 12. A repair whose address is not already one of the dropdown's options must
+//     still be what gets saved.
+//
+//     The options are built from this machine's addresses at the node's default
+//     port, so a repair that changes the port — the whole of the port_in_use
+//     case — names an address no <option> carries. Assigning an unmatched value
+//     to a <select> silently selects nothing, and "nothing" in this list is
+//     loopback: the owner clicks 改用 :7464 and the node is saved as local-only,
+//     with the panel reporting success.
+const busy = {
+  ...degraded,
+  saved: { ...degraded.saved, peerListen: "192.168.161.1:7463" },
+  peerListenProblem: {
+    address: "192.168.161.1:7463",
+    reason: "port_in_use",
+    detail: "listen tcp 192.168.161.1:7463: bind: address already in use",
+    runningOn: "127.0.0.1:7463",
+    message: "something else is already listening on 192.168.161.1:7463",
+  },
+};
+app.applyNodeSettings(busy, addresses);
+const portRepair = app.peerListenRepairs(busy.peerListenProblem, addresses, true).find((r) => r.primary);
+if (!portRepair || portRepair.peerListen !== "192.168.161.1:7464") {
+  failures.push(`a busy port was offered ${portRepair?.peerListen}, want the next port`);
+}
+saved = [];
+app.state.nodeSettingsAnswer = busy;
+await app.applyPeerListenRepair(portRepair);
+if (saved.length !== 1 || saved[0].peerListen !== "192.168.161.1:7464") {
+  failures.push(`clicking 改用 ${portRepair?.peerListen} saved ${JSON.stringify(saved[0])} instead`);
+}
+
 if (failures.length > 0) {
   for (const failure of failures) console.error(failure);
   process.exit(1);
