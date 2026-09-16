@@ -2197,15 +2197,99 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     open.classList.remove("hidden");
     uninstall.classList.toggle("hidden", !status.installed);
+    renderServiceRepair(status);
     // The form opens itself only when nothing is running: that is the moment
     // the owner has nothing else to do here.
     if (!state.nodeReachable && !status.installed && !state.serviceFormTouched) openServiceForm().catch(() => {});
+  }
+
+  // renderServiceRepair offers the one action that fixes a unit which overrides
+  // this window.
+  //
+  // A unit that passes a node setting on every start wins over everything the
+  // settings page saves, and the node's own log is the only place that says so.
+  // An owner reading a form whose writes do nothing has no way to reach that
+  // conclusion, so the panel says it and offers the repair: register the
+  // service again with nothing but the database path, which is what this app
+  // installs today.
+  function renderServiceRepair(status) {
+    const repair = el("service-repair");
+    repair.replaceChildren();
+    const pinned = status.pinnedSettings ?? [];
+    if (!status.installed || pinned.length === 0) return;
+    repair.append(
+      element("div", "stale",
+        `這個服務被裝成每次啟動都固定使用 ${pinned.join("、")}，` +
+        "會蓋掉下面「節點設定」存的值——在那裡改了也不會生效。"),
+      element("div", "muted",
+        status.dbPathKnown && status.dbPath
+          ? `改成由節點自己管理之後，服務只會指定資料庫（${status.dbPath}），其餘設定都讀節點記住的值。`
+          : "改成由節點自己管理之後，服務只會指定資料庫，其餘設定都讀節點記住的值。"),
+    );
+    const button = document.createElement("button");
+    button.id = "service-unpin";
+    button.className = "primary";
+    button.textContent = "改成由節點自己管理";
+    button.onclick = () => reinstallWithoutPinnedSettings(status);
+    repair.append(button);
+  }
+
+  // reinstallWithoutPinnedSettings re-registers the service with the database it
+  // already uses and nothing else.
+  //
+  // The database path is carried over deliberately and is the whole reason this
+  // is not just "press install": a reinstall that dropped it would put the node
+  // on a different database, which is a different identity and no pairings.
+  async function reinstallWithoutPinnedSettings(status) {
+    if (status.installed && !status.dbPathKnown) {
+      banner("讀不到目前服務使用的資料庫路徑，所以沒有自動重裝：請用「重新安裝…」自己確認路徑。");
+      return;
+    }
+    const ok = confirm(
+      "改成由節點自己管理？\n\n" +
+      `服務會重新登記，只指定資料庫（${status.dbPath || "節點預設位置"}），` +
+      "其他設定改由節點記住的值決定——也就是「節點設定」那一頁存的東西。\n\n" +
+      "節點身分與配對不受影響。"
+    );
+    if (!ok) return;
+    await withBusy("重新登記背景服務", async () => {
+      const result = await api.InstallService({ dbPath: status.dbPath });
+      showServiceOutput(result);
+      const up = await waitForNode();
+      await load();
+      banner(up.answering ? "服務已重新登記，節點設定現在說了算。" : "服務已重新登記，但節點還沒有回應，請看上面的狀態。", up.answering);
+    });
   }
 
   async function openServiceForm() {
     state.serviceFormTouched = true;
     el("service-form").classList.remove("hidden");
     el("service-output").classList.add("hidden");
+    // Prefilled with the path the service already uses, because the field's
+    // meaning is "which database", not "change the database": an owner who
+    // opens this to reinstall means to keep the node they have. Blank meant the
+    // node's default, which is a different database, a new identity and no
+    // pairings — reached once by someone who read the empty field as
+    // "unchanged".
+    const status = state.service ?? {};
+    const note = el("service-db-note");
+    note.replaceChildren();
+    if (status.installed && status.dbPathKnown) {
+      el("service-db").value = status.dbPath;
+      state.serviceDBInstalled = status.dbPath;
+      note.textContent = status.dbPath
+        ? "這是目前服務正在使用的資料庫，已經填好。改掉它等於換一個節點身分。"
+        : "目前的服務沒有指定資料庫，所以節點用的是預設位置。填上路徑會換成那一個，也就是換一個節點身分。";
+      return;
+    }
+    // Cleared, not left: this element outlives the panel it was filled for, so
+    // an install form opened after reading a machine that had a unit would
+    // otherwise propose that machine's database on a machine with none.
+    el("service-db").value = "";
+    state.serviceDBInstalled = null;
+    note.textContent = status.installed
+      ? "讀不到目前服務使用的資料庫路徑，請自己確認要用哪一個。"
+      : "第一次安裝：留空就用節點的預設位置。";
   }
 
   function readServiceForm() {
@@ -2226,6 +2310,27 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function installService() {
+    // The one change on this form that cannot be undone by changing it back.
+    //
+    // A different database is a different node.key, so this machine gets a new
+    // identity, every paired node stops recognising it, and the sessions the
+    // old one published are gone from every peer's list. None of that announces
+    // itself: the panel would go green and the 區網 page would simply be empty.
+    // So it is said before it happens, with both paths named, and only when the
+    // owner actually changed the field.
+    const installed = state.serviceDBInstalled;
+    const wanted = el("service-db").value.trim();
+    if (installed !== null && installed !== undefined && wanted !== installed) {
+      const ok = confirm(
+        "換掉資料庫路徑？\n\n" +
+        `目前：${installed || "節點預設位置"}\n` +
+        `要改成：${wanted || "節點預設位置"}\n\n` +
+        "換資料庫等於換一個節點身分：這台機器在對方眼中會變成陌生人，" +
+        "已經配對過的節點要重新配對一次。\n\n" +
+        "只是想重裝服務、不想換節點的話，請按取消，把路徑改回原本的值。"
+      );
+      if (!ok) return;
+    }
     await withBusy("安裝背景服務", async () => {
       let result;
       try {
@@ -2266,9 +2371,42 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         throw error;
       }
       showServiceOutput(result);
-      banner("節點已重新啟動。", true);
+      // Not "restarted" yet. `ah service restart` answers as soon as the
+      // service manager accepts the job, and a node that exits two seconds
+      // later leaves that sentence on screen as the only thing anyone said —
+      // which is how a machine came to restart into the same failure 107 times
+      // with the panel showing one unchanging line.
+      const up = await waitForNode();
       await load();
+      if (up.answering) {
+        banner(up.degraded ? "節點已啟動，但對外位址沒有綁起來：看下面的「節點設定」。" : "節點已重新啟動。", !up.degraded);
+        return;
+      }
+      banner(
+        `節點啟動了，但${up.seconds} 秒後仍然沒有回應，可能是啟動後又結束了。` +
+        `看 log：${state.service?.logHint ?? "背景服務區有路徑"}`,
+      );
     });
+  }
+
+  // waitForNode asks the node whether it is there, for a few seconds, because
+  // "the service manager accepted the job" and "the node is running" are
+  // different facts and only the second one is what the owner asked for.
+  //
+  // The answer also says whether it came back degraded — up, serving loopback,
+  // and unreachable by every peer — which is a success that must not be
+  // reported as an ordinary one.
+  async function waitForNode({ attempts = 8, delay = 750 } = {}) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const view = await api.NodeSettings();
+        if (!view.error) return { answering: true, degraded: Boolean(view.peerListenProblem) };
+      } catch {
+        // Not there yet, or not there at all. The loop decides which.
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    return { answering: false, seconds: Math.round((attempts * delay) / 1000) };
   }
 
   async function uninstallService() {
@@ -2626,6 +2764,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         "這台機器啟動時把記住的區網位址收回了本機，那個位址救不回來。" +
         "要再對外服務，請在上面重新選一個位址並把「允許區網連線」打開。"));
     }
+    renderPeerListenProblem(notice, view, addresses);
     // Said out loud rather than swallowed: without the list the owner sees only
     // 「只在本機」 and no way to pick the address they are looking for, which
     // reads as the app having decided for them.
@@ -2641,6 +2780,107 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // A suggestion belongs to a change the owner makes, never to a repaint:
     // the node's own ranges are on screen and must not be edited behind them.
     syncNodeSettingsForm();
+  }
+
+  // renderPeerListenProblem says the node is up but unreachable, and offers the
+  // way out.
+  //
+  // This state used to be unreachable from this window, because it used to kill
+  // the node: an address that will not bind ended the process, the owner's API
+  // died with it, and the settings page could not be read, let alone written.
+  // The node now degrades to loopback and stays up, which is what makes a
+  // button here possible at all — so this is where that fix gets spent.
+  //
+  // What is offered is an address, not a diagnosis. The owner does not have to
+  // know what a peer listener is to understand "the cable this used is gone,
+  // use the Wi-Fi instead", and each button is the whole repair: it fills the
+  // form in, presses save, restarts, and reports what the node came back as.
+  function renderPeerListenProblem(notice, view, addresses) {
+    const problem = view.peerListenProblem;
+    if (!problem) return;
+    notice.append(
+      element("div", "stale",
+        problem.reason === "address_gone"
+          ? `這台機器現在沒有 ${problem.address} 這個位址（網路線拔掉了，或換了網路）。` +
+            `節點還在跑，但只在本機（${problem.runningOn}），其他機器連不進來。`
+          : problem.reason === "port_in_use"
+            ? `${problem.address} 這個位址上的 port 已經被別的東西占用了。` +
+              `節點還在跑，但只在本機（${problem.runningOn}），其他機器連不進來。`
+            : `${problem.address} 綁不起來。節點還在跑，但只在本機（${problem.runningOn}）。`),
+      element("div", "muted", problem.detail || problem.message),
+    );
+    const actions = document.createElement("div");
+    actions.className = "repairactions";
+    for (const option of peerListenRepairs(problem, addresses, el("node-allow-lan").checked)) {
+      const button = document.createElement("button");
+      button.className = option.primary ? "primary" : "ghost";
+      button.textContent = option.label;
+      button.onclick = () => applyPeerListenRepair(option);
+      actions.append(button);
+    }
+    notice.append(actions);
+  }
+
+  // peerListenRepairs is what this machine can actually offer right now.
+  //
+  // Only addresses the node would accept without a further declaration: an
+  // address on a network that is private by its numbers needs nothing else,
+  // and one that is not needs 「視為私有網段」 filled in too. A one-click repair
+  // that lands on a refusal is worse than no button, so the ones that need a
+  // second decision are left to the dropdown, where that decision is visible.
+  function peerListenRepairs(problem, addresses, allowLanAlreadyOn) {
+    const repairs = [];
+    const port = peerListenPort(problem.address);
+    if (problem.reason === "port_in_use") {
+      const host = problem.address.slice(0, problem.address.lastIndexOf(":"));
+      const next = Number(port) + 1;
+      if (Number.isFinite(next) && next < 65536) {
+        repairs.push({ label: `改用 ${host}:${next}`, peerListen: `${host}:${next}`, allowLan: true, primary: true });
+      }
+    } else {
+      for (const item of (addresses.list ?? []).slice(0, 3)) {
+        if (!item.private) continue;
+        const address = `${item.address}:${port}`;
+        if (address === problem.address) continue;
+        repairs.push({
+          // The switch is named only when clicking this would turn it on. This
+          // window does not tick that box behind anyone, and a button that did
+          // so silently would be doing exactly that — but a label that promises
+          // to turn on something already on is its own kind of wrong, and it is
+          // the one an owner notices, because nothing happens.
+          label: allowLanAlreadyOn
+            ? `改用 ${item.interface}（${item.address}）`
+            : `改用 ${item.interface}（${item.address}）並允許區網連線`,
+          peerListen: address,
+          allowLan: true,
+          primary: repairs.length === 0,
+        });
+      }
+    }
+    // Always last, and always there. An owner who has decided to be off the
+    // network for now needs a way to say so, or this banner returns on every
+    // start and becomes the thing they learn to ignore.
+    repairs.push({ label: "就先只在本機", peerListen: "", allowLan: false, primary: false });
+    return repairs;
+  }
+
+  function peerListenPort(address) {
+    const index = address.lastIndexOf(":");
+    const port = index < 0 ? "" : address.slice(index + 1);
+    return /^\d+$/.test(port) ? port : "7463";
+  }
+
+  // applyPeerListenRepair fills the form in and presses save.
+  //
+  // Through the same path a person's own edit takes, rather than a second one
+  // of its own: that path validates, saves, restarts, re-reads and says whether
+  // what was asked for survived. A shortcut here would be a second way to
+  // change this setting, with its own bugs, reporting success on its own terms.
+  async function applyPeerListenRepair(option) {
+    el("node-peerlisten").value = option.peerListen;
+    el("node-allow-lan").checked = option.allowLan;
+    syncNodeSettingsForm();
+    await saveNodeSettings();
   }
 
   // describeSource relates what is running to what the form is editing.
@@ -3227,7 +3467,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
-    serviceStatusOrUnknown, loadService, renderService, restartNode,
+    serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
+    openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
+    renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,

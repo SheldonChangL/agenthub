@@ -484,6 +484,18 @@ func TestFrontendNodeSettingsFormSpeaksTheNodesRules(t *testing.T) {
 // amounted to advice about Task Manager. The app restarts the node itself
 // there — and must not do it where a service manager would start a second one
 // behind its back, which is the case this pins.
+// Getting out of a broken state without leaving the window.
+//
+// A node that cannot bind its outward address stays up and serves loopback, so
+// this panel is reachable at exactly the moment it is needed — and it has to
+// spend that: name what happened, offer an address this machine actually has,
+// and report what the node came back as rather than that a restart was asked
+// for. The reinstall beside it must never propose a blank database path, which
+// is a different database, a new identity and no pairings.
+func TestFrontendServiceRecoveryIsPossibleFromTheWindow(t *testing.T) {
+	runNodeCheck(t, "service-recovery.mjs")
+}
+
 func TestFrontendServicePanelOffersTheRestartWhereItIsSafe(t *testing.T) {
 	runNodeCheck(t, "service-panel.mjs")
 }
