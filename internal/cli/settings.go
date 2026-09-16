@@ -46,8 +46,23 @@ type settingsView struct {
 	// listener it could not serve, and moved that listener back to the default.
 	// The FROM column then reads "default", which is true of the value and
 	// false about the database, where the default is now stored.
-	PeerListenWithdrawn bool   `json:"peerListenWithdrawn"`
-	Message             string `json:"message"`
+	PeerListenWithdrawn bool `json:"peerListenWithdrawn"`
+	// PeerListenProblem says this process could not bind the peer listener it
+	// was configured to serve and is running on loopback instead. The FROM
+	// column then reads "default" for the same reason, and for a different
+	// event: nothing was written, and the address in NEXT START is still the
+	// owner's.
+	PeerListenProblem *peerListenProblem `json:"peerListenProblem"`
+	Message           string             `json:"message"`
+}
+
+// peerListenProblem mirrors the API's field of the same name.
+type peerListenProblem struct {
+	Address   string `json:"address"`
+	Reason    string `json:"reason"`
+	Detail    string `json:"detail"`
+	RunningOn string `json:"runningOn"`
+	Message   string `json:"message"`
 }
 
 func (r runner) showSettings(ctx context.Context) error {
@@ -148,10 +163,28 @@ func (r runner) renderSettings(body []byte) error {
 			// promises its other readers.
 			from += " (withdrawn)"
 		}
+		if field == nodeconfig.SettingPeerListen && view.PeerListenProblem != nil {
+			// Marked for the same reason, and distinctly: a reader who sees
+			// "not bound" beside a default learns that the address in NEXT
+			// START is not waiting for a restart, it is waiting for a machine.
+			from += " (not bound)"
+		}
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", nodeconfig.FlagName(field), running[field], from, next)
 	}
 	if err := writer.Flush(); err != nil {
 		return err
+	}
+	if view.PeerListenProblem != nil {
+		// Before the restart line, because it changes what that line means: a
+		// restart into the same unbindable address is the loop this whole path
+		// exists to break.
+		fmt.Fprintln(r.stdout, view.PeerListenProblem.Message)
+		if view.PeerListenProblem.Detail != "" {
+			fmt.Fprintf(r.stdout, "  %s\n", view.PeerListenProblem.Detail)
+		}
+		fmt.Fprintln(r.stdout,
+			"choose an address this machine holds with `ah settings set --peer-listen ADDR`, "+
+				"or keep this one and restart once the network is back")
 	}
 	if view.Message != "" {
 		fmt.Fprintln(r.stdout, view.Message)

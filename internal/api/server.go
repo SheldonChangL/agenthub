@@ -64,6 +64,10 @@ type Server struct {
 	// default, and sources says so — truthfully, but in a way that reads as
 	// "nobody ever stored one". This is the difference.
 	peerListenWithdrawn bool
+	// peerListenProblem says this start could not bind the peer listener it was
+	// configured to serve and is running on loopback instead. Nil when it bound
+	// what it was asked for.
+	peerListenProblem *PeerListenProblem
 	// autoWake is the node's own -auto-wake flag, published on the owner
 	// surface. A session's own autoWake does nothing while this is closed, and
 	// the owner has to be able to see that before ticking the session's box.

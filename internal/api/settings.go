@@ -44,6 +44,21 @@ type settingsResponse struct {
 	// would have `ah settings` and a settings page print a value that is very
 	// much in the database as though it were not.
 	PeerListenWithdrawn bool `json:"peerListenWithdrawn,omitempty"`
+	// PeerListenProblem says this process could not bind the peer listener it
+	// was configured to serve and is running on loopback instead.
+	//
+	// Separate from PeerListenWithdrawn because the two are different events
+	// with different fixes and different lifetimes. A withdrawal is a decision
+	// this node made about a contradictory configuration, and it was written to
+	// the database. This is a failure of the machine underneath a configuration
+	// that is still correct — the address is still what the owner wants served,
+	// and nothing was written — so it is repaired by fixing the machine or by
+	// choosing another address, and it is absent from the next start that
+	// manages to bind.
+	//
+	// Absent unless it happened. A reader that does not know this field sees a
+	// node whose running peerListen is a default, which is true.
+	PeerListenProblem *PeerListenProblem `json:"peerListenProblem,omitempty"`
 	// Message is the human sentence a GUI can show verbatim: what a write did,
 	// or why the running configuration is not the one that was remembered.
 	Message string `json:"message,omitempty"`
@@ -75,6 +90,32 @@ func WithNodeSettings(settings nodeconfig.Settings, sources map[string]string) O
 func WithPeerListenWithdrawn() Option {
 	return func(s *Server) {
 		s.peerListenWithdrawn = true
+	}
+}
+
+// PeerListenProblem is a peer listener this process was configured to serve and
+// could not bind, and what it is serving instead.
+//
+// Reason is one of nodeconfig's reason codes, which is what a desktop switches
+// on to offer the right repair — the addresses this machine does have, or a
+// different port. Message is the same fact as a sentence, so a caller that does
+// not recognise the code still has something true to show. Detail is the
+// system's own words, kept because "can't assign requested address" is what an
+// owner will search for.
+type PeerListenProblem struct {
+	Address   string `json:"address"`
+	Reason    string `json:"reason"`
+	Detail    string `json:"detail,omitempty"`
+	RunningOn string `json:"runningOn"`
+	Message   string `json:"message"`
+}
+
+// WithPeerListenProblem records that this start could not bind its peer
+// listener, so the answers can say why the address on the settings page is not
+// the address being served.
+func WithPeerListenProblem(problem PeerListenProblem) Option {
+	return func(s *Server) {
+		s.peerListenProblem = &problem
 	}
 }
 
@@ -312,6 +353,7 @@ func (s *Server) settingsView(saved nodeconfig.Partial, message string) settings
 		Saved:               withRanges(next),
 		RestartRequired:     !sameSettings(running, next),
 		PeerListenWithdrawn: withdrawn,
+		PeerListenProblem:   s.peerListenProblem,
 		Message:             message,
 	}
 }
