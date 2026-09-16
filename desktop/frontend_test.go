@@ -484,6 +484,56 @@ func TestFrontendNodeSettingsFormSpeaksTheNodesRules(t *testing.T) {
 // amounted to advice about Task Manager. The app restarts the node itself
 // there — and must not do it where a service manager would start a second one
 // behind its back, which is the case this pins.
+// The dev page's fake has to answer every binding the window calls.
+//
+// dev/mock.html is how this frontend is looked at without a node — the README
+// points at it — and its fake is a hand-written list of bindings. One the
+// window calls and the fake does not have fails at the call site, inside the
+// error handling of whatever invoked it, so the page shows a plausible failure
+// message instead of the screen being worked on. RestartNode was missing for
+// exactly that long: every save on the settings page ended in "api.RestartNode
+// is not a function".
+func TestFrontendDevMockAnswersEveryBindingTheWindowCalls(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("frontend", "src", "app.js"))
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	mock, err := os.ReadFile(filepath.Join("frontend", "dev", "mock.js"))
+	if err != nil {
+		t.Fatalf("read dev/mock.js: %v", err)
+	}
+	called := map[string]bool{}
+	// The character before `api` is captured rather than asserted with a word
+	// boundary: `./api.js (configure)` in the file's own header comment matches
+	// \bapi\.(\w+)\s*\( and would have this test demanding a binding called
+	// "js".
+	for _, match := range regexp.MustCompile(`(^|[^\w./])api\.([A-Za-z0-9_]+)\s*\(`).FindAllStringSubmatch(string(source), -1) {
+		called[match[2]] = true
+	}
+	if len(called) == 0 {
+		t.Fatal("no api.X() calls found in app.js; this test would pass vacuously")
+	}
+	for name := range called {
+		// The key as it would be written in the configure() object literal.
+		if !regexp.MustCompile(`(?m)^\s*` + regexp.QuoteMeta(name) + `\s*:`).Match(mock) {
+			t.Errorf("the window calls api.%s() and dev/mock.js does not provide it; "+
+				"the dev page will fail there and blame whatever called it", name)
+		}
+	}
+}
+
+// Getting out of a broken state without leaving the window.
+//
+// A node that cannot bind its outward address stays up and serves loopback, so
+// this panel is reachable at exactly the moment it is needed — and it has to
+// spend that: name what happened, offer an address this machine actually has,
+// and report what the node came back as rather than that a restart was asked
+// for. The reinstall beside it must never propose a blank database path, which
+// is a different database, a new identity and no pairings.
+func TestFrontendServiceRecoveryIsPossibleFromTheWindow(t *testing.T) {
+	runNodeCheck(t, "service-recovery.mjs")
+}
+
 func TestFrontendServicePanelOffersTheRestartWhereItIsSafe(t *testing.T) {
 	runNodeCheck(t, "service-panel.mjs")
 }
