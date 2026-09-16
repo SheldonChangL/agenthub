@@ -961,3 +961,19 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .pill.refused { color: var(--amber); border-color: rgba(224, 163, 62, 0.4); }
 .pill.failed { color: #f0908a; border-color: rgba(229, 84, 75, 0.45); }
 .limits { font-size: 11px; color: var(--muted); margin: 0 0 10px; line-height: 1.6; }
+
+/* The buttons under a failure notice. A repair is offered on the same line as
+   the sentence that explains it, because a button somewhere else is one an
+   owner has to connect to the problem themselves. They wrap: the labels name
+   an interface and an address, so there is no width at which they are short. */
+.repairactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+
+/* The repair offered in the service panel, under the same kind of notice. */
+#service-repair:not(:empty) {
+  margin: 10px 0 2px;
+}
