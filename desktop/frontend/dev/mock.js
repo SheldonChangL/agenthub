@@ -50,11 +50,22 @@ const pairing = () => ({
   full: false, notice: "這份清單是同網段任何人都能寫入的廣播，只能當線索。",
 });
 const log = (...a) => console.log("[mock]", ...a);
+// A node that is up and unreachable: the address it was told to serve is not on
+// this machine any more, so it degraded to loopback rather than dying. Mocked
+// this way on purpose — it is the state the settings panel exists to get an
+// owner out of, and the one nobody can see by running a healthy node.
 const nodeSettings = {
-  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
-  sources: { peerListen: "remembered", allowLan: "remembered", discover: "flag", treatAsPrivate: "remembered", autoWake: "default" },
-  saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
-  restartRequired: false,
+  settings: { peerListen: "127.0.0.1:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  sources: { peerListen: "default", allowLan: "remembered", discover: "flag", treatAsPrivate: "remembered", autoWake: "default" },
+  saved: { peerListen: "122.122.0.7:7463", allowLan: true, discover: true, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+  restartRequired: true,
+  peerListenProblem: {
+    address: "122.122.0.7:7463",
+    reason: "address_gone",
+    detail: "listen tcp 122.122.0.7:7463: bind: can't assign requested address",
+    runningOn: "127.0.0.1:7463",
+    message: "no interface on this machine holds 122.122.0.7:7463 any more",
+  },
 };
 configure({
   Overview: async () => ({ reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions, nodes, peers, counts }),
@@ -97,12 +108,28 @@ configure({
     if (next.peerListen === "127.0.0.1:7463") nodeSettings.sources.peerListen = "default";
     nodeSettings.restartRequired = true;
     nodeSettings.message = message;
+    // A node that could not bind an address is repaired by being given another
+    // one, so choosing one clears the problem here as the restart clears it
+    // there. Without this the dev page shows the banner outliving its own fix,
+    // which is the one thing this panel must never do.
+    if (nodeSettings.peerListenProblem && next.peerListen !== nodeSettings.peerListenProblem.address) {
+      delete nodeSettings.peerListenProblem;
+      nodeSettings.settings = { ...next };
+      nodeSettings.restartRequired = false;
+    }
     log("SaveNodeSettings", patch);
     return { ...nodeSettings };
   },
   RestartService: async () => { log("RestartService"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
-  ServiceStatus: async () => ({ tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462" }),
-  InstallService: async () => ({ command: "ah service install --peer-listen 192.168.50.10:7463 --allow-lan", output: "installed (pid 41872)" }),
+  // What the window actually calls. It was missing, so every save on this page
+  // ended in "重新啟動節點失敗：api.RestartNode is not a function" — the dev
+  // page showing a failure the real app does not have, which is the same wasted
+  // hour as a bug, spent in the other direction.
+  RestartNode: async () => { log("RestartNode"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  // Installed the old way, with the node's settings burned into the unit, so
+  // the panel's offer to re-register it cleanly is visible here too.
+  ServiceStatus: async () => ({ tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/Projects/agenthub/data/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
+  InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(節點預設位置)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }, { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
   // The node filters by session (agenthub#132); the fake does the same, so the
