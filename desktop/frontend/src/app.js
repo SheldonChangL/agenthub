@@ -453,6 +453,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // with pre-restart values under a success banner.
     el("node-settings-reload").disabled = state.busy;
     el("node-settings-save").disabled = state.busy;
+    // The service buttons too, now that pressing one can take several seconds:
+    // a restart waits for the node to actually answer before it reports
+    // anything, and a second press during that wait starts a second restart
+    // whose result lands on top of the first one's. This is the same window in
+    // which an owner used to press 「啟動節點」 three times because nothing
+    // appeared to happen.
+    for (const id of ["service-refresh", "service-restart", "service-open", "service-uninstall", "service-install"]) {
+      el(id).disabled = state.busy;
+    }
 
     const allPicked = rows.length > 0 && rows.every((s) => state.selected.has(s.id));
     const some = !allPicked && rows.some((s) => state.selected.has(s.id));
@@ -2877,7 +2886,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // what was asked for survived. A shortcut here would be a second way to
   // change this setting, with its own bugs, reporting success on its own terms.
   async function applyPeerListenRepair(option) {
-    el("node-peerlisten").value = option.peerListen;
+    const select = el("node-peerlisten");
+    // The option has to exist before it can be selected. The list is built from
+    // this machine's addresses at the node's default port, so any repair that
+    // changes the port — which is the whole of the port_in_use case — names an
+    // address no option carries, and assigning an unmatched value to a <select>
+    // selects nothing. "Nothing" in this list is loopback: the owner would click
+    // 改用 …:7464, the node would be saved as local-only, and the panel would
+    // report it as a success.
+    if (option.peerListen && ![...select.options].some((existing) => existing.value === option.peerListen)) {
+      const added = document.createElement("option");
+      added.value = option.peerListen;
+      added.textContent = `${option.peerListen} · 這次修復選的位址`;
+      added.dataset.private = "1";
+      select.append(added);
+    }
+    select.value = option.peerListen;
     el("node-allow-lan").checked = option.allowLan;
     syncNodeSettingsForm();
     await saveNodeSettings();
