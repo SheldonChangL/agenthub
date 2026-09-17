@@ -1121,10 +1121,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const step = pairStepText(request);
     if (step) row.append(element("div", "nextstep", step));
     if (undecided) row.append(element("div", "stale", PAIR_TEXT.compare));
-    // The node's own next step, kept because it carries one thing this window
-    // cannot derive: a refusal that could not be delivered names the machine
-    // that may still be trusting this one, and what to ask its owner to run.
-    if (request.nextStep) row.append(element("div", "muted", request.nextStep));
+    // The node's own next step, on a finished row only.
+    //
+    // It is kept because one finished row carries something this window cannot
+    // derive: a refusal the node could not deliver names the machine that may
+    // still be trusting this one, and what to ask its owner to run. On an
+    // undecided row it says "run: ah pair approve <id>" — correct advice for
+    // the terminal it was written for, and in a window whose approve button is
+    // three centimetres below it, an instruction that contradicts the screen.
+    // Those are the ones people stop reading.
+    if (!undecided && request.nextStep) row.append(element("div", "muted", request.nextStep));
 
     const buttons = element("div", "decide");
     if (request.state === "pending" && request.direction === "incoming") {
@@ -1149,12 +1155,31 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return row;
   }
 
+  // renderPairWaiting is the one line at the top of the drawer.
+  //
+  // The requests panel is below the candidate list, which is where the order of
+  // prominence puts it and which also puts it below the fold on a short window.
+  // A row waiting for this owner is the only time-critical thing in here —
+  // somebody at another keyboard is looking at their screen — so its existence
+  // is stated where the drawer opens, and the panel itself is where it is
+  // acted on.
+  function renderPairWaiting() {
+    const line = el("pair-waiting");
+    line.replaceChildren();
+    const waiting = (state.pairRequests ?? []).filter(
+      (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
+    if (waiting.length === 0) return;
+    line.append(element("div", "stale",
+      `有 ${waiting.length} 個配對請求在等你比對指紋並決定，在這個面板最下面的「${PAIR_TEXT.requestsHeading}」。`));
+  }
+
   function renderPairRequests() {
     const rows = el("pair-requests");
     const note = el("pair-requests-note");
     rows.replaceChildren();
     note.textContent = "";
     el("pair-requests-all").checked = state.pairRequestsAll;
+    renderPairWaiting();
 
     if (state.pairRequestsError) {
       // A failed read is not a fact about the other machine. Rendering it as

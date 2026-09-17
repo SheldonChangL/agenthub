@@ -327,6 +327,10 @@
             <button id="btn-pairing-on" class="primary">與另一台機器配對</button>
             <button id="btn-pairing-off" class="ghost">關閉配對視窗</button>
           </div>
+          <!-- A row waiting for this owner is the one time-critical thing in
+               this drawer, and the panel holding it is below the candidate
+               list. This line sits at the top and says so. -->
+          <div id="pair-waiting"></div>
           <!-- The address the other machine has to type. Shown only when the
                node says it is not announcing, because then this is the whole
                way in — and shown in the key font, not in prose, so it is read

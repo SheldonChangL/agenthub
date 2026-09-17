@@ -189,10 +189,11 @@ for (const required of ["ubuntu-lab", "sheldon-mbp", PAIR_TEXT.whose["this machi
 if (!html.includes(PAIR_TEXT.compare)) {
   failures.push("an undecided row carries no instruction about comparing before deciding");
 }
-// The node's own next step survives: after a refusal it is the only place that
-// says the other machine could not be told.
-if (!html.includes("ah pair approve pair_incoming000001")) {
-  failures.push("the node's own next step was dropped from the row");
+// And the node's `ah pair approve <id>` sentence is NOT on it: correct advice
+// for the terminal it was written for, and directly above an approve button it
+// is an instruction that contradicts the screen.
+if (html.includes("ah pair approve pair_incoming000001")) {
+  failures.push("an undecided row tells the owner to run a CLI command next to the button that does it");
 }
 
 /* ---------------- 3. the three states stay apart ------------------------- */
@@ -237,6 +238,12 @@ if (!withDecided.includes("pair_expired000001")) {
 }
 if (!withDecided.includes(PAIR_TEXT.step.expired)) {
   failures.push("a finished row does not say what became of it");
+}
+// On a finished row the node's own next step is kept: a refusal it could not
+// deliver names the machine that may still be trusting this one, and there is
+// nowhere else that says so.
+if (!withDecided.includes("Nothing was trusted; start again")) {
+  failures.push("a finished row dropped the node's own account of what became of it");
 }
 // And a finished row is not still asking to be decided.
 const expiredRow = withDecided.slice(withDecided.indexOf("pair_expired000001"));
