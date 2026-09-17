@@ -144,6 +144,42 @@ func TestTheWindowOpensWithoutDiscovery(t *testing.T) {
 	}
 }
 
+// The window answer carries the address the other machine would type, on every
+// node that has one.
+//
+// It used to appear only inside the notice a node that cannot announce sends,
+// so an owner whose node announces perfectly well was never shown the one way
+// in that works when mDNS does not cross between the two machines.
+func TestTheWindowAnswerNamesTheAddressToTypeElsewhere(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "address.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+		WithPairing(pairing.NewMode(), nil, nil),
+		WithPairExchange(pairing.NewRequests(), nil, "192.168.1.42:7463"))
+
+	for _, call := range []struct {
+		name   string
+		method string
+	}{{"read", http.MethodGet}, {"open", http.MethodPost}} {
+		response := perform(t, server.Handler(), call.method, "/v1/pairing", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s = %d %s", call.name, response.Code, response.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["peerAddress"] != "192.168.1.42:7463" {
+			t.Errorf("%s answered peerAddress = %v", call.name, body["peerAddress"])
+		}
+	}
+}
+
 // pairingServerWithoutDiscovery is a node started without -discover: a window,
 // no candidate list, no announcer.
 func pairingServerWithoutDiscovery(t *testing.T) (http.Handler, *pairing.Mode, *registry.Registry) {
