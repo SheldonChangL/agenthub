@@ -169,6 +169,13 @@ type PairingState struct {
 	// that address: whether another machine could reach it at all, and what is
 	// wrong when it could not.
 	//
+	// Forward-declared for #172 and empty until it merges. No node on main
+	// writes either field yet — /v1/pairing gains them there — so on today's
+	// node both arrive absent and the window falls back to judging the address
+	// string itself, which is the behaviour that ships with this PR. They are
+	// declared here so the window already reads the node's answer the moment
+	// one exists, rather than needing a second change on the day it appears.
+	//
 	// A pointer, because absent and false are different answers. A node older
 	// than these fields says nothing about reachability, and writing false for
 	// it would put a claim the node never made behind a remedy; the window then
