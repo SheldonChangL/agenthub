@@ -70,21 +70,28 @@ check the file you got against the page before you run it.
    Either way, `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app`
    does the same thing from a terminal.
 
-**First launch.** The app opens on a checklist called **Set up AgentHub** above
-an empty table, with five steps: install the node as a background service, scan
-for the Claude Code and Codex sessions already on this machine, give the node an
-address other machines can reach (it listens on loopback until you say
-otherwise), pair with a second machine — the same thing **Pair another
-machine…** does on the Network tab — and publish a session. The first step is
-the one that matters on macOS and Linux, because opening the app starts no node
-there: it takes you to Settings → **Background service** → **Install as a
-background service…**, which registers the node with launchd or `systemd --user`
-and starts it, and until that is done the window says it cannot reach
-`http://127.0.0.1:7462`. On Windows the installer has already registered and
-started the node, so that step is done before you open the window. Each step
-ticks itself off as you finish it, the card goes away once there is nothing left
-in it, and Settings → Appearance → **Show the setup checklist** brings it back.
-Nothing you have is published by any of this — that stays a separate choice,
+**First launch.** The app opens on a checklist called **Set up AgentHub**,
+above an empty table. Five steps:
+
+1. Install the node as a background service.
+2. Scan for the Claude Code and Codex sessions already on this machine.
+3. Give the node an address other machines can reach. It listens on loopback
+   until you say otherwise.
+4. Pair with a second machine, the same thing **Pair another machine…** does
+   on the Network tab.
+5. Publish a session.
+
+Step 1 is the one that matters on macOS and Linux: opening the app starts no
+node there, so until it is done the window says it cannot reach
+`http://127.0.0.1:7462`. The button takes you to Settings → **Background
+service** → **Install as a background service…**, which registers the node with
+launchd or `systemd --user` and starts it. On Windows the installer has already
+done this.
+
+Steps tick themselves off as you finish them. The card disappears once the node
+is running, your sessions are listed and one machine is paired. Publishing stays
+yours to do, and Settings → Appearance → **Show the setup checklist** brings the
+card back. Nothing is published by any of this; that stays a separate choice,
 made per session.
 
 ### Windows
