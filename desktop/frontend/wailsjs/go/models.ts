@@ -751,7 +751,7 @@ export namespace main {
 	    displayName: string;
 	    nameIsChosen: boolean;
 	    notice?: string;
-	    pairAddress?: string;
+	    peerAddress?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new PairingState(source);
@@ -767,7 +767,7 @@ export namespace main {
 	        this.displayName = source["displayName"];
 	        this.nameIsChosen = source["nameIsChosen"];
 	        this.notice = source["notice"];
-	        this.pairAddress = source["pairAddress"];
+	        this.peerAddress = source["peerAddress"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
