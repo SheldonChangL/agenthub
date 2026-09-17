@@ -614,6 +614,15 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .pairrow .name { font-weight: 600; }
 .pairrow .meta { font-size: 11.5px; color: var(--muted); }
 .pairrow .nextstep { font-size: 12px; line-height: 1.55; }
+/* The row keeps one element per slot for the life of the exchange, because the
+   buttons in it must survive the drawer's two-second tick. A slot that has
+   nothing to say in the row's current state is emptied rather than removed, and
+   an empty one must not leave a gap where a sentence used to be. */
+.pairrow .compare { display: flex; flex-direction: column; gap: 6px; }
+.pairrow .compare:empty,
+.pairrow .nextstep:empty,
+.pairrow > .muted:empty,
+.pairrow .decide:empty { display: none; }
 
 /* The two values the whole exchange rests on. Grouped, monospaced and
    selectable, one per line in the order the node gave them, so two people

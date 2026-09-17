@@ -190,6 +190,34 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return element("span", extraClass ? `pill ${extraClass}` : "pill", text);
   }
 
+  // keepChildren writes a container only when its contents actually differ.
+  //
+  // replaceChildren detaches every child before re-appending it, so handing it
+  // the very same elements in the very same order still drops the focus inside
+  // them and still eats a press whose mousedown and mouseup fall on either side
+  // of the call. Both polled lists in the pairing drawer are re-rendered twice a
+  // second over data that usually did not change, so "did not change" has to
+  // mean "not written".
+  function keepChildren(container, wanted) {
+    const current = container.children ?? [];
+    const unchanged = current.length === wanted.length
+      && wanted.every((node, index) => current[index] === node);
+    if (!unchanged) container.replaceChildren(...wanted);
+  }
+
+  // keptMessage returns the child already sitting at that position when it is
+  // the very same one-line message, so a list showing an explanation instead of
+  // rows is not rewritten on every tick either. A container holding nothing but
+  // 「目前沒有等待處理的配對請求。」 is the commonest state this drawer is in.
+  function keptMessage(container, index, className, text) {
+    const current = (container.children ?? [])[index];
+    if (current && current.className === className && (current.children?.length ?? 0) === 0
+      && current.textContent === text) {
+      return current;
+    }
+    return element("div", className, text);
+  }
+
 
   // renderChips draws the three filter groups. Each chip carries a facet count:
   // what it would match with the other groups and the search still applied —
@@ -725,12 +753,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // read is abandoned if the owner started interacting while it was in flight;
   // a foreground read — startup, 「重新整理」, the reload after a mutation — is
   // what the owner asked for and always applies.
+  // Answers whether it reached the screen. The pairing drawer's own tick is the
+  // one caller that has to know: it draws the request rows itself when this read
+  // was abandoned, and leaves them to this render when it was not, so one tick
+  // renders them once rather than twice.
   async function load({ background = false, exceptPairingDrawer = false } = {}) {
     const sequence = ++overviewRequest;
     const overview = await api.Overview();
     if (sequence <= overviewApplied) {
       // A later read already landed. This one describes an older moment.
-      return;
+      return false;
     }
     if (background && interactionInProgress({ exceptPairingDrawer })) {
       // The guards passed when this tick fired, but the owner has since selected
@@ -745,7 +777,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // dropped too. Leaving it put is also right for a read still in flight from
       // before this one: nothing from this tick reached the screen, so that older
       // read is still newer than what is displayed and should land.
-      return;
+      return false;
     }
     overviewApplied = sequence;
     const reachable = Boolean(overview.reachable);
@@ -808,6 +840,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const id of [...state.selected]) if (!alive.has(id)) state.selected.delete(id);
 
     render();
+    return true;
   }
 
   async function withBusy(label, fn) {
@@ -895,7 +928,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // printing it under 「對方要輸入的本機位址」 would hand someone a string that
     // cannot work, and the failure lands on the other machine as a timeout with
     // nothing to explain it.
-    hereUnreachableHeadline: "還沒有人連得進這台機器。",
+    // The headline over the remedy block. It used to state the negative a third
+    // time — the window panel's headline says nobody can get in, the announce
+    // line said nothing is being sent, and then this said it again — and a
+    // screen that says the same bad news three times before naming the fix is a
+    // screen people stop reading before the fix. So the negative is said once,
+    // above, and this line is the instruction; the explanation is under it.
+    hereFixHeadline: "先讓對方連得進來",
     hereUnreachable: "節點目前只在本機回路（loopback）上聽，所以這個位址只有這台機器自己連得到，" +
       "對方輸入它會連不上。到「設定 → 節點設定」打開「允許區網連線」，" +
       "選一個這台機器實際有的區網位址，再重新啟動節點；之後這裡就會顯示對方可以輸入的位址。",
@@ -907,6 +946,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // whose whole point is that nobody out there will see this machine.
     drawerSubAnnouncing: "開啟後同網段的人都會知道這台機器在跑 AgentHub。",
     drawerSubNotAnnouncing: "這台機器不會廣播，開啟後也不會出現在對方的候選清單裡；對方要用下面這個位址連進來。",
+    // The third case, and the commonest one: a default node announces nothing
+    // AND has no address anyone can reach. The "not announcing" sentence ends
+    // 「對方要用下面這個位址連進來」 while the block directly beneath it says
+    // 「還沒有人連得進這台機器。」 and shows no address at all — the subtitle
+    // promising exactly what the panel then withholds.
+    drawerSubUnreachable: "這台機器不會廣播，目前也還沒有人連得進來；先照下面的說明設定位址。",
     drawerSubUnknown: "配對視窗開著的時候，對方才連得進來。",
     // Said on the window panel too, because "配對視窗開啟中" on its own reads as
     // done, and it is not: the window is open and unreachable.
@@ -1187,14 +1232,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // nothing but its own text.
   function fingerprintBlock(request) {
     const box = element("div", "fingerprints");
+    writeFingerprintBlock(box, request);
+    return box;
+  }
+
+  // fingerprintSignature is what "the same two values, in the same order, with
+  // the same labels" means. Anything else and the block is rewritten; the box
+  // itself never is, because it is the thing two people are reading off two
+  // screens while this window ticks underneath them.
+  function fingerprintSignature(request) {
     const rows = Array.isArray(request.fingerprints) ? request.fingerprints : [];
+    return JSON.stringify(rows.map((row) => [row.role, row.machine, row.whose, row.fingerprint]));
+  }
+
+  function writeFingerprintBlock(box, request) {
+    const rows = Array.isArray(request.fingerprints) ? request.fingerprints : [];
+    const kids = [];
     if (rows.length === 0) {
       // A node that answered without the ordered pair. Nothing is invented
       // here: two values in an order this window guessed at are exactly the
       // thing the comparison cannot survive.
-      box.append(element("div", "muted",
+      kids.push(element("div", "muted",
         "這個節點沒有給出可以比對的指紋組。請改用終端機的 ah pair pending 來比對。"));
-      return box;
+      box.replaceChildren(...kids);
+      return;
     }
     for (const row of rows) {
       const who = element("div", "who");
@@ -1206,10 +1267,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // is shown as the plain text it is.
       if (whose) who.append(element("span", row.whose === "this machine" ? "mine" : "", `（${whose}）`));
       else if (row.whose) who.append(element("span", "", `（${row.whose}）`));
-      box.append(who);
-      box.append(element("div", "fingerprint", row.fingerprint || ""));
+      kids.push(who);
+      kids.push(element("div", "fingerprint", row.fingerprint || ""));
     }
-    return box;
+    box.replaceChildren(...kids);
   }
 
   // pairRequestRow is one exchange, with the decision below the values it is
@@ -1221,27 +1282,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // there is no affordance anywhere for deciding without comparing — that is
   // the whole of what this exchange asks a person for.
   function pairRequestRow(request) {
-    const undecided = request.state === "pending" || request.state === "awaiting-confirm";
-    const row = element("div", undecided ? "pairrow waiting" : "pairrow");
+    const row = element("div", "pairrow");
     const line = element("div", "line");
-    line.append(element("span", "name", request.displayName || request.nodeId || "（未提供名稱）"));
-    line.append(pill(PAIR_TEXT.state[pairStateKey(request)] ?? request.state, undecided ? "idle" : ""));
-    row.append(line);
-    row.append(element("div", "meta",
-      `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`));
-    row.append(element("div", "fingerprint", request.nodeId || ""));
+    const name = element("span", "name");
+    const statePill = pill("");
+    line.append(name, statePill);
+    const meta = element("div", "meta");
+    const nodeId = element("div", "fingerprint");
     // The request id, because it is the handle the other surface uses: an owner
     // holding this window and a terminal has to be able to tell that the row
     // here and the row `ah pair pending` prints are the same exchange.
-    row.append(element("div", "meta", request.id || ""));
+    const id = element("div", "meta");
     // The notice once, above the block it describes — the layout the node's own
     // wording assumes ("two fingerprints are shown: the requester first…"). Put
     // below them it read as a comment on the decision rather than as the
-    // instruction for reading the two lines above it.
-    if (undecided) for (const sentence of PAIR_TEXT.compare) row.append(element("div", "stale", sentence));
-    row.append(fingerprintBlock(request));
-    const step = pairStepText(request);
-    if (step) row.append(element("div", "nextstep", step));
+    // instruction for reading the two lines above it. In its own box so it can
+    // be filled and emptied as the row's state changes without the rest of the
+    // row being rebuilt around it.
+    const compare = element("div", "compare");
+    const fingerprints = element("div", "fingerprints");
+    const step = element("div", "nextstep");
     // The node's own next step, on a finished row only.
     //
     // It is kept because one finished row carries something this window cannot
@@ -1251,29 +1311,83 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // the terminal it was written for, and in a window whose approve button is
     // three centimetres below it, an instruction that contradicts the screen.
     // Those are the ones people stop reading.
-    if (!undecided && request.nextStep) row.append(element("div", "muted", request.nextStep));
-
+    const nodeStep = element("div", "muted");
+    // The decision sits below the values it is about: a button level with the
+    // fingerprints is one that can be pressed before they have been read, and
+    // there is no affordance anywhere for deciding without comparing — that is
+    // the whole of what this exchange asks a person for.
+    //
+    // Both buttons are built once and kept for the life of the row. The state
+    // decides which of them is in the box, never whether they exist: pending →
+    // awaiting-confirm relabels this same primary button and rebinds it, so an
+    // owner already reaching for it is reaching for the same element when the
+    // other machine answers.
     const buttons = element("div", "decide");
-    if (request.state === "pending" && request.direction === "incoming") {
-      const approve = element("button", "primary", PAIR_TEXT.approve);
-      approve.disabled = state.busy;
-      approve.onclick = () => decidePairRequest(request.id, "approve");
-      buttons.append(approve);
+    const primary = element("button", "primary");
+    const reject = element("button", "ghost", PAIR_TEXT.reject);
+    row.append(line, meta, nodeId, id, compare, fingerprints, step, nodeStep, buttons);
+    row.pairParts = { name, statePill, meta, nodeId, id, compare, fingerprints, step, nodeStep, buttons, primary, reject };
+    // Neither written yet. Both differ from every value updateRequestRow can
+    // compute, so the first update fills them.
+    row.pairCompare = null;
+    row.pairFingerprints = null;
+    updateRequestRow(row, request);
+    return row;
+  }
+
+  // updateRequestRow writes this request into an existing row.
+  //
+  // Same reason as updateCandidateRow, and more of it. This list is re-rendered
+  // twice per two-second tick — loadPairRequests() ends in renderPairRequests and
+  // so does the overview render behind it — and what these rows carry is the one
+  // irreversible decision in this window. A rebuilt 「指紋一致，核准」 loses the
+  // focus on it, and a press whose mousedown and mouseup land on either side of
+  // the rebuild never becomes a click at all.
+  function updateRequestRow(row, request) {
+    const parts = row.pairParts;
+    const undecided = request.state === "pending" || request.state === "awaiting-confirm";
+    row.className = undecided ? "pairrow waiting" : "pairrow";
+    parts.name.textContent = request.displayName || request.nodeId || "（未提供名稱）";
+    parts.statePill.className = undecided ? "pill idle" : "pill";
+    parts.statePill.textContent = PAIR_TEXT.state[pairStateKey(request)] ?? request.state;
+    parts.meta.textContent = `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`;
+    parts.nodeId.textContent = request.nodeId || "";
+    parts.id.textContent = request.id || "";
+    if (row.pairCompare !== undecided) {
+      row.pairCompare = undecided;
+      parts.compare.replaceChildren(
+        ...(undecided ? PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)) : []));
     }
-    if (request.state === "awaiting-confirm") {
-      const confirmButton = element("button", "primary", PAIR_TEXT.confirm);
-      confirmButton.disabled = state.busy;
-      confirmButton.onclick = () => decidePairRequest(request.id, "confirm");
-      buttons.append(confirmButton);
+    // The two values are what two people are reading off two screens while this
+    // ticks underneath them, so the block is rewritten only when the node
+    // actually answered with different ones — and the box holding them is never
+    // replaced at all.
+    const signature = fingerprintSignature(request);
+    if (row.pairFingerprints !== signature) {
+      row.pairFingerprints = signature;
+      writeFingerprintBlock(parts.fingerprints, request);
+    }
+    parts.step.textContent = pairStepText(request);
+    parts.nodeStep.textContent = !undecided && request.nextStep ? String(request.nextStep) : "";
+
+    // "approve" and "confirm" are one button in two states, not two buttons.
+    const verb = request.state === "awaiting-confirm" ? "confirm"
+      : (request.state === "pending" && request.direction === "incoming" ? "approve" : "");
+    const wanted = [];
+    if (verb !== "") {
+      parts.primary.textContent = verb === "confirm" ? PAIR_TEXT.confirm : PAIR_TEXT.approve;
+      parts.primary.disabled = state.busy;
+      parts.primary.onclick = () => decidePairRequest(request.id, verb);
+      wanted.push(parts.primary);
     }
     if (undecided) {
-      const rejectButton = element("button", "ghost", PAIR_TEXT.reject);
-      rejectButton.disabled = state.busy;
-      rejectButton.onclick = () => decidePairRequest(request.id, "reject");
-      buttons.append(rejectButton);
+      parts.reject.disabled = state.busy;
+      parts.reject.onclick = () => decidePairRequest(request.id, "reject");
+      wanted.push(parts.reject);
     }
-    if (buttons.children.length > 0) row.append(buttons);
-    return row;
+    // A finished row carries no button at all, so the box is emptied rather than
+    // hidden — and emptied only when it is not already empty.
+    keepChildren(parts.buttons, wanted);
   }
 
   // renderPairWaiting is the one line at the top of the drawer.
@@ -1294,33 +1408,78 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       `有 ${waiting.length} 個配對請求在等你比對指紋並決定，在這個面板最下面的「${PAIR_TEXT.requestsHeading}」。`));
   }
 
+  // The exchange's rows, keyed by request id and kept across renders.
+  //
+  // Same treatment as the candidate list, for a worse case. The drawer's
+  // two-second tick ends in this render twice over, and with byte-identical data
+  // the container was written both times — replaceChildren detaches every child
+  // before re-appending it, so 指紋一致，核准 / 指紋一致，確認 / 拒絕 lost their
+  // identity twice a second. The focus on one was dropped, and a press whose
+  // mousedown and mouseup fell on either side of a write was swallowed without
+  // ever becoming a click — on the one decision in this window that cannot be
+  // taken back.
+  const pairRequestRows = new Map();
+
   function renderPairRequests() {
     const rows = el("pair-requests");
     const note = el("pair-requests-note");
-    rows.replaceChildren();
     note.textContent = "";
     el("pair-requests-all").checked = state.pairRequestsAll;
     renderPairWaiting();
+
+    // Every path that shows a message instead of rows forgets the kept rows:
+    // they are off screen, and reusing one when the list comes back would put a
+    // request's old claims on screen without anything having re-read them.
+    const message = (...kids) => {
+      pairRequestRows.clear();
+      keepChildren(rows, kids);
+    };
 
     if (state.pairRequestsError) {
       // A failed read is not a fact about the other machine. Rendering it as
       // an empty list would tell an owner nobody asked, at the moment somebody
       // is waiting for them.
-      rows.append(element("div", "stale", PAIR_TEXT.requestsFailed));
-      rows.append(element("div", "muted", state.pairRequestsError));
+      message(
+        keptMessage(rows, 0, "stale", PAIR_TEXT.requestsFailed),
+        keptMessage(rows, 1, "muted", state.pairRequestsError));
       return;
     }
     if (!state.pairRequestsLoaded) {
-      rows.append(element("div", "empty", PAIR_TEXT.requestsUnread));
+      message(keptMessage(rows, 0, "empty", PAIR_TEXT.requestsUnread));
       return;
     }
     const requests = state.pairRequests ?? [];
     if (requests.length === 0) {
-      rows.append(element("div", "empty",
+      message(keptMessage(rows, 0, "empty",
         state.pairRequestsAll ? PAIR_TEXT.requestsEmptyAll : PAIR_TEXT.requestsEmpty));
       return;
     }
-    for (const request of requests) rows.append(pairRequestRow(request));
+    const wanted = [];
+    const seen = new Set();
+    for (const request of requests) {
+      // The request id is what says "the same exchange". A row that carries
+      // none — or one another row in this same list already used — cannot be
+      // matched to a kept row, so it gets a fresh one rather than somebody
+      // else's: a node repeating an id must not be able to take over the row
+      // whose fingerprints the owner has already compared.
+      const key = String(request.id ?? "");
+      const keyed = key !== "" && !seen.has(key);
+      seen.add(key);
+      let row = keyed ? pairRequestRows.get(key) : undefined;
+      if (row) {
+        updateRequestRow(row, request);
+      } else {
+        row = pairRequestRow(request);
+        if (keyed) pairRequestRows.set(key, row);
+      }
+      wanted.push(row);
+    }
+    for (const key of [...pairRequestRows.keys()]) {
+      if (!seen.has(key)) pairRequestRows.delete(key);
+    }
+    // And the container is written only on an arrival, a departure or a
+    // reorder.
+    keepChildren(rows, wanted);
   }
 
   // pairAddressReachable says whether the address the node answers with is one
@@ -1417,7 +1576,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // address to type. What goes here instead is what is wrong and the button
     // that fixes it.
     if (!here.reachable) {
-      value.textContent = PAIR_TEXT.hereUnreachableHeadline;
+      value.textContent = PAIR_TEXT.hereFixHeadline;
       el("copy-pair-address-status").textContent = "";
       note.replaceChildren(element("div", "",
         here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable));
@@ -1509,7 +1668,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     const announceable = pairing.state?.announcing?.announceableAddresses ?? 0;
-    sub.textContent = announceable > 0 ? PAIR_TEXT.drawerSubAnnouncing : PAIR_TEXT.drawerSubNotAnnouncing;
+    if (announceable > 0) {
+      sub.textContent = PAIR_TEXT.drawerSubAnnouncing;
+      return;
+    }
+    // Two different nodes hide behind "not announcing". One has an address to
+    // hand over and the subtitle should send the owner to it; the other — the
+    // default install, whose peer listener is on loopback — has none, and
+    // pointing at 「下面這個位址」 there points at a block that says nobody can
+    // get in and shows no address. Same question #pair-here itself asks.
+    sub.textContent = pairHereState(pairing.state ?? {}).reachable
+      ? PAIR_TEXT.drawerSubNotAnnouncing
+      : PAIR_TEXT.drawerSubUnreachable;
   }
 
   function renderPairingWindow() {
@@ -1594,7 +1764,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       headline.textContent = left === 0
         ? PAIR_TEXT.windowExpiring
         : (reachable ? PAIR_TEXT.windowOpen : PAIR_TEXT.windowOpenUnreachable);
-      detail.append(announceLine(announcing));
+      // The announce line says "nothing at all was sent" — true, and on an
+      // unreachable node it is the second of three amber statements of the same
+      // bad news, between a headline that already said nobody can get in and a
+      // remedy block below that used to say it a third time. Said once, up
+      // there; what the node itself reported is still kept, because that is the
+      // one part of the line this window could not derive.
+      if (reachable || canAnnounce) {
+        detail.append(announceLine(announcing));
+      } else if (announcing.lastError) {
+        detail.append(element("div", "muted", announcing.lastError));
+      }
       // The broadcast tradeoff is only a tradeoff where something is actually
       // broadcast. On a node that announces nothing, the note that matters is
       // the address above, not a warning about a name nobody will hear.
@@ -1686,7 +1866,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // machine's old claims on screen without anything having re-read them.
     const message = (...kids) => {
       candidateRows.clear();
-      rows.replaceChildren(...kids);
+      keepChildren(rows, kids);
     };
 
     const pairing = state.pairing;
@@ -1698,20 +1878,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // window: neither is looking, so neither has a list. The difference is
     // what the window panel above says, not what this region contains.
     if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
-      message(element("div", "empty",
+      message(keptMessage(rows, 0, "empty",
         "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。"));
       return;
     }
     if (pairing.availability !== "on") {
-      message(element("div", "empty",
+      message(keptMessage(rows, 0, "empty",
         "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。"));
       return;
     }
     if (pairing.candidatesError) {
       message(
-        element("div", "stale",
+        keptMessage(rows, 0, "stale",
           "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"),
-        element("div", "muted", pairing.candidatesError));
+        keptMessage(rows, 1, "muted", pairing.candidatesError));
       return;
     }
     // In its own element above the list, not the first row of it. A full list is
@@ -1733,7 +1913,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // broken — they were already paired with each other, which is precisely
       // why neither appeared. So the sentence says which of the two it is, and
       // where the missing machine actually is.
-      wanted.push(element("div", "empty", state.nodes.length > 0
+      // Kept across renders like the rows are. A list that is empty stays empty
+      // for as long as nobody is broadcasting, and rebuilding this div twice a
+      // second is the same pointless write the rows were fixed for.
+      wanted.push(keptMessage(rows, 0, "empty", state.nodes.length > 0
         ? "沒有看到任何還沒配對的機器在廣播。已經配對過的節點不會出現在這份清單裡——" +
           "它們在上方的「已配對節點」。"
         : "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，" +
@@ -1761,13 +1944,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const key of [...candidateRows.keys()]) {
       if (!seen.has(key)) candidateRows.delete(key);
     }
-    // And the list is written only when it differs. replaceChildren detaches
-    // every child before re-appending it, so handing it the very same elements
-    // in the very same order still costs the focus and still eats the press.
-    const current = rows.children ?? [];
-    const unchanged = current.length === wanted.length
-      && wanted.every((node, index) => current[index] === node);
-    if (!unchanged) rows.replaceChildren(...wanted);
+    // And the list is written only when it differs.
+    keepChildren(rows, wanted);
     // The node's own words about what this list is worth, so the warning here
     // cannot drift from the guarantees the node actually makes.
     if (pairing.notice) notice.textContent = pairing.notice;
@@ -3392,7 +3570,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   let pairRequestsRequest = 0;
   let pairRequestsApplied = 0;
 
-  async function loadPairRequests() {
+  // render: false is for the drawer's own tick, whose second leg ends in the
+  // overview's render() and therefore in renderPairRequests anyway. Rendering
+  // here as well wrote the rows twice per tick over data nothing had changed.
+  async function loadPairRequests({ render = true } = {}) {
     const sequence = ++pairRequestsRequest;
     const all = state.pairRequestsAll;
     let rows;
@@ -3404,7 +3585,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // A failed read is not a fact about the other machine, so the rows are
       // left alone and the panel says which of the two this is.
       state.pairRequestsError = String(error);
-      renderPairRequests();
+      if (render) renderPairRequests();
       return;
     }
     if (sequence <= pairRequestsApplied) return;
@@ -3412,7 +3593,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.pairRequests = Array.isArray(rows) ? rows : [];
     state.pairRequestsError = "";
     state.pairRequestsLoaded = true;
-    renderPairRequests();
+    if (render) renderPairRequests();
   }
 
   el("mcp-close").onclick = closeMCPConfig;
@@ -4428,8 +4609,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // here refreshes that list, but a revoke run in a terminal did not: the
     // drawer is a modal, so it held the fifteen-second refresh off, and the
     // list sat there naming a node this machine had already stopped trusting.
-    loadPairRequests()
+    // One render of the rows per tick, not two: this read used to end in
+    // renderPairRequests and so does the overview's render() right behind it.
+    // The rows are drawn here only when that read was abandoned — a dialog
+    // opened, a caret in a field — and never reached the screen.
+    loadPairRequests({ render: false })
       .then(() => load({ background: true, exceptPairingDrawer: true }))
+      .then((rendered) => {
+        if (!rendered) renderPairRequests();
+      })
       .catch(() => {});
   }, 2000);
 
