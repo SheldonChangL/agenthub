@@ -294,8 +294,21 @@ state.pairing = {
 state.pairingReadAt = performance.now();
 renderPairing();
 const silent = panel();
-if (!silent.includes("實際上什麼都沒有送出")) {
+// Nothing gets out AND nothing gets in — this node has no peer address either,
+// which is the default install. The headline says the whole of it once; it used
+// to be followed by the amber "nothing was sent at all" and then by the remedy
+// block's own third statement of the same thing, and a screen that repeats
+// itself three times is one people stop reading before the instruction.
+if (!silent.includes(scope.PAIR_TEXT.windowOpenUnreachable)) {
   failures.push("an open window that announces nothing was rendered as advertising");
+}
+if (silent.includes("實際上什麼都沒有送出")) {
+  failures.push("the panel states the negative a second time under a headline that already said it");
+}
+// The remedy is the other half, and it is stated once, below.
+const remedy = el("pair-local-address").serialize() + el("pair-here-note").serialize();
+if (!remedy.includes(scope.PAIR_TEXT.hereFixHeadline) || !remedy.includes("允許區網連線")) {
+  failures.push(`the screen says nobody can get in and names no fix: ${remedy}`);
 }
 if (!silent.includes(nodeReason)) {
   failures.push("the panel did not show the node's own reason for announcing nothing");

@@ -721,6 +721,25 @@ if (!el("copy-pair-address").disabled) {
   failures.push("the copy button is live on an address that cannot work on the other machine");
 }
 
+// One negative, then the fix. This screen used to say the same bad news three
+// times before naming anything to do about it — the headline, the amber
+// "nothing was sent at all", and then the remedy block's own headline — and a
+// screen that repeats itself three times is one people stop reading before the
+// instruction. So the announce line is not on an unreachable node...
+if (el("pairing-detail").serialize().includes("實際上什麼都沒有送出")) {
+  failures.push("the window panel repeats that nothing is being announced under a headline that already said nobody can get in");
+}
+// ...but what the node itself reported still is, because that is the one part
+// of the line this window could not derive.
+if (!el("pairing-detail").serialize().includes("the peer listener is on loopback")) {
+  failures.push("the node's own account of why it announces nothing was dropped along with the amber line");
+}
+// ...and the remedy block is headed by the instruction rather than by a third
+// statement of the problem.
+if (el("pair-local-address").textContent !== PAIR_TEXT.hereFixHeadline) {
+  failures.push(`the remedy block is headed ${JSON.stringify(el("pair-local-address").textContent)} rather than by what to do`);
+}
+
 // The remedy is a button, not a sentence about where to click: the fix is two
 // tabs away and the owner has just been told their node is unreachable.
 const fix = buttonsUnder(el("pair-here-note")).find((b) => b.textContent === PAIR_TEXT.hereFix);
@@ -744,6 +763,43 @@ if (!fix) {
   state.view = "network";
   scope.openPairingDrawer();
   await settle();
+}
+
+/* ---------------- 8b-ii. the drawer's subtitle, all three cases ---------- */
+
+// The subtitle branched on announceableAddresses alone, so the default node —
+// which announces nothing AND has no address anyone can reach — was told
+// 「對方要用下面這個位址連進來」 directly above a block saying nobody can get
+// in and showing no address at all: the subtitle promising exactly what the
+// panel then withholds.
+const subtitleFor = async (announceableAddresses, peerAddress) => {
+  pairingAnswer = {
+    availability: "on", windowAvailable: true,
+    state: {
+      open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+      announcing: { announceableAddresses }, peerAddress,
+    },
+    candidates: [],
+  };
+  await scope.loadPairing();
+  return el("pairing-sub").textContent;
+};
+const subAnnouncing = await subtitleFor(1, "192.168.50.10:7463");
+if (subAnnouncing !== PAIR_TEXT.drawerSubAnnouncing) {
+  failures.push(`a node that announces is subtitled ${JSON.stringify(subAnnouncing)}`);
+}
+const subQuiet = await subtitleFor(0, "192.168.50.10:7463");
+if (subQuiet !== PAIR_TEXT.drawerSubNotAnnouncing) {
+  failures.push(`a quiet node with an address to hand over is subtitled ${JSON.stringify(subQuiet)}`);
+}
+for (const nothing of ["127.0.0.1:7463", ""]) {
+  const subStuck = await subtitleFor(0, nothing);
+  if (subStuck !== PAIR_TEXT.drawerSubUnreachable) {
+    failures.push(`a node nobody can reach (peerAddress ${JSON.stringify(nothing)}) is subtitled ${JSON.stringify(subStuck)}`);
+  }
+  if (subStuck.includes("下面這個位址")) {
+    failures.push("the subtitle points at an address the block beneath it does not show");
+  }
 }
 
 /* ---------------- 8c. the list behind the drawer keeps up ---------------- */
@@ -869,6 +925,144 @@ if (!kept || !keptSend) {
   }
 }
 
+/* ------ 8d-ii. and so do the rows the trust decision is made on ---------- */
+
+// The same tick ends in renderPairRequests twice over — loadPairRequests() used
+// to render and so does the overview render behind it — so with byte-identical
+// data this container was written twice every two seconds. What is in it is
+// 指紋一致，核准 and 拒絕: the one irreversible decision in this window, and the
+// one place a swallowed press costs the most.
+pending = [incoming, outgoing];
+decided = [expired];
+state.pairRequestsAll = false;
+el("pair-requests-all").checked = false;
+await scope.loadPairRequests();
+const keptRequest = rendered()[0];
+const keptApprove = buttonsIn(keptRequest ?? {}).find((b) => b.textContent === PAIR_TEXT.approve);
+const keptFingerprints = find(keptRequest, "fingerprints")[0];
+if (!keptRequest || !keptApprove || !keptFingerprints) {
+  failures.push("the requests panel rendered no undecided row with a 核准 button to measure");
+} else {
+  const requestBox = el("pair-requests");
+  const realRequestReplace = requestBox.replaceChildren;
+  let requestWrites = 0;
+  requestBox.replaceChildren = function spy(...kids) {
+    requestWrites += 1;
+    return realRequestReplace.apply(this, kids);
+  };
+  fastTick?.fn();
+  await settle();
+  scope.tickCountdown();
+  await scope.loadPairRequests();
+  if (requestWrites !== 0) {
+    failures.push(`a tick over unchanged requests rewrote the panel ${requestWrites} times, detaching the approve button`);
+  }
+  delete requestBox.replaceChildren;
+  if (rendered()[0] !== keptRequest) {
+    failures.push("the drawer's tick rebuilt the request row whose fingerprints are being compared");
+  }
+  if (buttonsIn(rendered()[0] ?? {}).find((b) => b.textContent === PAIR_TEXT.approve) !== keptApprove) {
+    failures.push("the tick replaced 指紋一致，核准, so a press that spans a tick is swallowed on the trust decision");
+  }
+
+  // ...and the tick draws them once, not twice. Both of its legs used to end in
+  // renderPairRequests — the read itself, and the overview render behind it —
+  // so every row was walked twice per tick over data nothing had re-read.
+  // Counted on the one write renderPairRequests always performs.
+  const allToggle = el("pair-requests-all");
+  let requestRenders = 0;
+  let checkedValue = allToggle.checked;
+  Object.defineProperty(allToggle, "checked", {
+    configurable: true,
+    get: () => checkedValue,
+    set: (next) => { requestRenders += 1; checkedValue = next; },
+  });
+  fastTick?.fn();
+  await settle();
+  Object.defineProperty(allToggle, "checked",
+    { configurable: true, enumerable: true, writable: true, value: checkedValue });
+  if (requestRenders !== 1) {
+    failures.push(`one tick rendered the request rows ${requestRenders} times`);
+  }
+
+  // pending → awaiting-confirm is the one state change that happens under an
+  // owner's hand, because it is the other machine answering. The label and the
+  // handler change; the row, the fingerprint block being read off two screens,
+  // and the button itself do not.
+  pending = [{ ...incoming, state: "awaiting-confirm" }, outgoing];
+  await scope.loadPairRequests();
+  const advanced = rendered()[0];
+  if (advanced !== keptRequest) {
+    failures.push("a request that advanced was given a new row instead of its own being written");
+  }
+  if (find(advanced, "fingerprints")[0] !== keptFingerprints) {
+    failures.push("advancing a request replaced the fingerprint block the two owners are reading");
+  }
+  const advancedPrimary = buttonsIn(advanced ?? {}).find((b) => b.className === "primary");
+  if (advancedPrimary !== keptApprove) {
+    failures.push("the approve button was replaced rather than relabelled when the other machine answered");
+  }
+  if (advancedPrimary?.textContent !== PAIR_TEXT.confirm) {
+    failures.push(`the kept button still reads ${JSON.stringify(advancedPrimary?.textContent)} after the other machine approved`);
+  }
+  await advancedPrimary?.onclick();
+  await settle();
+  if (decisions.at(-1)?.[0] !== "confirm" || decisions.at(-1)?.[1] !== incoming.id) {
+    failures.push(`the relabelled button ran ${JSON.stringify(decisions.at(-1))} rather than a confirm of its own row`);
+  }
+
+  // A decided row leaves when the all-toggle is turned off, and the row beside
+  // it stays the element it was.
+  pending = [{ ...incoming, state: "awaiting-confirm" }, outgoing];
+  el("pair-requests-all").checked = true;
+  await el("pair-requests-all").onchange();
+  await settle();
+  if (!rowsHTML().includes("pair_expired000001")) {
+    failures.push("the all-toggle did not bring the decided row in for the removal check");
+  }
+  const beside = rendered()[0];
+  el("pair-requests-all").checked = false;
+  await el("pair-requests-all").onchange();
+  await settle();
+  if (rowsHTML().includes("pair_expired000001")) {
+    failures.push("a decided row kept its element after the all-toggle was turned off");
+  }
+  if (rendered().length !== 2) {
+    failures.push(`the panel kept ${rendered().length} rows for two undecided requests`);
+  }
+  if (rendered()[0] !== beside) {
+    failures.push("removing the decided row rebuilt the undecided row next to it");
+  }
+
+  // And with nothing to show at all, the empty state is kept too: the drawer
+  // sits in this state most of the time, and rebuilding the div twice a second
+  // is the same pointless write.
+  pending = [];
+  await scope.loadPairRequests();
+  const emptyState = el("pair-requests").children[0];
+  const realEmptyReplace = el("pair-requests").replaceChildren;
+  let emptyWrites = 0;
+  el("pair-requests").replaceChildren = function spy(...kids) {
+    emptyWrites += 1;
+    return realEmptyReplace.apply(this, kids);
+  };
+  fastTick?.fn();
+  await settle();
+  await scope.loadPairRequests();
+  if (emptyWrites !== 0) {
+    failures.push(`a tick over an empty request list rewrote it ${emptyWrites} times`);
+  }
+  delete el("pair-requests").replaceChildren;
+  if (el("pair-requests").children[0] !== emptyState) {
+    failures.push("the empty-state message was rebuilt on a tick");
+  }
+  if (!rowsHTML().includes(PAIR_TEXT.requestsEmpty)) {
+    failures.push("an empty request list stopped saying so");
+  }
+  pending = [incoming, outgoing];
+  await scope.loadPairRequests();
+}
+
 /* ---------------- 8e. the summary line in the node list's foot ----------- */
 
 // The one line an owner reads without opening the drawer. It used to tell every
@@ -946,7 +1140,7 @@ if (!hostileHTML.includes("&lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;"
 // Nothing a peer chose may decide a class name — including the role and whose
 // labels, which are mapped through a fixed table and otherwise shown as text.
 for (const cls of hostileHTML.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|decide|primary|ghost|pill idle|pill|empty)"$/.test(cls)) {
+  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty)"$/.test(cls)) {
     failures.push(`a peer-supplied value reached a class name: ${cls}`);
   }
 }
