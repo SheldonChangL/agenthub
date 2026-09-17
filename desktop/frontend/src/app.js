@@ -44,6 +44,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // come from the node, so they are subtracted from the moment they were read
     // rather than compared against this machine's own idea of the expiry.
     pairingReadAt: 0,
+    // mcpSession is whose config the MCP dialog is showing. Only the title
+    // needs it, and only so a language switch can write that title again.
+    mcpSession: null,
     // inboxSession is whose inbox the modal is showing, so Clear knows what it
     // would empty and a refresh knows what to re-read.
     inboxSession: null,
@@ -69,6 +72,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Whether a read ever reached the node. It decides what an unreachable read
     // says: "this is the last data we had" only means something if there is any.
     loadedOnce: false,
+    // What the title bar's node line last said, kept as its parts rather than
+    // as the finished sentence: half of that line is a translated string, so a
+    // language switch has to build it again and there is nothing else to build
+    // it from once load() has returned.
+    nodeLine: null,
+    // The addresses the settings form's address list was built from. Same
+    // reason: the option labels are part translation, and rebuilding them
+    // after a switch must not mean another round trip to the node.
+    nodeAddresses: { list: [], failure: "" },
     // ---- redesign state ----
     // Grouped filters: a Set of chosen values per group (docs/ui-contract.md
     // §5.1). Empty means "no restriction". Search, filters and sort are kept in
@@ -419,7 +431,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         checkCell,
         idCell,
         cell(element("td"), pill(session.status, statusPillClass(session.status))),
-        element("td", "muted mgmt", session.management),
+        element("td", "muted mgmt", managementLabel(session.management)),
         cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
         flags,
         cwdCell,
@@ -456,6 +468,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
+
+  // managementLabel turns the node's enum into a word in the language on
+  // screen. The node sends model.Management ("managed"/"unmanaged"), which is
+  // an identifier, and this column used to render it raw — so the table read
+  // "managed" under a Chinese header.
+  //
+  // Anything the table does not know is shown exactly as it arrived: a value
+  // this build has never heard of is the node saying something new, and
+  // blanking it or guessing at it would hide that.
+  function managementLabel(management) {
+    const value = String(management ?? "");
+    const label = t("session.managed." + value);
+    return label === "session.managed." + value ? value : label;
+  }
 
   const VIEWS = ["local", "network", "settings"];
 
@@ -836,12 +862,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     el("conn-dot").className = reachable ? "dot ok" : "dot bad";
-    // The app's own version rides on this line in both states: the half of the
-    // bug reports worth having are the ones where the node is not reachable.
-    const version = state.appVersion ? ` · ${state.appVersion}` : "";
-    el("node-line").textContent = reachable
-      ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}${version}`
-      : t("app.unreachable", { url: overview.nodeUrl, version });
+    state.nodeLine = {
+      reachable,
+      displayName: overview.node?.displayName ?? "",
+      platform: overview.node?.platform ?? "",
+      nodeUrl: overview.nodeUrl ?? "",
+    };
+    renderNodeLine();
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
     if (!reachable) {
@@ -861,6 +888,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     render();
     return true;
+  }
+
+  // renderNodeLine writes the title bar's one line about the node from
+  // state.nodeLine, never from a closure over one load(). The unreachable half
+  // of it is a translated sentence, so this has to be re-runnable: after a
+  // language switch paintStatic has just put the placeholder key back on the
+  // element, and there is no second load() coming.
+  function renderNodeLine() {
+    const line = state.nodeLine;
+    if (!line) return;
+    // The app's own version rides on this line in both states: the half of the
+    // bug reports worth having are the ones where the node is not reachable.
+    const version = state.appVersion ? ` · ${state.appVersion}` : "";
+    el("node-line").textContent = line.reachable
+      ? `${line.displayName} · ${line.platform} · ${line.nodeUrl}${version}`
+      : t("app.unreachable", { url: line.nodeUrl, version });
   }
 
   async function withBusy(label, fn) {
@@ -2317,8 +2360,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-node-input").value = "";
   }
 
+  // renderAudienceCount says how many sessions the dialog is about.
+  //
+  // One sentence through plural() rather than two fragments around a bold
+  // number: English wanted "session(s)" for the singular, which is the one
+  // place a table of finished sentences gives up, and (s) in a dialog that
+  // publishes things reads as a draft.
+  function renderAudienceCount() {
+    el("audience-count").textContent = plural(state.selected.size, "audience.count");
+  }
+
   function openAudienceModal() {
-    el("audience-count").textContent = String(state.selected.size);
+    renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
     renderAudienceNodeList();
@@ -2635,6 +2688,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // textContent like everything else a provider had a hand in.
   async function openMCPConfig(sessionId) {
     const sequence = ++mcpRequest;
+    // Kept because half this title is a translated word: after a language
+    // switch the dialog has to be able to write it again, and the id is not
+    // anywhere else by then.
+    state.mcpSession = sessionId;
     el("mcp-title").textContent = `${t("mcp.title")} · ${sessionId}`;
     el("mcp-text").textContent = "";
     el("mcp-status").textContent = t("mcp.generating");
@@ -2686,6 +2743,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Retire whatever is in flight, so its answer cannot paint a hidden dialog
     // or take the clipboard from whatever the owner copied next.
     mcpApplied = mcpRequest;
+    state.mcpSession = null;
     el("mcp-modal").classList.add("hidden");
     el("mcp-text").textContent = "";
     el("mcp-status").textContent = "";
@@ -3581,6 +3639,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // wrote fields the owner never touched.
     const addresses = view.error ? { list: [], failure: "" } : await fetchLocalAddresses();
     if (sequence <= nodeSettingsApplied) return;
+
     nodeSettingsApplied = sequence;
     applyNodeSettings(view, addresses);
   }
@@ -3624,6 +3683,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     state.nodeSettings = view;
+    state.nodeAddresses = addresses;
     // The form edits what the NEXT start will use, which is `saved`, not what
     // is running. The node merges a write onto the saved configuration and
     // judges it there — its own comment in internal/api/settings.go says so —
@@ -3895,6 +3955,40 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       select.append(option);
     }
     select.value = isDefault ? "" : value;
+  }
+
+  // relabelNodeSettings puts this form back into the language in use without
+  // reading the node again and without touching a single thing the owner
+  // typed.
+  //
+  // Not applyNodeSettings: that repaints every field from `saved`, so calling
+  // it here would throw away a half-edited form because somebody changed the
+  // language. What is rebuilt is only what is translated — the address list's
+  // labels (the option VALUES are addresses and survive, and the current
+  // selection is passed back in as `current`), the source tags beside each
+  // field, the restart hint, and the warnings syncNodeSettingsForm derives.
+  function relabelNodeSettings() {
+    const view = state.nodeSettings;
+    if (!view) return;
+    const select = el("node-peerlisten");
+    const chosen = select.value || view.saved?.peerListen || "";
+    fillPeerListenOptions(chosen, state.nodeAddresses?.list);
+    const running = view.settings ?? {};
+    const sources = view.sources ?? {};
+    const saved = view.saved ?? {};
+    for (const [id, key] of [
+      ["node-peerlisten-source", "peerListen"],
+      ["node-allowlan-source", "allowLan"],
+      ["node-discover-source", "discover"],
+      ["node-private-source", "treatAsPrivate"],
+      ["node-autowake-source", "autoWake"],
+    ]) {
+      el(id).textContent = describeSource(sources[key], running[key], saved[key]);
+    }
+    el("node-settings-hint").textContent = view.restartRequired
+      ? t("nodeSettings.hintRestart")
+      : t("nodeSettings.hint");
+    syncNodeSettingsForm();
   }
 
   // syncNodeSettingsForm explains the combination on screen. It writes no field
@@ -4308,6 +4402,37 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     savePrefs();
     paintStatic();
     render();
+    repaintFromState();
+  }
+
+  // repaintFromState is the other half of a language switch, and the half that
+  // was missing.
+  //
+  // paintStatic writes t(key) onto every [data-t] element in index.html —
+  // including the ones JS later overwrites with something derived from state.
+  // For those, the key in the markup is a placeholder ("reading the service
+  // status…"), so a switch that stopped at paintStatic() + render() left the
+  // Settings panel — the panel the language control itself sits in — claiming
+  // to be loading, and left a button reading "Install as a background service"
+  // on a machine where the service is installed and running.
+  //
+  // render() re-derives what it owns (the rows, the counts, the selection bar,
+  // the node list and the pairing drawer while their view is on screen). This
+  // covers everything else that is written from state: the title bar's node
+  // line, the service panel and its pill, the settings form, and the two
+  // dialogs that can be open across a switch. The rule for anything added
+  // later: if JS writes a [data-t] element, it is re-derived here.
+  function repaintFromState() {
+    renderNodeLine();
+    if (state.service) renderService();
+    if (state.nodeSettings) relabelNodeSettings();
+    if (state.inboxSessionAsked) {
+      el("inbox-title").textContent = state.inboxSessionAsked;
+      showInboxTab(state.inboxTab);
+      renderOutbound();
+    }
+    if (!el("audience-modal").classList.contains("hidden")) renderAudienceCount();
+    if (state.mcpSession) el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
   }
 
   /* ---------------- redesign wiring ---------------- */
@@ -4431,17 +4556,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
-    openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
+    openAudienceModal, renderAudienceCount, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
-    pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
+    pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
+    renderNodeLine, relabelNodeSettings, repaintFromState,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
     t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,

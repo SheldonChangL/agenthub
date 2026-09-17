@@ -8,6 +8,7 @@
 //   node frontend/test/render-hostile-inbox.mjs
 
 import { document } from "./dom-shim.mjs";
+import { inEnglish } from "./fixtures/in-english.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -273,6 +274,15 @@ if (!button) {
     failures.push("clicking the button did not open the inbox");
   }
 }
+
+// The drawer in English (review of #173). Its own words are repainted by the
+// renderer rather than by render(), so the switch is followed by the same
+// render the window does — and what a hostile body says is not this check's
+// business here, only that the frame around it is in one language and carries
+// no key names.
+inEnglish(scope, failures, "inbox drawer in English", [
+  "inbox-foot-note", "inbox-title", "inbox-meta", "inbox-body", "inbox-clear",
+], () => scope.renderInbox(hostile));
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));

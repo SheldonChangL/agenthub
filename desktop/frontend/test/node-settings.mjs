@@ -18,6 +18,7 @@
 //   node frontend/test/node-settings.mjs
 
 import { document } from "./dom-shim.mjs";
+import { inEnglish } from "./fixtures/in-english.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -1240,6 +1241,17 @@ if (!el("node-autowake").checked) {
   failures.push("an older paint landed on top of a newer one");
 }
 
+
+// The form in English (review of #173). The address list is built by
+// fillPeerListenOptions, which nothing re-ran on a language switch, so the
+// options kept the words of the language before it — including the one the
+// placeholder is written in, which is the option a form with no match falls
+// back to.
+inEnglish(app, failures, "node settings in English", [
+  "node-peerlisten", "node-settings-hint", "node-settings-combination", "node-lan-note",
+  "node-peerlisten-source", "node-allowlan-source", "node-discover-source",
+  "node-private-source", "node-autowake-source",
+]);
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));
