@@ -269,3 +269,68 @@ func TestDecidedRequestsAreKeptThenForgotten(t *testing.T) {
 		t.Fatalf("list still holds %d rows", len(rows))
 	}
 }
+
+// SettleFrom is the one atomic decision point: it takes the transition, the
+// state it came from and the row's own change together.
+//
+// The three parts are asserted together because the callers depend on them
+// being one step. The approval records "this request wrote the trust" in the
+// same instant as becoming approved, since a refusal reading between those two
+// facts revoked nothing and left a refused key trusted; the refusal learns
+// whether it was approved from the transition itself, since the answer read
+// beforehand is about a row the node may already have left.
+func TestSettleFromTakesTheTransitionAndTheRowTogether(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	if err := requests.Add(pending("pair_1", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatal(err)
+	}
+
+	settled, previous, err := requests.SettleFrom("pair_1",
+		[]pairing.RequestState{pairing.StatePending}, pairing.StateApproved, "",
+		func(row *pairing.Request) { row.TrustedByRequest = true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous != pairing.StatePending {
+		t.Errorf("previous = %q, want %q", previous, pairing.StatePending)
+	}
+	if settled.State != pairing.StateApproved || !settled.TrustedByRequest {
+		t.Errorf("the returned row does not carry both halves: %+v", settled)
+	}
+	if stored, _ := requests.Get("pair_1"); stored.State != pairing.StateApproved ||
+		!stored.TrustedByRequest {
+		t.Errorf("the stored row does not carry both halves: %+v", stored)
+	}
+
+	// The refusal accepts either state and reports which one it found, which is
+	// what decides whether a trust row is revoked.
+	refused, previous, err := requests.SettleFrom("pair_1",
+		[]pairing.RequestState{pairing.StatePending, pairing.StateApproved},
+		pairing.StateRejected, pairing.ReasonDeclined, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous != pairing.StateApproved {
+		t.Errorf("previous = %q, want %q: a refusal reading this would revoke nothing",
+			previous, pairing.StateApproved)
+	}
+	if refused.State != pairing.StateRejected || refused.Reason != pairing.ReasonDeclined {
+		t.Errorf("the refusal did not land: %+v", refused)
+	}
+
+	// And a transition that is not the one waiting changes nothing at all.
+	_, previous, err = requests.SettleFrom("pair_1",
+		[]pairing.RequestState{pairing.StatePending}, pairing.StateApproved, "",
+		func(row *pairing.Request) { row.TrustedByRequest = false })
+	if !errors.Is(err, pairing.ErrWrongState) {
+		t.Fatalf("settling a refused request = %v, want ErrWrongState", err)
+	}
+	if previous != pairing.StateRejected {
+		t.Errorf("the refusal reports %q as the state it found", previous)
+	}
+	stored, _ := requests.Get("pair_1")
+	if stored.State != pairing.StateRejected || !stored.TrustedByRequest {
+		t.Errorf("a refused transition changed the row anyway: %+v", stored)
+	}
+}
