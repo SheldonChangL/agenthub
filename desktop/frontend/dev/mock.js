@@ -120,6 +120,10 @@ configure({
     log("SaveNodeSettings", patch);
     return { ...nodeSettings };
   },
+  // The build the window reports in its title bar. "unreleased" is what a
+  // build that no tag stamped really answers, so that is what the dev page
+  // shows rather than a version number nothing produced.
+  Version: async () => ({ release: "unreleased", goos: "darwin", goarch: "arm64" }),
   RestartService: async () => { log("RestartService"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // What the window actually calls. It was missing, so every save on this page
   // ended in "重新啟動節點失敗：api.RestartNode is not a function" — the dev
