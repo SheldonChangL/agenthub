@@ -308,8 +308,8 @@ export const TEXT = {
   "busy.failed": "{action}失敗：{error}",
 
   "network.summaryPairing": "配對中 · 剩 {left}",
-  "network.summaryOpenNotAnnouncing": "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。打開配對面板，把裡面顯示的本機位址給對方輸入。",
-  "network.summaryOpenUnreachable": "視窗開著，但這台沒有在廣播，也還沒有人連得進來。打開配對面板看原因和補救。",
+  "network.summaryOpenNotAnnouncing": "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。按上面的「配對另一台機器…」，把裡面顯示的本機位址給對方輸入。",
+  "network.summaryOpenUnreachable": "視窗開著，但這台沒有在廣播，也還沒有人連得進來。按上面的「配對另一台機器…」看原因和補救。",
   "network.summaryOff": "未啟用",
   "network.summaryOffLine": "節點啟動時沒有 -discover，這台機器不廣播也不看；仍可按「與另一台機器配對」開視窗，用位址配對。",
   "network.summaryUnreadable": "讀不到",
@@ -598,6 +598,7 @@ export const TEXT = {
   "onboarding.service.actionStart": "啟動節點",
   "onboarding.service.actionRestart": "重新啟動節點",
   "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，所以這個視窗查不出節點是被什麼帶起來的：{error}",
+  "onboarding.service.bodyNoAhNodeDown": "節點沒有回應，而且這台機器上沒有 ah 指令，所以這個視窗查不出節點本來是被什麼帶起來的（{error}）。它還是可以直接啟動隨這個 app 一起安裝的節點；如果這台機器上的節點本來是由服務管理員帶起來的，請改用那邊的方式啟動。",
 
   "onboarding.sessions.title": "找出這台機器上的 session",
   "onboarding.sessions.body": "AgentHub 是讀 Claude Code 和 Codex 留在硬碟上的檔案。掃描一次，下面的表格就會有東西；之後它會自己保持更新。",
@@ -612,7 +613,8 @@ export const TEXT = {
   "onboarding.reachable.bodyNodeDown": "節點沒有回應，說不出它聽在哪裡。請先在步驟 1 把它啟動。",
   "onboarding.reachable.bodyUnreadable": "讀不到節點設定，所以這裡暫時沒有東西可以給你按。",
   "onboarding.reachable.retry": "重新讀取一次",
-  "onboarding.reachable.formDirty": "設定頁還有沒存的改動，請先存檔或還原。",
+  "onboarding.reachable.formDirty": "節點設定還有沒存的改動。請先在那頁按「儲存」或「重新讀取」，再回來按這裡。",
+  "onboarding.reachable.formDirtyFields": "沒存的是：{fields}。",
   "onboarding.reachable.openSettings": "打開節點設定",
 
   "onboarding.pair.title": "和另一台機器配對",
