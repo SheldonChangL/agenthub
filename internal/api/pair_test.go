@@ -883,22 +883,13 @@ func TestARequesterRejectBlocksALaterApprove(t *testing.T) {
 	}
 }
 
-// A refusal may only take back what the refused request itself wrote. A node
-// paired earlier by some other route is not revoked because a pairing request
-// naming it was withdrawn.
-func TestARejectDoesNotRevokeATrustItDidNotWrite(t *testing.T) {
-	requester := newPairNode(t, "asks")
-	receiver := newPairNode(t, "decides")
-	receiver.openWindow()
-	// Paired by hand, before any of this.
-	if err := receiver.store.TrustNode(context.Background(), registry.TrustedNode{
-		NodeID: requester.node.ID, DisplayName: "paired by hand", Platform: "test",
-		PublicKey:   identity.EncodePublicKey(requester.keypair.Public),
-		Fingerprint: identity.Fingerprint(requester.keypair.Public),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+// approvedRequest walks requester → receiver as far as the receiving owner's
+// approval, which is the only state from which a refusal revokes anything.
+//
+// The tests below need to be past that point: a refusal of a request still
+// pending never reaches the guards on revoking at all.
+func approvedRequest(t *testing.T, requester, receiver *pairNode) pairing.Request {
+	t.Helper()
 	started := requester.startRequest(receiver.address())
 	if started.Code != http.StatusCreated {
 		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
@@ -907,11 +898,78 @@ func TestARejectDoesNotRevokeATrustItDidNotWrite(t *testing.T) {
 	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
 		t.Fatal(err)
 	}
-	// Refused without this request ever having written anything.
+	receiver.decide(t, outgoing.ID, "approve", http.StatusOK)
+	if len(receiver.trusted()) != 1 {
+		t.Fatalf("approval did not write the trust row the revoke tests are about: %v",
+			receiver.trusted())
+	}
+	return outgoing
+}
+
+// A refusal may only take back what the refused request itself wrote. A node
+// trusted by some other route — `ah pair` by hand — is not revoked because a
+// pairing request naming it was refused.
+//
+// The row is the stand-in for that other route: trust under this node id that
+// this request did not write is exactly what TrustedByRequest being false
+// means, and clearing it here is the only way to put an approved request in
+// that state, because approving always sets it.
+func TestARejectDoesNotRevokeATrustItDidNotWrite(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	outgoing := approvedRequest(t, requester, receiver)
+
+	if _, err := receiver.server.pairRequests.Update(outgoing.ID, func(row *pairing.Request) {
+		row.TrustedByRequest = false
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
 
-	if trusted := receiver.trusted(); len(trusted) != 1 {
-		t.Fatalf("the earlier pairing was revoked by an unrelated refusal: %v", trusted)
+	trusted := receiver.trusted()
+	if len(trusted) != 1 {
+		t.Fatalf("a trust this request did not write was revoked by its refusal: %v", trusted)
+	}
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the refused request is %q, want %q", state, pairing.StateRejected)
+	}
+}
+
+// The same guard from the other side: the request did write a trust row, but
+// what is stored under that node id now is a different key. Some later act
+// replaced it, and replacing is not this refusal's to undo — revoking would
+// delete a pairing the owner made after this one.
+func TestARejectDoesNotRevokeATrustStoredUnderAnotherKey(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	outgoing := approvedRequest(t, requester, receiver)
+
+	// The owner re-paired that node id by hand, against a new key. The store
+	// will not overwrite a key in place, so this is the revoke-and-pair-again
+	// the owner would have done.
+	replacement, _ := throwawayIdentity(t)
+	if err := receiver.store.RevokeNode(context.Background(), requester.node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiver.store.TrustNode(context.Background(), registry.TrustedNode{
+		NodeID: requester.node.ID, DisplayName: "paired again by hand", Platform: "test",
+		PublicKey:   identity.EncodePublicKey(replacement.Public),
+		Fingerprint: identity.Fingerprint(replacement.Public),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	trusted := receiver.trusted()
+	if len(trusted) != 1 {
+		t.Fatalf("the later pairing was revoked by a refusal of the earlier one: %v", trusted)
+	}
+	if trusted[0].PublicKey != identity.EncodePublicKey(replacement.Public) {
+		t.Errorf("the stored key changed: %q", trusted[0].PublicKey)
 	}
 }
 

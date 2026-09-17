@@ -132,10 +132,13 @@ func TestOneSourceCannotHoldManyPendingRequests(t *testing.T) {
 	}
 }
 
-// A full incoming list makes room by displacing the oldest thing still waiting.
-// The owner is standing at two machines with a window open; their own machine's
-// request landing matters more than an older unanswered row.
-func TestAFullIncomingListDisplacesTheOldest(t *testing.T) {
+// A full incoming list is refused, and only a sender that already has a row
+// waiting here can make room — by displacing its own oldest one.
+//
+// Displacing the oldest row overall looked kinder to the owner and was not: it
+// handed whoever sent the newest request the power to evict whoever sent the
+// oldest, and that is exactly what a flooder does.
+func TestAFullIncomingListDisplacesOnlyWithinOneSource(t *testing.T) {
 	c := &clock{at: time.Now()}
 	requests := pairing.NewRequestsWithClock(c.now)
 	for i := range pairing.MaxPending {
@@ -147,27 +150,77 @@ func TestAFullIncomingListDisplacesTheOldest(t *testing.T) {
 		c.at = c.at.Add(time.Second)
 	}
 
-	real := pending("pair_real", "node_real", c.at, pairing.Incoming)
-	real.SourceHost = "192.168.1.42"
-	real.ExpiresAt = c.at.Add(pairing.RequestTTL)
-	if err := requests.Add(real); err != nil {
-		t.Fatalf("the real machine was turned away by a full list: %v", err)
+	// A stranger arriving at a full list is told the list is full, rather than
+	// being handed somebody else's place in it.
+	stranger := pending("pair_stranger", "node_stranger", c.at, pairing.Incoming)
+	stranger.SourceHost = "192.168.1.42"
+	if err := requests.Add(stranger); !errors.Is(err, pairing.ErrTooManyRequests) {
+		t.Fatalf("a new address at a full list = %v, want ErrTooManyRequests", err)
 	}
-	if row, _ := requests.Get("pair_real"); row.State != pairing.StatePending {
-		t.Fatalf("the real machine's request is %q", row.State)
+	if row, _ := requests.Get("pair_0"); row.State != pairing.StatePending {
+		t.Fatalf("the oldest row was evicted by a refused request: %q", row.State)
 	}
-	// The oldest is gone, and says why: it did not run out of time, something
-	// filled the list.
-	displaced, ok := requests.Get("pair_0")
+
+	// The machine that already has a row may retry: it loses its own place,
+	// nobody else's.
+	retry := pending("pair_retry", "node_retry", c.at, pairing.Incoming)
+	retry.SourceHost = "10.0.0.3"
+	retry.ExpiresAt = c.at.Add(pairing.RequestTTL)
+	if err := requests.Add(retry); err != nil {
+		t.Fatalf("a retry from an address already in the list: %v", err)
+	}
+	if row, _ := requests.Get("pair_retry"); row.State != pairing.StatePending {
+		t.Fatalf("the retry is %q", row.State)
+	}
+	// The displaced row says why: it did not run out of time, something filled
+	// the list.
+	displaced, ok := requests.Get("pair_3")
 	if !ok {
 		t.Fatal("the displaced request vanished; the owner has to be able to tell what happened")
 	}
 	if displaced.State != pairing.StateExpired || displaced.Reason != pairing.ReasonDisplaced {
 		t.Fatalf("displaced request = %q/%q, want expired/displaced", displaced.State, displaced.Reason)
 	}
-	// And nothing else was touched.
-	if row, _ := requests.Get("pair_1"); row.State != pairing.StatePending {
-		t.Fatalf("a second row was displaced by one arrival: %q", row.State)
+	// And nothing from any other address was touched.
+	if row, _ := requests.Get("pair_0"); row.State != pairing.StatePending {
+		t.Fatalf("another address's row was displaced by one arrival: %q", row.State)
+	}
+}
+
+// The reviewer's probe: a flooder rotating source addresses cannot evict the
+// owner's own request.
+//
+// Six addresses were enough to fill the list under the old rule, and every
+// request after that pushed out whatever was oldest — the owner's real machine
+// among them, which then showed as displaced during the window they had opened
+// to pair it.
+func TestAFloodRotatingSourcesCannotEvictTheOwnersRequest(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+
+	legit := pending("pair_legit", "node_legit", c.at, pairing.Incoming)
+	legit.SourceHost = "10.0.0.9"
+	if err := requests.Add(legit); err != nil {
+		t.Fatalf("the owner's own request: %v", err)
+	}
+	c.at = c.at.Add(time.Second)
+
+	for i := range 40 {
+		row := pending(fmt.Sprintf("pair_flood%d", i), fmt.Sprintf("node_flood%d", i), c.at, pairing.Incoming)
+		row.SourceHost = fmt.Sprintf("fd00::%d", i)
+		// Refusals are the point: what must not happen is one of these
+		// succeeding at the owner's expense.
+		_ = requests.Add(row)
+		c.at = c.at.Add(time.Second)
+	}
+
+	row, ok := requests.Get("pair_legit")
+	if !ok {
+		t.Fatal("the owner's request was forgotten entirely")
+	}
+	if row.State != pairing.StatePending {
+		t.Fatalf("the owner's request is %q/%q after a flood from rotating addresses, want it "+
+			"still pending", row.State, row.Reason)
 	}
 }
 

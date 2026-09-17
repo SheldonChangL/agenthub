@@ -631,16 +631,27 @@ func (s *Server) approvePairRequest(w http.ResponseWriter, r *http.Request) {
 		writePairStateError(w, request, "approved", err)
 		return
 	}
+	// Recorded before the trust store is written, not after, so a refusal
+	// landing in between cannot read a row that says this request trusted
+	// nobody and skip the revoke — the window between the two writes was small
+	// and the thing left behind was a trusted key the owner had just refused.
+	// Erring the other way is harmless: untrustFromRequest finds no row, or one
+	// under a different key, and does nothing.
+	settled, err = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
+		row.TrustedByRequest = true
+	})
+	if err != nil {
+		writePairStateError(w, request, "approved", err)
+		return
+	}
 	if err := s.trustFromRequest(r.Context(), settled); err != nil {
+		_, _ = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
+			row.TrustedByRequest = false
+		})
 		_, _ = s.pairRequests.Settle(request.ID, pairing.StateApproved, pairing.StatePending, "")
 		writeRegistryError(w, err)
 		return
 	}
-	// Recorded so a later refusal from that machine knows this request is what
-	// wrote the trust row, and is allowed to take it back again.
-	settled, _ = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
-		row.TrustedByRequest = true
-	})
 	log.Printf("paired with node %s (fingerprint %s) after its request %s was approved",
 		settled.NodeID, settled.Fingerprint, settled.ID)
 	writeJSON(w, http.StatusOK, s.view(settled))
