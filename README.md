@@ -74,6 +74,16 @@ your PATH.
 There is no arm64 desktop build for Windows or Linux; macOS is a universal
 binary, so one file covers both Apple architectures.
 
+**First launch.** The app opens on a setup checklist above an empty table:
+install the node as a background service, scan for the Claude Code and Codex
+sessions already on this machine, give the node an address other machines can
+reach (it listens on loopback until you say otherwise, and the button that
+changes that says so in its own label), and pair with a second machine. Each
+step ticks itself off as you finish it, the card goes away once there is
+nothing left in it, and you can bring it back from Settings → Appearance.
+Nothing you have is published by any of this — that stays a separate choice,
+made per session.
+
 ### The command line tools on their own
 
 The same release also holds six archives — `linux`, `darwin` and `windows`,

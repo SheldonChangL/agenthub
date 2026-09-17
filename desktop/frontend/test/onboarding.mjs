@@ -209,6 +209,30 @@ if (document.activeElement !== el("select-all")) {
   failures.push("the publish step did not put the keyboard on the checkbox that starts a selection");
 }
 
+// Without ah this window cannot find out what is holding the node, and
+// restarting the process behind a launchd job is how one node becomes two. So
+// that step explains and offers nothing, exactly as the service panel does.
+settle();
+app.state.service = { toolError: "ah: command not found", supported: false, installed: false, running: false };
+const blocked = app.onboardingSteps().find((step) => step.id === "service");
+if (blocked.actions.length !== 0) {
+  failures.push(`a window that cannot see the service offered ${blocked.actions.length} buttons anyway`);
+}
+if (!blocked.body.includes("ah: command not found")) {
+  failures.push(`the step did not say what went wrong: ${blocked.body}`);
+}
+
+// A platform with no service manager gets the start the window performs itself,
+// which is the only way a setting saved here takes effect there.
+settle();
+app.state.service = { supported: false, installed: false, running: false };
+app.state.nodeReachable = false;
+calls.RestartNode = 0;
+await press("service");
+if (calls.RestartNode !== 1) {
+  failures.push(`the start step called RestartNode ${calls.RestartNode} times, want 1`);
+}
+
 /* ---------------- 5. the switch is named, or it is not flipped ---------------- */
 
 // docs/ui-contract.md §7.8 rule 4. The label says every flag the click sets,
@@ -238,6 +262,23 @@ reach = app.onboardingSteps().find((step) => step.id === "reachable");
 if (reach.actions[0]?.label !== noLanClause) {
   failures.push(`with LAN access already on the button still promises to turn it on: ${reach.actions[0]?.label}`);
 }
+
+// A machine with nothing private to offer gets no one-click button at all: a
+// repair that lands on the node's refusal is worse than no button, so the step
+// says so and points at the form where the decision is visible.
+app.state.nodeAddresses = { list: [{ interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }], failure: "" };
+const nowhere = app.onboardingSteps().find((step) => step.id === "reachable");
+if (nowhere.body !== ZH["onboarding.reachable.bodyNoAddress"]) {
+  failures.push(`a machine with no private address was still told to pick one: ${nowhere.body}`);
+}
+if (nowhere.actions[0]?.label !== ZH["onboarding.reachable.openSettings"]) {
+  failures.push(`no way through to the form: ${nowhere.actions.map((a) => a.label).join(" | ")}`);
+}
+nowhere.actions[0].run();
+if (app.state.view !== "settings" || app.state.settingsSection !== "settings-node") {
+  failures.push(`the fallback left the window on ${app.state.view}/${app.state.settingsSection}`);
+}
+app.state.nodeAddresses = { list: ADDRESSES, failure: "" };
 
 // Rendering the card is not a decision. Building these buttons reads the
 // checkbox; nothing here may write it.

@@ -92,11 +92,28 @@
   （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
   重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
 - Banner：一則，錯誤或成功（ok），成功會自動消失。
+- **首次啟動清單**（`#onboarding`，見 §3.2）：只出現在本機視圖，但它的觸發條件橫跨三個視圖的狀態。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。
 
 ### 3.2 本機視圖
 
+- **首次啟動清單 `#onboarding`**（在 `.filters` 上方，可關閉）。裝好 .dmg／.exe 第一次打開的人看到的
+  就是這張卡片，所以英文文案的品質跟功能一樣重要。
+  - **出現條件**（任一成立）：節點連不到；服務支援但沒安裝／沒在跑；`sessions` 是空的；`nodes` 是空的。
+    除了「節點連不到」以外，每一條都要 `state.loadedOnce` 才算數——讀不到節點時的空表格不是這台機器的事實
+    （#114）。關掉之後寫進 `UI_PREFS_KEY` 的 `onboardingDismissed`，**不會自己再打開**；
+    要找回來只有設定 → 外觀的「Show the setup checklist」。
+  - **五個步驟**，每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
+    所以在終端機把服務移除掉，那一步會自己回來：①把節點跑成背景服務（`goToService()`；不支援服務管理員的
+    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②找出本機 session（跟 `btn-discover` 同一個
+    `discoverSessions()`；掃出 0 筆時 body 換成「AgentHub 是讀那些工具寫在硬碟上的檔案」的解釋）
+    ③讓這台機器連得到（見下）④和另一台機器配對（`goToPairing()`：先切到區網視圖再 `openPairingDrawer()`，
+    因為交換清單只在那個視圖被輪詢）⑤公開一個 session（純文字 + 把焦點放到 `#select-all`）。
+  - **元素識別**：本機視圖會被 15 秒的 `load()` tick 重畫，所以 `renderOnboarding()` 以 step id 為 key
+    原地更新，只有「步驟集合改變」時才寫容器；按鈕依位置保留。理由與 `updateCandidateRow` 一樣：
+    重建會把使用者正要按下去的那顆按鈕換掉。`state.busy` 時每顆按鈕 disabled。
+  - 全部做完時多顯示一次（帶勾），下一次 render 才收起來：在點下去的當下消失會被讀成閃退。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
 - **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
@@ -437,6 +454,21 @@
 4. **表單不替使用者做選擇。** 早期版本會因為選了區網位址就自動打開允許區網，而且綁在那個開關
    自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
    不改使用者控制的欄位。
+
+**規則 4 與首次啟動清單的第三步（2026-09-17）。** 那一步要做的事正是「一鍵讓這台機器連得到」，
+而那一鍵在允許區網是關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；
+它不禁止一顆使用者親手按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，
+連理由都寫在 `peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。
+這個視窗不會背著任何人勾那個框。」
+
+所以清單第三步的按鈕**就是用 `peerListenRepairs()` 產生的**，餵給它一個合成的
+`{reason: "loopback", address: <目前的 peerListen>}` 加上 `fetchLocalAddresses()` 的結果，
+按下去走 `applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的
+旗標；存檔走表單那條路，所以驗證、重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；
+`peerListenRepairs()` 最後那個「就先只在本機」同時是這一步的 skip；以及**光是 render 這張卡片不會去寫
+`#node-allow-lan`**（`frontend/test/onboarding.mjs` 逐項斷言這四件事）。
+前提是節點設定已經讀進來過——`applyPeerListenRepair` 填的是真正的表單——所以 `renderOnboarding()`
+在卡片可見且 `state.nodeSettings` 還是 null 時，每個視窗生命週期呼叫一次 `loadNodeSettings()`。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
