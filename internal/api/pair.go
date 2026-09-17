@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"agenthub.local/agenthub/internal/id"
@@ -37,23 +38,114 @@ import (
 // in — a substituted key that carried the fingerprint of the key it replaced
 // would otherwise pass the only check there is.
 
-// pairNotice is what the owner is told beside a request, on both sides.
-const pairNotice = "Compare the fingerprint below with the one shown on the other machine, " +
-	"looking at both screens. They are the same two values in the same order on each. " +
-	"If they differ in any group, reject: something is between the two machines. " +
-	"Nothing is trusted until the owner of each machine confirms."
+// pairNotice is what the owner is told beside a request that still needs a
+// decision, on both sides.
+//
+// It describes exactly what is on the screen. The earlier wording said "the
+// fingerprint below" beside two fingerprints printed above it, and claimed the
+// same order on both machines while each machine printed its own first — an
+// instruction that does not match the screen is worse than none, because the
+// person stops reading it and starts guessing.
+const pairNotice = "Two fingerprints are shown, the machine that asked first and the machine " +
+	"it asked second. The other machine shows the same two values in the same order. Read both " +
+	"screens: if any group differs, reject — something is between the two machines. Nothing is " +
+	"trusted until the owner of each machine says so."
+
+// pairFingerprintView is one machine's fingerprint, labelled well enough that a
+// person looking at two screens knows which line to compare with which.
+type pairFingerprintView struct {
+	// Role is "requester" or "receiver" — the canonical order. Both machines
+	// list the requester first, whichever machine they are, so the two screens
+	// can be read line by line.
+	Role string `json:"role"`
+	// Machine is that machine's own display name. Its own, not a local label:
+	// the name on this screen has to be the name on that one.
+	Machine string `json:"machine"`
+	// Whose is "this machine" or "the other machine", from here.
+	Whose       string `json:"whose"`
+	Fingerprint string `json:"fingerprint"`
+}
 
 // pairRequestView is one exchange as the owner sees it.
 type pairRequestView struct {
 	pairing.Request
+	// Fingerprints is what the owner compares, requester first on both
+	// machines.
+	Fingerprints []pairFingerprintView `json:"fingerprints"`
+	// NextStep is one sentence: what happens now, and on which machine. Named
+	// per row because the answer differs per row, and a person holding two
+	// terminals needs to be told which one to type in.
+	NextStep string `json:"nextStep"`
 	// Notice repeats what the owner is being asked to do, per row, because a
 	// UI shows one row at a time and a banner somewhere else is not an
-	// instruction attached to the decision.
-	Notice string `json:"notice"`
+	// instruction attached to the decision. Absent on a finished row: there is
+	// nothing left to compare, and repeating it there is what made owners
+	// re-read a decided request looking for something to do.
+	Notice string `json:"notice,omitempty"`
 }
 
-func view(request pairing.Request) pairRequestView {
-	return pairRequestView{Request: request, Notice: pairNotice}
+const (
+	whoseThis  = "this machine"
+	whoseOther = "the other machine"
+)
+
+// view is one request as this node's owner sees it.
+//
+// A method on the server because it needs this machine's own display name: the
+// point of the labels is that each fingerprint is named by the machine that
+// holds it, in the words that machine uses about itself.
+func (s *Server) view(request pairing.Request) pairRequestView {
+	local := pairFingerprintView{
+		Machine: displayNameOr(s.node.DisplayName, s.node.ID), Whose: whoseThis,
+		Fingerprint: request.LocalFingerprint,
+	}
+	other := pairFingerprintView{
+		Machine: displayNameOr(request.DisplayName, request.NodeID), Whose: whoseOther,
+		Fingerprint: request.Fingerprint,
+	}
+	// Canonical order: the machine that asked, then the machine it asked. On an
+	// outgoing request this machine asked; on an incoming one the other did.
+	first, second := local, other
+	if request.Direction == pairing.Incoming {
+		first, second = other, local
+	}
+	first.Role, second.Role = "requester", "receiver"
+	row := pairRequestView{
+		Request:      request,
+		Fingerprints: []pairFingerprintView{first, second},
+		NextStep:     pairNextStep(request, other.Machine),
+	}
+	if !request.Decided() {
+		row.Notice = pairNotice
+	}
+	return row
+}
+
+// pairNextStep says what happens now and where, in one sentence.
+func pairNextStep(request pairing.Request, otherName string) string {
+	switch {
+	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
+		return fmt.Sprintf("On %s, run: ah pair approve %s", otherName, request.ID)
+	case request.State == pairing.StatePending:
+		return fmt.Sprintf("Compare the two fingerprints, then on this machine run: "+
+			"ah pair approve %s (or ah pair reject %s)", request.ID, request.ID)
+	case request.State == pairing.StateAwaitingConfirm:
+		return fmt.Sprintf("%s approved it. On this machine, run: ah pair confirm %s",
+			otherName, request.ID)
+	case request.State == pairing.StateApproved && request.Direction == pairing.Incoming:
+		// The gap this sentence covers: this node cannot tell whether the other
+		// owner ever confirms, so it cannot expire what it already wrote. See
+		// docs/decisions/004-pairing-exchange.md.
+		return fmt.Sprintf("%s is trusted here. Nothing more to do on this machine; wait for "+
+			"them to confirm. If they never do, undo it with: ah revoke %s", otherName, request.NodeID)
+	case request.State == pairing.StateApproved:
+		return fmt.Sprintf("Done: %s is trusted here, and this machine is trusted there.", otherName)
+	case request.State == pairing.StateRejected:
+		return "Refused. Nothing from this request is trusted on either machine."
+	default:
+		return fmt.Sprintf("It ran out (%s). Nothing was trusted; start again if you still want to pair.",
+			displayNameOr(request.Reason, pairing.ReasonExpired))
+	}
 }
 
 // pairExchangeUnavailable answers when this build has no pairing exchange
@@ -153,12 +245,13 @@ func (s *Server) receivePairRequest(w http.ResponseWriter, r *http.Request) {
 		Fingerprint:      identity.Fingerprint(public),
 		LocalFingerprint: s.node.Fingerprint,
 		Address:          s.acceptablePeerAddress(protocol.PairAddress(envelope)),
+		SourceHost:       sourceHost(r),
 		State:            pairing.StatePending,
 		CreatedAt:        now.UTC(),
 		ExpiresAt:        expires.UTC(),
 	}
 	switch err := s.pairRequests.Add(request); {
-	case errors.Is(err, pairing.ErrTooManyRequests):
+	case errors.Is(err, pairing.ErrTooManyFromSource), errors.Is(err, pairing.ErrTooManyRequests):
 		writeError(w, http.StatusTooManyRequests, "PAIRING_BUSY", err.Error())
 		return
 	case errors.Is(err, pairing.ErrDuplicateRequest):
@@ -232,12 +325,12 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 	if s.pairExchangeUnavailable(w) {
 		return
 	}
+	// Address and nothing else. An earlier version took a local name for the
+	// peer and stored it as the peer's display name, which put a different name
+	// on each screen while the whole exchange asks the owner to check that the
+	// two screens agree. A node is called what it calls itself.
 	var input struct {
 		Address string `json:"address"`
-		// Name renames the peer locally. The other machine's own display name
-		// is whatever it was started with, and an owner pairing two laptops
-		// called "MacBook Pro" needs to be able to tell them apart here.
-		Name string `json:"name"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
@@ -317,7 +410,7 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 		ID:               answer.RequestID,
 		Direction:        pairing.Outgoing,
 		NodeID:           answer.Node.NodeID,
-		DisplayName:      displayNameOr(strings.TrimSpace(input.Name), displayNameOr(answer.Node.DisplayName, answer.Node.NodeID)),
+		DisplayName:      displayNameOr(answer.Node.DisplayName, answer.Node.NodeID),
 		Platform:         answer.Node.Platform,
 		PublicKey:        identity.EncodePublicKey(public),
 		Fingerprint:      identity.Fingerprint(public),
@@ -331,7 +424,7 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "PAIRING_BUSY", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, view(request))
+	writeJSON(w, http.StatusCreated, s.view(request))
 }
 
 // handlePairReplyStatus turns the far side's status code into an answer the
@@ -378,16 +471,49 @@ func (s *Server) listPairRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.syncWindow()
-	for _, request := range s.pairRequests.List() {
-		if request.Direction == pairing.Outgoing && request.State == pairing.StatePending {
-			s.refreshOutgoing(r.Context(), request)
-		}
-	}
+	s.refreshAllOutgoing(r.Context())
+	// Finished rows are kept — "rejected" and "expired" are answers — but they
+	// are not what the owner is looking at when they ask what is waiting. A
+	// list where the one row needing a decision sat under four decided ones is
+	// how an owner misses their own pairing.
+	all := r.URL.Query().Get("all") == "true" || r.URL.Query().Get("all") == "1"
 	rows := make([]pairRequestView, 0)
 	for _, request := range s.pairRequests.List() {
-		rows = append(rows, view(request))
+		if !all && request.Decided() {
+			continue
+		}
+		rows = append(rows, s.view(request))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"requests": rows, "notice": pairNotice})
+	writeJSON(w, http.StatusOK, map[string]any{"requests": rows, "notice": pairNotice, "all": all})
+}
+
+// pairPollTimeout bounds one refresh of one outgoing request.
+//
+// The dialer's own timeout is ten seconds, which is right for delivering a
+// message and wrong here: this runs while an owner waits at a prompt, and the
+// machines are on the same segment or not reachable at all. Sixteen pending
+// rows at ten seconds each was nearly three minutes of silence.
+const pairPollTimeout = 3 * time.Second
+
+// refreshAllOutgoing polls every pending outgoing request at once.
+//
+// Concurrently, because these are separate machines and one that has been
+// unplugged must not hold up the answer about the one that is answering.
+func (s *Server) refreshAllOutgoing(ctx context.Context) {
+	var waiting sync.WaitGroup
+	for _, request := range s.pairRequests.List() {
+		if request.Direction != pairing.Outgoing || request.State != pairing.StatePending {
+			continue
+		}
+		waiting.Add(1)
+		go func(request pairing.Request) {
+			defer waiting.Done()
+			polling, cancel := context.WithTimeout(ctx, pairPollTimeout)
+			defer cancel()
+			s.refreshOutgoing(polling, request)
+		}(request)
+	}
+	waiting.Wait()
 }
 
 // refreshOutgoing asks the far side what became of one request.
@@ -502,7 +628,7 @@ func (s *Server) approvePairRequest(w http.ResponseWriter, r *http.Request) {
 	// twice, and put back if the write fails.
 	settled, err := s.pairRequests.Settle(request.ID, pairing.StatePending, pairing.StateApproved, "")
 	if err != nil {
-		writePairStateError(w, request, err)
+		writePairStateError(w, request, "approved", err)
 		return
 	}
 	if err := s.trustFromRequest(r.Context(), settled); err != nil {
@@ -510,9 +636,14 @@ func (s *Server) approvePairRequest(w http.ResponseWriter, r *http.Request) {
 		writeRegistryError(w, err)
 		return
 	}
+	// Recorded so a later refusal from that machine knows this request is what
+	// wrote the trust row, and is allowed to take it back again.
+	settled, _ = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
+		row.TrustedByRequest = true
+	})
 	log.Printf("paired with node %s (fingerprint %s) after its request %s was approved",
 		settled.NodeID, settled.Fingerprint, settled.ID)
-	writeJSON(w, http.StatusOK, view(settled))
+	writeJSON(w, http.StatusOK, s.view(settled))
 }
 
 // confirmPairRequest is the requesting owner saying the fingerprints match.
@@ -530,9 +661,25 @@ func (s *Server) confirmPairRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such outgoing pairing request")
 		return
 	}
+	// Ask the far side first, when this request has not yet heard an answer.
+	//
+	// Confirming is the command the owner was told to run, and it has to work
+	// when run exactly as told. Learning of the approval used to happen only in
+	// the list handler, so an owner who went straight from `ah pair request` to
+	// `ah pair confirm` — as its own output instructed — was answered "it is
+	// pending, not awaiting-confirm" for an approval that had already been
+	// given.
+	if request.State == pairing.StatePending {
+		polling, cancel := context.WithTimeout(r.Context(), pairPollTimeout)
+		s.refreshOutgoing(polling, request)
+		cancel()
+		if refreshed, found := s.pairRequests.Get(request.ID); found {
+			request = refreshed
+		}
+	}
 	settled, err := s.pairRequests.Settle(request.ID, pairing.StateAwaitingConfirm, pairing.StateApproved, "")
 	if err != nil {
-		writePairStateError(w, request, err)
+		writePairStateError(w, request, "confirmed", err)
 		return
 	}
 	if err := s.trustFromRequest(r.Context(), settled); err != nil {
@@ -542,16 +689,22 @@ func (s *Server) confirmPairRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("paired with node %s (fingerprint %s) after confirming request %s",
 		settled.NodeID, settled.Fingerprint, settled.ID)
-	writeJSON(w, http.StatusOK, view(settled))
+	writeJSON(w, http.StatusOK, s.view(settled))
 }
 
 // rejectPairRequest refuses one, in either direction.
 //
 // On the receiving side the refusal is collected by the requester's next poll,
-// so "they said no" and "it ran out" are different things on both screens. On
-// the requesting side nothing is sent: the far side is waiting for its own
-// owner, and it will expire on its own. Telling it would be a courtesy paid by
-// dialling a machine this owner has just decided not to trust.
+// so "they said no" and "it ran out" are different things on both screens.
+//
+// On the requesting side it is pushed. Nothing used to be sent, on the argument
+// that the far side would expire on its own — but by then it may already have
+// approved, and an approval has written a trust row. An owner who refuses
+// because the fingerprints did not match would have left the other machine
+// trusting exactly the key they refused, for as long as nobody noticed. The
+// push is directed and signed, and it reaches a machine this owner has just
+// decided not to trust — which costs nothing, because that machine already has
+// this node's address and key from the request itself.
 func (s *Server) rejectPairRequest(w http.ResponseWriter, r *http.Request) {
 	if s.pairExchangeUnavailable(w) {
 		return
@@ -568,10 +721,157 @@ func (s *Server) rejectPairRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	settled, err := s.pairRequests.Settle(request.ID, from, pairing.StateRejected, pairing.ReasonDeclined)
 	if err != nil {
-		writePairStateError(w, request, err)
+		writePairStateError(w, request, "rejected", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, view(settled))
+	row := s.view(settled)
+	if settled.Direction == pairing.Outgoing {
+		if err := s.pushPairReject(r.Context(), settled); err != nil {
+			// The refusal stands here whatever the other machine heard: this
+			// owner has decided. What changes is what they are told to do
+			// about the machine that may still be trusting them.
+			log.Printf("pairing request %s: could not tell %s it was refused: %s",
+				settled.ID, settled.Address, err)
+			row.NextStep = fmt.Sprintf("Refused here, but %s could not be told (%s). "+
+				"If its owner had already approved, ask them to run: ah revoke %s",
+				settled.DisplayName, err, s.node.ID)
+		}
+	}
+	writeJSON(w, http.StatusOK, row)
+}
+
+// pushPairReject tells the other machine that this owner refused.
+//
+// Pinned to the key this exchange recorded, like every other call after the
+// first: a refusal delivered to a different machine than the one being refused
+// would be no refusal at all.
+func (s *Server) pushPairReject(ctx context.Context, request pairing.Request) error {
+	if request.Address == "" {
+		return errors.New("this exchange recorded no address for that machine")
+	}
+	public, err := identity.DecodePublicKey(request.PublicKey)
+	if err != nil {
+		return err
+	}
+	envelope, err := s.heartbeats.BuildPairReject(
+		time.Now(), request.NodeID, request.ID, pairing.ReasonDeclined)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	pushing, cancel := context.WithTimeout(ctx, pairPollTimeout)
+	defer cancel()
+	reply, err := s.pairDialer.Post(pushing, request.Address,
+		"/v1/pair/requests/"+request.ID+"/reject", body, public)
+	if err != nil {
+		return err
+	}
+	if reply.Status != http.StatusOK && reply.Status != http.StatusNotFound {
+		return fmt.Errorf("%s answered %d: %s", request.Address, reply.Status, peerMessage(reply.Body))
+	}
+	return nil
+}
+
+// receivePairReject is the peer-facing endpoint: the machine that asked to be
+// trusted saying it does not want to be after all.
+//
+// Unauthenticated in the sense that the caller is not in the trust store, and
+// authenticated in the sense that matters: the envelope must be signed by the
+// key this request recorded, directed at this node, and name this request. That
+// is a stricter check than the poll, because this one changes state.
+//
+// If this node had already approved, the trust row that approval wrote is taken
+// back — but only when this request is what wrote it. A node paired earlier by
+// some other route is not revoked by a refusal that names it.
+func (s *Server) receivePairReject(w http.ResponseWriter, r *http.Request) {
+	if s.pairRequests == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such pairing request")
+		return
+	}
+	s.syncWindow()
+	request, ok := s.pairRequests.Get(r.PathValue("id"))
+	if !ok || request.Direction != pairing.Incoming {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such pairing request")
+		return
+	}
+	var envelope protocol.Envelope
+	if err := decodeJSON(r, &envelope); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	public, err := identity.DecodePublicKey(request.PublicKey)
+	if err != nil {
+		writeInternalError(w, "PAIRING_FAILED", "could not read the recorded key", err)
+		return
+	}
+	if err := s.checkPairAnswer(envelope, protocol.TypePairReject, request, public); err != nil {
+		writeError(w, http.StatusForbidden, "PAIR_REJECT_REFUSED", err.Error())
+		return
+	}
+
+	if request.Decided() && request.State != pairing.StateApproved {
+		// Already refused or run out. Saying so rather than failing: the
+		// requester is telling this node something it already believes.
+		writeJSON(w, http.StatusOK, map[string]any{"requestId": request.ID, "state": string(request.State)})
+		return
+	}
+	if request.State == pairing.StateApproved {
+		if err := s.untrustFromRequest(r.Context(), request); err != nil {
+			writeRegistryError(w, err)
+			return
+		}
+		_, _ = s.pairRequests.Settle(request.ID, pairing.StateApproved, pairing.StateRejected,
+			pairing.ReasonDeclined)
+		log.Printf("pairing request %s: %s refused after this node approved it; trust withdrawn",
+			request.ID, request.NodeID)
+	} else {
+		_, _ = s.pairRequests.Settle(request.ID, pairing.StatePending, pairing.StateRejected,
+			pairing.ReasonDeclined)
+		log.Printf("pairing request %s from %s was withdrawn by its own owner", request.ID, request.NodeID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"requestId": request.ID, "state": string(pairing.StateRejected)})
+}
+
+// untrustFromRequest takes back exactly what this request wrote.
+//
+// Two guards, because revoking is destructive: the row must say this request is
+// what trusted that node, and the key stored under that node id must still be
+// the key this request carried. Either one failing means the trust in the store
+// came from somewhere else, and somewhere else is not this refusal's to undo.
+func (s *Server) untrustFromRequest(ctx context.Context, request pairing.Request) error {
+	if !request.TrustedByRequest {
+		return nil
+	}
+	stored, err := s.store.TrustedNode(ctx, request.NodeID)
+	if errors.Is(err, registry.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if stored.PublicKey != request.PublicKey {
+		log.Printf("pairing request %s: not revoking %s, its trusted key is not the one this "+
+			"request carried", request.ID, request.NodeID)
+		return nil
+	}
+	return s.store.RevokeNode(ctx, request.NodeID)
+}
+
+// sourceHost is the host half of where a request actually came from.
+//
+// The listener's view, not anything in the body: this is the one thing about an
+// incoming pairing request that its sender cannot choose freely, which is why
+// the flood bound is keyed on it.
+func sourceHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	return host
 }
 
 // trustFromRequest writes one side of the pairing into the trust store.
@@ -625,14 +925,41 @@ func (s *Server) acceptablePeerAddress(address string) string {
 	return address
 }
 
-// writePairStateError says what the request is doing instead of what was asked.
-func writePairStateError(w http.ResponseWriter, request pairing.Request, err error) {
+// writePairStateError says, in one sentence, what this request is and what the
+// owner can do instead.
+//
+// One sentence deliberately. Wrapping the store's error inside the handler's
+// stuttered the same fact three ways — "pairing request … is rejected: pairing
+// request is not waiting for that: it is rejected, not awaiting-confirm" — and
+// a person reading that has to work out which clause is the news.
+func writePairStateError(w http.ResponseWriter, request pairing.Request, wanted string, err error) {
 	if errors.Is(err, pairing.ErrNoSuchRequest) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such pairing request")
 		return
 	}
-	writeError(w, http.StatusConflict, "PAIRING_STATE",
-		fmt.Sprintf("pairing request %s is %s: %s", request.ID, request.State, err))
+	var message string
+	switch {
+	case request.State == pairing.StateRejected:
+		message = fmt.Sprintf("pairing request %s was refused; nothing from it is trusted. "+
+			"Start again with `ah pair request <host:port>` if you still want to pair", request.ID)
+	case request.State == pairing.StateExpired:
+		message = fmt.Sprintf("pairing request %s ran out before both owners agreed. "+
+			"Open a pairing window on the other machine and start again with "+
+			"`ah pair request <host:port>`", request.ID)
+	case request.State == pairing.StateApproved:
+		message = fmt.Sprintf("pairing request %s is finished and %s is trusted here; "+
+			"undo it with `ah revoke %s`", request.ID, request.DisplayName, request.NodeID)
+	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
+		message = fmt.Sprintf("pairing request %s has not been approved on the other machine yet; "+
+			"run `ah pair approve %s` there first", request.ID, request.ID)
+	case request.State == pairing.StateAwaitingConfirm:
+		message = fmt.Sprintf("pairing request %s is waiting for this machine to confirm; "+
+			"run `ah pair confirm %s`", request.ID, request.ID)
+	default:
+		message = fmt.Sprintf("pairing request %s is %s, so it cannot be %s now",
+			request.ID, request.State, wanted)
+	}
+	writeError(w, http.StatusConflict, "PAIRING_STATE", message)
 }
 
 // peerMessage pulls the message out of a peer's error body, falling back to the

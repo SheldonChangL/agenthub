@@ -826,3 +826,40 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 		t.Errorf("local public key = %q, want AAAA", overview.Node.PublicKey)
 	}
 }
+
+// A node started without -discover now answers the window endpoints — the
+// window is a node-level state, and the pairing exchange needs only that — and
+// refuses the candidate list. That is still "this node is not looking", which
+// is the panel's "off"; rendering it as a failure to read would send the owner
+// to fix the wrong thing.
+func TestPairingIsOffWhenOnlyTheCandidateListRefuses(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/candidates") {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+				"code":    "DISCOVERY_DISABLED",
+				"message": "this node is not listening on the local network. Start it with -discover",
+			}})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":120,"announcing":{"announceableAddresses":0},` +
+			`"notice":"this node is not announcing itself over mDNS"}`))
+	}))
+	defer node.Close()
+
+	app := &App{client: newClient(node.URL), url: node.URL, ctx: context.Background()}
+	pairing := app.Pairing()
+	if pairing.Availability != pairingOff {
+		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOff)
+	}
+	if pairing.CandidatesError != "" {
+		t.Errorf("a node that is simply not looking was rendered as a failure to read: %q",
+			pairing.CandidatesError)
+	}
+	// The window it does have is still reported, because it can be paired
+	// against by address.
+	if !pairing.State.Open {
+		t.Error("the open window was lost")
+	}
+}

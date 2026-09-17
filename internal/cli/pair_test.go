@@ -22,9 +22,9 @@ func TestPairRoutesEachShapeToItsEndpoint(t *testing.T) {
 		wantBody   map[string]any
 	}{
 		"request": {
-			args:       []string{"pair", "request", "192.168.1.42:7463", "--name", "the other laptop"},
+			args:       []string{"pair", "request", "192.168.1.42:7463"},
 			wantMethod: http.MethodPost, wantPath: "/v1/pair/requests",
-			wantBody: map[string]any{"address": "192.168.1.42:7463", "name": "the other laptop"},
+			wantBody: map[string]any{"address": "192.168.1.42:7463"},
 		},
 		"approve": {
 			args:       []string{"pair", "approve", "pair_1"},
@@ -125,7 +125,7 @@ func TestPairPendingSaysWhenThereIsNothing(t *testing.T) {
 	if code := Run(context.Background(), []string{"--url", server.URL, "pair", "pending"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "No pairing requests") {
+	if !strings.Contains(stdout.String(), "Nothing is waiting") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
@@ -158,7 +158,7 @@ func TestPairSubcommandsRefuseIncoherentInput(t *testing.T) {
 		"request without an address":   {"pair", "request"},
 		"request with two addresses":   {"pair", "request", "a:1", "b:2"},
 		"request with an unknown flag": {"pair", "request", "a:1", "--force"},
-		"--name without a value":       {"pair", "request", "a:1", "--name"},
+		"a local name for the peer":    {"pair", "request", "a:1", "--name", "theirs"},
 		"approve without an id":        {"pair", "approve"},
 		"pending with an argument":     {"pair", "pending", "extra"},
 		"too few arguments":            {"pair", "node_0123456789abcdef0123", "laptop"},
@@ -175,5 +175,149 @@ func TestPairSubcommandsRefuseIncoherentInput(t *testing.T) {
 				t.Fatalf("exit = 0 for %v; stdout = %q", args, stdout.String())
 			}
 		})
+	}
+}
+
+// The fingerprints print in the order the node gave them — requester first on
+// both machines — labelled with the name each machine calls itself and with
+// which of the two this one is.
+func TestPairPendingPrintsTheOrderedFingerprints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("all") != "" {
+			t.Fatalf("plain `ah pair pending` asked for everything: %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"requests":[{"id":"pair_1","direction":"incoming","state":"pending",` +
+			`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop","platform":"linux/amd64",` +
+			`"fingerprints":[` +
+			`{"role":"requester","machine":"other laptop","whose":"the other machine",` +
+			`"fingerprint":"AAAA BBBB CCCC DDDD EEEE FFFF"},` +
+			`{"role":"receiver","machine":"this laptop","whose":"this machine",` +
+			`"fingerprint":"1111 2222 3333 4444 5555 6666"}],` +
+			`"nextStep":"Compare the two fingerprints, then on this machine run: ah pair approve pair_1",` +
+			`"notice":"Two fingerprints are shown"}]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(), []string{"--url", server.URL, "pair", "pending"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	printed := stdout.String()
+	for _, want := range []string{
+		"pair_1", "other laptop (the other machine)", "this laptop (this machine)",
+		"requester", "receiver",
+		"AAAA BBBB CCCC DDDD EEEE FFFF", "1111 2222 3333 4444 5555 6666",
+		"on this machine run: ah pair approve pair_1", "Two fingerprints are shown",
+	} {
+		if !strings.Contains(printed, want) {
+			t.Errorf("output does not contain %q:\n%s", want, printed)
+		}
+	}
+	// The requester's line comes first, as it does on the other machine.
+	if strings.Index(printed, "AAAA BBBB") > strings.Index(printed, "1111 2222") {
+		t.Errorf("the receiver's fingerprint printed first:\n%s", printed)
+	}
+}
+
+// --all is a different question and asks the node a different question.
+func TestPairPendingAllAsksForFinishedRequestsToo(t *testing.T) {
+	var asked string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"requests":[]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "pair", "pending", "--all"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(asked, "all=true") {
+		t.Errorf("--all asked for %q", asked)
+	}
+}
+
+// approve, confirm and reject are read by somebody standing between two
+// laptops. They say what happened, who is trusted now, and which machine runs
+// the next command — not the node's JSON.
+func TestPairDecisionsPrintSomethingAPersonCanRead(t *testing.T) {
+	cases := map[string]struct {
+		verb  string
+		reply string
+		want  []string
+	}{
+		"approve": {
+			verb: "approve",
+			reply: `{"id":"pair_1","direction":"incoming","state":"approved",` +
+				`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop",` +
+				`"fingerprint":"AAAA BBBB CCCC DDDD EEEE FFFF",` +
+				`"nextStep":"other laptop is trusted here. Nothing more to do on this machine; ` +
+				`wait for them to confirm. If they never do, undo it with: ah revoke node_abcdef01234567890abc"}`,
+			want: []string{
+				"Approved", "other laptop", "node_abcdef01234567890abc",
+				"AAAA BBBB CCCC DDDD EEEE FFFF", "Nothing more to do on this machine",
+				"ah revoke node_abcdef01234567890abc",
+			},
+		},
+		"confirm": {
+			verb: "confirm",
+			reply: `{"id":"pair_1","direction":"outgoing","state":"approved",` +
+				`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop",` +
+				`"fingerprint":"AAAA BBBB CCCC DDDD EEEE FFFF",` +
+				`"nextStep":"Done: other laptop is trusted here, and this machine is trusted there."}`,
+			want: []string{"Confirmed", "other laptop", "trusted", "Done:"},
+		},
+		"reject": {
+			verb: "reject",
+			reply: `{"id":"pair_1","direction":"outgoing","state":"rejected",` +
+				`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop","reason":"declined",` +
+				`"nextStep":"Refused. Nothing from this request is trusted on either machine."}`,
+			want: []string{"Refused", "Nothing from this request is trusted"},
+		},
+	}
+	for name, test := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.reply))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(),
+				[]string{"--url", server.URL, "pair", test.verb, "pair_1"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			printed := stdout.String()
+			for _, want := range test.want {
+				if !strings.Contains(printed, want) {
+					t.Errorf("output does not contain %q:\n%s", want, printed)
+				}
+			}
+			if strings.Contains(printed, `"id":`) {
+				t.Errorf("raw JSON was printed at a person:\n%s", printed)
+			}
+		})
+	}
+}
+
+// --json is still the shape a script reads.
+func TestPairDecisionsStillHaveAJSONForm(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"pair_1","state":"approved"}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "--json", "pair", "approve", "pair_1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"state": "approved"`) {
+		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
