@@ -1,0 +1,271 @@
+package pairing_test
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+
+	"agenthub.local/agenthub/internal/pairing"
+)
+
+// clock is a hand-wound time source, so the expiry boundary can be put exactly
+// where the test wants it rather than waited for.
+type clock struct{ at time.Time }
+
+func (c *clock) now() time.Time { return c.at }
+
+func pending(id, nodeID string, now time.Time, direction pairing.Direction) pairing.Request {
+	return pairing.Request{
+		ID: id, Direction: direction, NodeID: nodeID,
+		DisplayName: nodeID, Platform: "test",
+		PublicKey: "key", Fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF",
+		State:     pairing.StatePending,
+		CreatedAt: now, ExpiresAt: now.Add(pairing.RequestTTL),
+	}
+}
+
+// A request that nobody answered stops being answerable. Nothing has to notice
+// the moment: the next read is what applies the clock.
+func TestRequestsExpireOnTheClock(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	if err := requests.Add(pending("pair_1", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatal(err)
+	}
+
+	c.at = c.at.Add(pairing.RequestTTL - time.Second)
+	if row, _ := requests.Get("pair_1"); row.State != pairing.StatePending {
+		t.Fatalf("state one second before expiry = %q, want pending", row.State)
+	}
+	c.at = c.at.Add(time.Second)
+	row, ok := requests.Get("pair_1")
+	if !ok {
+		t.Fatal("an expired request disappeared; the owner has to be able to tell it ran out")
+	}
+	if row.State != pairing.StateExpired || row.Reason != pairing.ReasonExpired {
+		t.Fatalf("state at expiry = %q/%q, want expired/expired", row.State, row.Reason)
+	}
+	// And an expired request cannot be approved after the fact.
+	if _, err := requests.Settle("pair_1", pairing.StatePending, pairing.StateApproved, ""); !errors.Is(err, pairing.ErrWrongState) {
+		t.Fatalf("settling an expired request = %v, want ErrWrongState", err)
+	}
+}
+
+// Closing the window is the owner withdrawing consent, and it must reach the
+// requests the window collected.
+func TestClosingTheWindowExpiresWhatItCollected(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	if err := requests.Add(pending("pair_in", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Add(pending("pair_out", "node_b", c.at, pairing.Outgoing)); err != nil {
+		t.Fatal(err)
+	}
+
+	requests.ExpirePending(pairing.Incoming)
+
+	if row, _ := requests.Get("pair_in"); row.State != pairing.StateExpired {
+		t.Fatalf("incoming request = %q, want expired", row.State)
+	}
+	// Outgoing requests are this owner's own, made deliberately, and are not
+	// what the window consents to. Closing it must not cancel them.
+	if row, _ := requests.Get("pair_out"); row.State != pairing.StatePending {
+		t.Fatalf("outgoing request = %q, want it left alone", row.State)
+	}
+}
+
+// The outgoing list is this owner's own and is bounded outright: sixteen of
+// them means the owner asked for sixteen, and cancelling one silently would be
+// this node deciding which of their pairings to abandon.
+func TestPendingOutgoingRequestsAreBounded(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	for i := range pairing.MaxPending {
+		id := fmt.Sprintf("pair_%d", i)
+		if err := requests.Add(pending(id, fmt.Sprintf("node_%d", i), c.at, pairing.Outgoing)); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	err := requests.Add(pending("pair_extra", "node_extra", c.at, pairing.Outgoing))
+	if !errors.Is(err, pairing.ErrTooManyRequests) {
+		t.Fatalf("request past the cap = %v, want ErrTooManyRequests", err)
+	}
+	// An incoming request is counted separately.
+	if err := requests.Add(pending("pair_theirs", "node_theirs", c.at, pairing.Incoming)); err != nil {
+		t.Fatalf("incoming request refused because outgoing ones were full: %v", err)
+	}
+	// Deciding one makes room again.
+	if _, err := requests.Settle("pair_0", pairing.StatePending, pairing.StateRejected, pairing.ReasonDeclined); err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Add(pending("pair_extra", "node_extra", c.at, pairing.Outgoing)); err != nil {
+		t.Fatalf("request after room was made = %v, want it accepted", err)
+	}
+}
+
+// One address may not hold the incoming list open. Node ids are the sender's to
+// choose, so a bound keyed on them bounds nothing: sixteen fresh ones from one
+// machine filled the list, and the owner's real machine was refused during the
+// very window they had opened to pair it.
+func TestOneSourceCannotHoldManyPendingRequests(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	for i := range pairing.MaxPendingPerSource {
+		row := pending(fmt.Sprintf("pair_flood%d", i), fmt.Sprintf("node_flood%d", i), c.at, pairing.Incoming)
+		row.SourceHost = "10.0.0.9"
+		if err := requests.Add(row); err != nil {
+			t.Fatalf("request %d from one address: %v", i, err)
+		}
+	}
+	extra := pending("pair_flood_extra", "node_flood_extra", c.at, pairing.Incoming)
+	extra.SourceHost = "10.0.0.9"
+	if err := requests.Add(extra); !errors.Is(err, pairing.ErrTooManyFromSource) {
+		t.Fatalf("a fourth request from one address = %v, want ErrTooManyFromSource", err)
+	}
+	// Another machine is unaffected: the bound is per address, not global.
+	other := pending("pair_real", "node_real", c.at, pairing.Incoming)
+	other.SourceHost = "10.0.0.10"
+	if err := requests.Add(other); err != nil {
+		t.Fatalf("a different address was refused: %v", err)
+	}
+}
+
+// A full incoming list is refused, and only a sender that already has a row
+// waiting here can make room — by displacing its own oldest one.
+//
+// Displacing the oldest row overall looked kinder to the owner and was not: it
+// handed whoever sent the newest request the power to evict whoever sent the
+// oldest, and that is exactly what a flooder does.
+func TestAFullIncomingListDisplacesOnlyWithinOneSource(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	for i := range pairing.MaxPending {
+		row := pending(fmt.Sprintf("pair_%d", i), fmt.Sprintf("node_%d", i), c.at, pairing.Incoming)
+		row.SourceHost = fmt.Sprintf("10.0.0.%d", i)
+		if err := requests.Add(row); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+		c.at = c.at.Add(time.Second)
+	}
+
+	// A stranger arriving at a full list is told the list is full, rather than
+	// being handed somebody else's place in it.
+	stranger := pending("pair_stranger", "node_stranger", c.at, pairing.Incoming)
+	stranger.SourceHost = "192.168.1.42"
+	if err := requests.Add(stranger); !errors.Is(err, pairing.ErrTooManyRequests) {
+		t.Fatalf("a new address at a full list = %v, want ErrTooManyRequests", err)
+	}
+	if row, _ := requests.Get("pair_0"); row.State != pairing.StatePending {
+		t.Fatalf("the oldest row was evicted by a refused request: %q", row.State)
+	}
+
+	// The machine that already has a row may retry: it loses its own place,
+	// nobody else's.
+	retry := pending("pair_retry", "node_retry", c.at, pairing.Incoming)
+	retry.SourceHost = "10.0.0.3"
+	retry.ExpiresAt = c.at.Add(pairing.RequestTTL)
+	if err := requests.Add(retry); err != nil {
+		t.Fatalf("a retry from an address already in the list: %v", err)
+	}
+	if row, _ := requests.Get("pair_retry"); row.State != pairing.StatePending {
+		t.Fatalf("the retry is %q", row.State)
+	}
+	// The displaced row says why: it did not run out of time, something filled
+	// the list.
+	displaced, ok := requests.Get("pair_3")
+	if !ok {
+		t.Fatal("the displaced request vanished; the owner has to be able to tell what happened")
+	}
+	if displaced.State != pairing.StateExpired || displaced.Reason != pairing.ReasonDisplaced {
+		t.Fatalf("displaced request = %q/%q, want expired/displaced", displaced.State, displaced.Reason)
+	}
+	// And nothing from any other address was touched.
+	if row, _ := requests.Get("pair_0"); row.State != pairing.StatePending {
+		t.Fatalf("another address's row was displaced by one arrival: %q", row.State)
+	}
+}
+
+// The reviewer's probe: a flooder rotating source addresses cannot evict the
+// owner's own request.
+//
+// Six addresses were enough to fill the list under the old rule, and every
+// request after that pushed out whatever was oldest — the owner's real machine
+// among them, which then showed as displaced during the window they had opened
+// to pair it.
+func TestAFloodRotatingSourcesCannotEvictTheOwnersRequest(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+
+	legit := pending("pair_legit", "node_legit", c.at, pairing.Incoming)
+	legit.SourceHost = "10.0.0.9"
+	if err := requests.Add(legit); err != nil {
+		t.Fatalf("the owner's own request: %v", err)
+	}
+	c.at = c.at.Add(time.Second)
+
+	for i := range 40 {
+		row := pending(fmt.Sprintf("pair_flood%d", i), fmt.Sprintf("node_flood%d", i), c.at, pairing.Incoming)
+		row.SourceHost = fmt.Sprintf("fd00::%d", i)
+		// Refusals are the point: what must not happen is one of these
+		// succeeding at the owner's expense.
+		_ = requests.Add(row)
+		c.at = c.at.Add(time.Second)
+	}
+
+	row, ok := requests.Get("pair_legit")
+	if !ok {
+		t.Fatal("the owner's request was forgotten entirely")
+	}
+	if row.State != pairing.StatePending {
+		t.Fatalf("the owner's request is %q/%q after a flood from rotating addresses, want it "+
+			"still pending", row.State, row.Reason)
+	}
+}
+
+// One machine, one row to compare. A second request from the same node would
+// put two identical fingerprints in front of the owner, only one of which is
+// the one the other machine is waiting on.
+func TestASecondRequestFromTheSameNodeIsRefused(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	if err := requests.Add(pending("pair_1", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Add(pending("pair_2", "node_a", c.at, pairing.Incoming)); !errors.Is(err, pairing.ErrDuplicateRequest) {
+		t.Fatalf("second request from the same node = %v, want ErrDuplicateRequest", err)
+	}
+	// Once the first is decided, the node may ask again.
+	if _, err := requests.Settle("pair_1", pairing.StatePending, pairing.StateRejected, pairing.ReasonDeclined); err != nil {
+		t.Fatal(err)
+	}
+	if err := requests.Add(pending("pair_2", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatalf("request after a refusal = %v, want it accepted", err)
+	}
+}
+
+// A decided request is kept for a while, because "rejected" and "expired" are
+// answers, and then forgotten, because nothing should accumulate for the life
+// of the process.
+func TestDecidedRequestsAreKeptThenForgotten(t *testing.T) {
+	c := &clock{at: time.Now()}
+	requests := pairing.NewRequestsWithClock(c.now)
+	if err := requests.Add(pending("pair_1", "node_a", c.at, pairing.Incoming)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := requests.Settle("pair_1", pairing.StatePending, pairing.StateRejected, pairing.ReasonDeclined); err != nil {
+		t.Fatal(err)
+	}
+	c.at = c.at.Add(pairing.RequestTTL)
+	if _, ok := requests.Get("pair_1"); !ok {
+		t.Fatal("a refusal was forgotten while the other side could still be asking")
+	}
+	c.at = c.at.Add(11 * time.Minute)
+	if _, ok := requests.Get("pair_1"); ok {
+		t.Fatal("a long-decided request is still held")
+	}
+	if rows := requests.List(); len(rows) != 0 {
+		t.Fatalf("list still holds %d rows", len(rows))
+	}
+}
