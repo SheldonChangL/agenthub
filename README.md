@@ -1,141 +1,276 @@
 # AgentHub
 
-AgentHub is a privacy-first, local control plane for coding-agent sessions. The MVP discovers Claude Code and Codex CLI/App sessions, normalizes their status, and exposes an owner-local view through an `agenthub-node` daemon, the `ah` CLI, and a desktop app.
+**A private control plane for your Claude Code and Codex sessions, across your
+own machines.** See which agent is waiting for you, message a session running on
+another computer, wake it up — without anything leaving your LAN, and without an
+account anywhere.
 
-AgentHub targets Windows, macOS, and Ubuntu. The shared core is pure Go; provider process discovery is platform-specific. Cross-compilation is part of verification, while each provider must still be installed and supported on the target host.
+Cross-provider (Claude Code and Codex). Cross-machine (paired over your own
+network, TLS pinned to keys you compared by fingerprint, on both screens).
+Private by default (every session it finds starts invisible; you choose what
+each peer sees). No cloud, no account, no telemetry. The source is public, and it is Go.
 
-Privacy is the default: discovered sessions start with audience `none`, and the peer listener stays on loopback unless the owner passes `-allow-lan` and names a private address. With that set, paired nodes exchange signed heartbeats and messages over TLS pinned to the key recorded at pairing, carrying only what each session's audience authorizes for that peer.
+![Local sessions: every session this machine can see, with its status and who it is published to](docs/screenshots/local-sessions.png)
 
-## MVP status
+![Network: a paired machine online, and an incoming pairing request with two fingerprints to compare](docs/screenshots/network-pairing.png)
 
-- Local SQLite session registry
-- Claude Code and Codex filesystem discovery
-- Codex App Server JSON-RPC initialize/thread-list client boundary
-- Managed and unmanaged session model
-- Conservative `active`, `idle`, `inactive`, and `unknown` status inference
-- Persistent Ed25519 node identity, signed envelopes, and a schema-validated heartbeat preview
-- Heartbeats bound to their recipient and a heartbeat sequence that survives restarts
-- Local HTTP API and `ah` CLI
-- Message inbox, bounded and deduplicated, reachable from paired nodes
-- Per-session audience, working-directory export, and inbound-message policy
-- Fingerprint-confirmed pairing, from the CLI or the desktop window: an exchange that carries the keys so nobody copies one by hand, plus the manual form, trust storage, revocation, and desktop management
-- Broker envelope schema and MCP tool schemas, both in use
-- Architecture and issue plan for authenticated multi-node operation
-- Wake-up: a message can start a turn on its own, behind two switches that are
-  both closed by default (Step 8, issue #60). The Codex path has been observed
-  starting a turn; the Claude Code channel push has not — see
-  [channel-push-not-observed.md](docs/channel-push-not-observed.md)
-- Nothing writes into a provider's session files or process, by design
-- No installer: installing means downloading the archive for your platform from
-  [Releases](https://github.com/SheldonChangL/agenthub/releases) and putting the
-  binaries somewhere on your PATH, or building from source. The archives are
-  **unsigned** — see [Install a release](#install-a-release) (Step 10, issue #67)
+The window is in English and 繁體中文.
 
-The remote export contract, per-node audience model, signing identity, manual
-trust workflow, and the authenticated peer transport between nodes are all
-implemented and have been exercised between two machines
-([verification.md](docs/verification.md)), and `agenthub-mcp` gives an agent four
-tools over those pipes — also exercised between two machines, each running its
-own Claude Code. Waking is implemented on top of them: see
-[Waking an agent](#waking-an-agent) for what is verified and what is not. What
-is missing is everything needed for someone else to install this — Step 10,
-tracked from [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
+## What it does
 
-## Roadmap and release gates
+- **Sees every agent session on every machine you pair.** Claude Code and Codex,
+  a mac and a Linux box, one list.
+- **Tells you who is waiting.** Each session is `active`, `idle`, `inactive` or
+  `unknown`, inferred from the provider's own files — nothing is injected into
+  the agent.
+- **Lets you message a session on another machine**, and — if you turn on two
+  more switches — **wake it**, so a message starts a turn with nobody at the
+  keyboard.
+- **Gives every session its own audience.** A session is published to nobody, to
+  every paired node, or to the nodes you name. The working directory, incoming
+  messages and outgoing messages are three more switches, all closed by default.
+- **Hands your agents four MCP tools** — `agent_list`, `agent_status`,
+  `agent_inbox`, `agent_send` — so an agent on one machine can ask what an agent
+  on another is doing, and write to it.
+- **Keeps everything on your LAN.** Peers talk directly to each other over TLS
+  pinned to the key recorded at pairing. There is no server in the middle, no
+  account, and nothing to sign up for.
+- **Never writes into a provider's files or process.** Messages live in
+  AgentHub's own SQLite database; handing one to an agent goes through that
+  provider's own API, or not at all.
 
-| Track | State | Source of truth |
-|---|---|---|
-| Local MVP | Implemented and tested | [spec](docs/spec.md), [verification](docs/verification.md) |
-| Remote export contract | Implemented and schema-validated | [architecture](docs/architecture.md), [broker protocol](docs/broker-protocol.schema.json) |
-| Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
-| MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
-| Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
-| Automated pairing exchange | Implemented on the CLI, the API and the desktop app: `pair.request` / `pair.approve` / `pair.reject` are sent and received, with both owners confirming a fingerprint | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [ADR-004](docs/decisions/004-pairing-exchange.md) |
-| Distribution | Tag-triggered release workflow: desktop app for macOS, Windows and Linux plus six command line archives, all unsigned | issues [#64](https://github.com/SheldonChangL/agenthub/issues/64), [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
-| Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
-| Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
+## Install
 
-## Install a release
+Downloads are on the
+[Releases page](https://github.com/SheldonChangL/agenthub/releases). The desktop
+download is one file and brings `agenthub-node`, `ah` and `agenthub-mcp` with
+it — the app runs them from beside its own executable, so there is nothing else
+to fetch and nothing to put on your `PATH`.
 
-### The desktop app
+**None of these files are signed.** Code-signing certificates cost money every
+year and this project has not paid for one. Your machine will say so, and it is
+telling you the truth: nothing vouches for the download. Every release ships a
+`SHA256SUMS`, and the same hashes are printed in the release notes, so you can
+check the file you got against the page before you run it.
 
-This is the download for most people. One file, and it brings
-`agenthub-node`, `ah` and `agenthub-mcp` with it: the app runs them from beside
-its own executable, so there is nothing else to fetch and nothing to put on
-your PATH.
+### macOS
 
-| Platform | File | What to do with it |
-|---|---|---|
-| macOS, Apple silicon and Intel | `agenthub-desktop_<tag>_darwin_universal.dmg` | Open it and drag `agenthub-desktop.app` to Applications. The app is not notarized, so the **first** launch needs one extra step — see [the downloads are not signed](#the-downloads-are-not-signed-and-your-machine-will-say-so) below. |
-| Windows 10/11, x64 | `agenthub-desktop_<tag>_windows_amd64-installer.exe` | Run it. It installs the app, registers the background node with Task Scheduler and adds a Start menu entry. |
-| Windows, without an installer | `agenthub-desktop_<tag>_windows_amd64.zip` | Unpack it and run `agenthub-desktop.exe`. Keep the other three binaries in the same folder. |
-| Linux, x64 | `agenthub-desktop_<tag>_linux_amd64.tar.gz` | Unpack it and run `./agenthub-desktop`. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1 — `README.txt` inside names the package for Debian, Fedora and Arch. |
+1. Download `agenthub-desktop_<tag>_darwin_universal.dmg` — one file for Apple
+   silicon and Intel — and check it with
+   `shasum -a 256 -c SHA256SUMS --ignore-missing`.
+2. Open it and drag `agenthub-desktop.app` to Applications.
+3. Double-click the app. macOS refuses it the first time.
+4. **macOS 15 Sequoia and later:** click **Done**, then System Settings →
+   Privacy & Security → scroll to **Security** → **Open Anyway** → confirm.
+   **macOS 14 and earlier:** right-click the app → **Open** → **Open**.
+   Either way, `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app`
+   does the same thing from a terminal.
 
-There is no arm64 desktop build for Windows or Linux; macOS is a universal
-binary, so one file covers both Apple architectures.
+<!-- first-launch paragraph lands with the onboarding PR -->
 
-### The command line tools on their own
+### Windows
 
-The same release also holds six archives — `linux`, `darwin` and `windows`,
-each `amd64` and `arm64` — with `agenthub-node`, `ah` and `agenthub-mcp` and no
-app. Unpack the one for your platform and put the binaries somewhere on your
-PATH. Nothing here needs administrator rights.
+1. Download `agenthub-desktop_<tag>_windows_amd64-installer.exe` (Windows 10/11,
+   x64).
+2. Check it: `Get-FileHash .\agenthub-desktop_<tag>_windows_amd64-installer.exe -Algorithm SHA256`
+   and compare with the line in `SHA256SUMS`.
+3. Run it. SmartScreen says "Windows protected your PC" — **More info** → **Run
+   anyway**.
+4. The installer puts the app in place, registers the background node with Task
+   Scheduler and starts it, and adds a Start menu entry. If that registration
+   fails it says so and falls back to a Startup-folder shortcut.
+5. Prefer no installer? `agenthub-desktop_<tag>_windows_amd64.zip` unpacks and
+   runs; keep `ah.exe`, `agenthub-node.exe` and `agenthub-mcp.exe` in the same
+   folder.
 
-### The downloads are not signed, and your machine will say so
+### Linux
 
-This is a deliberate choice, not an oversight: code-signing certificates are a
-recurring cost, and AgentHub is not distributed widely enough yet to have paid
-for one. The consequence is that you will be asked to override a warning:
+1. Download `agenthub-desktop_<tag>_linux_amd64.tar.gz` (x64; there is no arm64
+   desktop build).
+2. Check it: `sha256sum -c SHA256SUMS --ignore-missing`.
+3. Unpack it and run `./agenthub-desktop`, keeping the other three binaries
+   beside it. There is no Gatekeeper equivalent here; `chmod +x` is all.
+4. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1. The
+   `README.txt` inside names the package for Debian, Fedora and Arch.
 
-| Platform | What you see | How to proceed |
-|---|---|---|
-| Windows | SmartScreen: "Windows protected your PC", unknown publisher | More info → Run anyway |
-| macOS 15 Sequoia and later, the `.app` | "agenthub-desktop.app cannot be opened" / "Apple could not verify it is free of malware" | Double-click it, click **Done**, then System Settings → Privacy & Security → scroll to **Security** → **Open Anyway** → confirm. Or `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app` |
-| macOS 14 and earlier, the `.app` | Gatekeeper will not open it, and offers to move it to the Bin | Right-click the app → **Open** → **Open**, once. Or the same `xattr` command |
-| macOS, a loose binary | Gatekeeper refuses to open it | System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine <file>` |
-| Linux | Nothing; there is no equivalent gate | `chmod +x` |
+### Command line only
+
+The same release holds six archives — `linux`, `darwin` and `windows`, each
+`amd64` and `arm64` — with `agenthub-node`, `ah` and `agenthub-mcp` and no app.
+Unpack the one for your platform, put the binaries on your `PATH` (nothing here
+needs administrator rights), then `agenthub-node --db ./data/agenthub.db` in one
+terminal and `ah discover && ah list` in another.
+
+## Pair two machines
+
+Pairing establishes identity and nothing else. It publishes no session.
+
+1. On **both** machines, the node has to listen somewhere the other one can
+   reach. Settings → Node settings → turn on **Allow LAN connections**, pick an
+   address this machine actually has, and restart the node. The defaults are
+   loopback-only, which no other machine can reach.
+2. On the machine that decides, go to **Network** → **Open the pairing panel** →
+   **Pair with another machine**. That opens a window, for a few minutes.
+3. On the other machine, open the same panel and either click that machine in
+   **Machines announcing themselves**, or type its address into **Address shown
+   on the other screen** and press **Send pairing request**. Multicast does not
+   cross every network; typing the address always works.
+4. Both windows now show **the same two fingerprints, in the same order** — the
+   machine that asked first, the machine it asked second, each labelled with the
+   name that machine calls itself.
+5. **Read both screens and compare every group.** Checking the first few groups
+   is exactly what an attacker defeats. If one single group differs, press
+   **Reject** — something is intercepting the connection.
+6. Press **Fingerprints match, approve** on the machine that was asked, then
+   **Fingerprints match, confirm** on the machine that asked. Each machine writes
+   only its own trust store: an approval on one screen is not consent on the
+   other, and nothing is trusted until both owners have said yes.
+
+Each fingerprint is computed on the spot from the key that machine actually
+received in the handshake — never from one that arrived over the network, which
+a substituted key could carry.
+
+<details>
+<summary>The same thing from a terminal</summary>
+
+```sh
+# on the machine that decides
+ah pairing on
+
+# on the machine that asks
+ah pair request 192.168.1.20:7463
+
+# on either: the request, with the two fingerprints to compare
+ah pair pending
+
+ah pair approve <request-id>   # on the machine that was asked
+ah pair confirm <request-id>   # on the machine that asked
+ah pair reject  <request-id>   # refuse, on either
+```
+
+A request nobody answers expires after five minutes, or when the pairing window
+closes, and writes nothing on either side. `ah revoke <node-id>` withdraws trust
+and every grant it held, in one step. The manual five-field form is still there,
+for two machines that cannot open a connection to each other at all:
+
+```sh
+ah node   # on each machine, to read and compare
+ah pair <their-node-id> <their-name> <their-platform> <their-public-key> <their-fingerprint>
+```
+
+</details>
+
+## Let an agent see another machine
+
+**Publishing.** Pairing shares nothing on its own. In **Local sessions**, tick
+the sessions you want to share and press **Set the audience…**: no one, every
+paired node, or the nodes you name. Three more boxes are closed until you open
+them — the working directory, **Let them queue messages**, and **Let this session
+send messages out**. What a peer then receives is metadata only: address,
+provider, status, managed or not, where the status came from, when it was last
+seen, and the working directory if you allowed it. No transcripts, no prompts.
+
+**The inbox.** A message sent to a session lands in AgentHub's own database and
+waits. **Inbox** on any session row reads it; so does `ah inbox <session-id>`,
+and so does an agent calling `agent_inbox`. Reading changes nothing in the
+agent's own session — nothing here writes into Claude Code's or Codex's files.
+
+**Waking.** If you want a message to start a turn by itself, that is a separate
+decision and it needs two switches: `--auto-wake` on the node, and `--auto-wake`
+on that session. A woken turn approves nothing — every permission prompt with
+nobody present is refused — and it cannot reply outward unless you opened that
+too. Codex is woken through the app server's own API and has been observed
+working end to end; the Claude Code path is **not** verified — see
+[Status and roadmap](#status-and-roadmap).
+
+Agents get four MCP tools from `agenthub-mcp`: `agent_list`, `agent_status`,
+`agent_inbox`, `agent_send` — setup is under
+[Give an agent the four tools](#give-an-agent-the-four-tools) below. What a woken
+agent should do with a message is written down rather than re-typed each time:
+[AGENTS.md](AGENTS.md) for Codex and
+[.claude/skills/agenthub-watch](.claude/skills/agenthub-watch/SKILL.md) for
+Claude Code.
+
+## How it stays private
+
+- **Every session starts published to nobody.** Discovery never publishes
+  anything, and re-discovery never changes a policy you set.
+- **The owner's API is loopback-only.** It has no authentication, and it is safe
+  only because reaching it means being on this machine. The desktop app refuses
+  a non-loopback node URL for that reason.
+- **Peer traffic is TLS pinned to the key recorded at pairing.** Every envelope
+  is checked against the trust store: signature and recipient binding on all of
+  them, plus expiry and a strictly advancing sequence on heartbeats, and message
+  deduplication on messages.
+- **Two people compare the fingerprints, on two screens.** There is no
+  auto-accept, no skip, and no convenience toggle. Each side writes only its own
+  trust store.
+- **Nothing is written into a provider's files or process.** That is a decision,
+  not a stage that has not been built yet —
+  [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md).
+- **No cloud, no account, no telemetry.** Nodes talk to each other directly, and
+  the peer listener stays on loopback until you pass `--allow-lan` and name a
+  private address yourself.
+
+The full model is in the ADRs:
+[001](docs/decisions/001-session-audience-and-export-boundary.md) audience and
+the export boundary,
+[002](docs/decisions/002-mcp-surface-trust-boundary.md) what the MCP surface may
+touch, [003](docs/decisions/003-waking-with-nobody-present.md) waking with nobody
+present, [004](docs/decisions/004-pairing-exchange.md) the pairing exchange —
+with [docs/architecture.md](docs/architecture.md) over the whole thing.
+
+## Status and roadmap
+
+This is one person's project, used daily on a mac and an Ubuntu box, and it has
+not been through anyone else's hands. The local view, the audience model, the
+pairing exchange, the MCP tools and delivery between two hosts have all been
+exercised on two real machines and written down in
+[docs/verification.md](docs/verification.md). The gaps below are the honest ones
+— including one (the Claude Code wake path) where a feature that reports success
+may not have done anything.
+
+| What | State |
+|---|---|
+| Local session list, status, audience | Verified on macOS and Linux |
+| Pairing exchange with fingerprint comparison | Verified between two real hosts |
+| Heartbeats, messages, inbox between two hosts | Verified between two real hosts |
+| MCP tools, agent to agent across machines | Verified between two real hosts |
+| Waking a **Codex** session | Verified: a turn was observed at the other end |
+| Waking a **Claude Code** session (`-channel`) | **Unverified.** The frame is correct on the wire and the node reports `woken`, but no turn has been observed. [docs/channel-push-not-observed.md](docs/channel-push-not-observed.md), [#57](https://github.com/SheldonChangL/agenthub/issues/57) |
+| Windows background node | Starts at logon only, and Task Scheduler does not restart it if it exits. [#65](https://github.com/SheldonChangL/agenthub/issues/65) |
+| Windows / macOS / Ubuntu acceptance on real hosts | Open. [#21](https://github.com/SheldonChangL/agenthub/issues/21) |
+| Signed binaries | Not done, and not planned until this is worth a certificate |
+
+Open epics: [#1](https://github.com/SheldonChangL/agenthub/issues/1) multi-node,
+[#60](https://github.com/SheldonChangL/agenthub/issues/60) waking,
+[#67](https://github.com/SheldonChangL/agenthub/issues/67) distribution.
+
+---
+
+<details>
+<summary><b>For contributors</b> — building, running, the full CLI, the service, the two-machine walkthrough, the MCP tools, waking, the privacy model in detail, and the local API</summary>
+
+### What a checksum proves, and what it does not
+
+A matching hash means the file you have is the file the release workflow built
+and published. It does not prove that the release page itself is honest — the
+archive and the hash come from the same place, so anyone who could replace one
+could replace the other. What backs the page is that the workflow builds from a
+tag in this repository, on GitHub's runners, with the run linked from the notes,
+and that the tree is public. If you want more than that, build from source.
 
 The `.app` is ad-hoc signed — enough to launch on Apple silicon, where an app
 whose signature does not verify is killed outright, and not enough to satisfy
-Gatekeeper, which wants a Developer ID and notarization.
+Gatekeeper, which wants a Developer ID and notarization. macOS 15 Sequoia
+removed the right-click → **Open** bypass, which is why Sequoia and later go
+through System Settings instead: the dialog there has no Open button at all, and
+the override lives in Privacy & Security for a few minutes after the app was
+refused. A loose binary (from the CLI archives) is the same story: System
+Settings → Privacy & Security → Open Anyway, or
+`xattr -d com.apple.quarantine <file>`.
 
-macOS 15 Sequoia removed the right-click → **Open** bypass, which is why the
-first row sends you through System Settings instead: on Sequoia and later the
-dialog has no Open button at all, and the override lives in Privacy & Security
-for a few minutes after the app was refused.
-
-Take the warning seriously rather than clicking through it by reflex. It is
-telling you the truth: nothing vouches for this download. Which is why the
-checksum below is not optional decoration — it is the only evidence you have.
-
-### Check the download before you run it
-
-Every release attaches a `SHA256SUMS` file, and the same hashes are printed in
-the release notes on the page itself, so you can compare without downloading
-anything first.
-
-```sh
-# Linux
-sha256sum -c SHA256SUMS --ignore-missing
-
-# macOS
-shasum -a 256 -c SHA256SUMS --ignore-missing
-```
-
-```powershell
-# Windows PowerShell — compare the output with the line in SHA256SUMS
-Get-FileHash .\agenthub_<tag>_windows_amd64.zip -Algorithm SHA256
-```
-
-What this proves and what it does not: a matching hash means the file you have
-is the file the release workflow built and published. It does not prove that
-the release page itself is honest — the archive and the hash come from the same
-place, so anyone who could replace one could replace the other. What backs the
-page is that the workflow builds from a tag in this repository, on GitHub's
-runners, with the run linked from the notes, and that the tree is public. If
-you want more than that, build from source; the next section is how.
-
-## Build and test
+### Build and test
 
 Both modules require **Go 1.27.0 or newer**, declared in `go.mod` and
 `desktop/go.mod`. The floor is a security requirement, not a language-feature
@@ -167,7 +302,7 @@ applying modes — so a workflow that consumes these has to `chmod +x` them. On 
 pull request the revision inside the binary is the ephemeral merge commit
 GitHub built, not a commit on the branch; `BUILD` records both.
 
-## Run locally
+### Run locally
 
 ```sh
 mkdir -p data
@@ -226,7 +361,7 @@ signature and recipient binding on all of them, plus expiry and a strictly
 advancing sequence on heartbeats, and message-id deduplication on messages.
 Session list responses are paginated; `ah list` follows every page automatically.
 
-## Run the node as a background service
+### Run the node as a background service
 
 A node started from a terminal lives as long as that terminal — or as long as
 the agent session that started it. Messages sent to this machine while the node
@@ -302,7 +437,7 @@ predates this registration: there the app stops the node and starts the one
 beside it itself, which is the only way a setting saved in the window can take
 effect on such a machine.
 
-## Two machines
+### Two machines
 
 This is the walkthrough that was actually run between a MacBook and an Ubuntu
 22.04 box joined by a direct Ethernet cable, recorded in
@@ -328,7 +463,7 @@ local network; without it `ah candidates` refuses and says so, while the pairing
 window and `ah pair request <host:port>` still work — that exchange needs only an
 address one owner types, which is the case it exists for.
 
-### What your machine calls itself
+#### What your machine calls itself
 
 While pairing mode is open, the node announces a display name to everyone on
 the segment, and it is printed at startup so you can see what that is:
@@ -366,7 +501,7 @@ made of nothing that renders.
 A peer you have already paired with keeps the name it recorded at pairing time;
 re-pair to update it there.
 
-### What this node remembers
+#### What this node remembers
 
 `--peer-listen`, `--allow-lan`, `--discover`, `--treat-as-private` and
 `--auto-wake` work the way `--display-name` does: give one and it is recorded,
@@ -562,7 +697,7 @@ waits in the inbox until something asks for it, whether that is you pressing
 [Waking an agent](#waking-an-agent), and it is off until two switches are
 opened.
 
-## Give an agent the four tools
+### Give an agent the four tools
 
 `agenthub-mcp` is an MCP server over stdio. It is bound to one session at
 startup, because stdio carries no caller identity: whoever runs it decides which
@@ -597,7 +732,7 @@ own, but sending needs the owner to open the gate for that session
 (`ah audience <id> ... --outbound`), and the node refuses an unattributed message
 to another machine regardless.
 
-## Waking an agent
+### Waking an agent
 
 By default a message waits: it lands in an inbox and stays there until somebody
 asks their agent to read it. Waking makes it start a turn on its own, with
@@ -701,7 +836,7 @@ and the session the id actually belongs to is left silent — with `ah wakes`
 still saying `woken`. Give each session its own config, or start the server
 with `--strict-mcp-config` and a config of its own.
 
-### What a woken turn may do
+#### What a woken turn may do
 
 **It approves nothing.** Codex asks before it runs a command, changes a file,
 or widens its permissions, and there is nobody present to answer. Every such
@@ -721,7 +856,7 @@ permissions a stranger's message can invoke without asking anyone. AgentHub
 does not shrink those permissions and cannot; that combination is yours to
 avoid.
 
-### One turn at a time, per thread
+#### One turn at a time, per thread
 
 A Codex thread runs one woken turn at a time. A second message for the same
 thread waits behind the one in flight for at most 90 seconds; at most two may
@@ -736,7 +871,7 @@ limits are counted before the driver is reached, and a wake the driver then
 refuses settles as `failed` — and only `woken` rows are counted, so a message
 turned away by a busy thread costs no allowance.
 
-### Loops and limits
+#### Loops and limits
 
 Two machines that both wake automatically would answer each other until someone
 noticed, and that costs real money. Three limits stop it:
@@ -755,7 +890,7 @@ machine share a bucket of their own.
 plus a hop count that stops an exchange after 4 automatic wakes. A message
 stopped by any of them stays in the inbox and can be read by hand.
 
-### Seeing what happened
+#### Seeing what happened
 
 ```bash
 go run ./cmd/ah wakes                    # everything, newest first
@@ -783,7 +918,7 @@ confirm a turn ran is the agent's own history.
 The reasoning behind all of it, including what it deliberately does not solve,
 is [ADR-003](docs/decisions/003-waking-with-nobody-present.md).
 
-## Desktop app
+### Desktop app
 
 The desktop app is the owner's management surface for the privacy model. It
 lists local sessions, filters by provider/status/audience/working directory,
@@ -833,7 +968,7 @@ not qualify. `agenthub-node` and `agenthub-mcp` are found the same way, with
 `AGENTHUB_NODE` and `AGENTHUB_MCP`. The app passes what it found to
 `ah service install --node-binary`, rather than letting `ah` search again.
 
-## Privacy model
+### Privacy model
 
 `ah list` is an owner-local view and can show private sessions. Publishing
 decides which paired nodes receive a session in the heartbeat built for them:
@@ -879,7 +1014,7 @@ See [architecture](docs/architecture.md), [MVP specification](docs/spec.md), [mu
 
 The Codex App Server client is what waking a Codex session runs through, and the node starts its supervisor when `--auto-wake` is on. Discovery does not use it: the scan path is still the filesystem, and `thread/list` is implemented and schema-tested without being enabled there. See [Codex App Server notes](docs/codex-app-server.md).
 
-## Local API
+### Local API
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -967,3 +1102,5 @@ fingerprint of the key that arrives in the handshake, on both machines.
 The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, `POST /v1/messages`, and — only while a pairing window is open — `POST /v1/pair/requests` and `GET /v1/pair/requests/{id}`. It is never the owner's API: `approve` and `confirm` exist only on the loopback surface, because a peer that could reach them would be approving itself.
 
 See [verification notes](docs/verification.md) for the tested platform matrix and remaining runtime checks.
+
+</details>
