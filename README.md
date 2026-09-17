@@ -9,8 +9,8 @@ nothing leaves your LAN, and there is no account.
 Cross-provider (Claude Code and Codex). Cross-machine (paired over your own
 network, TLS pinned to keys you compared by fingerprint, on both screens).
 Private by default (every session it finds starts invisible; you choose what
-each peer sees). No cloud, no account, no telemetry. Written in Go; the source
-is public.
+each peer sees). No cloud, no account, no telemetry. Written in Go, open source
+under the MIT license.
 
 ![Local sessions](docs/screenshots/local-sessions.png)
 
@@ -1130,3 +1130,5 @@ packaging.
 acceptance, is the one in English.
 
 </details>
+
+License: MIT — see [LICENSE](LICENSE).
