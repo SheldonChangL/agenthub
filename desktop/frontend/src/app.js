@@ -35,6 +35,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     inboxSession: null,
     localNodeId: "",
     localFingerprint: "",
+    // This build's own version, read once from the Go side at boot. It is in
+    // the title bar so a bug report from a stranger names a build; empty until
+    // the binding answers, and the line simply omits it until then.
+    appVersion: "",
     // This node's own public key, as the peer must type it. Read from the node
     // on every overview; empty until one succeeds.
     localPublicKey: "",
@@ -730,9 +734,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     el("conn-dot").className = reachable ? "dot ok" : "dot bad";
+    // The app's own version rides on this line in both states: the half of the
+    // bug reports worth having are the ones where the node is not reachable.
+    const version = state.appVersion ? ` · ${state.appVersion}` : "";
     el("node-line").textContent = reachable
-      ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}`
-      : `無法連線到 ${overview.nodeUrl}`;
+      ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}${version}`
+      : `無法連線到 ${overview.nodeUrl}${version}`;
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
     if (!reachable) {
@@ -3537,6 +3544,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   api.HostPlatform?.()
     .then((platform) => {
       if (platform === "darwin") document.body?.classList?.add("mac");
+    })
+    .catch(() => {});
+  // Which build this is. Asked once — it cannot change while the window is
+  // open — and painted onto the node line directly as well as stored, because
+  // this answer can arrive after the first load() has already written it.
+  api.Version?.()
+    .then((info) => {
+      const release = info?.release || "";
+      if (!release) return;
+      state.appVersion = release === "unreleased" ? "unreleased" : `v${release}`;
+      const line = el("node-line");
+      const painted = line?.textContent || "";
+      if (painted.includes("·") || painted.includes("無法連線")) {
+        if (!painted.endsWith(state.appVersion)) line.textContent = `${painted} · ${state.appVersion}`;
+      }
     })
     .catch(() => {});
   // The rain is pure CSS, but the compositor still pays for it while the

@@ -56,4 +56,6 @@ export function TrustNode(arg1:string,arg2:string,arg3:string,arg4:string,arg5:s
 
 export function UninstallService():Promise<main.ServiceResult>;
 
+export function Version():Promise<main.VersionInfo>;
+
 export function Wakes(arg1:string,arg2:number):Promise<main.WakesView>;
