@@ -353,17 +353,43 @@ func looksLikeSessionID(arg string) bool {
 	return found && model.KnownProvider(provider)
 }
 
-// pair records a peer whose fingerprint the owner has already compared on both
-// machines.
+// pair is both routes to a trusted peer: the exchange, and the manual form.
 //
+//	ah pair request <host:port> [--name <label>]  ask that machine to pair
+//	ah pair pending                               what is waiting, with fingerprints
+//	ah pair approve <request-id>                  yes, on the machine that was asked
+//	ah pair confirm <request-id>                  yes, on the machine that asked
+//	ah pair reject <request-id>                   no, on either
 //	ah pair <node-id> <display-name> <platform> <public-key> <fingerprint...>
 //
-// The fingerprint is passed in deliberately: this command cannot verify
-// anything by itself, and taking the value the person actually read means a
-// substituted key is refused rather than trusted.
+// The subcommands cannot collide with the manual form: its first argument is a
+// node id, which is at least sixteen characters and in practice begins `node_`.
+//
+// The manual form stays. It is the route that needs nothing but a shell and a
+// way to read five values aloud, and it is what still works when the two
+// machines cannot open a connection to each other at all.
 func (r runner) pair(ctx context.Context, args []string) error {
+	if len(args) > 1 {
+		switch args[1] {
+		case "request":
+			return r.pairRequest(ctx, args)
+		case "pending":
+			if len(args) != 2 {
+				return errors.New("usage: ah pair pending")
+			}
+			return r.pairPending(ctx)
+		case "approve", "confirm", "reject":
+			if len(args) != 3 {
+				return fmt.Errorf("usage: ah pair %s <request-id>", args[1])
+			}
+			return r.simple(ctx, http.MethodPost,
+				"/v1/pair/requests/"+url.PathEscape(args[2])+"/"+args[1], map[string]string{})
+		}
+	}
 	if len(args) < 6 {
-		return errors.New("usage: ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
+		return errors.New("usage: ah pair request <host:port> [--name <label>]\n" +
+			"       ah pair pending | approve <request-id> | confirm <request-id> | reject <request-id>\n" +
+			"       ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
 	}
 	return r.simple(ctx, http.MethodPost, "/v1/nodes", map[string]string{
 		"nodeId":               args[1],
@@ -372,6 +398,132 @@ func (r runner) pair(ctx context.Context, args []string) error {
 		"publicKey":            args[4],
 		"confirmedFingerprint": strings.Join(args[5:], " "),
 	})
+}
+
+// pairRequest asks the machine at an address to pair.
+//
+//	ah pair request <host:port> [--name <label>]
+//
+// The address is the only thing that has to be carried between the two
+// machines, and it is not a secret: nothing here is trusted because of it. What
+// decides the pairing is the fingerprint this prints, compared against the one
+// the other machine prints.
+func (r runner) pairRequest(ctx context.Context, args []string) error {
+	address := ""
+	name := ""
+	for i := 2; i < len(args); i++ {
+		switch {
+		case args[i] == "--name":
+			if i+1 >= len(args) {
+				return errors.New("--name needs a value: what to call this peer here")
+			}
+			i++
+			name = args[i]
+		case strings.HasPrefix(args[i], "--name="):
+			name = strings.TrimPrefix(args[i], "--name=")
+		case strings.HasPrefix(args[i], "-"):
+			return fmt.Errorf("unknown flag %q\nusage: ah pair request <host:port> [--name <label>]", args[i])
+		case address == "":
+			address = args[i]
+		default:
+			return fmt.Errorf("ah pair request takes one address, got %q as well\n"+
+				"usage: ah pair request <host:port> [--name <label>]", args[i])
+		}
+	}
+	if address == "" {
+		return errors.New("usage: ah pair request <host:port> [--name <label>]")
+	}
+	body, err := r.request(ctx, http.MethodPost, "/v1/pair/requests",
+		map[string]string{"address": address, "name": name})
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var request pairRequestRow
+	if err := json.Unmarshal(body, &request); err != nil {
+		return fmt.Errorf("decode pairing request: %w", err)
+	}
+	r.printPairRequest(request)
+	_, _ = fmt.Fprintf(r.stdout,
+		"\nApprove it on the other machine with `ah pair approve %s`, then run `ah pair confirm %s` here.\n",
+		request.ID, request.ID)
+	return nil
+}
+
+// pairPending shows what each side is waiting for, with the fingerprints to
+// compare.
+func (r runner) pairPending(ctx context.Context) error {
+	body, err := r.request(ctx, http.MethodGet, "/v1/pair/requests", nil)
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var decoded struct {
+		Requests []pairRequestRow `json:"requests"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode pairing requests: %w", err)
+	}
+	if len(decoded.Requests) == 0 {
+		_, _ = fmt.Fprintln(r.stdout, "No pairing requests.")
+		return nil
+	}
+	for i, request := range decoded.Requests {
+		if i > 0 {
+			_, _ = fmt.Fprintln(r.stdout)
+		}
+		r.printPairRequest(request)
+	}
+	return nil
+}
+
+// pairRequestRow is one exchange as the node reports it.
+type pairRequestRow struct {
+	ID               string `json:"id"`
+	Direction        string `json:"direction"`
+	NodeID           string `json:"nodeId"`
+	DisplayName      string `json:"displayName"`
+	Platform         string `json:"platform"`
+	Fingerprint      string `json:"fingerprint"`
+	LocalFingerprint string `json:"localFingerprint"`
+	Address          string `json:"address"`
+	State            string `json:"state"`
+	Reason           string `json:"reason"`
+	ExpiresAt        string `json:"expiresAt"`
+	Notice           string `json:"notice"`
+}
+
+// printPairRequest puts the two fingerprints where a person will read them.
+//
+// Both, in the same order on both machines, and labelled by which machine each
+// belongs to. One fingerprint on each screen is the version people get wrong:
+// they see two different values, assume that is how it works, and confirm.
+func (r runner) printPairRequest(request pairRequestRow) {
+	name := request.DisplayName
+	if name == "" {
+		name = request.NodeID
+	}
+	_, _ = fmt.Fprintf(r.stdout, "%s  %s  (%s)\n", request.ID, request.State, request.Direction)
+	_, _ = fmt.Fprintf(r.stdout, "  other machine   %s", name)
+	if request.Platform != "" {
+		_, _ = fmt.Fprintf(r.stdout, " on %s", request.Platform)
+	}
+	if request.Address != "" {
+		_, _ = fmt.Fprintf(r.stdout, " at %s", request.Address)
+	}
+	_, _ = fmt.Fprintf(r.stdout, "\n                  %s\n", request.NodeID)
+	_, _ = fmt.Fprintf(r.stdout, "  their fingerprint  %s\n", request.Fingerprint)
+	_, _ = fmt.Fprintf(r.stdout, "  this machine's     %s\n", request.LocalFingerprint)
+	if request.Reason != "" {
+		_, _ = fmt.Fprintf(r.stdout, "  reason             %s\n", request.Reason)
+	}
+	if request.Notice != "" {
+		_, _ = fmt.Fprintf(r.stdout, "  %s\n", request.Notice)
+	}
 }
 
 // audience reads or replaces one session's export policy.
@@ -760,7 +912,13 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah nodes address <node-id> <host:port>       record where a paired node answers; without one,")
 	_, _ = fmt.Fprintln(output, "                                               delivery skips it and `ah send` still says queued")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")
+	_, _ = fmt.Fprintln(output, "  ah pair request <host:port> [--name <label>] ask that machine to pair; no key is copied by hand")
+	_, _ = fmt.Fprintln(output, "  ah pair pending                              requests waiting, with the two fingerprints to compare")
+	_, _ = fmt.Fprintln(output, "  ah pair approve <request-id>                 on the machine that was asked, once they match")
+	_, _ = fmt.Fprintln(output, "  ah pair confirm <request-id>                 on the machine that asked, once they match")
+	_, _ = fmt.Fprintln(output, "  ah pair reject <request-id>                  refuse one, on either machine")
 	_, _ = fmt.Fprintln(output, "  ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>")
+	_, _ = fmt.Fprintln(output, "                                               the manual form, still here")
 	_, _ = fmt.Fprintln(output, "  ah send [--from <local-session-id>] <session-id> [--] <message>")
 	_, _ = fmt.Fprintln(output, "                                               --from is required when <session-id> names another node;")
 	_, _ = fmt.Fprintln(output, "                                               put -- before a message that mentions --from")
