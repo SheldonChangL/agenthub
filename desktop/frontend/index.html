@@ -60,7 +60,12 @@
             <span class="spacer"></span>
             <button id="onboarding-dismiss" class="link" data-t="onboarding.dismiss"></button>
           </div>
-          <div class="cardbody"><div id="onboarding-steps"></div></div>
+          <div class="cardbody">
+            <div id="onboarding-steps"></div>
+            <!-- Shown on the one render that carries every tick, just before the
+                 card puts itself away: ticks alone do not say it is going. -->
+            <p id="onboarding-alldone" class="muted hidden" data-t="onboarding.allDone"></p>
+          </div>
         </section>
         <section class="filters">
           <input id="search" type="search" data-t-placeholder="local.searchPlaceholder" autocomplete="off" />
@@ -123,7 +128,6 @@
                 <span id="pairing-summary" class="pill" data-t="network.pairingLoading"></span>
               </div>
               <p id="pairing-summary-line" class="muted"></p>
-              <button id="btn-open-pairing" data-t="network.openPairingPanel"></button>
             </div>
             <p class="muted" data-t="network.pairingOnlyIdentity"></p>
           </div>

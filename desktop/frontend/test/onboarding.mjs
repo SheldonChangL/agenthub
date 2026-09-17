@@ -257,11 +257,44 @@ if (reach.actions.at(-1)?.label !== ZH["nodeSettings.repairLoopback"]) {
   failures.push(`the step offers no way to stay local: ${reach.actions.map((a) => a.label).join(" | ")}`);
 }
 
+// The clause follows what the NODE has stored, not what the settings form is
+// showing. The card is on another view; that checkbox is live-editable over
+// there, and a tick nobody saved used to drop "and allow LAN connections" from
+// this label while the click still turned it on — the silent tick §7.8 rule 4
+// forbids, arrived at from the other direction.
 el("node-allow-lan").checked = true;
 reach = app.onboardingSteps().find((step) => step.id === "reachable");
-if (reach.actions[0]?.label !== noLanClause) {
-  failures.push(`with LAN access already on the button still promises to turn it on: ${reach.actions[0]?.label}`);
+if (reach.actions[0]?.label !== lanClause) {
+  failures.push(`an unsaved tick in the settings form took the LAN clause off the card's label: ${reach.actions[0]?.label}`);
 }
+el("node-allow-lan").checked = false;
+app.state.nodeSettings.saved = { ...app.state.nodeSettings.saved, allowLan: true };
+reach = app.onboardingSteps().find((step) => step.id === "reachable");
+if (reach.actions[0]?.label !== noLanClause) {
+  failures.push(`with LAN access already saved on, the button still promises to turn it on: ${reach.actions[0]?.label}`);
+}
+app.state.nodeSettings.saved = { ...app.state.nodeSettings.saved, allowLan: false };
+
+// And the card's button never carries an unrelated unsaved edit into the save.
+// applyPeerListenRepair presses save on the form as it stands, which is right
+// for the button inside that form and wrong for one two views away: a private
+// range somebody was still typing would be committed by a click about a
+// listening address.
+el("node-private").value = "10.9.0.0/16";
+calls.SaveNodeSettings = 0;
+app.state.view = "local";
+await press("reachable");
+if (calls.SaveNodeSettings !== 0) {
+  failures.push("the card saved the settings form while it held an edit nobody asked to save");
+}
+if (app.state.view !== "settings" || app.state.settingsSection !== "settings-node") {
+  failures.push(`the refusal did not take the owner to the form it is about: ${app.state.view}/${app.state.settingsSection}`);
+}
+if (!el("banner").textContent.includes(ZH["onboarding.reachable.formDirty"])) {
+  failures.push(`the refusal was silent: ${el("banner").textContent}`);
+}
+el("node-private").value = (SETTINGS.saved.treatAsPrivate ?? []).join(", ");
+app.state.view = "local";
 
 // A machine with nothing private to offer gets no one-click button at all: a
 // repair that lands on the node's refusal is worse than no button, so the step
@@ -383,7 +416,188 @@ if (next.state.ui.onboardingDismissed) failures.push("the settings link did not 
 if (!shown()) failures.push("the settings link did not bring the checklist back");
 if (next.state.view !== "local") failures.push("the checklist was brought back on a view it is not on");
 
-/* ---------------- 9. the English half ---------------- */
+/* ---------------- 9. the service status lands after the first render ---------------- */
+
+// load() renders the card and only then fires loadService(), so for the first
+// seconds of every launch the card is built with state.service === null. That
+// used to fall through to "Install the service" — on a machine whose service
+// was installed and running, beside a title-bar pill that said so. Fourteen
+// seconds of a flat contradiction on the first screen a stranger sees.
+const RUNNING = { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 9, unitPath: "/u", logHint: "/l", dbPath: "~/agenthub.db", dbPathKnown: true };
+let releaseStatus = () => {};
+const heldStatus = new Promise((resolve) => { releaseStatus = resolve; });
+bindings.ServiceStatus = async () => { await heldStatus; return RUNNING; };
+// configure() copies the object, so a fake swapped in afterwards only takes
+// effect once it is handed over again.
+configure(bindings);
+
+next.state.ui.onboardingDismissed = false;
+next.state.service = null;
+next.state.nodeReachable = true;
+next.state.loadedOnce = true;
+next.state.sessions = [];
+next.state.nodes = [];
+next.state.counts = {};
+next.state.pairing = null;
+next.renderOnboarding();
+
+const serviceIndex = next.onboardingSteps().findIndex((step) => step.id === "service");
+const tickAt = (index) => rows()[index]?.children[0]?.textContent;
+const bodyAt = (index) => rows()[index]?.children[1]?.children[1]?.textContent;
+const waiting = next.onboardingSteps()[serviceIndex];
+if (waiting.done) failures.push("the service step was ticked before any status had been read");
+if (waiting.actions.length !== 0) {
+  failures.push(`a window that does not yet know whether a service exists offered ${waiting.actions.length} buttons about it`);
+}
+if (waiting.body !== ZH["onboarding.service.bodyChecking"]) {
+  failures.push(`before the status landed the step said: ${waiting.body}`);
+}
+if (bodyAt(serviceIndex) === ZH["onboarding.service.body"] || tickAt(serviceIndex) === "✓") {
+  failures.push(`the rendered row does not match the step: ${tickAt(serviceIndex)} / ${bodyAt(serviceIndex)}`);
+}
+
+// And when it lands, the card is repainted by loadService itself — no second
+// render from the test, because there is no second render in the app either:
+// the next one is fifteen seconds away.
+const inFlight = next.loadService();
+releaseStatus();
+await inFlight;
+if (tickAt(serviceIndex) !== "✓") {
+  failures.push(`the status landed and the card still read ${tickAt(serviceIndex)} / ${bodyAt(serviceIndex)}`);
+}
+bindings.ServiceStatus = async () => RUNNING;
+configure(bindings);
+
+/* ---------------- 10. a node that is not answering ---------------- */
+
+// The one situation this card exists for. Step 1 used to be derived from the
+// service manager's answer alone, so it ticked over a window showing "cannot
+// reach http://127.0.0.1:7462", and step 3 sat on "waiting for the node to
+// say…" forever because the read that fills it is never even attempted while
+// the node is down. Between them the card had nothing to press.
+store.clear();
+bindings.Overview = async () => ({
+  // Shaped as App.Overview shapes it in Go: it never rejects, it answers
+  // unreachable with the dial error and empty lists.
+  reachable: false, nodeUrl: "http://127.0.0.1:7462",
+  error: "dial tcp 127.0.0.1:7462: connect: connection refused",
+  sessions: [], nodes: [], peers: [], counts: {},
+});
+configure(bindings);
+const dead = boot({ start: false });
+await dead.load();
+
+if (!shown()) failures.push("a node that never answered did not show the checklist, which is what it is for");
+const deadService = dead.onboardingSteps().find((step) => step.id === "service");
+if (deadService.done) failures.push("a node that is not answering was called a finished step");
+if (deadService.actions.length === 0) {
+  failures.push("a node that is not answering was offered no way to start it");
+}
+if (deadService.actions[0]?.label !== ZH["onboarding.service.actionStart"]) {
+  failures.push(`the step offers ${deadService.actions[0]?.label}, not the start`);
+}
+const deadReach = dead.onboardingSteps().find((step) => step.id === "reachable");
+if (deadReach.body !== ZH["onboarding.reachable.bodyNodeDown"]) {
+  failures.push(`step 3 on a dead node said: ${deadReach.body}`);
+}
+if (deadReach.done) failures.push("a dead node was called reachable from another machine");
+const pressable = dead.onboardingSteps().reduce((total, step) => total + step.actions.length, 0);
+if (pressable === 0) {
+  failures.push("the checklist offered nothing to press on the one situation it exists for");
+}
+// And the button is the node restart, not the service installer: whatever the
+// service manager says it is holding, what is wrong is that nothing answers.
+calls.RestartNode = 0;
+await deadService.actions[0].run();
+if (calls.RestartNode !== 1) {
+  failures.push(`the start button called RestartNode ${calls.RestartNode} times, want 1`);
+}
+// Even where the service is installed and running: that is exactly the state
+// the live run found, and the one that used to put a tick over a dead node.
+dead.state.nodeReachable = false;
+dead.state.service = { supported: true, installed: true, running: true, pid: 9 };
+const stillDown = dead.onboardingSteps().find((step) => step.id === "service");
+if (stillDown.done || stillDown.actions.length === 0) {
+  failures.push("an installed, running service ticked the step over a node that answers nothing");
+}
+
+/* ---------------- 11. a settings read that failed does not wedge step 3 ---------------- */
+
+// onboardingSettingsAsked is set before the await and was never cleared, so one
+// failed read left "waiting for the node to say…" on screen for the life of the
+// window — with no button and no timeout, which reads as a hang.
+store.clear();
+bindings.Overview = async () => ({
+  reachable: true, nodeUrl: "http://127.0.0.1:7462",
+  node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
+  sessions: [], nodes: [], peers: [], counts: {},
+});
+configure(bindings);
+let settingsReads = 0;
+bindings.NodeSettings = async () => { settingsReads += 1; throw new Error("dial tcp: connection refused"); };
+configure(bindings);
+const wedged = boot({ start: false });
+await wedged.load();
+wedged.renderOnboarding();
+// The read is fired from inside the render and resolves on its own; let it.
+for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+
+if (settingsReads === 0) failures.push("the checklist never asked for the node settings at all");
+const failed = wedged.onboardingSteps().find((step) => step.id === "reachable");
+if (failed.body === ZH["onboarding.reachable.bodyLoading"]) {
+  failures.push("a failed read left the step waiting for an answer that is never coming");
+}
+if (failed.body !== ZH["onboarding.reachable.bodyUnreadable"]) {
+  failures.push(`a failed read said: ${failed.body}`);
+}
+if (failed.actions[0]?.label !== ZH["onboarding.reachable.retry"]) {
+  failures.push(`a failed read offered no retry: ${failed.actions.map((a) => a.label).join(" | ")}`);
+}
+// And the retry really asks again, which is the whole point of clearing the latch.
+bindings.NodeSettings = async () => { settingsReads += 1; return JSON.parse(JSON.stringify(SETTINGS)); };
+configure(bindings);
+const readsBefore = settingsReads;
+failed.actions[0].run();
+for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+if (settingsReads === readsBefore) {
+  failures.push("the retry button did not ask the node again");
+}
+const recovered = wedged.onboardingSteps().find((step) => step.id === "reachable");
+if (recovered.body === ZH["onboarding.reachable.bodyUnreadable"]) {
+  failures.push("the step stayed on the failure after a read that succeeded");
+}
+
+/* ---------------- 12. the card says it is going ---------------- */
+
+// The auto-hide shows every tick once and then puts the card away. That last
+// render used to show ticks and nothing else; onboarding.allDone was written in
+// both tables and rendered nowhere.
+store.clear();
+const finishing = boot({ start: false });
+// Open first, so the finish is something that happens to the card rather than
+// a state it booted into.
+finishing.state.nodeReachable = true;
+finishing.state.loadedOnce = true;
+finishing.state.service = { supported: true, installed: true, running: true, pid: 9 };
+finishing.state.sessions = [{ id: "claude:one" }];
+finishing.state.counts = { total: 1, all_paired: 1, selected: 0 };
+finishing.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
+finishing.state.nodes = [];
+finishing.renderOnboarding();
+if (!shown()) failures.push("the card was not on screen before the step that finishes it");
+if (!el("onboarding-alldone").classList.contains("hidden")) {
+  failures.push("the card said goodbye while a step was still open");
+}
+finishing.state.nodes = [{ nodeId: "node_other" }];
+finishing.renderOnboarding();
+if (!shown()) failures.push("the card vanished under the click that completed it");
+if (el("onboarding-alldone").classList.contains("hidden")) {
+  failures.push("the last render showed five ticks and never said the card was going");
+}
+finishing.renderOnboarding();
+if (shown()) failures.push("the card stayed after its farewell render");
+
+/* ---------------- 13. the English half ---------------- */
 
 // Every other assertion above reads the Chinese table, because that is what the
 // shim boots in. This card is the first thing an English-speaking stranger
