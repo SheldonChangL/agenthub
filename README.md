@@ -70,15 +70,22 @@ check the file you got against the page before you run it.
    Either way, `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app`
    does the same thing from a terminal.
 
-**First launch, on macOS and Linux.** Opening the app does not start a node.
-Go to Settings → **Background service** → **Install as a background service…**:
-that registers the node with launchd or `systemd --user`, starts it, and brings
-it back at every login. Until it is installed the window says it cannot reach
-`http://127.0.0.1:7462`, and the steps below that need a running node will not
-work. The app opens on a setup checklist that walks through this one and the
-ones after it — scanning for the Claude Code and Codex sessions already on this
-machine, giving the node an address other machines can reach, and pairing with a
-second machine — and each step ticks itself off as you finish it.
+**First launch.** The app opens on a checklist called **Set up AgentHub** above
+an empty table, with five steps: install the node as a background service, scan
+for the Claude Code and Codex sessions already on this machine, give the node an
+address other machines can reach (it listens on loopback until you say
+otherwise), pair with a second machine — the same thing **Pair another
+machine…** does on the Network tab — and publish a session. The first step is
+the one that matters on macOS and Linux, because opening the app starts no node
+there: it takes you to Settings → **Background service** → **Install as a
+background service…**, which registers the node with launchd or `systemd --user`
+and starts it, and until that is done the window says it cannot reach
+`http://127.0.0.1:7462`. On Windows the installer has already registered and
+started the node, so that step is done before you open the window. Each step
+ticks itself off as you finish it, the card goes away once there is nothing left
+in it, and Settings → Appearance → **Show the setup checklist** brings it back.
+Nothing you have is published by any of this — that stays a separate choice,
+made per session.
 
 ### Windows
 
@@ -106,8 +113,7 @@ second machine — and each step ticks itself off as you finish it.
 4. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1. The
    `README.txt` inside names the package for Debian, Fedora and Arch.
 5. First launch is the same as macOS: install the background service from
-   Settings before anything else — see **First launch, on macOS and Linux**
-   above.
+   Settings before anything else — see **First launch** above.
 
 ### Command line only
 
@@ -126,7 +132,7 @@ Pairing establishes identity and nothing else. It publishes no session.
    address this machine actually has, and restart the node. The defaults are
    loopback-only, which no other machine can reach.
 2. On the machine that decides, go to **Network**, press **Pair another
-   machine…** — or **Open the pairing panel** — and then **Pair with another
+   machine…** to open the **Pairing mode** drawer, and then **Pair with another
    machine**. That opens a window, for a few minutes.
 3. On the other machine, open the same panel and either click that machine in
    **Machines announcing themselves**, or type its address into **Address shown
@@ -585,7 +591,8 @@ Without it each node refuses to list the other, because it will not deliver to
 an address outside the ranges it trusts.
 
 **2. Find each other.** Open the desktop app on both, go to the Network tab,
-open the Pairing mode drawer and press **Pair with another machine** on one. It appears on the other's
+press **Pair another machine…** to open the Pairing mode drawer and press
+**Pair with another machine** on one. It appears on the other's
 candidate list within a few seconds. From a terminal that is `bin/ah pairing on`
 and `bin/ah candidates`. A node started without `--discover` announces nothing
 and still opens a window; the drawer then shows the address the other machine
@@ -640,7 +647,8 @@ a heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
 half-done looks like.
 
 **In the desktop app**, the same exchange runs from the Network tab's Pairing
-mode drawer: press **Pair with another machine** on the machine that decides,
+mode drawer, which **Pair another machine…** opens: press **Pair with another
+machine** on the machine that decides,
 then on the other one either press **Send pairing request** on its row in the
 candidate list or type the address it shows into **Address shown on the other
 screen**. Both windows then list the request with the same two fingerprints in

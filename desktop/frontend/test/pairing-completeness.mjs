@@ -117,12 +117,26 @@ if (state.nodes.length !== 2) {
 
 /* ---------------- 1. this machine's own public key ---------------- */
 
-// The dialog is opened the way an owner opens it, so a handler that was never
-// wired fails here rather than passing because the test called the function.
+// The node list's primary button opens the EXCHANGE. It used to open the
+// five-field form below, which is the fallback for two machines that cannot
+// reach each other — so the most prominent button on this view put a newcomer
+// in front of a box asking for a base64 public key.
 el("btn-pair").onclick();
+if (el("pairing-modal").classList.contains("hidden")) {
+  failures.push("the node list's primary button did not open the pairing drawer");
+}
+if (!el("pair-modal").classList.contains("hidden")) {
+  failures.push("the node list's primary button opened the by-hand form instead of the exchange");
+}
+
+// And the form is still one click away, from the drawer's own footer, which is
+// where the sentence saying when to use it already is. Opened the way an owner
+// opens it, so a handler that was never wired fails here rather than passing
+// because the test called the function.
+el("btn-pair-manual").onclick();
 
 if (el("pair-modal").classList.contains("hidden")) {
-  failures.push("clicking 配對新節點… did not open the dialog");
+  failures.push("the drawer's by-hand link did not open the dialog");
 }
 if (el("local-public-key").textContent !== PUBLIC_KEY) {
   failures.push(`the dialog shows ${JSON.stringify(el("local-public-key").textContent)} as the local public key, want the node's`);
@@ -177,7 +191,7 @@ copyFails = false;
 // present an empty string as one.
 const savedKey = state.localPublicKey;
 state.localPublicKey = "";
-el("btn-pair").onclick();
+el("btn-pair-manual").onclick();
 if (el("local-public-key").textContent === "") {
   failures.push("with no key read yet the dialog rendered an empty value rather than a placeholder");
 }
