@@ -119,8 +119,8 @@ export const TEXT = {
   "local.deselect": "Clear selection",
 
   "network.pairedNodes": "Paired nodes",
-  "network.pairNew": "Pair a new node…",
-  "network.pairNewTitle": "Pair a new node",
+  "network.pairNew": "Pair another machine…",
+  "network.pairNewTitle": "Pair by hand",
   "network.pairingMode": "Pairing mode",
   "network.pairingLoading": "Reading…",
   "network.openPairingPanel": "Open the pairing panel",

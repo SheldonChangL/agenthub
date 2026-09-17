@@ -3673,7 +3673,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     };
   }
 
-  el("btn-pair").onclick = openPairModal;
+  // The node list's primary button opens the EXCHANGE, not the five-field form.
+  //
+  // It used to open the manual dialog, which asks for a base64 public key
+  // carried across by hand — so the most prominent button on the network view
+  // put a newcomer in front of the fallback while the flow that finds the other
+  // machine for them sat behind a secondary link. The form is still one click
+  // away, from the drawer's own footer, which is where the sentence explaining
+  // when to use it already is.
+  el("btn-pair").onclick = openPairingDrawer;
   el("pair-close").onclick = closePairModal;
   el("copy-local-public-key").onclick = () => copyLocalPublicKey();
   el("pair-modal").onclick = (event) => {
