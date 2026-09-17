@@ -180,11 +180,15 @@ func (q *Requests) Now() time.Time { return q.now() }
 // and decided the expiry.
 //
 // A full incoming list makes room for the newcomer by displacing the oldest
-// request still waiting, rather than refusing. The owner is standing at two
-// machines with a window open, and the failure that matters is their own
-// machine's request being turned away because something filled the list first;
-// an older unanswered row is the cheaper thing to lose. Per-source bound first,
-// so displacing cannot be driven from one address either.
+// request still waiting from the newcomer's own source address, and refuses
+// with ErrTooManyRequests when that address has no row to give up. Displacing
+// the oldest row overall was worse than refusing: a flooder rotating source
+// hosts needs only MaxPending/MaxPendingPerSource addresses to fill the list,
+// and every further request would then evict somebody else's row — the owner's
+// real machine among them, shown to them as displaced. Keyed on SourceHost, a
+// sender can only ever push out its own earlier attempt. The residual is that
+// an attacker with unlimited source addresses can still fill the list and make
+// this node answer PAIRING_BUSY; it can never evict a stranger's row.
 func (q *Requests) Add(request Request) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -192,7 +196,7 @@ func (q *Requests) Add(request Request) error {
 
 	pending := 0
 	fromSource := 0
-	oldest := ""
+	oldestFromSource := ""
 	for _, id := range q.order {
 		row := q.rows[id]
 		if row.Direction != request.Direction || row.Decided() {
@@ -202,11 +206,12 @@ func (q *Requests) Add(request Request) error {
 		if row.NodeID == request.NodeID {
 			return ErrDuplicateRequest
 		}
-		if request.SourceHost != "" && row.SourceHost == request.SourceHost {
-			fromSource++
+		if request.SourceHost == "" || row.SourceHost != request.SourceHost {
+			continue
 		}
-		if oldest == "" || q.rows[oldest].CreatedAt.After(row.CreatedAt) {
-			oldest = id
+		fromSource++
+		if oldestFromSource == "" || q.rows[oldestFromSource].CreatedAt.After(row.CreatedAt) {
+			oldestFromSource = id
 		}
 	}
 	if fromSource >= MaxPendingPerSource {
@@ -216,11 +221,13 @@ func (q *Requests) Add(request Request) error {
 		// An outgoing request is this owner's own deliberate act and there is
 		// no attacker to absorb: sixteen of them means the owner asked for
 		// sixteen, and silently cancelling one of those would be this node
-		// deciding which of their pairings to abandon.
-		if request.Direction != Incoming || oldest == "" {
+		// deciding which of their pairings to abandon. An incoming one may only
+		// displace a row from its own address, so a full list is refused unless
+		// this sender already has one waiting here.
+		if request.Direction != Incoming || oldestFromSource == "" {
 			return ErrTooManyRequests
 		}
-		displaced := q.rows[oldest]
+		displaced := q.rows[oldestFromSource]
 		displaced.State = StateExpired
 		displaced.Reason = ReasonDisplaced
 	}

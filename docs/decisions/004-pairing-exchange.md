@@ -141,8 +141,21 @@ where it was.
   owner's real machine was answered `PAIRING_BUSY` during the very window they
   had opened to pair it. So the incoming list is bounded **per source address**
   (three), which is the one thing in an incoming request its sender cannot
-  invent freely, and a full incoming list **displaces the oldest row still
-  waiting** rather than refusing the newcomer. The displaced row says
+  invent freely.
+
+  A full incoming list **displaces only within one source address**: a newcomer
+  may push out the oldest row still waiting *from its own address*, and is
+  answered `PAIRING_BUSY` when that address has no row to give up. Displacing
+  the oldest row overall was the first attempt and was worse than refusing —
+  with three rows allowed per address, six addresses fill the list, and every
+  request after that evicted whoever happened to be oldest. A flooder rotating
+  source hosts could therefore make the owner's own machine show as
+  `displaced`, which is the failure the bound exists to prevent. Keyed on the
+  source host, a sender can only ever push out its own earlier attempt. The
+  residual is accepted and named: an attacker with an unlimited supply of source
+  addresses can still fill the list and make this node answer `PAIRING_BUSY`,
+  but it can never evict a stranger's row — the owner sees a busy node rather
+  than a request of theirs that silently disappeared. The displaced row says
   `displaced` rather than `expired`: the owner did not run out of time,
   something filled the list. Outgoing requests are never displaced — sixteen of
   them means the owner asked for sixteen, and silently cancelling one would be
