@@ -126,14 +126,29 @@ func TestTheWindowOpensWithoutDiscovery(t *testing.T) {
 	if body["open"] != true {
 		t.Errorf("open = %v", body["open"])
 	}
-	// And it says, in the same answer, that nothing is being announced and what
-	// the other machine has to be told instead. An owner left believing an
-	// unannounced window is advertising waits at the wrong screen.
+	// And it says, in the same answer, that nothing is being announced and why.
+	// An owner left believing an unannounced window is advertising waits at the
+	// wrong screen.
 	notice, _ := body["notice"].(string)
-	for _, want := range []string{"not announcing", "ah pair request"} {
+	for _, want := range []string{"not announcing", "without -discover"} {
 		if !strings.Contains(notice, want) {
 			t.Errorf("notice %q does not say %q", notice, want)
 		}
+	}
+	// What to do about it is not said here. This node has no peer address, so
+	// peerAddressProblem is the one next step in this answer, and the notice
+	// used to add a second one contradicting it: "the other machine can still
+	// pair by typing this node's peer address", beside a field saying there is
+	// no address to type.
+	if strings.Contains(notice, "ah pair request") {
+		t.Errorf("the notice carries a second next step: %q", notice)
+	}
+	problem, _ := body["peerAddressProblem"].(string)
+	if problem == "" {
+		t.Errorf("no next step at all: %s", opened.Body.String())
+	}
+	if body["peerAddressReachable"] != false {
+		t.Errorf("peerAddressReachable = %v on a node with no address", body["peerAddressReachable"])
 	}
 	if closed := perform(t, handler, http.MethodDelete, "/v1/pairing", nil); closed.Code != http.StatusOK {
 		t.Fatalf("closing without -discover = %d %s", closed.Code, closed.Body.String())
@@ -187,13 +202,27 @@ func TestTheWindowAnswerSaysWhetherThatAddressIsReachable(t *testing.T) {
 	for name, test := range map[string]struct {
 		address   string
 		reachable bool
+		says      []string
 	}{
 		"a LAN address": {address: "192.168.1.42:7463", reachable: true},
 		// The default node. The address exists and names this machine, which is
 		// the case that sent owners to type 127.0.0.1 on the other machine.
-		"loopback":    {address: "127.0.0.1:7463"},
-		"unspecified": {address: "0.0.0.0:7463"},
-		"none at all": {address: ""},
+		"loopback": {address: "127.0.0.1:7463",
+			says: []string{"only listens on this machine", "-allow-lan", "ah service restart"}},
+		// The v6 spellings of the same two, present because a mutation that
+		// stopped treating ::1 as loopback survived a suite that had only the
+		// v4 ones.
+		"IPv6 loopback": {address: "[::1]:7463",
+			says: []string{"only listens on this machine", "-allow-lan", "ah service restart"}},
+		"IPv6 unspecified": {address: "[::]:7463", says: []string{"only listens on this machine"}},
+		"loopback by name": {address: "localhost:7463", says: []string{"only listens on this machine"}},
+		"unspecified":      {address: "0.0.0.0:7463", says: []string{"only listens on this machine"}},
+		"no host at all":   {address: ":7463", says: []string{"only listens on this machine"}},
+		// No address is not the loopback answer. A node reports none whenever
+		// its listener cannot be announced, and an IPv6 listener is reachable,
+		// so "only listens on this machine" would be a claim about a
+		// configuration that is already right.
+		"none at all": {address: "", says: []string{"did not report an address", "ah settings"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -223,12 +252,16 @@ func TestTheWindowAnswerSaysWhetherThatAddressIsReachable(t *testing.T) {
 			if test.reachable && problem != "" {
 				t.Errorf("a usable address came with a problem: %s", problem)
 			}
-			if !test.reachable {
-				for _, want := range []string{"only listens on this machine", "-allow-lan", "ah service restart"} {
-					if !strings.Contains(problem, want) {
-						t.Errorf("the problem does not say %q: %s", want, problem)
-					}
+			if !test.reachable && problem == "" {
+				t.Errorf("an unusable address came with no problem: %s", response.Body.String())
+			}
+			for _, want := range test.says {
+				if !strings.Contains(problem, want) {
+					t.Errorf("the problem does not say %q: %s", want, problem)
 				}
+			}
+			if test.address == "" && strings.Contains(problem, "only listens on this machine") {
+				t.Errorf("a node that named no address is described as loopback: %s", problem)
 			}
 			// And the notice never carries the address a second time: a reader
 			// showing both fields printed it twice in the same four lines.

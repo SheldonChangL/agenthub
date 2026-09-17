@@ -392,7 +392,10 @@ func TestPairingOnPrintsWhatToDoNext(t *testing.T) {
 // It used to print `ah pair request <this machine's host:port>`, which reads as
 // an instruction with a blank to fill in — and on the machine this describes
 // there is nothing to fill it with: the peer listener is on this machine only.
-func TestPairingOnStillNamesTheCommandWithoutAnAddress(t *testing.T) {
+func TestPairingOnDoesNotGuessWhyAnOldNodeGaveNoAddress(t *testing.T) {
+	// A node from before peerAddress existed: it reports a window and an
+	// announce status, and nothing about an address. It is announcing one
+	// address, so it plainly does not listen on this machine only.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":60,` +
@@ -406,13 +409,75 @@ func TestPairingOnStillNamesTheCommandWithoutAnAddress(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
 	printed := stdout.String()
-	for _, want := range []string{"only listens on this machine", "-allow-lan", "ah service restart"} {
+	// Silence about the address is not a statement about the listener. Reading
+	// an absent address as loopback printed "this node only listens on this
+	// machine" at a node that was announcing one to the whole segment.
+	if strings.Contains(printed, "only listens on this machine") {
+		t.Errorf("this side invented a configuration the node never reported:\n%s", printed)
+	}
+	for _, want := range []string{"predates address reporting", "ah settings"} {
 		if !strings.Contains(printed, want) {
 			t.Errorf("output does not say %q:\n%s", want, printed)
 		}
 	}
 	if strings.Contains(printed, "ah pair request") {
-		t.Errorf("a command to type on the other machine is still printed:\n%s", printed)
+		t.Errorf("an address nobody has is printed as the one to type:\n%s", printed)
+	}
+}
+
+// One next step per invocation, in the configuration that used to print two.
+//
+// The default node listens on loopback and announces nothing, so the answer
+// carried the remedy on the `next` line and a notice underneath saying the
+// other machine could still type this node's peer address — with the remedy a
+// third time inside the announce reason. Three instructions, two of which
+// cannot be followed.
+func TestPairingOnPrintsExactlyOneNextStep(t *testing.T) {
+	for name, reply := range map[string]string{
+		"loopback, announcing nothing": `{"open":true,"remainingSeconds":60,` +
+			`"peerAddress":"127.0.0.1:7463","peerAddressReachable":false,` +
+			`"peerAddressProblem":"this node only listens on this machine, so there is no ` +
+			`address the other machine can be told to type; to pair over the network start it ` +
+			`with -allow-lan and -peer-listen on one of this machine's network addresses",` +
+			`"notice":"this node is not announcing itself over mDNS, so a window opened here ` +
+			`will not put it in anyone's candidate list: the peer listener is on loopback, ` +
+			`which no other machine can reach",` +
+			`"announcing":{"announceableAddresses":0,"lastError":"the peer listener is on ` +
+			`loopback, which no other machine can reach"}}`,
+		"a reachable address": `{"open":true,"remainingSeconds":60,` +
+			`"peerAddress":"192.168.1.42:7463","peerAddressReachable":true,` +
+			`"announcing":{"announceableAddresses":1}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(reply))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(),
+				[]string{"--url", server.URL, "pairing", "on"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			printed := stdout.String()
+			if lines := strings.Count(printed, "  next  "); lines != 1 {
+				t.Errorf("%d next lines, want 1:\n%s", lines, printed)
+			}
+			// The two next steps are mutually exclusive: an address to type, or
+			// the reason there is none. Whichever is printed, the other must
+			// not appear anywhere in the output.
+			typeIt := strings.Contains(printed, "ah pair request")
+			noAddress := strings.Contains(printed, "no address the other machine can be told to type")
+			if typeIt == noAddress {
+				t.Errorf("both remedies or neither (type=%v, none=%v):\n%s", typeIt, noAddress, printed)
+			}
+			// And the remedy is said once, not repeated inside the announce
+			// reason beside it.
+			if count := strings.Count(printed, "-allow-lan"); count > 1 {
+				t.Errorf("the remedy is printed %d times:\n%s", count, printed)
+			}
+		})
 	}
 }
 

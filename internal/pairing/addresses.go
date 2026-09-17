@@ -50,8 +50,8 @@ func PeerEndpoint(policy func(address string) error, peerListen string) (Endpoin
 				"peer should connect: an announcement carries the port, and port 0 is not the "+
 				"one the listener ends up on. Give a fixed port", peerListen)
 	}
-	address, unannounceable := reachableAt(policy, host, port)
-	endpoint := Endpoint{Port: port, Unannounceable: unannounceable}
+	address, unannounceable, remedy := reachableAt(policy, host, port)
+	endpoint := Endpoint{Port: port, Unannounceable: unannounceable, Remedy: remedy}
 	if unannounceable != "" {
 		endpoint.Addresses = func() []netip.Addr { return nil }
 		return endpoint, nil
@@ -74,9 +74,15 @@ type Endpoint struct {
 	// Port is the port the peer listener answers on, which is what a peer
 	// dials — not the port a multicast packet arrived from.
 	Port int
-	// Unannounceable is why this node cannot be announced, in words an owner
-	// can act on. Empty when it can be.
+	// Unannounceable is why this node cannot be announced. The cause only:
+	// every message that carries it sits beside a line that already tells the
+	// owner what to do next, and a reason with its own remedy attached made
+	// `ah pairing` print two different next steps for one situation.
 	Unannounceable string
+	// Remedy is what to change about that, for the one caller that has nothing
+	// else to say it: the line the node logs at startup. Empty when there is
+	// nothing to remedy.
+	Remedy string
 }
 
 // reachableAt decides whether the bound address is one a peer could find this
@@ -93,15 +99,15 @@ type Endpoint struct {
 // packet leaves and the reason appears in the announce status; and the API asks
 // the same question before opening a window. Nothing is sent naming an address
 // this machine no longer has.
-func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, string) {
+func reachableAt(policy func(address string) error, host string, port int) (netip.Addr, string, string) {
 	parsed, err := netip.ParseAddr(host)
 	if err != nil {
 		// Either a name or the wildcard. ValidatePeerListen refuses both beyond
 		// loopback — a name because it can resolve somewhere else later — and
 		// neither is a single address to put in an announcement.
 		return netip.Addr{}, "the peer listener names a host rather than one address " +
-			"(a name, or every interface), and an announcement carries one address. Restart the " +
-			"node with -peer-listen on one of this machine's network addresses"
+				"(a name, or every interface), and an announcement carries one address",
+			"restart the node with -peer-listen on one of this machine's network addresses"
 	}
 	// A zone names an interface on this machine, so it cannot travel in a
 	// packet. Asked before Unmap, which discards it: ::ffff:192.168.1.5%en0
@@ -109,8 +115,8 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// already gone, and be announced.
 	if parsed.Zone() != "" {
 		return netip.Addr{}, "the peer listener's address carries a %zone, which names an " +
-			"interface on this machine and means nothing to another one. Restart the node with " +
-			"-peer-listen giving the address without %zone"
+				"interface on this machine and means nothing to another one",
+			"restart the node with -peer-listen giving the address without %zone"
 	}
 	// Unmapped, because ::ffff:192.168.1.5 and 192.168.1.5 are the same address
 	// written two ways and do not compare equal. The receiving side checks an
@@ -122,9 +128,9 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// so nothing below would catch it, and announcing it would tell a peer to
 	// connect to its own machine.
 	if parsed.IsLoopback() {
-		return netip.Addr{}, "the peer listener is on loopback, which no other machine can reach. " +
-			"Restart the node with -allow-lan and -peer-listen on one of this machine's network " +
-			"addresses"
+		return netip.Addr{}, "the peer listener is on loopback, which no other machine can reach",
+			"restart the node with -allow-lan and -peer-listen on one of this machine's network " +
+				"addresses"
 	}
 	// Announcements go out on the IPv4 group and are read from it, so an IPv6
 	// address cannot be discovered however reachable it is: the packet would
@@ -140,8 +146,9 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// announcement that cannot reach it, and `ah pair` does not need to.
 	if parsed.Is6() {
 		return netip.Addr{}, "the peer listener is on an IPv6 address, and announcements go out " +
-			"on the IPv4 group, so no other machine could discover this one. It is reachable: " +
-			"pairing by hand with `ah pair` works"
+				"on the IPv4 group, so no other machine could discover this one",
+			"nothing, unless discovery matters: the listener is reachable, and pairing by typing " +
+				"its address or by hand with `ah pair` works"
 	}
 	// The policy has the last word, and is the only word on everything else.
 	// PrivateNetworks refuses the unspecified address explicitly and refuses
@@ -157,9 +164,10 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	// the two drifting apart, which is exactly the bug that would announce an
 	// address this build refuses to deliver to.
 	if err := policy(netip.AddrPortFrom(parsed, uint16(port)).String()); err != nil { // #nosec G115 -- LookupPort bounds this to 0-65535
-		return netip.Addr{}, "this build will not use the peer listener's address: " + err.Error()
+		return netip.Addr{}, "this build will not use the peer listener's address: " + err.Error(),
+			"restart the node with -peer-listen on an address this build delivers to"
 	}
-	return parsed, ""
+	return parsed, "", ""
 }
 
 // PeerAddressProblem says why this node's peer address is not one the other
@@ -172,24 +180,46 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 // had nothing worth announcing — and gets the same answer, because what the
 // owner has to do about it is the same.
 //
-// A host that is not an IP literal is left alone: ValidatePeerListen refuses a
-// name beyond loopback, so anything that reaches here naming one is a build
-// this function should not second-guess.
+// A host that is not an IP literal is left alone, with one exception:
+// ValidatePeerListen refuses a name beyond loopback, so anything that reaches
+// here naming one is a build this function should not second-guess — but
+// "localhost" is loopback written as a word, and a node bound to it is the same
+// node the loopback case exists for.
+//
+// No address at all is a third answer, not the loopback one. A node reports
+// none when its peer listener is reachable and merely cannot be announced — an
+// IPv6 listener is the shipped example — and "this node only listens on this
+// machine" would then be a statement this function cannot make.
 func PeerAddressProblem(address string) string {
-	if strings.TrimSpace(address) != "" {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return ""
-		}
-		parsed, err := netip.ParseAddr(host)
-		if err != nil {
-			return ""
-		}
-		if parsed = parsed.Unmap(); !parsed.IsLoopback() && !parsed.IsUnspecified() {
-			return ""
-		}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return PeerAddressUnknown
 	}
-	return PeerAddressRemedy
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return ""
+	}
+	host = strings.TrimSpace(host)
+	// No host at all is the wildcard written short: ":7463" binds every
+	// interface, exactly as "0.0.0.0:7463" does, and netip.ParseAddr does not
+	// recognise it.
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return PeerAddressRemedy
+	}
+	parsed, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	// Asked before Unmap, which discards the zone. A zone names an interface on
+	// this machine, so an address carrying one is not something the other
+	// machine can be told to type, however reachable it looks.
+	if parsed.Zone() != "" {
+		return PeerAddressZoned
+	}
+	if parsed = parsed.Unmap(); parsed.IsLoopback() || parsed.IsUnspecified() {
+		return PeerAddressRemedy
+	}
+	return ""
 }
 
 // PeerAddressRemedy is the one sentence an owner with no reachable peer address
@@ -199,3 +229,26 @@ const PeerAddressRemedy = "this node only listens on this machine, so there is n
 	"other machine can be told to type; to pair over the network start it with -allow-lan and " +
 	"-peer-listen on one of this machine's network addresses (or `ah settings set --allow-lan=true " +
 	"--peer-listen ADDR`, then `ah service restart`)"
+
+// PeerAddressUnknown is the answer when the node named no address at all.
+//
+// Separate from PeerAddressRemedy because the two are different facts with
+// different remedies. A node reports no address whenever its peer listener
+// cannot be announced — an IPv6 listener is reachable and cannot be announced,
+// since announcements go out on the IPv4 group — so claiming it listens only on
+// this machine would send an owner to change a setting that is already right.
+const PeerAddressUnknown = "this node did not report an address for the other machine to type; " +
+	"read its peer listener with `ah settings` here and type that address on the other machine " +
+	"(if it is a loopback address, start this node with -allow-lan and -peer-listen on one of " +
+	"this machine's network addresses to pair over the network)"
+
+// PeerAddressZoned is the answer for an address carrying a %zone.
+//
+// A zone names an interface on this machine and means nothing on another one,
+// so the address is not one the other machine could be told to type even though
+// nothing about it is loopback. ValidatePeerListen refuses a zone beyond
+// loopback, so this is a guard against the two drifting apart rather than
+// something an owner meets.
+const PeerAddressZoned = "the peer listener's address carries a %zone, which names an interface " +
+	"on this machine and means nothing to another one; restart the node with -peer-listen giving " +
+	"the address without %zone"

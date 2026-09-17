@@ -110,6 +110,28 @@ where it was.
    A node paired months ago by some other route is not revoked by a refusal that
    happens to name it.
 
+   **The approval writes the trust row first and decides second; the refusal
+   decides first and revokes second.** Both orders exist so that whichever of
+   the two loses the one atomic transition — `SettleFrom`, which moves the row
+   and records `trustedByRequest` under a single hold of the request store's
+   lock — is the side holding something it can undo. An approval that loses
+   takes back the trust row it has already written. A refusal that wins has
+   nothing of the approval's to find, because the approval will take it back
+   itself. The order that came before this had an unguarded window in each
+   direction: settle-then-write left a refusal reading between the two writes
+   revoking nothing while the trust row was written behind it, and
+   settle-then-revoke on the refusing side left a failed revoke returning early,
+   with the row saying `rejected` and the owner's screen saying the trust "has
+   been withdrawn" while the key was still in the store.
+
+   A revoke that does not happen is recorded on the row (`trustLeftInPlace`) in
+   the words the owner is shown, and every sentence about that request is built
+   from it. Both ways it can happen — a stored key that is not this request's,
+   and a store that refuses the revoke — say something is still trusted and name
+   `ah revoke`. Nothing claims a withdrawal that did not occur; if even the
+   recording fails, the refusal answers 500 rather than letting a row be read as
+   a withdrawal.
+
 7. **Pairing writes identity and nothing else.** No `session_audience` row is
    created. Two machines that have paired can see nothing of each other until
    somebody sets an audience per session.

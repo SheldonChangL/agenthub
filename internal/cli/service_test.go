@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -331,18 +332,60 @@ func TestServiceRunNodeStartsTheNodeAndReturns(t *testing.T) {
 	// that happens are a fork that had not got there in five seconds and a read
 	// that caught the write half-done — non-empty, and asserted against
 	// immediately. Waiting for what is being asserted covers both.
+	//
+	// Thirty seconds is the bound on a slow machine, not a budget to spend. The
+	// wait ends the moment the started process is gone, because a node that has
+	// exited will not write anything more, and it ends with the test's own
+	// context, so a cancelled or timed-out run stops here rather than sitting
+	// out the deadline in a loop nothing is watching.
+	pid := spawnedPID(t, stdout.String())
+	ctx := t.Context()
 	deadline := time.Now().Add(30 * time.Second)
 	var content []byte
-	for time.Now().Before(deadline) {
+	var exited bool
+	for {
 		content, _ = os.ReadFile(logPath)
 		if strings.Contains(string(content), "--db /tmp/x.db") {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		if spawnedProcessExited(pid) {
+			// Read once more before giving up: the write happens before the
+			// exit, but this loop may only now be looking.
+			exited = true
+			content, _ = os.ReadFile(logPath)
+			break
+		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 	if !strings.Contains(string(content), "--db /tmp/x.db") {
-		t.Errorf("the node's own flags did not reach it; log = %q", string(content))
+		t.Errorf("the node's own flags did not reach it (process %d exited: %v, context: %v); log = %q",
+			pid, exited, ctx.Err(), string(content))
 	}
+}
+
+// spawnedPID is the process id `ah service run-node` reported, which is how
+// this test can tell "not started yet" from "started and already gone".
+func spawnedPID(t *testing.T, printed string) int {
+	t.Helper()
+	_, rest, found := strings.Cut(printed, "(pid ")
+	if !found {
+		t.Fatalf("the start line names no pid: %q", printed)
+	}
+	digits, _, found := strings.Cut(rest, ")")
+	if !found {
+		t.Fatalf("the start line names no pid: %q", printed)
+	}
+	pid, err := strconv.Atoi(digits)
+	if err != nil {
+		t.Fatalf("the start line's pid is not a number: %q", printed)
+	}
+	return pid
 }
 
 // `ah service restart` is the step between saving a setting and it being in
