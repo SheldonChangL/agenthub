@@ -196,12 +196,15 @@ type Pairing struct {
 	// the node rather than written here, so the warning cannot drift from the
 	// guarantees the node actually makes.
 	Notice string `json:"notice"`
-	// Availability is "on", "off" or "unknown", and it is three values rather
-	// than a boolean because the panel has three different things to say.
-	// "off" is a node started without -discover, which the owner can change by
-	// restarting it. "unknown" is a node that did not answer, where saying
-	// anything about the network would be a claim with nothing behind it. A
-	// boolean would have to render one of those as the other.
+	// Availability is "on", "off", "openNotAnnouncing" or "unknown", and it is
+	// four values rather than a boolean because the panel has four different
+	// things to say. "off" is a node started without -discover and with no
+	// window open, which the owner can change by restarting it.
+	// "openNotAnnouncing" is that same node with a window open: nobody will
+	// find it on the network, and a request sent to its address still arrives.
+	// "unknown" is a node that did not answer, where saying anything about the
+	// network would be a claim with nothing behind it. A boolean would have to
+	// render one of those as another.
 	Availability string `json:"availability"`
 	// Error and CandidatesError are separate, and separate from Availability,
 	// because a failure to read must never be rendered as a fact about the
@@ -216,6 +219,15 @@ const (
 	pairingOn      = "on"
 	pairingOff     = "off"
 	pairingUnknown = "unknown"
+	// pairingOpenNotAnnouncing is a node with a window open that cannot be
+	// found on the network: it was started without -discover, so the candidate
+	// list is refused, but requests sent to its address still arrive.
+	//
+	// Its own value because the two halves have different remedies. Rendering
+	// it as "off" said the window was shut while it was open and collecting
+	// requests, and sent the owner to reopen something that was already there
+	// instead of to type this machine's address on the other one.
+	pairingOpenNotAnnouncing = "openNotAnnouncing"
 )
 
 // Pairing reports whether this machine is advertising and who else is.
@@ -240,11 +252,14 @@ func (a *App) Pairing() Pairing {
 	if err != nil {
 		// A node without -discover now answers the window endpoints — the
 		// window is a node-level state and the pairing exchange needs only that
-		// — and refuses the candidate list. That is still "this node is not
-		// looking", which is what the panel says with "off"; rendering it as a
-		// failure to read would tell the owner to fix the wrong thing.
+		// — and refuses the candidate list. Not a failure to read, so it is not
+		// reported as one; what it says about this node depends on the window,
+		// which was read first and is authoritative here.
 		if isDiscoveryDisabled(err) {
 			result.Availability = pairingOff
+			if state.Open {
+				result.Availability = pairingOpenNotAnnouncing
+			}
 			return result
 		}
 		result.CandidatesError = err.Error()
@@ -259,10 +274,12 @@ func (a *App) Pairing() Pairing {
 // OpenPairing starts advertising for a while. Seconds of zero asks the node for
 // its default window.
 //
-// The node refuses a window it could not announce, and refuses one outside its
-// own bounds, rather than clamping — so an owner who asked for an hour is told
+// A window the node cannot announce is opened all the same — the other machine
+// can be given this one's address to type — and the state that comes back says
+// so in its notice. What the node does refuse is a window outside its own
+// bounds, rather than clamping it, so an owner who asked for an hour is told
 // the limit instead of being given fifteen minutes and believing they have an
-// hour. Those refusals arrive here as errors and are shown as they are.
+// hour. That refusal arrives here as an error and is shown as it is.
 func (a *App) OpenPairing(seconds int) (PairingState, error) {
 	activeClient, _ := a.current()
 	return activeClient.openPairing(a.ctx, seconds)

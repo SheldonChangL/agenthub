@@ -46,10 +46,11 @@ import (
 // same order on both machines while each machine printed its own first — an
 // instruction that does not match the screen is worse than none, because the
 // person stops reading it and starts guessing.
-const pairNotice = "Two fingerprints are shown, the machine that asked first and the machine " +
-	"it asked second. The other machine shows the same two values in the same order. Read both " +
-	"screens: if any group differs, reject — something is between the two machines. Nothing is " +
-	"trusted until the owner of each machine says so."
+const pairNotice = "Two fingerprints are shown: the requester (the machine that asked) first, " +
+	"the receiver (the machine it asked) second — the same words that label the lines. The other " +
+	"machine shows the same two values in the same order; run `ah pair pending` there to see them. " +
+	"Read both screens: if any group differs, reject — something is between the two machines. " +
+	"Nothing is trusted until the owner of each machine says so."
 
 // pairFingerprintView is one machine's fingerprint, labelled well enough that a
 // person looking at two screens knows which line to compare with which.
@@ -125,7 +126,11 @@ func (s *Server) view(request pairing.Request) pairRequestView {
 func pairNextStep(request pairing.Request, otherName string) string {
 	switch {
 	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
-		return fmt.Sprintf("On %s, run: ah pair approve %s", otherName, request.ID)
+		// Both halves, because the requester who is told only the first half
+		// stalls: the approval on the far side does not finish the pairing, and
+		// nothing else on this screen says a confirm is coming.
+		return fmt.Sprintf("On %s, run: ah pair approve %s — then, after they approve, compare "+
+			"the fingerprints and run here: ah pair confirm %s", otherName, request.ID, request.ID)
 	case request.State == pairing.StatePending:
 		return fmt.Sprintf("Compare the two fingerprints, then on this machine run: "+
 			"ah pair approve %s (or ah pair reject %s)", request.ID, request.ID)
@@ -140,6 +145,13 @@ func pairNextStep(request pairing.Request, otherName string) string {
 			"them to confirm. If they never do, undo it with: ah revoke %s", otherName, request.NodeID)
 	case request.State == pairing.StateApproved:
 		return fmt.Sprintf("Done: %s is trusted here, and this machine is trusted there.", otherName)
+	case request.State == pairing.StateRejected && request.TrustedByRequest:
+		// This machine had already approved, and the refusal arrived after.
+		// Saying only "refused" would leave the owner with no way to know a
+		// trust row was written here at all, let alone that it is gone again.
+		return fmt.Sprintf("Refused by %s after this machine had trusted it. The trust written "+
+			"here has been withdrawn; nothing from this request is trusted on either machine.",
+			otherName)
 	case request.State == pairing.StateRejected:
 		return "Refused. Nothing from this request is trusted on either machine."
 	default:
@@ -446,8 +458,14 @@ func (s *Server) handlePairReplyStatus(w http.ResponseWriter, address string, re
 		writeError(w, http.StatusConflict, "PEER_PAIRING_CLOSED",
 			fmt.Sprintf("%s is not in pairing mode. Run `ah pairing on` there, then try again", address))
 	case http.StatusTooManyRequests:
+		// The peer's own sentence, because 429 covers two different refusals —
+		// the bound per source address (the usual one: this machine has been
+		// asking) and the whole list being full — and they are undone in
+		// different places. Either way the remedy is the same list.
 		writeError(w, http.StatusConflict, "PEER_PAIRING_BUSY",
-			fmt.Sprintf("%s already has as many pairing requests waiting as it will hold", address))
+			fmt.Sprintf("%s will not take another pairing request right now: %s. Reject what is "+
+				"waiting there or let it expire (`ah pair pending` on that machine), then try again",
+				address, peerMessage(reply.Body)))
 	case http.StatusConflict:
 		writeError(w, http.StatusConflict, "PEER_PAIRING_DUPLICATE",
 			fmt.Sprintf("%s already has a pairing request from this node waiting for its owner", address))

@@ -246,6 +246,14 @@ func (s *Server) writePairingState(w http.ResponseWriter, status int, state pair
 		// states the wrong one sends its reader to the wrong place.
 		"nameIsChosen": s.node.NameIsChosen,
 	}
+	// The address the other machine would type, present whether or not this
+	// node is announcing. It used to appear only inside the notice a node that
+	// cannot announce carries, so an owner whose node announces perfectly well
+	// was never told the one thing the other machine needs when mDNS does not
+	// carry between them.
+	if s.peerAddress != "" {
+		body["peerAddress"] = s.peerAddress
+	}
 	if state.Open {
 		body["openedAt"] = state.OpenedAt
 		body["expiresAt"] = state.ExpiresAt

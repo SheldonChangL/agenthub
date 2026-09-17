@@ -829,10 +829,11 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 
 // A node started without -discover now answers the window endpoints — the
 // window is a node-level state, and the pairing exchange needs only that — and
-// refuses the candidate list. That is still "this node is not looking", which
-// is the panel's "off"; rendering it as a failure to read would send the owner
-// to fix the wrong thing.
-func TestPairingIsOffWhenOnlyTheCandidateListRefuses(t *testing.T) {
+// refuses the candidate list. The refusal is not a failure to read, and it is
+// not "the window is off" either: with a window open, requests sent to this
+// machine's address arrive. Saying "off" there sent the owner to reopen
+// something that was already open.
+func TestPairingSaysOpenNotAnnouncingWhenOnlyTheCandidateListRefuses(t *testing.T) {
 	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/candidates") {
 			w.WriteHeader(http.StatusConflict)
@@ -850,8 +851,8 @@ func TestPairingIsOffWhenOnlyTheCandidateListRefuses(t *testing.T) {
 
 	app := &App{client: newClient(node.URL), url: node.URL, ctx: context.Background()}
 	pairing := app.Pairing()
-	if pairing.Availability != pairingOff {
-		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOff)
+	if pairing.Availability != pairingOpenNotAnnouncing {
+		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOpenNotAnnouncing)
 	}
 	if pairing.CandidatesError != "" {
 		t.Errorf("a node that is simply not looking was rendered as a failure to read: %q",
@@ -861,5 +862,28 @@ func TestPairingIsOffWhenOnlyTheCandidateListRefuses(t *testing.T) {
 	// against by address.
 	if !pairing.State.Open {
 		t.Error("the open window was lost")
+	}
+}
+
+// The same node with its window shut is "off": nothing to find on the network,
+// and nothing collecting requests either.
+func TestPairingIsOffWhenTheCandidateListRefusesAndNoWindowIsOpen(t *testing.T) {
+	node := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/candidates") {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+				"code":    "DISCOVERY_DISABLED",
+				"message": "this node is not listening on the local network. Start it with -discover",
+			}})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"open":false,"announcing":{"announceableAddresses":0}}`))
+	}))
+	defer node.Close()
+
+	app := &App{client: newClient(node.URL), url: node.URL, ctx: context.Background()}
+	if pairing := app.Pairing(); pairing.Availability != pairingOff {
+		t.Errorf("availability = %q, want %q", pairing.Availability, pairingOff)
 	}
 }

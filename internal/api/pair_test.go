@@ -623,9 +623,22 @@ func TestBothMachinesShowTheFingerprintsInOneOrder(t *testing.T) {
 	if !strings.Contains(here.Notice, "same two values in the same order") {
 		t.Errorf("notice does not describe what is printed: %q", here.Notice)
 	}
+	// It also names the words that label the lines, and the command that shows
+	// the other screen: "read both screens" is not an instruction anybody can
+	// follow without knowing what to type on the other machine.
+	for _, want := range []string{"requester", "receiver", "ah pair pending"} {
+		if !strings.Contains(here.Notice, want) {
+			t.Errorf("notice does not mention %q: %q", want, here.Notice)
+		}
+	}
 	if !strings.Contains(here.NextStep, "On "+receiver.node.DisplayName) ||
 		!strings.Contains(here.NextStep, "ah pair approve") {
 		t.Errorf("the requester is not told which machine approves: %q", here.NextStep)
+	}
+	// And that a confirm is coming. Without it a requester who follows only
+	// the CLI stops after the far side approves, with nothing trusted here.
+	if !strings.Contains(here.NextStep, "ah pair confirm "+outgoing.ID) {
+		t.Errorf("the requester is not told a confirm step follows: %q", here.NextStep)
 	}
 	if !strings.Contains(there.NextStep, "on this machine") {
 		t.Errorf("the receiver is not told it is the one to approve: %q", there.NextStep)
@@ -841,6 +854,13 @@ func TestARequesterRejectRevokesAnApprovalAlreadyGiven(t *testing.T) {
 	}
 	if len(requester.trusted()) != 0 {
 		t.Fatalf("the refusing machine trusted something: %v", requester.trusted())
+	}
+	// And the approver's row says what became of the trust it wrote. "Refused"
+	// alone left an owner who had approved with no way to know a trust row had
+	// existed here at all, let alone that it is gone.
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if !strings.Contains(step, "had trusted") || !strings.Contains(step, "withdrawn") {
+		t.Errorf("the approver's row does not say the trust it wrote was undone: %q", step)
 	}
 }
 

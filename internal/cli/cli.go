@@ -102,9 +102,18 @@ func (r runner) command(ctx context.Context, args []string) error {
 		// is "am I advertising right now".
 		switch {
 		case len(args) == 1:
-			return r.simple(ctx, http.MethodGet, "/v1/pairing", nil)
+			return r.pairingWindow(ctx, http.MethodGet, nil)
 		case args[1] == "off":
-			return r.simple(ctx, http.MethodDelete, "/v1/pairing", nil)
+			return r.pairingWindow(ctx, http.MethodDelete, nil)
+		case args[1] == "candidates":
+			// An alias, so the window and the list it feeds live under one
+			// verb. `ah candidates` stays: it is what exists in scripts and in
+			// this node's own output.
+			if len(args) != 2 {
+				return fmt.Errorf("ah pairing candidates takes no arguments, got %s\n"+
+					"usage: ah pairing candidates", strings.Join(args[2:], " "))
+			}
+			return r.simple(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 		case args[1] == "on":
 			if len(args) > 3 {
 				return fmt.Errorf("ah pairing on takes one duration at most, got %d: %s\nusage: ah pairing on [seconds]",
@@ -129,9 +138,10 @@ func (r runner) command(ctx context.Context, args []string) error {
 				}
 				body["seconds"] = seconds
 			}
-			return r.simple(ctx, http.MethodPost, "/v1/pairing", body)
+			return r.pairingWindow(ctx, http.MethodPost, body)
 		default:
-			return fmt.Errorf("ah pairing does not take %q\nusage: ah pairing [on [seconds] | off]", args[1])
+			return fmt.Errorf("ah pairing does not take %q\n"+
+				"usage: ah pairing [on [seconds] | off | candidates]", args[1])
 		}
 	case "candidates":
 		if len(args) != 1 {
@@ -402,6 +412,103 @@ func (r runner) pair(ctx context.Context, args []string) error {
 	})
 }
 
+// pairingWindow opens, closes or reads the window, and says in words what the
+// answer means.
+//
+// The JSON this used to print was the whole answer to a question asked while
+// standing between two machines: an owner who ran `ah pairing on` was shown a
+// state object and left to work out, from `announceableAddresses`, whether the
+// other machine could find this one — and was never told the address to type
+// there, which is the one thing that always works.
+func (r runner) pairingWindow(ctx context.Context, method string, input any) error {
+	body, err := r.request(ctx, method, "/v1/pairing", input)
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var state pairingStateRow
+	if err := json.Unmarshal(body, &state); err != nil {
+		return fmt.Errorf("decode pairing state: %w", err)
+	}
+	r.printPairingState(state)
+	return nil
+}
+
+// pairingStateRow is the window as the node reports it.
+type pairingStateRow struct {
+	Open             bool      `json:"open"`
+	ExpiresAt        time.Time `json:"expiresAt"`
+	RemainingSeconds int       `json:"remainingSeconds"`
+	DisplayName      string    `json:"displayName"`
+	// PeerAddress is where the other machine would send its request. Absent on
+	// a node with no peer listener, and on a node too old to report it.
+	PeerAddress string `json:"peerAddress"`
+	Notice      string `json:"notice"`
+	Announcing  struct {
+		Addresses   int       `json:"announceableAddresses"`
+		LastSuccess time.Time `json:"lastAnnouncedAt"`
+		LastError   string    `json:"lastError"`
+	} `json:"announcing"`
+}
+
+// announcing reports whether anything is actually going out over mDNS, and why
+// not when nothing is.
+func (state pairingStateRow) announcing() (bool, string) {
+	switch {
+	case state.Announcing.LastError != "":
+		return false, state.Announcing.LastError
+	case state.Announcing.Addresses == 0:
+		return false, "this node has no address it can announce"
+	default:
+		return true, ""
+	}
+}
+
+func (r runner) printPairingState(state pairingStateRow) {
+	if !state.Open {
+		_, _ = fmt.Fprintln(r.stdout, "Pairing window closed. This machine is not advertising and "+
+			"will refuse pairing requests. Open one with `ah pairing on`.")
+		return
+	}
+	_, _ = fmt.Fprintf(r.stdout, "Pairing window open until %s (%s left)",
+		state.ExpiresAt.Local().Format("15:04:05"), remainingWords(state.RemainingSeconds))
+	if state.DisplayName != "" {
+		_, _ = fmt.Fprintf(r.stdout, ", as %q", state.DisplayName)
+	}
+	_, _ = fmt.Fprintln(r.stdout, ".")
+	if announcing, why := state.announcing(); announcing {
+		_, _ = fmt.Fprintln(r.stdout, "  announcing over mDNS  yes")
+	} else {
+		_, _ = fmt.Fprintf(r.stdout, "  announcing over mDNS  no (%s)\n", why)
+	}
+	// Printed whether or not this node announces: mDNS does not cross every
+	// network the two machines might be on, and the address always works.
+	address := state.PeerAddress
+	if address == "" {
+		address = "<this machine's host:port>"
+	}
+	_, _ = fmt.Fprintf(r.stdout, "  next                  On the other machine, run: "+
+		"ah pair request %s\n", address)
+	if state.Notice != "" {
+		_, _ = fmt.Fprintf(r.stdout, "\n%s\n", state.Notice)
+	}
+}
+
+// remainingWords is a countdown a person reads, from the seconds the node
+// counted. Its own clock is not consulted: the node's number is the one the
+// expiry beside it was computed from.
+func remainingWords(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	return fmt.Sprintf("%dm %ds", seconds/60, seconds%60)
+}
+
 // pairRequest asks the machine at an address to pair.
 //
 //	ah pair request <host:port>
@@ -444,6 +551,7 @@ func (r runner) pairRequest(ctx context.Context, args []string) error {
 	}
 	_, _ = fmt.Fprintf(r.stdout, "Asked %s to pair.\n\n", address)
 	r.printPairRequest(request)
+	r.printPairNotice(request)
 	return nil
 }
 
@@ -472,9 +580,10 @@ func (r runner) pairDecide(ctx context.Context, verb, requestID string) error {
 		_, _ = fmt.Fprintf(r.stdout, "Confirmed. %s (%s) is now trusted on this machine.\n",
 			name, request.NodeID)
 		_, _ = fmt.Fprintf(r.stdout, "  its fingerprint  %s\n\n", request.Fingerprint)
-	default:
-		_, _ = fmt.Fprintf(r.stdout, "Refused. Nothing from this request is trusted here.\n\n")
 	}
+	// The node's own sentence and nothing else on a refusal: saying "not
+	// trusted here" and then "not trusted on either machine" is the same fact
+	// twice, and the second one is the one that is true of both machines.
 	_, _ = fmt.Fprintln(r.stdout, request.NextStep)
 	return nil
 }
@@ -518,7 +627,21 @@ func (r runner) pairPending(ctx context.Context, all bool) error {
 		}
 		r.printPairRequest(request)
 	}
+	// Once, under the rows. It is five sentences about how to compare two
+	// fingerprints, and repeating it per row buried the rows themselves.
+	r.printPairNotice(decoded.Requests...)
 	return nil
+}
+
+// printPairNotice prints the long explanation once, from the first row that
+// carries one. Decided rows carry none: there is nothing left to compare.
+func (r runner) printPairNotice(rows ...pairRequestRow) {
+	for _, row := range rows {
+		if row.Notice != "" {
+			_, _ = fmt.Fprintf(r.stdout, "\n%s\n", row.Notice)
+			return
+		}
+	}
 }
 
 // pairRequestRow is one exchange as the node reports it.
@@ -596,6 +719,13 @@ func (r runner) printPairRequest(request pairRequestRow) {
 			rows = []pairFingerprintRow{theirs, mine}
 		}
 	}
+	// One line above the two values saying what to do with them. The long
+	// notice printed under the block was an explanation arriving after the
+	// thing it explains, which is where people stop reading.
+	if request.Notice != "" {
+		_, _ = fmt.Fprintln(r.stdout,
+			"  compare these two lines with the other machine's screen, group by group:")
+	}
 	for _, row := range rows {
 		label := row.Machine
 		if label == "" {
@@ -610,9 +740,6 @@ func (r runner) printPairRequest(request pairRequestRow) {
 	}
 	if request.NextStep != "" {
 		_, _ = fmt.Fprintf(r.stdout, "  next            %s\n", request.NextStep)
-	}
-	if request.Notice != "" {
-		_, _ = fmt.Fprintf(r.stdout, "  %s\n", request.Notice)
 	}
 }
 
@@ -994,8 +1121,8 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "commands: discover, list, status, publish, unpublish, audience,")
 	_, _ = fmt.Fprintln(output, "          nodes, peers, pair, revoke, send, inbox, inbox-clear, outbound,")
 	_, _ = fmt.Fprintln(output, "          wakes, node, heartbeat, pairing, candidates, settings, service")
-	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              advertise on the local network, for a while")
-	_, _ = fmt.Fprintln(output, "  ah candidates                                machines advertising right now")
+	_, _ = fmt.Fprintln(output, "  ah pairing [on [seconds] | off]              open the pairing window, for a while")
+	_, _ = fmt.Fprintln(output, "  ah candidates | ah pairing candidates        machines advertising right now")
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
 	_, _ = fmt.Fprintln(output, "                                               with the address to send to")
 	_, _ = fmt.Fprintln(output, "  ah nodes                                     the nodes this one trusts")

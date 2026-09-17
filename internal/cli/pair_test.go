@@ -321,3 +321,192 @@ func TestPairDecisionsStillHaveAJSONForm(t *testing.T) {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
+
+// `ah pairing on` is read by somebody standing between two machines. The JSON
+// it used to print answered none of their three questions: is the window open,
+// can the other machine find this one, and what do I type over there.
+func TestPairingOnPrintsWhatToDoNext(t *testing.T) {
+	for name, test := range map[string]struct {
+		reply string
+		want  []string
+		avoid []string
+	}{
+		"announcing": {
+			reply: `{"open":true,"remainingSeconds":298,"expiresAt":"2026-09-17T10:05:12Z",` +
+				`"displayName":"this laptop","peerAddress":"192.168.1.42:7463",` +
+				`"announcing":{"announceableAddresses":2,"lastAnnouncedAt":"2026-09-17T10:00:14Z"}}`,
+			want: []string{
+				"Pairing window open until", "4m 58s left", "this laptop",
+				"announcing over mDNS  yes",
+				"On the other machine, run: ah pair request 192.168.1.42:7463",
+			},
+			avoid: []string{`"open":`, "announceableAddresses"},
+		},
+		// The case the address exists for: nothing is going out over mDNS, so
+		// typing the address is the only way in.
+		"not announcing": {
+			reply: `{"open":true,"remainingSeconds":30,"expiresAt":"2026-09-17T10:05:12Z",` +
+				`"peerAddress":"10.0.0.9:7463","announcing":{"announceableAddresses":0},` +
+				`"notice":"this node is not announcing itself over mDNS: discovery is off"}`,
+			want: []string{
+				"30s left", "announcing over mDNS  no",
+				"On the other machine, run: ah pair request 10.0.0.9:7463",
+				"not announcing itself over mDNS",
+			},
+		},
+		"closed": {
+			reply: `{"open":false,"announcing":{"announceableAddresses":0}}`,
+			want:  []string{"closed", "ah pairing on"},
+			avoid: []string{"ah pair request"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(test.reply))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(),
+				[]string{"--url", server.URL, "pairing", "on"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			printed := stdout.String()
+			for _, want := range test.want {
+				if !strings.Contains(printed, want) {
+					t.Errorf("output does not contain %q:\n%s", want, printed)
+				}
+			}
+			for _, avoid := range test.avoid {
+				if strings.Contains(printed, avoid) {
+					t.Errorf("output still contains %q:\n%s", avoid, printed)
+				}
+			}
+		})
+	}
+}
+
+// A node too old to report its address still gets a usable sentence: the shape
+// of what to type, rather than a line that says to type nothing.
+func TestPairingOnStillNamesTheCommandWithoutAnAddress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":60,` +
+			`"announcing":{"announceableAddresses":1}}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "pairing"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ah pair request <this machine's host:port>") {
+		t.Errorf("output = %q", stdout.String())
+	}
+}
+
+// --json is still the shape a script reads.
+func TestPairingStillHasAJSONForm(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"open":true,"remainingSeconds":60}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "--json", "pairing", "on"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"open": true`) {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+// The window and the list it feeds live under one verb, without taking the
+// older spelling away from anyone's script.
+func TestPairingCandidatesIsAnAliasForCandidates(t *testing.T) {
+	for _, args := range [][]string{{"pairing", "candidates"}, {"candidates"}} {
+		var asked string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			asked = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"candidates":[]}`))
+		}))
+		var stdout, stderr bytes.Buffer
+		code := Run(context.Background(), append([]string{"--url", server.URL}, args...), &stdout, &stderr)
+		server.Close()
+		if code != 0 {
+			t.Fatalf("%v: exit = %d, stderr = %q", args, code, stderr.String())
+		}
+		if asked != "/v1/pairing/candidates" {
+			t.Errorf("%v asked for %q", args, asked)
+		}
+	}
+}
+
+// The long notice is one explanation, not one per row, and the line that says
+// what to do with the fingerprints comes above them.
+func TestPairPendingPrintsTheNoticeOnceAboveTheFingerprints(t *testing.T) {
+	row := func(id string) string {
+		return `{"id":"` + id + `","direction":"incoming","state":"pending",` +
+			`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop",` +
+			`"fingerprints":[` +
+			`{"role":"requester","machine":"other laptop","whose":"the other machine",` +
+			`"fingerprint":"AAAA BBBB CCCC DDDD EEEE FFFF"},` +
+			`{"role":"receiver","machine":"this laptop","whose":"this machine",` +
+			`"fingerprint":"1111 2222 3333 4444 5555 6666"}],` +
+			`"nextStep":"Compare the two fingerprints",` +
+			`"notice":"Two fingerprints are shown, and so on."}`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"requests":[` + row("pair_1") + `,` + row("pair_2") + `]}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "pair", "pending"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	printed := stdout.String()
+	if got := strings.Count(printed, "Two fingerprints are shown"); got != 1 {
+		t.Errorf("the notice printed %d times for two rows:\n%s", got, printed)
+	}
+	lead := strings.Index(printed, "compare these two lines")
+	if lead < 0 {
+		t.Fatalf("no line says what the fingerprints are for:\n%s", printed)
+	}
+	if lead > strings.Index(printed, "AAAA BBBB") {
+		t.Errorf("the explanation printed under the values it explains:\n%s", printed)
+	}
+}
+
+// A refusal is one sentence. It used to be two, saying "not trusted here" and
+// then "not trusted on either machine" — the same fact, one of them narrower
+// than the truth.
+func TestPairRejectSaysItOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"pair_1","direction":"outgoing","state":"rejected",` +
+			`"nodeId":"node_abcdef01234567890abc","displayName":"other laptop","reason":"declined",` +
+			`"nextStep":"Refused. Nothing from this request is trusted on either machine."}`))
+	}))
+	defer server.Close()
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(context.Background(),
+		[]string{"--url", server.URL, "pair", "reject", "pair_1"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	printed := stdout.String()
+	if got := strings.Count(printed, "is trusted"); got != 1 {
+		t.Errorf("the refusal states what is trusted %d times:\n%s", got, printed)
+	}
+	if !strings.Contains(printed, "either machine") {
+		t.Errorf("the refusal does not say it holds on both machines:\n%s", printed)
+	}
+}
