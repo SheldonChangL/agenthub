@@ -335,6 +335,18 @@ jobs:
           jq --arg v "$product_version" '.info.productVersion = $v' wails.json > wails.json.tmp
           mv wails.json.tmp wails.json
           echo "info.productVersion = $product_version"
+          # Committed on the runner, not left as a working-tree edit: the Go
+          # toolchain records vcs.modified=true for a dirty tree, and every
+          # binary built from it — the window and the three bundled commands —
+          # would then report "<tag> (modified source, ...)", which is the
+          # string a stranger reads as "someone tampered with this". The commit
+          # never leaves the runner; the checked-out tag is what is being built,
+          # plus one number that belongs to the tag anyway.
+          git -c user.name=release-workflow -c user.email=release@localhost \
+            commit -qam "ci: stamp info.productVersion ${product_version} for ${TAG}"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "the tree is not clean after stamping:"; git status --porcelain; exit 1
+          fi
           case "$PLATFORM" in
           darwin/*)
             wails build -clean -platform "$PLATFORM" -ldflags "$ldflags"
@@ -391,6 +403,10 @@ jobs:
         run: |
           reported=$("desktop/${beside}/ah" --version)
           echo "$reported"
+          case "$reported" in
+            *"modified source"*)
+              echo "the bundled ah was built from a dirty tree: $reported"; git status --porcelain; exit 1 ;;
+          esac
           case "$reported" in
             "ah ${TAG} "*) ;;
             *) echo "the bundled ah --version does not lead with ${TAG}"; exit 1 ;;
