@@ -241,6 +241,69 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
+/* The local view is the one view with something above the table that can be
+ * taller than the space left for it. It scrolls as a page; the table keeps a
+ * floor so it cannot be squeezed to a header and one row. */
+#local-view { overflow-y: auto; }
+#local-view .tablewrap { min-height: 320px; }
+
+/* ---------- local view: the first-launch checklist ---------- */
+
+/* Sits above the filters at its natural height, with no scroller of its own.
+ *
+ * It had `max-height: 46vh; overflow-y: auto`, meaning to keep the table on
+ * screen. At 1200x760 — a laptop, which is the machine a stranger opens this
+ * on — that clipped a 563px card to 348px: two of the five steps were entirely
+ * below the fold of a nested scroller nothing pointed at, and step three's
+ * buttons were cut through the middle. A checklist that hides 40% of itself is
+ * not a checklist. The view scrolls instead (see #local-view), so the card is
+ * whole and the table keeps a floor rather than the card keeping a ceiling. */
+#onboarding {
+  flex: none;
+  margin: 12px 16px 0;
+}
+#onboarding .cardhead { gap: 8px; flex-wrap: wrap; }
+#onboarding .cardhead .muted { font-weight: 400; font-size: 12px; }
+#onboarding .cardhead .spacer { flex: 1; }
+#onboarding-steps { display: flex; flex-direction: column; gap: 10px; }
+
+.onboarding .step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-solid);
+}
+/* The number is what says "these are in order"; the tick is what says this
+ * one is behind you. Both in the same box so the rows stay aligned. */
+.onboarding .steptick {
+  flex: none;
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 11px; font-weight: 600;
+}
+.onboarding .stepbody { flex: 1; min-width: 0; }
+.onboarding .steptitle { font-weight: 600; font-size: 13px; }
+.onboarding .stepwhy { font-size: 12px; line-height: 1.55; margin-top: 2px; }
+.onboarding .stepactions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+}
+.onboarding .stepactions:not(:empty) { margin-top: 8px; }
+/* Done is stated by the tick and the colour, never by removing the step:
+ * a checklist that deletes what you finished cannot be read back. */
+.onboarding .step.done { opacity: 0.72; }
+.onboarding .step.done .steptick {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+.onboarding .step.done .steptitle { color: var(--muted); font-weight: 500; }
+
 /* ---------- local view: filters ---------- */
 
 .filters {
