@@ -119,6 +119,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nodeSettings null, and without this the panel would re-read on every
     // repaint.
     nodeSettingsTried: false,
+    // Set when a read came back without a baseline, so the checklist offers a
+    // retry instead of a spinner nothing will ever end.
+    nodeSettingsUnreadable: false,
     nodePrivateSuggested: "",
     nodeReachable: false,
     serviceFormTouched: false,
@@ -527,8 +530,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (status.supported && !status.installed) {
       openServiceForm().catch((error) =>
         banner(t("busy.failed", { action: t("service.busyOpenForm"), error })));
-      return;
     }
+    // In every branch, including the one that opened the form: the button this
+    // step came from is on the local view, which is now hidden, so returning
+    // early would leave the keyboard on an element nobody can see — exactly
+    // what goToNodeSettings's comment forbids.
     el("service-open")?.focus?.();
   }
 
@@ -544,12 +550,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Which of the four situations this card exists for the window is in. The
   // unreachable case is the one that does NOT wait for a successful read: a
   // node that never answered is exactly the state this card is for, and gating
-  // it on loadedOnce would hide it precisely then. The other three wait,
-  // because "no sessions" on a read that did not reach the node is not a fact
-  // about this machine (issue #114).
+  // it on loadedOnce would hide it precisely then.
+  //
+  // There is no loadedOnce gate here, because there cannot be one that does
+  // anything: load() sets state.loadedOnce and state.nodeReachable together
+  // (the reachable branch sets the first, the line after it sets the second),
+  // so `reachable && !loadedOnce` never holds and a clause testing it would be
+  // an equivalent mutant. The #114 protection that does work — "no sessions" on
+  // a read that never reached the node is not a fact about this machine — is
+  // the step-level gate in onboardingSteps, which drops the sessions step
+  // entirely until a read has landed.
   function onboardingTriggered() {
     if (!state.nodeReachable) return true;
-    if (!state.loadedOnce) return false;
     const status = state.service ?? {};
     if (status.supported === true && !(status.installed && status.running)) return true;
     if (state.sessions.length === 0) return true;
@@ -576,16 +588,50 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         done: false,
         actions: [],
       });
-    } else if (state.service && status.supported === false) {
+    } else if (!state.nodeReachable) {
+      // A node that is not answering is not a finished step, whatever the
+      // service manager says about the job that is supposed to be holding it.
+      // Deriving this step from state.service alone put a tick over a machine
+      // showing "cannot reach http://127.0.0.1:7462", and left the card with
+      // nothing to press on the one situation it exists for.
+      steps.push({
+        id: "service",
+        title: t("onboarding.service.titleStart"),
+        body: t("onboarding.service.bodyNodeDown"),
+        done: false,
+        actions: [{
+          label: t("onboarding.service.actionStart"),
+          primary: true,
+          run: () => restartNode().catch(() => {}),
+        }],
+      });
+    } else if (!state.service) {
+      // The status has not landed yet. load() renders before ServiceStatus
+      // answers, so for the first seconds of every launch this step knows
+      // nothing — and "knows nothing" used to fall through to the else below
+      // and read "Install the service" on a machine whose service was installed
+      // and running, next to a title-bar pill that said so. A neutral sentence
+      // and no button until the fact arrives; loadService() re-renders this
+      // card when it does.
+      steps.push({
+        id: "service",
+        title: t("onboarding.service.title"),
+        body: t("onboarding.service.bodyChecking"),
+        done: false,
+        actions: [],
+      });
+    } else if (status.supported === false) {
       // Windows today: the node runs, nothing this app can ask holds it, and
-      // the window starts and stops it itself.
+      // the window starts and stops it itself. The node is answering — the
+      // branch above has the case where it is not — so this is the done state,
+      // and the button it keeps is the restart rather than the start.
       steps.push({
         id: "service",
         title: t("onboarding.service.titleStart"),
         body: t("onboarding.service.bodyUnsupported"),
-        done: state.nodeReachable,
+        done: true,
         actions: [{
-          label: state.nodeReachable ? t("onboarding.service.actionRestart") : t("onboarding.service.actionStart"),
+          label: t("onboarding.service.actionRestart"),
           primary: true,
           run: () => restartNode().catch(() => {}),
         }],
@@ -635,8 +681,31 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     //    one path that already does all three.
     const here = pairHereState(state.pairing?.state);
     const reachable = { id: "reachable", title: t("onboarding.reachable.title"), done: here.reachable === true, actions: [] };
-    if (reachable.done) {
+    if (!state.nodeReachable) {
+      // Nothing here can be asked of a node that is not answering, and the
+      // read that would fill this step is not even attempted while it is down.
+      // Saying so beats "Waiting for the node to say…" forever, which is what
+      // this used to show: a sentence that reads as a hang, under a step that
+      // has no button and no timeout.
+      reachable.done = false;
+      reachable.body = t("onboarding.reachable.bodyNodeDown");
+    } else if (reachable.done) {
       reachable.body = t("onboarding.reachable.bodyDone", { address: here.address });
+    } else if (state.nodeSettingsUnreadable) {
+      // One failed read used to wedge this step on "Waiting…" for the life of
+      // the window, because the once-per-window latch was set before the await
+      // and never cleared. Now the failure is said, and the retry clears the
+      // latch so the next render asks again.
+      reachable.body = t("onboarding.reachable.bodyUnreadable");
+      reachable.actions = [{
+        label: t("onboarding.reachable.retry"),
+        primary: true,
+        run: () => {
+          state.nodeSettingsUnreadable = false;
+          onboardingSettingsAsked = false;
+          renderOnboarding();
+        },
+      }];
     } else if (!state.nodeSettings) {
       // applyPeerListenRepair fills the real form, so the form has to hold the
       // node's current answer before any of this is offered.
@@ -648,7 +717,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const options = peerListenRepairs(
         { reason: "loopback", address: current },
         state.nodeAddresses ?? { list: [], failure: "" },
-        el("node-allow-lan").checked,
+        // The node's SAVED answer, never the form's checkbox. This card lives
+        // on the local view; the checkbox lives in the settings form two tabs
+        // away and is live-editable, so an unsaved tick over there dropped the
+        // "and allow LAN connections" clause from this label while the click
+        // still turned it on — the silent tick §7.8 rule 4 exists to forbid.
+        // (renderPeerListenProblem may read the checkbox: it renders inside
+        // that form, where what is on screen is what a press would send.)
+        Boolean(state.nodeSettings.saved?.allowLan),
       );
       // peerListenRepairs always ends with "stay local only", which is this
       // step's skip: an owner who has decided to be off the network needs a way
@@ -658,7 +734,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       reachable.actions = options.map((option) => ({
         label: option.label,
         primary: option.primary,
-        run: () => applyPeerListenRepair(option).catch(() => {}),
+        run: () => applyPeerListenRepairFromCard(option).catch(() => {}),
       }));
       if (!offersAddress) {
         reachable.actions.unshift({
@@ -774,10 +850,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // The reachability step offers buttons that fill the node settings form, so
     // the form has to hold the node's answer first. Asked once per window: a
     // read on every render would re-fire on every background tick.
-    if (!state.nodeSettings && !onboardingSettingsAsked && state.nodeReachable) {
+    if (!state.nodeSettings && !onboardingSettingsAsked && !state.nodeSettingsUnreadable
+      && state.nodeReachable) {
       onboardingSettingsAsked = true;
-      loadNodeSettings().then(() => renderOnboarding()).catch(() => {});
+      // A read that did not produce a baseline clears the latch, so the retry
+      // button this puts on the step can ask again. loadNodeSettings resolves
+      // either way — it turns a rejection into view.error, which applyNodeSettings
+      // reports without replacing state.nodeSettings — so the check is whether
+      // the baseline is there, not whether the promise settled.
+      const done = () => {
+        state.nodeSettingsUnreadable = !state.nodeSettings;
+        if (state.nodeSettingsUnreadable) onboardingSettingsAsked = false;
+        renderOnboarding();
+      };
+      loadNodeSettings().then(done, done);
     }
+    // Said out loud on the one render that shows every tick. Ticks alone do not
+    // explain why the card is about to disappear.
+    el("onboarding-alldone").classList.toggle("hidden", !onboardingAllDoneShown);
     keepChildren(el("onboarding-steps"), steps.map(onboardingStepNode));
   }
 
@@ -3337,6 +3427,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (sequence !== serviceRequest) return;
     state.service = status;
     renderService();
+    // The checklist's first step is derived from this status, and load()
+    // renders the card before this read answers. Without this line the card
+    // keeps whatever it was built with — which on every launch is "no status
+    // yet" — while the title bar's pill, painted by renderService above,
+    // already says the service is running.
+    renderOnboarding();
   }
 
   // renderServicePill is the title bar's one-line version of the panel below.
@@ -4227,6 +4323,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await saveNodeSettings();
   }
 
+  // applyPeerListenRepairFromCard is the checklist's way into the same repair.
+  //
+  // applyPeerListenRepair fills the settings form and presses save, which is
+  // right when the button is IN that form: what is on screen is what the owner
+  // means to send. From the checklist it is not — the card is on another view,
+  // and the form may be holding edits nobody has saved. Pressing save there
+  // would commit a private range or an auto-wake tick the owner was still
+  // thinking about, as a side effect of a button about a listening address.
+  // So a dirty form is refused and named, rather than silently carried along.
+  async function applyPeerListenRepairFromCard(option) {
+    // Every field the save would send, minus the two this button is here to
+    // set. Anything left is an edit that belongs to the owner, not to us.
+    const carried = Object.keys(readNodeSettingsPatch())
+      .filter((field) => field !== "peerListen" && field !== "allowLan");
+    if (carried.length > 0) {
+      banner(t("onboarding.reachable.formDirty"));
+      goToNodeSettings();
+      return;
+    }
+    await applyPeerListenRepair(option);
+  }
+
   // describeSource relates what is running to what the form is editing.
   //
   // The form shows the saved configuration — what the next start uses. The
@@ -4831,7 +4949,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     render();
   };
 
-  el("btn-open-pairing").onclick = openPairingDrawer;
   el("pairing-close").onclick = closePairingDrawer;
   el("pairing-modal").onclick = (event) => {
     if (event.target === el("pairing-modal")) closePairingDrawer();

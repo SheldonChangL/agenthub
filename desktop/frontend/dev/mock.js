@@ -64,6 +64,18 @@ const pairShape = query.get("pair") ?? "";
 //   ?onboarding=fresh   nothing done at all — what the installer leaves behind
 //   ?onboarding=mixed   the shape worth looking at: two steps ticked, the node
 //                       still on loopback and nobody paired
+//   ?onboarding=unreachable
+//                       the node does not answer at all. This is the one
+//                       situation the card exists for, and it was the one this
+//                       preview could not show: Overview rejects, so the window
+//                       never learns an address, a session or a peer, and the
+//                       card has to offer a way to start the node rather than a
+//                       tick over a machine showing "cannot reach".
+//   ?onboarding=slow    the same as `fresh`, except ServiceStatus takes three
+//                       seconds. The window renders before that read lands, so
+//                       this is what every real launch looks like for its first
+//                       seconds — the state in which the step used to read
+//                       "Install the service" on a machine that already had one.
 //
 // Both put the node's peer listener back on 127.0.0.1 and drop the bind
 // failure, because "this machine cannot be reached" and "the address it was
@@ -72,7 +84,13 @@ const onboarding = query.get("onboarding") ?? "";
 // Anything other than "fresh" keeps the sessions and the service, so the card
 // shows with two steps ticked and three still open, which is the state worth
 // looking at: a tick that never appears proves nothing about the tick.
-const firstRun = onboarding === "fresh";
+const firstRun = onboarding === "fresh" || onboarding === "slow";
+const unreachable = onboarding === "unreachable";
+// ServiceStatus behind a delay, because the defect it uncovers is a race: the
+// first render happens with no status at all, and what the card says then is
+// only visible if something answers slower than the first paint.
+const serviceStatusDelayMs = onboarding === "slow" ? 3000 : 0;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PAIR_ADDRESS = {
   // A default node answers with no peerAddress rather than with 127.0.0.1: an
   // address the other machine cannot use is not an answer to "what do I type".
@@ -207,7 +225,13 @@ const overviewNodes = onboarding ? [] : nodes;
 const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
 
 configure({
-  Overview: async () => ({ reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions, nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts }),
+  // A node that is not answering: `reachable` false and the dial error, shaped
+  // exactly as App.Overview shapes it in Go — that binding never rejects, it
+  // fills Error and leaves every list empty — so load() takes the same
+  // unreachable path here as it does in the built app.
+  Overview: async () => (unreachable
+    ? { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: "Get \"http://127.0.0.1:7462/v1/node\": dial tcp 127.0.0.1:7462: connect: connection refused", sessions: [], nodes: [], peers: [], counts: {} }
+    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions, nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts }),
   Discover: async () => ({ claude: 7, codex: 3, total: 10, skipped: 0 }),
   SetAudience: async (ids, audience) => { log("SetAudience", ids, audience); for (const s of sessions) if (ids.includes(s.id)) s.audience = { ...audience }; return { changed: ids.length, failed: 0 }; },
   SetVisibility: async () => ({ changed: 0, failed: 0 }),
@@ -260,7 +284,11 @@ configure({
   // The node remembers its own start-up settings (#116). The fake keeps them in
   // a variable so a save really changes what the next read answers, including
   // the rule that turning allowLan off pulls peerListen back to loopback.
-  NodeSettings: async () => ({ ...nodeSettings }),
+  // A node that is not answering cannot answer this either, and the settings
+  // panel's own unreadable path is what should be on screen when it does not.
+  NodeSettings: async () => (unreachable
+    ? Promise.reject(new Error("dial tcp 127.0.0.1:7462: connect: connection refused"))
+    : { ...nodeSettings }),
   SaveNodeSettings: async (patch) => {
     const next = { ...nodeSettings.settings, ...patch };
     let message = "";
@@ -302,7 +330,9 @@ configure({
   RestartNode: async () => { log("RestartNode"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // Installed the old way, with the node's settings burned into the unit, so
   // the panel's offer to re-register it cleanly is visible here too.
-  ServiceStatus: async () => (firstRun
+  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), unreachable
+    ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
+    : firstRun
     ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
     : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
   InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
