@@ -452,8 +452,14 @@ type pairingStateRow struct {
 	// the address is checked here as well: printing a loopback address as the
 	// one to type on the other machine is the failure this guards.
 	PeerAddressProblem string `json:"peerAddressProblem"`
-	Notice             string `json:"notice"`
-	Announcing         struct {
+	// PeerAddressReachable is the node's own verdict on that address. A
+	// pointer because its absence is the fact this side needs: a node that
+	// reports it has answered the question, and a node that does not is one
+	// from before the field existed, whose silence must not be read as "there
+	// is no address".
+	PeerAddressReachable *bool  `json:"peerAddressReachable"`
+	Notice               string `json:"notice"`
+	Announcing           struct {
 		Addresses   int       `json:"announceableAddresses"`
 		LastSuccess time.Time `json:"lastAnnouncedAt"`
 		LastError   string    `json:"lastError"`
@@ -496,28 +502,49 @@ func (r runner) printPairingState(state pairingStateRow) {
 	// this machine: on the default node the peer listener is on loopback, and
 	// "run ah pair request 127.0.0.1:7463 over there" is an instruction that
 	// cannot work and reads as though it should.
-	if problem := r.peerAddressProblem(state); problem != "" {
-		_, _ = fmt.Fprintf(r.stdout, "  next                  %s\n", problem)
-	} else {
-		_, _ = fmt.Fprintf(r.stdout, "  next                  On the other machine, run: "+
-			"ah pair request %s\n", state.PeerAddress)
-	}
+	_, _ = fmt.Fprintf(r.stdout, "  next                  %s\n", r.nextStep(state))
 	if state.Notice != "" {
 		_, _ = fmt.Fprintf(r.stdout, "\n%s\n", state.Notice)
 	}
 }
 
-// peerAddressProblem is the node's reason when it gave one, and this side's own
-// reading of the address when it did not.
+// nextStep is the one thing to do next, in one sentence.
 //
-// Two sources rather than one because the two disagree only in one direction: a
-// node that reports the field is authoritative, and a node too old to report it
-// still must not have a loopback address printed as the one to type elsewhere.
-func (r runner) peerAddressProblem(state pairingStateRow) string {
+// One, deliberately. This block used to print the remedy on this line and then
+// a notice underneath saying the other machine could still type this node's
+// peer address — on the default node, where there is no address to type. A
+// person holding two terminals cannot act on two instructions that contradict
+// each other, and picks the wrong one.
+//
+// The node's own fields decide, in their own order of authority: a stated
+// problem, then a stated verdict, and only then this side's reading of the
+// address. The last case exists for a node from before those fields, and it is
+// a reading of what that node actually sent — never a guess at what it did not.
+func (r runner) nextStep(state pairingStateRow) string {
 	if state.PeerAddressProblem != "" {
 		return state.PeerAddressProblem
 	}
-	return pairing.PeerAddressProblem(state.PeerAddress)
+	if state.PeerAddressReachable != nil {
+		if *state.PeerAddressReachable && state.PeerAddress != "" {
+			return "On the other machine, run: ah pair request " + state.PeerAddress
+		}
+		// Reachable with no address to show is not a thing a node says; if one
+		// does, the honest answer is the one for an address nobody knows.
+		return pairing.PeerAddressUnknown
+	}
+	if state.PeerAddress == "" {
+		// A node too old to report any of this. Announcing nothing is not what
+		// that means, and "this node only listens on this machine" — which is
+		// what reading an empty address as loopback said — is a claim about a
+		// configuration this side has not been told.
+		return "this node predates address reporting, so it did not say where the other machine " +
+			"should send its request; read its peer listener with `ah settings` here and type " +
+			"that address on the other machine"
+	}
+	if problem := pairing.PeerAddressProblem(state.PeerAddress); problem != "" {
+		return problem
+	}
+	return "On the other machine, run: ah pair request " + state.PeerAddress
 }
 
 // remainingWords is a countdown a person reads, from the seconds the node

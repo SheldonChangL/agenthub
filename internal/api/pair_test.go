@@ -938,6 +938,108 @@ func TestAnApproveLandingInsideARejectDoesNotLeaveTrustBehind(t *testing.T) {
 	}
 }
 
+// The other half of the same pair of windows: the refusal arrives after the
+// approval has written its trust row and before the row says so.
+//
+// The bug this pins is the one the order above left open. The approval used to
+// settle the row and set trustedByRequest first and write the trust store
+// after, so a refusal reading between those two writes settled `rejected`,
+// found no trust row recorded against the request, revoked nothing — and the
+// approval then wrote the trust row it had already decided on. The requester
+// was told rejected, and this machine kept the key.
+//
+// The order is now the other way round and the compensation is the approval's:
+// it writes the trust row first, loses the transition to the refusal, and takes
+// its own write back. The refusal is injected at the one instant that produces
+// the interleaving rather than raced for.
+func TestARejectLandingInsideAnApproveLeavesNothingTrusted(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	var rejected struct {
+		sync.Mutex
+		done bool
+	}
+	receiver.server.afterApproveTrustWrite = func() {
+		rejected.Lock()
+		defer rejected.Unlock()
+		if rejected.done {
+			return
+		}
+		rejected.done = true
+		// At this instant the trust row is in the receiver's store and its
+		// pairing row still says pending, trusted by nobody.
+		if trusted := receiver.trusted(); len(trusted) != 1 {
+			t.Errorf("the approval had not written its trust row yet: %v", trusted)
+		}
+		requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+	}
+
+	// The approval loses: the row is no longer pending when it gets there.
+	receiver.decide(t, outgoing.ID, "approve", http.StatusConflict)
+
+	rejected.Lock()
+	defer rejected.Unlock()
+	if !rejected.done {
+		t.Fatal("the refusal was never injected, so this test proves nothing")
+	}
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the receiver sees %q, want %q", state, pairing.StateRejected)
+	}
+	if trusted := receiver.trusted(); len(trusted) != 0 {
+		t.Errorf("the refused machine is still trusted: %v", trusted)
+	}
+	// And nothing on the owner's screen says a trust row was left behind,
+	// because none was.
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "left in place") {
+		t.Errorf("the row claims a leftover that was taken back: %q", step)
+	}
+}
+
+// A refusal that cannot take the trust back says so, and never says the
+// opposite.
+//
+// The store is closed under the handler, which is the failing store this path
+// has no other way to meet: the refusal is already recorded when the revoke is
+// attempted, so an error there leaves the row saying rejected with a key still
+// trusted behind it. Returning the error and stopping — which is what this used
+// to do — left `trustedByRequest` set and `trustLeftInPlace` unset, which is
+// the combination the owner's row renders as "the trust written here has been
+// withdrawn".
+func TestARejectThatCannotRevokeSaysTheTrustIsStillHere(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	outgoing := approvedRequest(t, requester, receiver)
+
+	if err := receiver.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "withdrawn") {
+		t.Errorf("the row claims a withdrawal that could not happen: %q", step)
+	}
+	for _, want := range []string{"left in place", "could not remove it", "ah revoke " + requester.node.ID} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
+	}
+}
+
 // The same push before any approval: the other owner is told, and approving
 // afterwards is refused in words they can act on.
 func TestARequesterRejectBlocksALaterApprove(t *testing.T) {

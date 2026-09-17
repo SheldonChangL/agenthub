@@ -60,6 +60,12 @@ type Server struct {
 	// row approved and the trust row written. A race that can only be produced
 	// by winning a scheduling gamble is a race nothing can hold a fix against.
 	afterRejectRead func()
+	// afterApproveTrustWrite runs inside an approval, between writing the trust
+	// row and the transition that keeps it. The other half of the same pair of
+	// windows: nil everywhere but in the test that lands a refusal in exactly
+	// this one, where the row still says this request trusted nobody and the
+	// trust row is already in the store.
+	afterApproveTrustWrite func()
 	// peerAddress is where this node's peer listener answers, as host:port, so
 	// a pairing request can tell the far side where to deliver to. Empty when
 	// there is no address worth claiming, which records nothing rather than
