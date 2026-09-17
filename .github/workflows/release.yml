@@ -323,8 +323,11 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           ldflags="-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}"
-          ldflags="$ldflags -X main.release=${TAG}"
+          # main.release carries the bare number: the window prefixes "v" itself
+          # (desktop/frontend/src/app.js, tested in test/version-line.mjs), so
+          # stamping the tag verbatim would show "vv0.0.3".
           version="${TAG#v}"
+          ldflags="$ldflags -X main.release=${version}"
           case "$PLATFORM" in
           windows/*) product_version="${version%%-*}" ;;
           *) product_version="$version" ;;
