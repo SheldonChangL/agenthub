@@ -387,8 +387,11 @@ func TestPairingOnPrintsWhatToDoNext(t *testing.T) {
 	}
 }
 
-// A node too old to report its address still gets a usable sentence: the shape
-// of what to type, rather than a line that says to type nothing.
+// A node with no address to be reached at says so, and says what to change.
+//
+// It used to print `ah pair request <this machine's host:port>`, which reads as
+// an instruction with a blank to fill in — and on the machine this describes
+// there is nothing to fill it with: the peer listener is on this machine only.
 func TestPairingOnStillNamesTheCommandWithoutAnAddress(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -402,8 +405,54 @@ func TestPairingOnStillNamesTheCommandWithoutAnAddress(t *testing.T) {
 		[]string{"--url", server.URL, "pairing"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "ah pair request <this machine's host:port>") {
-		t.Errorf("output = %q", stdout.String())
+	printed := stdout.String()
+	for _, want := range []string{"only listens on this machine", "-allow-lan", "ah service restart"} {
+		if !strings.Contains(printed, want) {
+			t.Errorf("output does not say %q:\n%s", want, printed)
+		}
+	}
+	if strings.Contains(printed, "ah pair request") {
+		t.Errorf("a command to type on the other machine is still printed:\n%s", printed)
+	}
+}
+
+// The same, for the node that does report an address and the address is its own
+// loopback: this is the default node, and `ah pair request 127.0.0.1:7463` typed
+// on the other machine reaches that machine's own node, not this one.
+func TestPairingOnDoesNotPrintALoopbackAddressAsTheOneToType(t *testing.T) {
+	for name, reply := range map[string]string{
+		// A node that reports the fact itself.
+		"node says so": `{"open":true,"remainingSeconds":60,"peerAddress":"127.0.0.1:7463",` +
+			`"peerAddressReachable":false,"peerAddressProblem":"this node only listens on this ` +
+			`machine, so there is no address the other machine can be told to type",` +
+			`"announcing":{"announceableAddresses":1}}`,
+		// A node too old to report it: this side reads the address instead.
+		"read from the address": `{"open":true,"remainingSeconds":60,"peerAddress":"127.0.0.1:7463",` +
+			`"announcing":{"announceableAddresses":1}}`,
+		// The wildcard is the same situation: it is not an address to dial.
+		"unspecified": `{"open":true,"remainingSeconds":60,"peerAddress":"0.0.0.0:7463",` +
+			`"announcing":{"announceableAddresses":1}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(reply))
+			}))
+			defer server.Close()
+
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(),
+				[]string{"--url", server.URL, "pairing", "on"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			printed := stdout.String()
+			if strings.Contains(printed, "ah pair request") {
+				t.Errorf("an unreachable address is printed as the one to type:\n%s", printed)
+			}
+			if !strings.Contains(printed, "only listens on this machine") {
+				t.Errorf("output does not say why there is nothing to type:\n%s", printed)
+			}
+		})
 	}
 }
 

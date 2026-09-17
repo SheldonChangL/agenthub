@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 )
 
 // PeerEndpoint reports where a peer on the local network could reach this node:
@@ -160,3 +161,41 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	}
 	return parsed, ""
 }
+
+// PeerAddressProblem says why this node's peer address is not one the other
+// machine could be told to type, or "" when it is one.
+//
+// The case it exists for is the default node: its peer listener is on loopback,
+// so there is no address another machine can reach, and printing 127.0.0.1:7463
+// as "run this over there" sends the owner to type an address that names their
+// own machine. Empty is the same situation seen from the other side — the node
+// had nothing worth announcing — and gets the same answer, because what the
+// owner has to do about it is the same.
+//
+// A host that is not an IP literal is left alone: ValidatePeerListen refuses a
+// name beyond loopback, so anything that reaches here naming one is a build
+// this function should not second-guess.
+func PeerAddressProblem(address string) string {
+	if strings.TrimSpace(address) != "" {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return ""
+		}
+		parsed, err := netip.ParseAddr(host)
+		if err != nil {
+			return ""
+		}
+		if parsed = parsed.Unmap(); !parsed.IsLoopback() && !parsed.IsUnspecified() {
+			return ""
+		}
+	}
+	return PeerAddressRemedy
+}
+
+// PeerAddressRemedy is the one sentence an owner with no reachable peer address
+// can act on. Named, because the CLI and the API answer with the same words and
+// two copies would drift.
+const PeerAddressRemedy = "this node only listens on this machine, so there is no address the " +
+	"other machine can be told to type; to pair over the network start it with -allow-lan and " +
+	"-peer-listen on one of this machine's network addresses (or `ah settings set --allow-lan=true " +
+	"--peer-listen ADDR`, then `ah service restart`)"
