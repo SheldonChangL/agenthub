@@ -26,6 +26,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // table does not, and a candidate list that only updates when the owner
     // clicks refresh is one they cannot use to find a machine.
     pairing: null,
+    // The pairing exchange's own rows (#63), read separately from the window
+    // and the candidate list because reading them is not free at the node: it
+    // polls every pending outgoing request at the far side first. So they are
+    // asked for only while the pairing drawer is open.
+    //
+    // pairRequestsLoaded keeps "no rows" apart from "never asked": the first is
+    // a fact about the two machines, the second is this window not having
+    // looked yet, and rendering the second as the first tells an owner nobody
+    // asked when nobody has checked.
+    pairRequests: [],
+    pairRequestsAll: false,
+    pairRequestsError: "",
+    pairRequestsLoaded: false,
     // pairingReadAt is when the countdown below was true. The remaining seconds
     // come from the node, so they are subtracted from the moment they were read
     // rather than compared against this machine's own idea of the expiry.
@@ -561,9 +574,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function openPairingDrawer() {
     el("pairing-modal").classList.remove("hidden");
     loadPairing().catch(() => {});
+    loadPairRequests().catch(() => {});
   }
   function closePairingDrawer() {
     el("pairing-modal").classList.add("hidden");
+  }
+
+  // pairingDrawerOpen is what the two-second poll asks. The exchange's rows are
+  // read only while somebody is looking at them, because reading them makes the
+  // node dial every machine it is waiting on.
+  function pairingDrawerOpen() {
+    return !el("pairing-modal").classList.contains("hidden");
   }
 
   // renderPairingSummary is the one-line state in the node list's foot: it
@@ -801,6 +822,104 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   /* ---------------- pairing mode and candidates ---------------- */
 
+  // Every user-facing string of the pairing exchange, in one object.
+  //
+  // One object rather than literals at the call sites so that translating this
+  // panel later is a swap of this object and nothing else — the English pass is
+  // its own change, and a pass that has to find forty literals scattered
+  // through the renderers is a pass that misses some.
+  //
+  // The state wording mirrors `ah pair pending` deliberately: two owners on two
+  // machines, one in a terminal and one in this window, have to be able to say
+  // the same thing to each other about the same row.
+  const PAIR_TEXT = {
+    open: "與另一台機器配對",
+    close: "關閉配對視窗",
+    // The window, said as what it is for rather than as what it broadcasts:
+    // the window is now what the exchange needs, and announcing is a separate
+    // half that a node without -discover simply does not have.
+    windowOpen: "配對視窗開啟中",
+    windowClosed: "配對視窗未開啟。",
+    windowExpiring: "配對視窗已到期，正在向節點確認…",
+    windowUnavailable: "配對狀態讀不到。",
+    // The address half, for a node that is not announcing.
+    hereHeading: "對方要輸入的本機位址",
+    hereNote: "這台機器沒有在廣播，所以不會出現在對方的候選清單裡。把上面這個位址念給對方，" +
+      "讓他們填進自己視窗的「對方畫面顯示的位址」欄位。",
+    hereNoAddress: "節點沒有給出可以讓對方連進來的位址，所以只剩下最底下的手動配對。",
+    hereCopied: "已複製位址到剪貼簿",
+    hereCopyFailed: "無法寫入剪貼簿，請手動複製上面那一串。",
+    // Sending a request.
+    send: "送出配對請求",
+    sendFromCandidate: "送出配對請求",
+    sendManual: "改用手動填入…",
+    addressEmpty: "請先填入對方畫面上顯示的位址，格式是 host:port，例如 192.168.1.20:7463。",
+    addressNote: "對方要先在自己的視窗按「與另一台機器配對」，這台才連得進去。" +
+      "送出後兩台螢幕會各自顯示同樣的兩組指紋，逐組比對過才按核准。",
+    sent: "配對請求已送出，等對方核准。兩邊的指紋要逐組比對過才按確認。",
+    // The requests panel.
+    requestsHeading: "配對請求",
+    showDecided: "顯示已結束",
+    requestsEmpty: "目前沒有等待處理的配對請求。",
+    requestsEmptyAll: "沒有任何配對請求。已結束的請求只留十分鐘。",
+    requestsUnread: "還沒有向節點讀過配對請求。",
+    requestsFailed: "無法向本機節點取得配對請求，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方沒有送出。",
+    // The one instruction attached to a decision. The node writes the same
+    // sentence in English beside every undecided row; this is that sentence in
+    // the window's own language, kept next to the buttons it governs rather
+    // than in a banner somewhere else.
+    compare: "兩台螢幕會顯示同樣的兩組指紋，順序一樣：先發起的那台在上。" +
+      "逐組比對，只要有一組不同就按拒絕——那表示中間有東西。兩邊各自說好之前，什麼都還沒有被信任。",
+    approve: "指紋一致，核准",
+    confirm: "指紋一致，確認",
+    reject: "拒絕",
+    // What each state means, in one phrase, and what happens next in one line.
+    state: {
+      "pending-incoming": "等你核准",
+      "pending-outgoing": "等待對方核准",
+      "awaiting-confirm": "對方已核准，等你確認",
+      approved: "已完成",
+      rejected: "已拒絕",
+      expired: "已結束",
+    },
+    step: {
+      "pending-incoming": "比對下面兩組指紋，一致就按「指紋一致，核准」；不一致按「拒絕」。",
+      "pending-outgoing": "請對方在他們的視窗按「指紋一致，核准」。他們按了之後這一列才會換成等你確認。",
+      "awaiting-confirm": "對方已經核准了。比對下面兩組指紋，一致就按「指紋一致，確認」。",
+      "approved-incoming": "這台已經信任對方了。剩下的在對方那台，等他們按確認；他們一直沒按的話，就撤銷這個節點。",
+      "approved-outgoing": "兩邊都完成了。",
+      rejected: "已拒絕，兩邊都沒有留下任何信任。",
+      expired: "這次配對沒有在時限內完成，兩邊都沒有留下任何信任。要配對就重新送一次。",
+      displaced: "這一列被後來的請求擠掉了，不是你逾時。要配對就重新送一次。",
+    },
+    // The node's own labels, mapped one-for-one. A fixed table, so a string
+    // from the wire can never choose the words around it — and the fingerprint
+    // values themselves are rendered exactly as the node ordered them.
+    whose: { "this machine": "這一台", "the other machine": "對方那台" },
+    role: { requester: "發起方", receiver: "被詢問方" },
+    // What the node's refusals mean, and what to do about each. The node's own
+    // sentences are English and name `ah` subcommands, which is the wrong
+    // advice in a window with buttons.
+    errors: {
+      PEER_TOO_OLD: "對方那台跑的是還沒有配對交換功能的舊版 AgentHub。請先在那台更新 AgentHub，" +
+        "或用最底下的手動配對。",
+      PEER_PAIRING_CLOSED: "對方那台沒有在配對模式。請他們在自己的視窗按「與另一台機器配對」，再送一次。",
+      PEER_PAIRING_BUSY: "對方那台等待中的配對請求已經滿了。請他們先處理掉手上的請求，再送一次。",
+      PEER_PAIRING_DUPLICATE: "對方那台已經有一個來自這台機器的請求在等他們決定了。請他們先處理那一列。",
+      PAIRING_BUSY: "這台機器等待中的配對請求已經滿了。先處理或拒絕掉現有的，再送一次。",
+      PAIRING_DUPLICATE: "那台機器已經有一個請求在這裡等著了，先處理下面那一列。",
+      PAIRING_STATE: "這個請求已經不在等這個動作了——可能已經被拒絕、逾時，或是已經完成。" +
+        "清單重新整理後再看一次，需要的話重新送出請求。",
+      PAIRING_EXCHANGE_DISABLED: "這個節點啟動時沒有帶配對交換，只能用最底下的手動配對。",
+      PEER_UNREACHABLE: "連不到那個位址。確認位址沒打錯、兩台在同一個網段，而且對方的節點正在跑。",
+      PEER_KEY_MISMATCH: "那台機器用一把金鑰完成連線，卻自稱是另一把——中間有東西在轉送這條連線。" +
+        "什麼都沒有被配對，不要重試，先確認你連的是哪一台。",
+      ADDRESS_NOT_ALLOWED: "這個節點不會送資料到那個位址。要嘛位址打錯了，要嘛它不在這個節點視為私有的網段裡" +
+        "（設定頁的「視為私有網段」）。",
+      NOT_FOUND: "找不到這個配對請求，它可能已經逾時被清掉了。重新送一次。",
+    },
+  };
+
   // Every field of a candidate was chosen by whoever sent the packet, on a
   // multicast group anyone on the segment can write to. So this whole panel is
   // built with element(), which assigns textContent, and none of these values is
@@ -837,8 +956,263 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // different machine.
   function renderPairing() {
     renderPairingWindow();
+    renderPairHere();
     renderCandidates();
+    renderPairRequests();
     renderPairingSummary();
+  }
+
+  /* ---------------- the pairing exchange (#63) ---------------- */
+
+  // pairErrorMessage turns one of the node's refusals into a sentence with a
+  // remedy in it.
+  //
+  // The node answers "CODE: message", and its message is English and names `ah`
+  // subcommands — right for the terminal it was written for, wrong in a window
+  // whose remedy is a button three centimetres away. A code this table does not
+  // know keeps the node's own words: a refusal nobody translated is still an
+  // answer, and swallowing it would leave the owner with nothing.
+  function pairErrorMessage(error) {
+    const text = String(error?.message ?? error ?? "");
+    for (const code of Object.keys(PAIR_TEXT.errors)) {
+      // The code is at the start of the node's error, ahead of ": ". Anchored
+      // there rather than searched for anywhere, so a peer's message quoting a
+      // code cannot pick the sentence shown about it.
+      if (text.includes(`${code}: `) && text.indexOf(`${code}: `) <= text.indexOf(": ")) {
+        return PAIR_TEXT.errors[code];
+      }
+    }
+    return text;
+  }
+
+  // sendPairRequest asks the machine at `address` to trust this one.
+  //
+  // The address is passed in rather than read from the form, because three
+  // things call this: the form, a candidate row's button, and nothing else may
+  // invent one. It is not validated here — the node holds the ranges this build
+  // will talk to, and a second rule in this process could only disagree with
+  // the one that actually decides.
+  async function sendPairRequest(address) {
+    const wanted = String(address ?? "").trim();
+    if (wanted === "") {
+      banner(PAIR_TEXT.addressEmpty);
+      return;
+    }
+    await withBusy("送出配對請求", async () => {
+      try {
+        await api.StartPairRequest(wanted);
+      } catch (error) {
+        banner(pairErrorMessage(error));
+        return;
+      }
+      el("pair-address").value = "";
+      banner(PAIR_TEXT.sent, true);
+      await loadPairRequests();
+    });
+  }
+
+  // decidePairRequest is approve, confirm and reject, which differ only in
+  // which binding they call.
+  //
+  // The id comes from the row the button was built on, never from a field: an
+  // id typed or pasted is an id that can name somebody else's request.
+  async function decidePairRequest(id, verb) {
+    const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
+    if (!call) return;
+    const label = { approve: "核准配對", confirm: "確認配對", reject: "拒絕配對" }[verb];
+    await withBusy(label, async () => {
+      let answer;
+      try {
+        answer = await call(id);
+      } catch (error) {
+        banner(pairErrorMessage(error));
+        await loadPairRequests();
+        return;
+      }
+      // The node's own sentence about what happens next, which is the one
+      // thing this window cannot work out: after a refusal it says whether the
+      // other machine could be told, and a refusal it could not deliver leaves
+      // that machine trusting a key this owner has just refused.
+      if (answer?.nextStep) {
+        banner(answer.nextStep, verb !== "reject");
+      }
+      await loadPairRequests();
+      // Approving or confirming writes the trust store, so the node list is
+      // now out of date.
+      if (verb !== "reject") await load();
+    });
+  }
+
+  // pairStateKey is the row's state as this panel talks about it: the two
+  // pending states are different situations on the two machines, and one word
+  // for both is one word that is wrong on one of them.
+  function pairStateKey(request) {
+    if (request.state === "pending") return `pending-${request.direction === "outgoing" ? "outgoing" : "incoming"}`;
+    return request.state;
+  }
+
+  function pairStepText(request) {
+    const key = pairStateKey(request);
+    if (request.state === "approved") {
+      return PAIR_TEXT.step[`approved-${request.direction === "incoming" ? "incoming" : "outgoing"}`];
+    }
+    if (request.state === "expired" && request.reason === "displaced") return PAIR_TEXT.step.displaced;
+    return PAIR_TEXT.step[key] ?? "";
+  }
+
+  // fingerprintBlock renders the two values the exchange rests on.
+  //
+  // Exactly as the node ordered and labelled them. The order is the same on
+  // both machines by construction — the machine that asked first — which is
+  // what lets two people read down two screens line by line, and sorting or
+  // re-deriving them here would break the only check there is. The labels are
+  // mapped through a fixed table, so a display name a stranger chose can decide
+  // nothing but its own text.
+  function fingerprintBlock(request) {
+    const box = element("div", "fingerprints");
+    const rows = Array.isArray(request.fingerprints) ? request.fingerprints : [];
+    if (rows.length === 0) {
+      // A node that answered without the ordered pair. Nothing is invented
+      // here: two values in an order this window guessed at are exactly the
+      // thing the comparison cannot survive.
+      box.append(element("div", "muted",
+        "這個節點沒有給出可以比對的指紋組。請改用終端機的 ah pair pending 來比對。"));
+      return box;
+    }
+    for (const row of rows) {
+      const who = element("div", "who");
+      const role = PAIR_TEXT.role[row.role] ?? row.role ?? "";
+      if (role) who.append(element("span", "", `${role}　`));
+      who.append(element("span", "", row.machine || "（未提供名稱）"));
+      const whose = PAIR_TEXT.whose[row.whose];
+      // Only the two labels the node documents get the highlight; anything else
+      // is shown as the plain text it is.
+      if (whose) who.append(element("span", row.whose === "this machine" ? "mine" : "", `（${whose}）`));
+      else if (row.whose) who.append(element("span", "", `（${row.whose}）`));
+      box.append(who);
+      box.append(element("div", "fingerprint", row.fingerprint || ""));
+    }
+    return box;
+  }
+
+  // pairRequestRow is one exchange, with the decision below the values it is
+  // about.
+  //
+  // The order on the row is the order of the acts: who is asking, the two
+  // fingerprints, what to do, then the buttons. A button level with the
+  // fingerprints is one that can be pressed before they have been read, and
+  // there is no affordance anywhere for deciding without comparing — that is
+  // the whole of what this exchange asks a person for.
+  function pairRequestRow(request) {
+    const undecided = request.state === "pending" || request.state === "awaiting-confirm";
+    const row = element("div", undecided ? "pairrow waiting" : "pairrow");
+    const line = element("div", "line");
+    line.append(element("span", "name", request.displayName || request.nodeId || "（未提供名稱）"));
+    line.append(pill(PAIR_TEXT.state[pairStateKey(request)] ?? request.state, undecided ? "idle" : ""));
+    row.append(line);
+    row.append(element("div", "meta",
+      `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`));
+    row.append(element("div", "fingerprint", request.nodeId || ""));
+    row.append(fingerprintBlock(request));
+    const step = pairStepText(request);
+    if (step) row.append(element("div", "nextstep", step));
+    if (undecided) row.append(element("div", "stale", PAIR_TEXT.compare));
+    // The node's own next step, kept because it carries one thing this window
+    // cannot derive: a refusal that could not be delivered names the machine
+    // that may still be trusting this one, and what to ask its owner to run.
+    if (request.nextStep) row.append(element("div", "muted", request.nextStep));
+
+    const buttons = element("div", "decide");
+    if (request.state === "pending" && request.direction === "incoming") {
+      const approve = element("button", "primary", PAIR_TEXT.approve);
+      approve.disabled = state.busy;
+      approve.onclick = () => decidePairRequest(request.id, "approve");
+      buttons.append(approve);
+    }
+    if (request.state === "awaiting-confirm") {
+      const confirmButton = element("button", "primary", PAIR_TEXT.confirm);
+      confirmButton.disabled = state.busy;
+      confirmButton.onclick = () => decidePairRequest(request.id, "confirm");
+      buttons.append(confirmButton);
+    }
+    if (undecided) {
+      const rejectButton = element("button", "ghost", PAIR_TEXT.reject);
+      rejectButton.disabled = state.busy;
+      rejectButton.onclick = () => decidePairRequest(request.id, "reject");
+      buttons.append(rejectButton);
+    }
+    if (buttons.children.length > 0) row.append(buttons);
+    return row;
+  }
+
+  function renderPairRequests() {
+    const rows = el("pair-requests");
+    const note = el("pair-requests-note");
+    rows.replaceChildren();
+    note.textContent = "";
+    el("pair-requests-all").checked = state.pairRequestsAll;
+
+    if (state.pairRequestsError) {
+      // A failed read is not a fact about the other machine. Rendering it as
+      // an empty list would tell an owner nobody asked, at the moment somebody
+      // is waiting for them.
+      rows.append(element("div", "stale", PAIR_TEXT.requestsFailed));
+      rows.append(element("div", "muted", state.pairRequestsError));
+      return;
+    }
+    if (!state.pairRequestsLoaded) {
+      rows.append(element("div", "empty", PAIR_TEXT.requestsUnread));
+      return;
+    }
+    const requests = state.pairRequests ?? [];
+    if (requests.length === 0) {
+      rows.append(element("div", "empty",
+        state.pairRequestsAll ? PAIR_TEXT.requestsEmptyAll : PAIR_TEXT.requestsEmpty));
+      return;
+    }
+    for (const request of requests) rows.append(pairRequestRow(request));
+  }
+
+  // renderPairHere shows the address the other machine has to type.
+  //
+  // Only when the node says it is not announcing, because then this is the
+  // whole way in: the window is open, nothing is being broadcast, and the other
+  // machine will wait forever for a candidate row that is not coming. Shown in
+  // the key font with a copy button rather than inside the notice's prose,
+  // which is how the last hand-carried string lost a character.
+  function renderPairHere() {
+    const box = el("pair-here");
+    const value = el("pair-local-address");
+    const note = el("pair-here-note");
+    const window_ = state.pairing?.state ?? {};
+    const notice = window_.notice || "";
+    if (!state.pairing?.windowAvailable || !notice) {
+      box.classList.add("hidden");
+      el("copy-pair-address-status").textContent = "";
+      return;
+    }
+    box.classList.remove("hidden");
+    const address = window_.pairAddress || "";
+    value.textContent = address || "—";
+    note.textContent = address ? PAIR_TEXT.hereNote : PAIR_TEXT.hereNoAddress;
+  }
+
+  // copyPairAddress hands that address to the clipboard, and says so when the
+  // clipboard refuses: the address is on screen either way, and a copy silently
+  // reported as done is a string typed wrong on the other machine.
+  async function copyPairAddress() {
+    const status = el("copy-pair-address-status");
+    const address = state.pairing?.state?.pairAddress || "";
+    if (!address) {
+      status.textContent = PAIR_TEXT.hereNoAddress;
+      return;
+    }
+    try {
+      await api.CopyText(address);
+      status.textContent = PAIR_TEXT.hereCopied;
+    } catch (error) {
+      status.textContent = `${PAIR_TEXT.hereCopyFailed}（${error}）`;
+    }
   }
 
   // broadcastWarning says what actually goes on the wire, with the name spelled
@@ -899,10 +1273,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
 
+    // Whether the window itself can be opened from here, which since the
+    // pairing exchange landed is a different question from whether this node
+    // looks at the network. A node started without -discover opens a window
+    // all the same and pairs by a typed address — greying the button out there
+    // would take the button away from the one owner who has nothing else.
+    //
+    // The fallback is for an answer from before that field existed: availability
+    // "on" is only ever set after the window endpoints answered.
+    const windowAvailable = pairing.windowAvailable ?? (pairing.availability === "on");
+
     // Three different things to say, and a panel that collapses any two of them
     // tells the owner to wait for something that is not coming, or to change a
     // setting that is not the problem.
-    if (pairing.availability === "off") {
+    if (!windowAvailable && pairing.availability === "off") {
       headline.textContent = "這台機器沒有在看，也不會廣播。";
       detail.append(element("div", "stale",
         "這個節點啟動時沒有 -discover，所以它既不廣播，也看不到別人廣播。" +
@@ -913,8 +1297,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       off.disabled = true;
       return;
     }
-    if (pairing.availability !== "on") {
-      headline.textContent = "配對狀態讀不到。";
+    if (!windowAvailable) {
+      headline.textContent = PAIR_TEXT.windowUnavailable;
       detail.append(element("div", "stale",
         "無法向本機節點取得配對狀態，所以這裡不顯示任何內容。" +
         "這是本機的讀取問題，不代表沒有人在廣播。"));
@@ -926,11 +1310,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const window_ = pairing.state ?? {};
     const announcing = window_.announcing ?? {};
-    // The node refuses to open a window it could not announce on — the same
-    // condition, checked there. Leaving the button live would invite the owner to
-    // press it and read a 409 to learn what this panel already knows.
+    // A window this node cannot announce is still a window: the other machine
+    // can be handed this one's address and type it. The node stopped refusing
+    // those when the pairing exchange landed (ADR-004), so the button is live
+    // whenever the window endpoints answer. What changes is what is said beside
+    // it — and #pair-here then carries the address that is the whole way in.
     const canAnnounce = (announcing.announceableAddresses ?? 0) > 0;
-    on.disabled = state.busy || !canAnnounce;
+    on.disabled = state.busy;
     off.disabled = state.busy || !window_.open;
 
     if (window_.open) {
@@ -940,20 +1326,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // and the whole point of carrying `announcing` is that it does not follow.
       // The node closes the window itself; this machine only knows the count
       // reached zero. Saying so beats counting "剩 0:00" until the next read.
-      headline.textContent = left === 0 ? "配對視窗已到期，正在向節點確認…" : "配對視窗開啟中";
+      headline.textContent = left === 0 ? PAIR_TEXT.windowExpiring : PAIR_TEXT.windowOpen;
       detail.append(announceLine(announcing));
-      note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
+      // The broadcast tradeoff is only a tradeoff where something is actually
+      // broadcast. On a node that announces nothing, the note that matters is
+      // the address above, not a warning about a name nobody will hear.
+      if (canAnnounce) {
+        note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
+      } else {
+        note.textContent = "";
+      }
     } else if (!canAnnounce) {
-      // Not "opening it would achieve nothing" — the node will not open it. Two
-      // different sentences, and the earlier one sat directly above a note
-      // promising what opening would reveal, which contradicted it.
-      headline.textContent = "配對視窗無法開啟。";
+      // Not "the node will refuse it" any more — it does not. What is true is
+      // that opening it will put this machine in nobody's candidate list, and
+      // that the typed address is what is left.
+      headline.textContent = PAIR_TEXT.windowClosed;
       detail.append(element("div", "stale",
-        "這台機器沒有任何可以廣播的位址，節點會拒絕開啟配對模式。"));
+        "這台機器沒有任何可以廣播的位址，所以就算開啟配對視窗，也不會出現在對方的候選清單裡。" +
+        "視窗本身還是開得起來：把這台的位址給對方輸入就能連進來。"));
       detail.append(element("div", "muted", announcing.lastError || "節點沒有說明原因。"));
-      note.textContent = "修正後重新啟動節點，這裡就會可以開啟。在那之前仍可用 ah pair 手動配對。";
+      note.textContent = "";
     } else {
-      headline.textContent = "配對視窗未開啟。";
+      headline.textContent = PAIR_TEXT.windowClosed;
       note.replaceChildren(...broadcastWarning("開啟後，", "這是為了配對而明確接受的取捨，時間到會自動停止。"));
     }
   }
@@ -1075,9 +1469,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     row.append(element("div", "fingerprint", candidate.fingerprint));
     row.append(element("div", "muted",
       `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`));
-    const use = element("button", "ghost", "用這一列開始配對…");
+    // One click, and it carries the announced address and nothing else. The
+    // address is where to knock; everything that decides identity — the key,
+    // and the fingerprint derived from it — arrives over the connection this
+    // opens, and is then compared by two people. So the untrusted row can pick
+    // who is dialled without being able to pre-answer the question that
+    // matters.
+    const actions = element("div", "decide");
+    const send = element("button", "primary", PAIR_TEXT.sendFromCandidate);
+    send.disabled = state.busy || !candidate.address;
+    send.onclick = () => sendPairRequest(candidate.address);
+    actions.append(send);
+    // The manual five-field form stays reachable from the row, as a secondary
+    // path for two machines that cannot open a connection to each other.
+    const use = element("button", "ghost", PAIR_TEXT.sendManual);
     use.onclick = () => prefillPairFrom(candidate);
-    row.append(use);
+    actions.append(use);
+    row.append(actions);
     return row;
   }
 
@@ -2613,6 +3021,43 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (state.view === "network") renderPairing();
   }
 
+  // loadPairRequests reads the exchange's own rows.
+  //
+  // Separate from loadPairing, and asked for only while the drawer is open,
+  // because it is not a free read: the node polls every pending outgoing
+  // request at the far side before answering. A window that asked for it every
+  // five seconds forever would keep dialling machines for as long as it was
+  // left running.
+  //
+  // Sequence-guarded like every other read here. Two are in flight at once
+  // whenever a decision's re-read overlaps the two-second tick, and the older
+  // answer describes the moment before the decision.
+  let pairRequestsRequest = 0;
+  let pairRequestsApplied = 0;
+
+  async function loadPairRequests() {
+    const sequence = ++pairRequestsRequest;
+    const all = state.pairRequestsAll;
+    let rows;
+    try {
+      rows = await api.PairRequests(all);
+    } catch (error) {
+      if (sequence <= pairRequestsApplied) return;
+      pairRequestsApplied = sequence;
+      // A failed read is not a fact about the other machine, so the rows are
+      // left alone and the panel says which of the two this is.
+      state.pairRequestsError = String(error);
+      renderPairRequests();
+      return;
+    }
+    if (sequence <= pairRequestsApplied) return;
+    pairRequestsApplied = sequence;
+    state.pairRequests = Array.isArray(rows) ? rows : [];
+    state.pairRequestsError = "";
+    state.pairRequestsLoaded = true;
+    renderPairRequests();
+  }
+
   el("mcp-close").onclick = closeMCPConfig;
   el("mcp-modal").onclick = (event) => {
     if (event.target === el("mcp-modal")) closeMCPConfig();
@@ -2648,10 +3093,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
 
   el("btn-pairing-off").onclick = () =>
-    withBusy("停止廣播", async () => {
+    withBusy("關閉配對視窗", async () => {
       await api.ClosePairing();
       await loadPairing();
     });
+
+  /* ---------------- the pairing exchange's own controls ---------------- */
+
+  el("copy-pair-address").onclick = () => copyPairAddress();
+  el("btn-pair-send").onclick = () => sendPairRequest(el("pair-address").value);
+  el("pair-address").onkeydown = (event) => {
+    // Enter in the address field sends, because that is what a field with one
+    // button beside it is for.
+    if (event?.key === "Enter") sendPairRequest(el("pair-address").value);
+  };
+  el("pair-requests-all").onchange = () => {
+    state.pairRequestsAll = Boolean(el("pair-requests-all").checked);
+    loadPairRequests().catch(() => {});
+  };
+  el("pair-address-note").textContent = PAIR_TEXT.addressNote;
 
 
   /* ---------------- node settings ---------------- */
@@ -3575,6 +4035,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
     openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
+    loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
+    pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
@@ -3590,6 +4052,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (state.view !== "network") return;
     loadPairing().catch(() => {});
   }, 5000);
+
+  // The exchange's rows, faster and only while they are on screen.
+  //
+  // Two seconds because this is the one list where the owner is waiting on
+  // somebody at another keyboard: the gap between them pressing 核准 and this
+  // row offering 確認 is dead time in front of two people. And only while the
+  // drawer is open, because each read makes the node dial every machine it is
+  // waiting on — a poll that outlived the panel would keep doing that for as
+  // long as the window was left running.
+  setInterval(() => {
+    if (state.view !== "network" || !pairingDrawerOpen()) return;
+    // Not while a decision is in flight: the answer would repaint the rows
+    // under the button that is still being pressed.
+    if (state.busy) return;
+    loadPairRequests().catch(() => {});
+  }, 2000);
 
   // And the countdown ticks in between, so an expiring window is visibly
   // expiring. Only the countdown's own text is touched: redrawing the panel here

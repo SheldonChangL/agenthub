@@ -85,7 +85,7 @@ if (!row.includes("AAAA BBBB CCCC DDDD EEEE FFFF")) {
 }
 // Nothing a sender chose may decide a class name.
 for (const cls of row.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(candidaterow|line|name|meta|fingerprint|muted|pill bad|ghost)"$/.test(cls)) {
+  if (!/^class="(candidaterow|line|name|meta|fingerprint|muted|pill bad|ghost|primary|decide)"$/.test(cls)) {
     failures.push(`a candidate-supplied value reached a class name: ${cls}`);
   }
 }
@@ -166,24 +166,29 @@ if (!unknown.includes("connection refused")) {
   failures.push("the reason the read failed was not shown");
 }
 
-// 3b. A node that cannot announce is one the node itself refuses to open a
-//     window on, so the panel must say that rather than describing an outcome
-//     the node prevents — and must not leave the button live to prove it.
+// 3b. A node that cannot announce used to be one the node refused to open a
+//     window on, and this panel greyed the button out to match. Neither is true
+//     since the pairing exchange (#62, ADR-004): the window is a node-level
+//     state, it opens whatever discovery is doing, and the other machine pairs
+//     by typing this one's address. The button has to be live there — it is the
+//     only way in that owner has — while the panel still says plainly that
+//     nobody will see this machine in a candidate list.
 state.pairing = {
   availability: "on",
+  windowAvailable: true,
   state: { open: false, announcing: { announceableAddresses: 0, lastError: "the peer listener is on loopback" } },
   candidates: [],
 };
 renderPairing();
 const cannot = panel() + el("pairing-note").serialize();
-if (!cannot.includes("拒絕")) {
-  failures.push("a node that cannot announce was not described as one the node will refuse");
+if (!cannot.includes("不會出現在對方的候選清單")) {
+  failures.push("a node that announces nothing did not say it will be in nobody's candidate list");
 }
 if (cannot.includes("開啟後，同網段的人都會知道")) {
-  failures.push("the tradeoff of opening was promised on a node that cannot open");
+  failures.push("the broadcast tradeoff was promised on a node that broadcasts nothing");
 }
-if (!el("btn-pairing-on").disabled) {
-  failures.push("the open button is live on a node the node itself would refuse");
+if (el("btn-pairing-on").disabled) {
+  failures.push("the open button is dead on a node whose only way to pair is the window it opens");
 }
 if (!cannot.includes("the peer listener is on loopback")) {
   failures.push("the node's own reason was dropped");
