@@ -293,10 +293,10 @@ platforms, both of which `install` prints rather than leaving you to discover:
   prints, which is how you find out why it will not start. The cost of that
   choice is that the process Task Scheduler watches is the launcher, not the
   node. A node that stops stays stopped until your next logon, or until you
-  press **重新啟動節點** in the app.
+  press **Restart the node** in the app.
 
 The desktop app offers the same actions as buttons, so nobody has to know what
-launchd is. Its **重新啟動節點** button is also the answer for a node that no
+launchd is. Its **Restart the node** button is also the answer for a node that no
 service manager holds — one started from a terminal, or by an installer that
 predates this registration: there the app stops the node and starts the one
 beside it itself, which is the only way a setting saved in the window can take
@@ -437,8 +437,8 @@ If the two machines are on a direct cable in a range that is not private —
 Without it each node refuses to list the other, because it will not deliver to
 an address outside the ranges it trusts.
 
-**2. Find each other.** Open the desktop app on both, go to the 區網 tab, open
-the 配對模式 drawer and press 與另一台機器配對 on one. It appears on the other's
+**2. Find each other.** Open the desktop app on both, go to the Network tab,
+open the Pairing mode drawer and press **Pair with another machine** on one. It appears on the other's
 candidate list within a few seconds. From a terminal that is `bin/ah pairing on`
 and `bin/ah candidates`. A node started without `--discover` announces nothing
 and still opens a window; the drawer then shows the address the other machine
@@ -492,12 +492,14 @@ over there too, that machine will neither accept this one's messages nor send it
 a heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
 half-done looks like.
 
-**In the desktop app**, the same exchange runs from the 區網 tab's 配對模式
-drawer: press 與另一台機器配對 on the machine that decides, then on the other one
-either press 送出配對請求 on its row in the candidate list or type the address it
-shows into 對方畫面顯示的位址. Both windows then list the request with the same two
-fingerprints in the same order, and each owner presses 指紋一致，核准 or
-指紋一致，確認 once they have read both screens group for group — or 拒絕, which
+**In the desktop app**, the same exchange runs from the Network tab's Pairing
+mode drawer: press **Pair with another machine** on the machine that decides,
+then on the other one either press **Send a pairing request** on its row in the
+candidate list or type the address it shows into **Address shown on the other
+screen**. Both windows then list the request with the same two fingerprints in
+the same order, and each owner presses **Fingerprints match, approve** or
+**Fingerprints match, confirm** once they have read both screens group for
+group — or **Reject**, which
 travels to the other machine like the CLI's does. No key is carried by hand, and
 a node started without `-discover` still opens a window: it cannot be found on the
 network, and the drawer shows the address the other machine has to be given
@@ -519,10 +521,10 @@ bin/ah pair <their-node-id> <their-name> <their-platform> <their-public-key> <th
 With `--discover` running, each node learns the other's address from the
 announcements; no `PUT /v1/nodes/{id}/address` is needed.
 
-**4. Publish a session.** Pairing on its own shares nothing. In the app's 本機
-tab, tick the sessions and press 設定公開對象…, then choose who and tick 允許對方
-排入訊息 and 允許這個 session 主動送出訊息. Doing many at once is why the app
-exists.
+**4. Publish a session.** Pairing on its own shares nothing. In the app's
+Local sessions tab, tick the sessions and press **Set audience…**, then choose
+who and tick **Let them queue messages** and **Let this session send messages
+out**. Doing many at once is why the app exists.
 
 ```sh
 bin/ah list                                            # your own sessions
@@ -548,7 +550,7 @@ A remote session is addressed `<node-id>/<session-id>`; `ah peers` prints that
 string in its SEND TO column, because `ah list` shows only your own sessions and
 nothing else showed the qualified one.
 
-Reading has a button: 收件匣 on any session row in the app, or
+Reading has a button: **Inbox** on any session row in the app, or
 
 ```sh
 bin/ah inbox <session-id>
@@ -556,7 +558,7 @@ bin/ah inbox <session-id>
 
 **6. Give an agent the tools.** That is the next section. By default a message
 waits in the inbox until something asks for it, whether that is you pressing
-收件匣 or an agent calling `agent_inbox`. Making it arrive on its own is
+**Inbox** or an agent calling `agent_inbox`. Making it arrive on its own is
 [Waking an agent](#waking-an-agent), and it is off until two switches are
 opened.
 
@@ -584,9 +586,10 @@ In `.mcp.json`, for a Claude Code session:
 }
 ```
 
-The desktop app writes that snippet for you: each session row has an
-「MCP 設定」 button that copies a `.mcp.json` naming this machine's
-`agenthub-mcp` and that row's session.
+The desktop app can write that snippet, but there is no button for it any
+more: the per-row **MCP configuration** entry was removed once `ah` covered
+everything the four tools do, so the file is written by hand from the template
+above.
 
 The four tools are `agent_list`, `agent_status`, `agent_inbox` and `agent_send`;
 their contract is [mcp-tools.json](docs/mcp-tools.json). Reading is enough on its
