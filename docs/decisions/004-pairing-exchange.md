@@ -43,12 +43,27 @@ where it was.
    comparison optional in practice. There is no auto-accept and no skip, and
    nothing here is offered as a convenience toggle.
 
-   Both screens show **both** fingerprints, labelled, in the same order: the
-   other machine's and this machine's. Each is derived locally, with
-   `identity.Fingerprint`, from the key that side actually received. A
-   fingerprint that arrived in a descriptor is never displayed. If it were, a
-   substituted key could travel with the fingerprint of the key it replaced, and
-   the only check in the system would pass.
+   Both screens show **both** fingerprints, in one canonical order: the machine
+   that asked, then the machine it asked. Requester-first on both machines,
+   rather than own-first on each, because own-first reverses the order between
+   the two screens — two people reading down two lists then compare line one
+   against line two. Each line carries the display name that machine calls
+   itself and whether it is this machine or the other one, and the notice
+   describes exactly what is printed. A notice that does not match the screen is
+   worse than none: people stop reading it and start guessing.
+
+   Each value is derived locally, with `identity.Fingerprint`, from the key that
+   side actually received. A fingerprint that arrived in a descriptor is never
+   displayed. If it were, a substituted key could travel with the fingerprint of
+   the key it replaced, and the only check in the system would pass. Tests feed
+   a descriptor whose fingerprint field lies, on both the incoming and the
+   answer path, and assert the locally derived value is what is shown and
+   stored.
+
+   There is no local name for the peer. An earlier `--name` flag stored a
+   locally chosen name as the peer's display name, so the two screens showed
+   different names while the owner was being asked to check that the two screens
+   agree.
 
 3. **The TLS key must equal the descriptor key.** There is no CA here, so A's
    first connection cannot pin anything — it *records* the key that terminated
@@ -76,7 +91,26 @@ where it was.
    which already answers callers that are not in the trust store. A peer that
    could reach `approve` would be approving itself.
 
-6. **Pairing writes identity and nothing else.** No `session_audience` row is
+6. **A refusal travels, and takes its own trust row back.** The refusing side
+   pushes a signed, directed `pair.reject` to the other machine's peer listener
+   (`POST /v1/pair/requests/{id}/reject`), pinned to the key the exchange
+   recorded, verified with `VerifyDirected` plus request-id equality. The
+   receiver marks the request rejected; if it had already approved, it revokes
+   the trust row that approval wrote.
+
+   Nothing used to be sent from the asking side, on the argument that the other
+   machine would expire on its own. Two-machine testing showed what that costs:
+   the other owner had already approved, so refusing because the fingerprints
+   did *not* match left that machine trusting exactly the key its owner had been
+   told to refuse, with nothing on either screen saying so.
+
+   Revocation is guarded twice, because it is destructive: the request row must
+   record that this request is what wrote the trust (`trustedByRequest`), and
+   the key stored under that node id must still be the key the request carried.
+   A node paired months ago by some other route is not revoked by a refusal that
+   happens to name it.
+
+7. **Pairing writes identity and nothing else.** No `session_audience` row is
    created. Two machines that have paired can see nothing of each other until
    somebody sets an audience per session.
 
@@ -101,3 +135,57 @@ where it was.
   the existing peer rate limiter. The bound is not about memory: it is about the
   owner's list of fingerprints to compare not becoming a page of noise with the
   real machine buried in it.
+
+  A bound keyed on the node id bounds nothing, because the node id is chosen by
+  whoever sends the request: sixteen fresh ones filled the incoming list and the
+  owner's real machine was answered `PAIRING_BUSY` during the very window they
+  had opened to pair it. So the incoming list is bounded **per source address**
+  (three), which is the one thing in an incoming request its sender cannot
+  invent freely, and a full incoming list **displaces the oldest row still
+  waiting** rather than refusing the newcomer. The displaced row says
+  `displaced` rather than `expired`: the owner did not run out of time,
+  something filled the list. Outgoing requests are never displaced — sixteen of
+  them means the owner asked for sixteen, and silently cancelling one would be
+  this node choosing which of their pairings to abandon.
+
+- The window is a node-level state and does not need `-discover`. The window is
+  consent; announcing over mDNS is discovery's half, and requiring the flag to
+  open a window made this exchange unusable in exactly the case it exists for —
+  two machines that cannot hear each other's announcements. A node that cannot
+  announce opens the window anyway and says so in the same answer, with the
+  address the other machine has to be given. `GET /v1/pairing/candidates` still
+  answers `409 DISCOVERY_DISABLED`, because a candidate list really does need
+  the network.
+
+- Reading the list polls every pending outgoing row **concurrently**, with a
+  three-second timeout each. The dialer's own ten seconds is right for
+  delivering a message and wrong here: this runs while an owner waits at a
+  prompt, and serially a handful of machines that had gone away was minutes of
+  silence.
+
+- `ah pair pending` shows only what still needs somebody to do something;
+  `--all` adds the rows that finished, which are kept for ten minutes. A list
+  where the one row awaiting a decision sat under four decided ones is how an
+  owner misses their own pairing.
+
+## Residual gaps
+
+- **An approval this side gave cannot be expired by this side.** After `ah pair
+  approve`, the machine that was asked has written its trust row and has no way
+  to learn whether the other owner ever confirms: the requester polls, and a
+  confirmation is a local act that sends nothing. A refusal is pushed and does
+  revoke; silence is not. The row therefore stays `approved`, and its
+  `nextStep` says so in words with a remedy — "wait for them to confirm; if they
+  never do, undo it with `ah revoke <node-id>`" — in the answer to `approve`
+  itself and in `ah pair pending --all`. Closing this properly needs a signed
+  `pair.confirm` travelling back, or an expiry the approver can apply without
+  guessing; both are more protocol than this issue should add, and either would
+  have to distinguish "never confirmed" from "confirmed and the message was
+  lost", which silence cannot.
+
+- **A refusal that cannot be delivered is local only.** If the other machine is
+  unreachable when `ah pair reject` runs, the refusal stands here and the answer
+  says the other machine could not be told, naming the command its owner should
+  run. There is no retry queue: this node has just decided not to trust that
+  machine, and keeping a job that dials it would be the wrong thing to hold on
+  to.

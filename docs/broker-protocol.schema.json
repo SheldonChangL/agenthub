@@ -386,7 +386,8 @@
           "enum": [
             "fingerprint_mismatch",
             "declined",
-            "expired"
+            "expired",
+            "displaced"
           ]
         }
       },
