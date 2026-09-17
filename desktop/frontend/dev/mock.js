@@ -39,12 +39,35 @@ const peers = [
   { nodeId: "node_c30d8e2f4a6b19d571fa", displayName: "win-bench", online: false, sessions: [] },
 ];
 let pairingOpen = true;
+// The preview node announces and has a LAN address, which is the finished
+// state. What a fresh install is actually in is the opposite one — no
+// -allow-lan, a peer listener on loopback, and therefore NO peerAddress key at
+// all in the answer — and it is reachable here with `?pair=loopback`, or
+// `?pair=problem` for a node that reports the trouble itself. Those two are the
+// shapes the panel got wrong while nobody was looking at them.
+const pairShape = new URLSearchParams(globalThis.location?.search ?? "").get("pair") ?? "";
+const PAIR_ADDRESS = {
+  // A default node answers with no peerAddress rather than with 127.0.0.1: an
+  // address the other machine cannot use is not an answer to "what do I type".
+  loopback: { announceable: 0, address: {} },
+  problem: {
+    announceable: 0,
+    address: {
+      peerAddress: "127.0.0.1:7463",
+      peerAddressReachable: false,
+      peerAddressProblem: "the peer listener is bound to 127.0.0.1, which no other machine can reach",
+    },
+  },
+}[pairShape] ?? {
+  announceable: 1,
+  address: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true },
+};
 const pairing = () => ({
   availability: "on",
   windowAvailable: true,
   state: { open: pairingOpen, remainingSeconds: 252, displayName: "sheldon-mbp", nameIsChosen: false,
-    peerAddress: "192.168.50.10:7463",
-    announcing: { announceableAddresses: 1, lastAnnouncedAt: ago(3) } },
+    ...PAIR_ADDRESS.address,
+    announcing: { announceableAddresses: PAIR_ADDRESS.announceable, lastAnnouncedAt: ago(3) } },
   candidates: pairingOpen ? [
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
     { nodeId: "node_a91c3e7b2d5f8046c0e1", address: "192.168.50.22:7463", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF 0011 2233", firstSeen: ago(120), lastSeen: ago(5), contested: true, duplicate: true },
@@ -104,6 +127,19 @@ let pairRequests = [
     ],
     address: "192.168.50.44:7463", state: "expired", reason: "expired", expiresAt: ago(400),
     nextStep: "It ran out (expired). Nothing was trusted; start again if you still want to pair.",
+  },
+  // A refusal the node blamed on the fingerprints, which is the one refusal
+  // that says something about the network rather than about a decision.
+  {
+    id: "pair_2d6f80b4c95e1a37", direction: "outgoing", nodeId: "node_7b2f4d8e60a1c395f2d8",
+    displayName: "lab-box", platform: "linux/arm64",
+    fingerprint: "C3D1 88A0 4B72 EF56 1094 7D3B 6CA2 05F8", localFingerprint: LOCAL_FP,
+    fingerprints: [
+      fp("requester", LOCAL_NAME, "this machine", LOCAL_FP),
+      fp("receiver", "lab-box", "the other machine", "C3D1 88A0 4B72 EF56 1094 7D3B 6CA2 05F8"),
+    ],
+    address: "192.168.50.66:7463", state: "rejected", reason: "fingerprint_mismatch", expiresAt: ago(300),
+    nextStep: "lab-box rejected it: the fingerprints did not match. Nothing was trusted.",
   },
 ];
 const settle = (id, state, reason = "") => {

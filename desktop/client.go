@@ -165,6 +165,19 @@ type PairingState struct {
 	// needs this string when the other machine's list stays empty. Empty on a
 	// node with no peer listener address to give.
 	PeerAddress string `json:"peerAddress,omitempty"`
+	// PeerAddressReachable and PeerAddressProblem are the node's own verdict on
+	// that address: whether another machine could reach it at all, and what is
+	// wrong when it could not.
+	//
+	// A pointer, because absent and false are different answers. A node older
+	// than these fields says nothing about reachability, and writing false for
+	// it would put a claim the node never made behind a remedy; the window then
+	// falls back to judging the string itself. Nil is "the node did not say".
+	PeerAddressReachable *bool `json:"peerAddressReachable,omitempty"`
+	// PeerAddressProblem is the node's sentence about why that address is no
+	// use to the other machine. Carried rather than written here so the window
+	// and `ah pair` cannot drift apart about the same listener.
+	PeerAddressProblem string `json:"peerAddressProblem,omitempty"`
 }
 
 // PairFingerprint is one machine's fingerprint, labelled as the node labelled
