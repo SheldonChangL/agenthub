@@ -53,16 +53,35 @@ else to install this. Those are Steps 9 and 10, tracked from
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
 | Automated pairing exchange | Planned; the `pair.*` envelopes are defined and schema-tested with no producer or consumer | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63) |
-| Distribution | Tag-triggered release workflow, unsigned archives; no installer | issue [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
+| Distribution | Tag-triggered release workflow: desktop app for macOS, Windows and Linux plus six command line archives, all unsigned | issues [#64](https://github.com/SheldonChangL/agenthub/issues/64), [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
 
 ## Install a release
 
-A release is six archives — `linux`, `darwin` and `windows`, each `amd64` and
-`arm64` — holding `agenthub-node`, `ah` and `agenthub-mcp`. Unpack the one for
-your platform and put the binaries somewhere on your PATH. There is no
-installer, and nothing here needs administrator rights.
+### The desktop app
+
+This is the download for most people. One file, and it brings
+`agenthub-node`, `ah` and `agenthub-mcp` with it: the app runs them from beside
+its own executable, so there is nothing else to fetch and nothing to put on
+your PATH.
+
+| Platform | File | What to do with it |
+|---|---|---|
+| macOS, Apple silicon and Intel | `agenthub-desktop_<tag>_darwin_universal.dmg` | Open it and drag AgentHub to Applications. On the **first** launch, right-click the app → **Open** → **Open**; a plain double-click only offers to move it to the Bin, because the app is not notarized. |
+| Windows 10/11, x64 | `agenthub-desktop_<tag>_windows_amd64-installer.exe` | Run it. It installs the app, registers the background node with Task Scheduler and adds a Start menu entry. |
+| Windows, without an installer | `agenthub-desktop_<tag>_windows_amd64.zip` | Unpack it and run `agenthub-desktop.exe`. Keep the other three binaries in the same folder. |
+| Linux, x64 | `agenthub-desktop_<tag>_linux_amd64.tar.gz` | Unpack it and run `./agenthub-desktop`. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1 — `README.txt` inside names the package for Debian, Fedora and Arch. |
+
+There is no arm64 desktop build for Windows or Linux; macOS is a universal
+binary, so one file covers both Apple architectures.
+
+### The command line tools on their own
+
+The same release also holds six archives — `linux`, `darwin` and `windows`,
+each `amd64` and `arm64` — with `agenthub-node`, `ah` and `agenthub-mcp` and no
+app. Unpack the one for your platform and put the binaries somewhere on your
+PATH. Nothing here needs administrator rights.
 
 ### The downloads are not signed, and your machine will say so
 
@@ -73,8 +92,13 @@ for one. The consequence is that you will be asked to override a warning:
 | Platform | What you see | How to proceed |
 |---|---|---|
 | Windows | SmartScreen: "Windows protected your PC", unknown publisher | More info → Run anyway |
-| macOS | Gatekeeper refuses to open the binary | System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine <file>` |
+| macOS, the `.app` | Gatekeeper will not open it, and offers to move it to the Bin | Right-click the app → **Open** → **Open**, once. Or `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app` |
+| macOS, a loose binary | Gatekeeper refuses to open it | System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine <file>` |
 | Linux | Nothing; there is no equivalent gate | `chmod +x` |
+
+The `.app` is ad-hoc signed — enough to launch on Apple silicon, where an app
+whose signature does not verify is killed outright, and not enough to satisfy
+Gatekeeper, which wants a Developer ID and notarization.
 
 Take the warning seriously rather than clicking through it by reflex. It is
 telling you the truth: nothing vouches for this download. Which is why the

@@ -7,7 +7,9 @@
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "postBuildHooks": {
-    "*/*": "../bundle-binaries.sh ${platform} ${bin}"
+    "darwin/*": "../bundle-binaries.sh ${platform} ${bin}",
+    "linux/*": "../bundle-binaries.sh ${platform} ${bin}",
+    "windows/*": "bash ../bundle-binaries.sh ${platform} ${bin}"
   },
   "author": {
     "name": "SheldonChang",

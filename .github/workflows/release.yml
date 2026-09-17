@@ -197,9 +197,273 @@ jobs:
           # are per-run, and this action refuses an existing one by default.
           overwrite: true
 
+  # The desktop app is the product a non-developer downloads, and until #64 it
+  # was the one thing a release did not contain: the build job above cross-
+  # compiles three command line binaries from one Linux runner, which no amount
+  # of GOOS can turn into a .app, an NSIS installer or a GTK/WebKit binary.
+  # Wails links against each platform's own UI toolkit through cgo, so this job
+  # is a matrix of real runners rather than a matrix of environment variables.
+  #
+  # Only amd64 for Windows and Linux: GitHub has no arm64 runner for either on
+  # the free plan, and a cross-compiled cgo build is not a thing that happens by
+  # accident. macOS is universal, so one download serves both Apple architectures.
+  desktop:
+    name: desktop ${{ matrix.platform }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin/universal
+            runner: macos-latest
+            slug: darwin_universal
+          - platform: windows/amd64
+            runner: windows-latest
+            slug: windows_amd64
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            slug: linux_amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # desktop/go.mod, not go.mod: this job compiles the desktop module, and
+      # its toolchain floor is the one that has to be met. The bundled command
+      # line binaries come from the root module, which declares the same floor.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+
+      - name: resolve the tag being built
+        id: version
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${DISPATCH_TAG:-${GITHUB_REF_NAME}}"
+          # Same grammar as the build job, and for the same reasons: the value
+          # reaches -ldflags, a file name and a volume name from here.
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "refusing to build \"$tag\": want vMAJOR.MINOR.PATCH with an optional -suffix"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "building $tag"
+
+      # Wails on Linux binds GTK and WebKit through cgo. wails v2.15 selects
+      # webkit2gtk-4.0 unless the webkit2_41 build tag is set, and ubuntu-latest
+      # only ships the 4.1 development package — so the tag below and this
+      # package list are one decision, not two.
+      - name: wails build dependencies (linux)
+        if: matrix.runner == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev
+
+      # Pinned to whatever desktop/go.mod requires, read from the module rather
+      # than typed here: a CLI newer than the library it drives generates
+      # bindings and templates the library does not expect, and @latest would
+      # make every release a different build of the same tag.
+      - name: install the wails CLI pinned to the module
+        working-directory: desktop
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
+          echo "wails CLI ${wails_version}"
+          go install "github.com/wailsapp/wails/v2/cmd/wails@${wails_version}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # AGENTHUB_RELEASE is what actually stamps the tag: bundle-binaries.sh
+      # reads it and rebuilds ah, agenthub-node and agenthub-mcp with the same
+      # -X the standalone archives get, so the copies inside the bundle answer
+      # `--version` with the tag rather than a revision.
+      #
+      # -ldflags passes the same -X to the desktop binary itself. It is a no-op
+      # today — the desktop module does not link internal/buildinfo, and the Go
+      # linker ignores an -X naming a symbol that is not there — and it is here
+      # so that the day the app reports a version, the release already stamps it.
+      #
+      # -nsis on Windows: the installer is the point of that platform, and the
+      # bundling hook has to have run first, because project.nsi packages
+      # ..\..\bin\ah.exe from where the hook put it.
+      - name: wails build
+        working-directory: desktop
+        env:
+          AGENTHUB_RELEASE: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          ldflags="-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}"
+          case "$PLATFORM" in
+          darwin/*)
+            wails build -clean -platform "$PLATFORM" -ldflags "$ldflags"
+            ;;
+          windows/*)
+            # -o names the executable agenthub-desktop.exe, which is what
+            # project.nsi installs as ${PRODUCT_EXECUTABLE} and what its
+            # taskkill lines name; the wails.json outputfilename is "desktop".
+            wails build -clean -platform "$PLATFORM" -ldflags "$ldflags" \
+              -o agenthub-desktop.exe -nsis
+            ;;
+          linux/*)
+            wails build -clean -platform "$PLATFORM" -ldflags "$ldflags" \
+              -tags webkit2_41 -o agenthub-desktop
+            ;;
+          esac
+          ls -l build/bin
+
+      # The hook is the only thing standing between a released bundle and "ah
+      # was not found" (bundle-binaries.sh says so at length). It runs inside
+      # wails, where a failure is one line in a long log, so this asserts the
+      # result instead of trusting it.
+      - name: the bundled command line binaries are there
+        working-directory: desktop
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          case "$PLATFORM" in
+          darwin/*) beside=build/bin/agenthub-desktop.app/Contents/MacOS; suffix="" ;;
+          windows/*) beside=build/bin; suffix=".exe" ;;
+          *) beside=build/bin; suffix="" ;;
+          esac
+          for binary in ah agenthub-node agenthub-mcp; do
+            if [ ! -f "${beside}/${binary}${suffix}" ]; then
+              echo "the post-build hook did not bundle ${binary}${suffix} into ${beside}"
+              ls -l "$beside"
+              exit 1
+            fi
+          done
+          echo "beside=$beside" >> "$GITHUB_ENV"
+
+      # Only where the bundle is native. The stamping is one env var shared by
+      # all three platforms, so it holds everywhere or nowhere — same argument
+      # the build job makes for checking only linux/amd64.
+      - name: the bundled ah reports the tag
+        if: matrix.runner != 'windows-latest'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          reported=$("desktop/${beside}/ah" --version)
+          echo "$reported"
+          case "$reported" in
+            "ah ${TAG} "*) ;;
+            *) echo "the bundled ah --version does not lead with ${TAG}"; exit 1 ;;
+          esac
+
+      # hdiutil rather than a third-party action: it is in the OS, it is what
+      # Apple documents, and a .dmg is the only macOS download a stranger knows
+      # what to do with. The Applications symlink is what makes the window a
+      # drag-to-install rather than a folder with an app loose in it.
+      #
+      # Ad-hoc signed only, by bundle-binaries.sh — there is no certificate
+      # (#66). codesign --verify is still worth running: on Apple silicon a
+      # bundle whose seal is broken is killed at launch, not warned about, and
+      # that is exactly what copying binaries into a signed bundle risks.
+      - name: package the .dmg (macos)
+        if: matrix.runner == 'macos-latest'
+        working-directory: desktop
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          app=build/bin/agenthub-desktop.app
+          codesign --verify --deep --strict --verbose=2 "$app"
+          mkdir -p ../dist dmg-root
+          cp -R "$app" dmg-root/
+          ln -s /Applications dmg-root/Applications
+          hdiutil create -volname "AgentHub" -srcfolder dmg-root \
+            -fs HFS+ -format UDZO -ov \
+            "../dist/agenthub-desktop_${TAG}_${SLUG}.dmg"
+
+      # Two files, because they answer different questions. The installer is
+      # for someone who wants the app installed, the node registered and a
+      # Start menu entry; the zip is for someone who wants to look at what they
+      # downloaded, or to run it without an installer touching their machine.
+      - name: package the installer and the zip (windows)
+        if: matrix.runner == 'windows-latest'
+        working-directory: desktop
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          mkdir -p ../dist
+          # wails names it <project>-<arch>-installer.exe; matched by glob
+          # rather than spelled out, because that name is wails' to change.
+          installer=$(ls build/bin/*installer.exe)
+          cp "$installer" "../dist/agenthub-desktop_${TAG}_${SLUG}-installer.exe"
+          staging="agenthub-desktop_${TAG}_${SLUG}"
+          mkdir -p "build/zip/${staging}"
+          cp build/bin/agenthub-desktop.exe build/bin/ah.exe \
+            build/bin/agenthub-node.exe build/bin/agenthub-mcp.exe \
+            "build/zip/${staging}/"
+          cp ../README.md "build/zip/${staging}/"
+          (cd build/zip && 7z a -tzip -bso0 "../../../dist/${staging}.zip" "$staging")
+
+      # No Linux desktop packaging format is produced: .deb and .AppImage each
+      # want a maintainer who tests them, and a tarball is honest about being a
+      # directory you unpack. The README.txt is not decoration — the binary is
+      # dynamically linked against the system WebKit, so the one thing a
+      # downloader has to know is which package to install when it will not
+      # start.
+      - name: package the tarball (linux)
+        if: matrix.runner == 'ubuntu-latest'
+        working-directory: desktop
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SLUG: ${{ matrix.slug }}
+        run: |
+          mkdir -p ../dist
+          staging="agenthub-desktop_${TAG}_${SLUG}"
+          mkdir -p "build/tar/${staging}"
+          cp build/bin/agenthub-desktop build/bin/ah \
+            build/bin/agenthub-node build/bin/agenthub-mcp \
+            "build/tar/${staging}/"
+          cp ../README.md "build/tar/${staging}/"
+          cat > "build/tar/${staging}/README.txt" <<EOF
+          AgentHub desktop ${TAG} — linux/amd64
+
+          Unpack anywhere and run ./agenthub-desktop. Keep ah, agenthub-node and
+          agenthub-mcp in the same directory: the app resolves them beside its own
+          executable and deliberately does not fall back to PATH.
+
+          This build links the system WebKit at run time, so it needs the GTK and
+          WebKit2GTK 4.1 runtime libraries installed:
+
+            Debian / Ubuntu:  sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
+            Fedora:           sudo dnf install gtk3 webkit2gtk4.1
+            Arch:             sudo pacman -S gtk3 webkit2gtk-4.1
+
+          A missing one shows up as the app exiting immediately with an error
+          naming libwebkit2gtk-4.1.so.0.
+
+          These files are not signed. Check them against SHA256SUMS on the
+          release page before you run them.
+          EOF
+          tar -C build/tar -czf "../dist/${staging}.tar.gz" "$staging"
+
+      - name: what was packaged
+        run: ls -l dist
+
+      # Uploaded on a dispatch as well as on a tag, which is the point of item 7
+      # of #64: the artifacts of a rehearsal run are how anyone checks that the
+      # .dmg mounts and the installer installs before a tag exists.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-desktop-${{ matrix.slug }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
   publish:
     name: publish the release
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     # This job runs on a rehearsal too, and that is the point: gathering six
     # uploads, folding their checksum files into one list, and assembling the
@@ -235,9 +499,37 @@ jobs:
           # string. The directory is fresh per run today, so this is about not
           # depending on that.
           shopt -s nullglob
-          archives=(agenthub_*.tar.gz agenthub_*.zip)
+          # agenthub_* is the command line archives, agenthub-desktop_* the app.
+          # The two prefixes differ by the hyphen, so neither glob can pick up
+          # the other's files.
+          archives=(
+            agenthub_*.tar.gz agenthub_*.zip
+            agenthub-desktop_*.dmg agenthub-desktop_*.zip
+            agenthub-desktop_*.tar.gz agenthub-desktop_*-installer.exe
+          )
           if [ ${#archives[@]} -eq 0 ]; then
             echo "no archives were downloaded; nothing to publish"; exit 1
+          fi
+          # Every platform of both products, or the release is half a release
+          # and nobody notices until someone looks for their download. Nine:
+          # six command line archives, three desktop platforms (the Windows
+          # installer and zip are one platform, so ten files).
+          # The pattern is expanded inside the function, not by the for-list:
+          # nullglob is on, so an unmatched pattern in a word list vanishes
+          # instead of arriving as the string that was not matched.
+          missing=()
+          for expected in \
+            'agenthub-desktop_*_darwin_universal.dmg' \
+            'agenthub-desktop_*_windows_amd64-installer.exe' \
+            'agenthub-desktop_*_windows_amd64.zip' \
+            'agenthub-desktop_*_linux_amd64.tar.gz'; do
+            found=($expected)
+            [ ${#found[@]} -gt 0 ] || missing+=("$expected")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "a desktop artifact is missing: ${missing[*]}"
+            ls -l
+            exit 1
           fi
           sha256sum "${archives[@]}" > SHA256SUMS
           cat SHA256SUMS
@@ -250,7 +542,24 @@ jobs:
           {
             echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT})."
             echo
-            echo "Every binary reports this tag: \`ah --version\` says \`ah ${TAG} …\`, the node logs it at startup, and \`agenthub-mcp\` sends it at initialize."
+            # The desktop app first, because it is what most people came for
+            # and the command line archives are the thing you reach for after.
+            echo "## The desktop app"
+            echo
+            echo "One download, and it brings \`agenthub-node\`, \`ah\` and \`agenthub-mcp\` with it — the app runs them from beside its own executable, so there is nothing else to install and nothing to put on your PATH."
+            echo
+            echo "| Platform | Download | What to do with it |"
+            echo "|---|---|---|"
+            echo "| macOS (Apple silicon and Intel) | \`agenthub-desktop_${TAG}_darwin_universal.dmg\` | Open it, drag AgentHub to Applications. First launch: right-click the app → **Open** (see below). |"
+            echo "| Windows 10/11 (x64) | \`agenthub-desktop_${TAG}_windows_amd64-installer.exe\` | Run it. It installs the app, registers the background node and adds a Start menu entry. |"
+            echo "| Windows, no installer | \`agenthub-desktop_${TAG}_windows_amd64.zip\` | Unpack it and run \`agenthub-desktop.exe\`; keep the other three files beside it. |"
+            echo "| Linux (x64) | \`agenthub-desktop_${TAG}_linux_amd64.tar.gz\` | Unpack it and run \`./agenthub-desktop\`. Needs GTK 3 and WebKit2GTK 4.1 — the README.txt inside names the package. |"
+            echo
+            echo "## Command line only"
+            echo
+            echo "\`agenthub_${TAG}_<os>_<arch>.{tar.gz,zip}\` holds the same three binaries without the app, for six platforms. Unpack one and put the binaries on your PATH."
+            echo
+            echo "Every binary reports this tag: \`ah --version\` says \`ah ${TAG} …\`, the node logs it at startup, and \`agenthub-mcp\` sends it at initialize. That includes the copies inside the desktop bundle."
             echo
             echo "Verify a download against \`SHA256SUMS\`:"
             echo
@@ -268,7 +577,11 @@ jobs:
             # than letting the first warning be a surprise. It sits right after
             # the hashes because the checksum is what stands in for a
             # signature here, and a reader should meet both at once.
-            echo "These binaries are **not code-signed**. Windows SmartScreen will call the publisher unknown, and macOS Gatekeeper will refuse to open them until you allow it in System Settings → Privacy & Security. That is expected. Check the hash above before you override either warning — it is the only evidence you have that the download is what this workflow built."
+            echo "Nothing here is **code-signed or notarized** (issue #66), so every platform will say so before it lets you run anything. That is expected; check the hash above before you override any of it, because it is the only evidence you have that the download is what this workflow built."
+            echo
+            echo "- **macOS.** The app is ad-hoc signed, which is enough to launch but not enough for Gatekeeper. After dragging AgentHub to Applications, right-click it → **Open** → **Open** once; a plain double-click on the first launch only offers to move it to the Bin. Or, from a terminal: \`xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app\`. Loose command line binaries are the same: allow them in System Settings → Privacy & Security, or \`xattr -d com.apple.quarantine <file>\`."
+            echo "- **Windows.** SmartScreen calls the publisher unknown: More info → Run anyway."
+            echo "- **Linux.** No equivalent gate; \`chmod +x\` if the executable bit did not survive."
             echo
             echo "\`agenthub-node\` serves the owner's API on loopback only. Sharing with another machine is the peer listener, with \`-allow-lan\` and \`-peer-listen\`; see the README."
           } > "$notes"
