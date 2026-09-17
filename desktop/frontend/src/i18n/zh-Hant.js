@@ -271,7 +271,7 @@ export const TEXT = {
   "time.daysAgo.other": "{n} 天前",
 
   "audience.cell.allPaired": "所有已配對",
-  "audience.cell.selectedNone": "指定節點（無）",
+  "audience.cell.selectedNone": "指定：無",
   "audience.cell.nodeCount.one": "{n} 個節點",
   "audience.cell.nodeCount.other": "{n} 個節點",
   "audience.cell.none": "不公開",

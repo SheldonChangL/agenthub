@@ -370,6 +370,15 @@ if (!behindVPN.some((repair) => repair.peerListen === "192.168.161.1:7463")) {
 inEnglish(app, failures, "service panel in English", [
   "service-line", "service-pill-text", "service-open", "service-restart", "service-uninstall",
   "node-settings-hint", "node-peerlisten", "node-settings-combination",
+], () => {}, [
+  // The four whose words come from what the node answered, not from
+  // index.html. Drop renderService() or relabelNodeSettings() out of
+  // repaintFromState and these read a placeholder that is grammatical,
+  // translated, and wrong.
+  // (#node-settings-hint is deliberately NOT here: nodeSettings.hint is both
+  // the markup's placeholder and a legitimate derived value, so it cannot tell
+  // the two apart.)
+  "service-line", "service-pill-text", "service-open",
 ]);
 
 if (failures.length > 0) {
