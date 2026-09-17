@@ -16,6 +16,7 @@
 //   node frontend/test/service-recovery.mjs
 
 import { document } from "./dom-shim.mjs";
+import { inEnglish } from "./fixtures/in-english.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -358,6 +359,18 @@ const behindVPN = app.peerListenRepairs(degraded.peerListenProblem, vpnFirst, tr
 if (!behindVPN.some((repair) => repair.peerListen === "192.168.161.1:7463")) {
   failures.push("the only usable address was trimmed away by interfaces listed before it");
 }
+
+// 17. The same panel in English (review of #173). This whole file renders in
+//     Chinese, so nothing here could see what a language switch leaves behind:
+//     the service line, the pill and the button that offers the install were
+//     painted by renderService(), which render() does not call — so switching
+//     put index.html's placeholder keys back on all three, and a machine with
+//     the service installed and running read "Install as a background
+//     service".
+inEnglish(app, failures, "service panel in English", [
+  "service-line", "service-pill-text", "service-open", "service-restart", "service-uninstall",
+  "node-settings-hint", "node-peerlisten", "node-settings-combination",
+]);
 
 if (failures.length > 0) {
   for (const failure of failures) console.error(failure);

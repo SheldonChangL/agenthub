@@ -24,27 +24,39 @@ var unsafeSinks = []string{
 
 func frontendSources(t *testing.T) map[string]string {
 	t.Helper()
-	root := filepath.Join("frontend", "src")
+	return frontendSourcesUnder(t, filepath.Join("frontend", "src"))
+}
+
+// frontendSourcesUnder is frontendSources with the roots named, because not
+// every rule here covers the same files. The shipped window is frontend/src.
+// frontend/dev is the preview page: it is not in the build, so the sink rules
+// do not reach it (it assigns index.html to innerHTML on purpose, and says
+// so) — but the words it puts on screen are read by people, and a preview in
+// the wrong language is what the screenshots in a pull request show.
+func frontendSourcesUnder(t *testing.T, roots ...string) map[string]string {
+	t.Helper()
 	sources := map[string]string{}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || filepath.Ext(path) != ".js" {
+	for _, root := range roots {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || filepath.Ext(path) != ".js" {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sources[path] = string(data)
 			return nil
-		}
-		data, err := os.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			t.Fatalf("walk %s: %v", root, err)
 		}
-		sources[path] = string(data)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
 	}
 	if len(sources) == 0 {
-		t.Fatalf("no frontend sources found under %s", root)
+		t.Fatalf("no frontend sources found under %v", roots)
 	}
 	return sources
 }
@@ -986,7 +998,11 @@ func TestFrontendKeepsItsWordsInOneTable(t *testing.T) {
 	// No sentence at a call site. Comments are exempt — this codebase's are a
 	// deliberate mix and they quote the strings they are about — so they are
 	// stripped before the scan, and what is left is string literals.
-	for path, source := range frontendSources(t) {
+	// frontend/dev too: the preview page is where the screenshots in a pull
+	// request come from, and a mock that answers in Chinese where the node
+	// answers in English shows a window this app cannot actually produce.
+	for path, source := range frontendSourcesUnder(t,
+		filepath.Join("frontend", "src"), filepath.Join("frontend", "dev")) {
 		if strings.Contains(filepath.ToSlash(path), "frontend/src/i18n/") {
 			continue
 		}
@@ -996,6 +1012,23 @@ func TestFrontendKeepsItsWordsInOneTable(t *testing.T) {
 					"every sentence the window renders lives in the tables, or the English half "+
 					"silently stops being a translation of anything", path, number+1, strings.TrimSpace(line))
 			}
+		}
+	}
+
+	// English has two forms for a count and the tables carry both, so a .one
+	// that is a copy of its .other is a plural that was never written — and
+	// nothing else here can see it: the cross-language check compares en
+	// against zh, and zh resolves both forms to the same string by design.
+	for key, value := range en {
+		one, isOne := strings.CutSuffix(key, ".one")
+		if !isOne {
+			continue
+		}
+		other, ok := en[one+".other"]
+		if ok && other == value {
+			t.Errorf("en.js gives %q and %q the same value (%s); English counts one thing "+
+				"differently from many, and a plural that reads the same for both is one "+
+				"nobody wrote", key, one+".other", value)
 		}
 	}
 

@@ -177,6 +177,117 @@ if (el("settings-lang").value !== "zh-Hant") {
   failures.push("the language control does not show the language in use");
 }
 
+/* ---------------- the panels a switch has to catch up ---------------- */
+
+// The Settings tab is the panel the language control itself sits in, and it
+// was the one a switch left behind. renderService() and the node settings form
+// are not called from render(), so paintStatic() put index.html's placeholder
+// keys back on them and nothing wrote over them again: a machine with the
+// service installed and RUNNING read "Reading background service status…" and
+// offered a button saying "Install as a background service".
+//
+// Booted here with a service that is installed and running and a settings form
+// the node answered, because those are the states where a placeholder is not
+// merely stale but false.
+configure({
+  ServiceStatus: async () => ({
+    tool: "/usr/local/bin/ah", supported: true, installed: true, running: true,
+    pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist",
+    logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true,
+    dbPath: "~/agenthub.db", dbPathKnown: true,
+  }),
+  NodeSettings: async () => ({
+    settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: false },
+    saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: false },
+    sources: { peerListen: "remembered", allowLan: "remembered", discover: "remembered", treatAsPrivate: "default", autoWake: "default" },
+    restartRequired: false,
+  }),
+  LocalAddresses: async () => [
+    { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+  ],
+});
+app.state.nodeReachable = true;
+app.setUILanguage("en");
+await app.loadService();
+await app.loadNodeSettings();
+
+const optionText = () => el("node-peerlisten").options.map((option) => option.textContent);
+const han = /\p{Script=Han}/u;
+// A key rendered where a sentence belongs. Both tables are checked, because
+// the failure that started this is English text under a Chinese window as much
+// as the other way round.
+const rawKey = (value) => Object.hasOwn(EN, String(value).trim()) || Object.hasOwn(ZH, String(value).trim());
+
+for (const [lang, table, other] of [["en", EN, ZH], ["zh-Hant", ZH, EN], ["en", EN, ZH]]) {
+  app.setUILanguage(lang);
+  const where = `after switching to ${lang}`;
+
+  const line = el("service-line").textContent;
+  if (line !== table["service.lineRunning"].replace("{pid}", "41872")
+      .replace("{unit}", "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist")) {
+    failures.push(`${where} the service line is not the running one: ${line}`);
+  }
+  if (line === table["service.lineLoading"] || rawKey(line)) {
+    failures.push(`${where} the service line fell back to its placeholder: ${line}`);
+  }
+
+  const pill = el("service-pill-text").textContent;
+  if (pill !== table["service.pillRunning"]) {
+    failures.push(`${where} the service pill says ${pill}, not that the service is running`);
+  }
+
+  // The button whose label lied: its handler always opens the install form, so
+  // on an installed machine the label has to be the reinstall one.
+  const open = el("service-open").textContent;
+  if (open !== table["service.reinstallFlags"]) {
+    failures.push(`${where} the service button reads ${open}, not the reinstall label`);
+  }
+  if (open === table["service.install"] || open === table["service.install2"]) {
+    failures.push(`${where} an installed machine is offered a fresh install: ${open}`);
+  }
+
+  const options = optionText();
+  if (options.length < 2) failures.push(`${where} the address list holds ${options.length} options`);
+  for (const option of options) {
+    if (rawKey(option)) failures.push(`${where} an address option shows a raw key: ${option}`);
+    // Each option is part address, part sentence; the sentence has to be the
+    // language in use and not the one before it.
+    if (lang === "en" && han.test(option)) {
+      failures.push(`${where} an address option is still Chinese: ${option}`);
+    }
+    if (lang === "zh-Hant" && !han.test(option) && !/^\d|^127\./.test(option)) {
+      failures.push(`${where} an address option is still English: ${option}`);
+    }
+  }
+  if (!options.some((option) => option.includes(table["nodeSettings.optionLoopback"].replace("{address}", "127.0.0.1:7463")))) {
+    failures.push(`${where} the loopback placeholder is not in the address list: ${options.join(" | ")}`);
+  }
+  // Nothing in either panel may read as "still loading" once it has loaded.
+  for (const id of ["service-line", "service-pill-text", "service-open", "node-settings-hint"]) {
+    const value = el(id).textContent;
+    if (value === table["service.lineLoading"] || value === table["service.pillLoading"]
+        || value === table["common.loadingShort"] || rawKey(value)) {
+      failures.push(`${where} #${id} reads as loading or as a key: ${value}`);
+    }
+  }
+}
+
+// The MANAGED column is the node's enum, and it used to reach the screen raw.
+app.setUILanguage("en");
+if (app.managementLabel("managed") !== EN["session.managed.managed"]) {
+  failures.push("the managed column did not go through the table in English");
+}
+app.setUILanguage("zh-Hant");
+if (app.managementLabel("unmanaged") !== ZH["session.managed.unmanaged"]) {
+  failures.push("the managed column did not go through the table in Chinese");
+}
+// A value this build has never heard of is the node saying something new, and
+// is shown as it arrived rather than blanked or guessed at.
+if (app.managementLabel("supervised") !== "supervised") {
+  failures.push("an unknown management value was not shown verbatim");
+}
+app.setUILanguage("en");
+
 /* ---------------- both tables say the same things ---------------- */
 
 for (const key of Object.keys(ZH)) if (!Object.hasOwn(EN, key)) failures.push(`en.js has no ${key}`);
