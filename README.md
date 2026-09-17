@@ -162,10 +162,12 @@ go run ./cmd/ah nodes
 # Pairing, without copying a key. On the machine that decides, open a window:
 #   go run ./cmd/ah pairing on
 # then, on the machine that asks:
-go run ./cmd/ah pair request 192.168.1.20:7463 --name "the other laptop"
-# Both machines now show the same two fingerprints. Compare them on both
+go run ./cmd/ah pair request 192.168.1.20:7463
+# Both machines now show the same two fingerprints, in the same order, each
+# labelled with the name that machine calls itself. Compare them on both
 # screens, then say yes on each:
-go run ./cmd/ah pair pending          # on either machine
+go run ./cmd/ah pair pending          # on either machine: what still needs a decision
+go run ./cmd/ah pair pending --all    # ...and what finished in the last ten minutes
 go run ./cmd/ah pair approve <request-id>   # on the machine that was asked
 go run ./cmd/ah pair confirm <request-id>   # on the machine that asked
 go run ./cmd/ah pair reject <request-id>    # refuse, on either
@@ -293,8 +295,10 @@ bin/agenthub-node --db ./data/agenthub.db \
 
 `--peer-listen` is where peers connect back to, and it is the address that gets
 announced, so it has to be an address other machines can reach — not loopback.
-`--allow-lan` is what permits that. `--discover` turns on finding peers, and
-without it the pairing commands below refuse and say so.
+`--allow-lan` is what permits that. `--discover` turns on finding peers on the
+local network; without it `ah candidates` refuses and says so, while the pairing
+window and `ah pair request <host:port>` still work — that exchange needs only an
+address one owner types, which is the case it exists for.
 
 ### What your machine calls itself
 
@@ -420,14 +424,16 @@ by hand. With the pairing window open on the machine that decides, run on the
 machine that asks:
 
 ```sh
-bin/ah pair request 192.168.1.20:7463 --name "the other laptop"
+bin/ah pair request 192.168.1.20:7463
 ```
 
-Both machines now print the same two fingerprints, labelled, in the same order:
-the other machine's and their own. Each is computed on the spot from the key
-that machine actually received — never from a fingerprint that arrived over the
-network. Look at both screens and compare them group for group; comparing the
-first few is what an attacker defeats. Then say yes on each machine:
+Both machines now print the same two fingerprints, in one order — the machine
+that asked first, the machine it asked second — each labelled with the name that
+machine calls itself and with which of the two is the one you are looking at.
+Each value is computed on the spot from the key that machine actually received,
+never from a fingerprint that arrived over the network. Look at both screens and
+compare them group for group; comparing the first few is what an attacker
+defeats. Then say yes on each machine:
 
 ```sh
 bin/ah pair pending                    # on either, to see the request and the fingerprints
@@ -435,10 +441,20 @@ bin/ah pair approve <request-id>       # on the machine that was asked
 bin/ah pair confirm <request-id>       # on the machine that asked
 ```
 
-`bin/ah pair reject <request-id>` refuses, on either machine. A request that
-nobody answers runs out after five minutes, or when the pairing window closes,
-and nothing is written on either side — a refusal and a timeout stay distinct so
-you can tell which happened. See [ADR-004](docs/decisions/004-pairing-exchange.md).
+There is no local name for the peer: a node is called what it calls itself, on
+both screens, which is what makes "the two screens agree" a check worth making.
+
+`bin/ah pair reject <request-id>` refuses, on either machine, and the refusal
+reaches the other one: a machine that had already approved withdraws the trust
+row that approval wrote. A request that nobody answers runs out after five
+minutes, or when the pairing window closes, and nothing is written on either
+side — a refusal and a timeout stay distinct so you can tell which happened.
+
+One gap is left, and it is stated rather than hidden: after approving, the
+machine that was asked cannot tell whether the other owner ever confirms. Its
+`ah pair pending --all` row says so and names the remedy — `ah revoke <node-id>`
+— for a pairing the other side abandoned. See
+[ADR-004](docs/decisions/004-pairing-exchange.md).
 
 **On each side.** Trust is recorded per machine: approving on the mac tells the
 mac who the Ubuntu box is and nothing else, and until the confirmation happens
@@ -849,16 +865,19 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
 | `DELETE` | `/v1/pairing` | Stop advertising now |
 | `GET` | `/v1/pairing/candidates` | Machines advertising right now. Every field is the sender's own claim |
-| `POST` | `/v1/pair/requests` | Ask the machine at `{"address":"host:port","name":"..."}` to pair. The node dials its peer listener, records the key that terminated the TLS connection, checks it against the descriptor that machine signed, and aborts if they differ |
-| `GET` | `/v1/pair/requests` | Every exchange in flight, each with the other machine's fingerprint and this machine's — both derived locally. Reading also polls the far side for an answer |
+| `POST` | `/v1/pair/requests` | Ask the machine at `{"address":"host:port"}` to pair. The node dials its peer listener, records the key that terminated the TLS connection, checks it against the descriptor that machine signed, and aborts if they differ |
+| `GET` | `/v1/pair/requests` | Exchanges still needing a decision — `?all=true` includes finished ones — each with both fingerprints in one order, derived locally. Reading also polls the far side, concurrently and briefly |
 | `POST` | `/v1/pair/requests/{id}/approve` | On the machine that was asked: the fingerprints match. Writes this machine's trust store only |
 | `POST` | `/v1/pair/requests/{id}/confirm` | On the machine that asked: the fingerprints match. Writes this machine's trust store only |
-| `POST` | `/v1/pair/requests/{id}/reject` | Refuse one, on either machine |
+| `POST` | `/v1/pair/requests/{id}/reject` | Refuse one, on either machine. A refusal on the asking machine is pushed to the other as a signed `pair.reject`, which revokes a trust row that request had written |
 
-The four pairing endpoints exist only under `-discover`; without it they answer
+`GET /v1/pairing/candidates` exists only under `-discover`; without it it answers
 `409 DISCOVERY_DISABLED` rather than an empty list, because "nobody is
 advertising" and "this node is not looking" are different answers and only one
-of them means the owner should keep waiting.
+of them means the owner should keep waiting. The window itself (`GET`/`POST`/
+`DELETE /v1/pairing`) does not need it: the window is a node-level state, and its
+answer carries a `notice` saying that nothing is being announced over mDNS and
+which address the other machine has to be given instead.
 
 Advertising also needs somewhere for a peer to connect back to, and that is the
 peer listener's own bound address — so it needs `-allow-lan` *and* a
