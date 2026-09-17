@@ -18,7 +18,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Local HTTP API and `ah` CLI
 - Message inbox, bounded and deduplicated, reachable from paired nodes
 - Per-session audience, working-directory export, and inbound-message policy
-- Manual fingerprint pairing, trust storage, revocation, and desktop management
+- Fingerprint-confirmed pairing: an exchange that carries the keys so nobody copies one by hand, plus the manual form, trust storage, revocation, and desktop management
 - Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
 - Wake-up: a message can start a turn on its own, behind two switches that are
@@ -26,7 +26,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
   starting a turn; the Claude Code channel push has not — see
   [channel-push-not-observed.md](docs/channel-push-not-observed.md)
 - Nothing writes into a provider's session files or process, by design
-- Pairing still needs the peer's public key by hand, though a node can now announce itself for a while and see who else is announcing (Step 9, issues #61 and #62)
+- Desktop pairing is still the manual dialog: the exchange below is on the CLI and the API, and the GUI for it is a follow-up (Step 9, issue #63)
 - No installer: installing means downloading the archive for your platform from
   [Releases](https://github.com/SheldonChangL/agenthub/releases) and putting the
   binaries somewhere on your PATH, or building from source. The archives are
@@ -39,8 +39,8 @@ implemented and have been exercised between two machines
 tools over those pipes — also exercised between two machines, each running its
 own Claude Code. Waking is implemented on top of them: see
 [Waking an agent](#waking-an-agent) for what is verified and what is not. What
-is missing is the automated pairing exchange and everything needed for someone
-else to install this. Those are Steps 9 and 10, tracked from
+is missing is everything needed for someone else to install this, and a desktop
+UI for the pairing exchange. Those are Steps 9 and 10, tracked from
 [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
 ## Roadmap and release gates
@@ -52,7 +52,7 @@ else to install this. Those are Steps 9 and 10, tracked from
 | Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
-| Automated pairing exchange | Planned; the `pair.*` envelopes are defined and schema-tested with no producer or consumer | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63) |
+| Automated pairing exchange | Implemented on the CLI and the API: `pair.request` / `pair.approve` / `pair.reject` are sent and received, with both owners confirming a fingerprint. Desktop UI is a follow-up | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [ADR-004](docs/decisions/004-pairing-exchange.md) |
 | Distribution | Tag-triggered release workflow: desktop app for macOS, Windows and Linux plus six command line archives, all unsigned | issues [#64](https://github.com/SheldonChangL/agenthub/issues/64), [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
@@ -188,6 +188,21 @@ go run ./cmd/ah audience <session-id>
 go run ./cmd/ah audience <session-id> all-paired --cwd
 go run ./cmd/ah audience <session-id> selected node_laptop00000000 node_build000000000 --cwd --messages
 go run ./cmd/ah nodes
+
+# Pairing, without copying a key. On the machine that decides, open a window:
+#   go run ./cmd/ah pairing on
+# then, on the machine that asks:
+go run ./cmd/ah pair request 192.168.1.20:7463
+# Both machines now show the same two fingerprints, in the same order, each
+# labelled with the name that machine calls itself. Compare them on both
+# screens, then say yes on each:
+go run ./cmd/ah pair pending          # on either machine: what still needs a decision
+go run ./cmd/ah pair pending --all    # ...and what finished in the last ten minutes
+go run ./cmd/ah pair approve <request-id>   # on the machine that was asked
+go run ./cmd/ah pair confirm <request-id>   # on the machine that asked
+go run ./cmd/ah pair reject <request-id>    # refuse, on either
+
+# The manual form is still here, for two machines that cannot connect at all:
 go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerprint>
 
 # Pairing alone does not make delivery happen: a peer with no recorded address
@@ -310,8 +325,10 @@ bin/agenthub-node --db ./data/agenthub.db \
 
 `--peer-listen` is where peers connect back to, and it is the address that gets
 announced, so it has to be an address other machines can reach — not loopback.
-`--allow-lan` is what permits that. `--discover` turns on finding peers, and
-without it the pairing commands below refuse and say so.
+`--allow-lan` is what permits that. `--discover` turns on finding peers on the
+local network; without it `ah candidates` refuses and says so, while the pairing
+window and `ah pair request <host:port>` still work — that exchange needs only an
+address one owner types, which is the case it exists for.
 
 ### What your machine calls itself
 
@@ -432,32 +449,59 @@ packet, and the fingerprint shown is the one announced — a hint for finding th
 right machine, never proof of which it is. The panel says so, and flags a row
 whose name or fingerprint collides with another's.
 
-**3. Compare the fingerprints, then pair.** Click the candidate. The dialog
-fills in what was announced and deliberately leaves the public key and
-fingerprint fields empty: the announcement carries no key, and that fingerprint
-field is your statement that you compared one on the other machine's screen.
+**3. Compare the fingerprints, then pair.** From a terminal, no key is carried
+by hand. With the pairing window open on the machine that decides, run on the
+machine that asks:
 
-So compare them. Both apps show the node's own fingerprint; they must match
-group for group, since comparing the first few is what an attacker defeats. Then
-get the peer's public key from its own machine — `bin/ah node` there, or the
-本機公鑰 line in that machine's own pairing dialog, which has a copy button —
-and complete the dialog on each side.
+```sh
+bin/ah pair request 192.168.1.20:7463
+```
 
-**On each side.** Trust is recorded per machine: pairing on the mac tells the
-mac who the Ubuntu box is and nothing else, and until the same is done over
-there, that machine will neither accept this one's messages nor send it a
-heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
+Both machines now print the same two fingerprints, in one order — the machine
+that asked first, the machine it asked second — each labelled with the name that
+machine calls itself and with which of the two is the one you are looking at.
+Each value is computed on the spot from the key that machine actually received,
+never from a fingerprint that arrived over the network. Look at both screens and
+compare them group for group; comparing the first few is what an attacker
+defeats. Then say yes on each machine:
+
+```sh
+bin/ah pair pending                    # on either, to see the request and the fingerprints
+bin/ah pair approve <request-id>       # on the machine that was asked
+bin/ah pair confirm <request-id>       # on the machine that asked
+```
+
+There is no local name for the peer: a node is called what it calls itself, on
+both screens, which is what makes "the two screens agree" a check worth making.
+
+`bin/ah pair reject <request-id>` refuses, on either machine, and the refusal
+reaches the other one: a machine that had already approved withdraws the trust
+row that approval wrote. A request that nobody answers runs out after five
+minutes, or when the pairing window closes, and nothing is written on either
+side — a refusal and a timeout stay distinct so you can tell which happened.
+
+One gap is left, and it is stated rather than hidden: after approving, the
+machine that was asked cannot tell whether the other owner ever confirms. Its
+`ah pair pending --all` row says so and names the remedy — `ah revoke <node-id>`
+— for a pairing the other side abandoned. See
+[ADR-004](docs/decisions/004-pairing-exchange.md).
+
+**On each side.** Trust is recorded per machine: approving on the mac tells the
+mac who the Ubuntu box is and nothing else, and until the confirmation happens
+over there too, that machine will neither accept this one's messages nor send it
+a heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
 half-done looks like.
 
-From a terminal the same thing is:
+**In the desktop app**, pairing is still the manual dialog: click the candidate,
+compare the fingerprints on both apps, and carry the peer's public key across
+with the copy button beside the 本機公鑰 line. The GUI for the exchange above is
+issue #63. The five-argument form is also what still works when the two machines
+cannot open a connection to each other at all:
 
 ```sh
 bin/ah node                                            # on each machine, to read and compare
 bin/ah pair <their-node-id> <their-name> <their-platform> <their-public-key> <their-fingerprint>
 ```
-
-The public key still has to be carried across by hand. Automating that exchange
-while keeping the fingerprint comparison is issue #62.
 
 With `--discover` running, each node learns the other's address from the
 announcements; no `PUT /v1/nodes/{id}/address` is needed.
@@ -851,11 +895,19 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
 | `DELETE` | `/v1/pairing` | Stop advertising now |
 | `GET` | `/v1/pairing/candidates` | Machines advertising right now. Every field is the sender's own claim |
+| `POST` | `/v1/pair/requests` | Ask the machine at `{"address":"host:port"}` to pair. The node dials its peer listener, records the key that terminated the TLS connection, checks it against the descriptor that machine signed, and aborts if they differ |
+| `GET` | `/v1/pair/requests` | Exchanges still needing a decision — `?all=true` includes finished ones — each with both fingerprints in one order, derived locally. Reading also polls the far side, concurrently and briefly |
+| `POST` | `/v1/pair/requests/{id}/approve` | On the machine that was asked: the fingerprints match. Writes this machine's trust store only |
+| `POST` | `/v1/pair/requests/{id}/confirm` | On the machine that asked: the fingerprints match. Writes this machine's trust store only |
+| `POST` | `/v1/pair/requests/{id}/reject` | Refuse one, on either machine. A refusal on the asking machine is pushed to the other as a signed `pair.reject`, which revokes a trust row that request had written |
 
-The four pairing endpoints exist only under `-discover`; without it they answer
+`GET /v1/pairing/candidates` exists only under `-discover`; without it it answers
 `409 DISCOVERY_DISABLED` rather than an empty list, because "nobody is
 advertising" and "this node is not looking" are different answers and only one
-of them means the owner should keep waiting.
+of them means the owner should keep waiting. The window itself (`GET`/`POST`/
+`DELETE /v1/pairing`) does not need it: the window is a node-level state, and its
+answer carries a `notice` saying that nothing is being announced over mDNS and
+which address the other machine has to be given instead.
 
 Advertising also needs somewhere for a peer to connect back to, and that is the
 peer listener's own bound address — so it needs `-allow-lan` *and* a
@@ -896,6 +948,6 @@ The fingerprint shown is the one announced, which is a hint for finding the
 right row and never evidence; what settles identity is comparing the
 fingerprint of the key that arrives in the handshake, on both machines.
 
-The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, and `POST /v1/messages`. It is never the owner's API.
+The peer listener serves a separate mux on `:7463` over TLS: `POST /v1/challenge`, `POST /v1/heartbeat`, `POST /v1/messages`, and — only while a pairing window is open — `POST /v1/pair/requests` and `GET /v1/pair/requests/{id}`. It is never the owner's API: `approve` and `confirm` exist only on the loopback surface, because a peer that could reach them would be approving itself.
 
 See [verification notes](docs/verification.md) for the tested platform matrix and remaining runtime checks.
