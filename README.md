@@ -78,7 +78,8 @@ binary, so one file covers both Apple architectures.
 install the node as a background service, scan for the Claude Code and Codex
 sessions already on this machine, give the node an address other machines can
 reach (it listens on loopback until you say otherwise, and the button that
-changes that says so in its own label), and pair with a second machine. Each
+changes that says so in its own label), and pair with a second machine — the
+same thing **Pair another machine…** does on the Network tab. Each
 step ticks itself off as you finish it, the card goes away once there is
 nothing left in it, and you can bring it back from Settings → Appearance.
 Nothing you have is published by any of this — that stays a separate choice,

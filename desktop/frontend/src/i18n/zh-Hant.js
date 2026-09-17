@@ -114,8 +114,8 @@ export const TEXT = {
   "local.deselect": "取消選取",
 
   "network.pairedNodes": "已配對節點",
-  "network.pairNew": "配對新節點…",
-  "network.pairNewTitle": "配對新節點",
+  "network.pairNew": "配對另一台機器…",
+  "network.pairNewTitle": "手動配對",
   "network.pairingMode": "配對模式",
   "network.pairingLoading": "讀取中…",
   "network.openPairingPanel": "開啟配對面板",

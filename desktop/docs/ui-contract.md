@@ -132,7 +132,12 @@
 - 已配對節點列表：每列 presence 點 + 名稱 + presence 文字 + 平台 · 最後聯繫。空：「尚未配對任何節點。」
 - 配對模式面板：headline、倒數（獨立元素，每秒只改這一個）、detail、開啟／停止按鈕、note（含 `broadcastWarning`，把本機名稱和它的來源說出來）。
 - 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字）。
-- 「配對新節點…」按鈕與說明。
+- **`#btn-pair`「配對另一台機器…」（節點列表的 primary 按鈕）開的是配對抽屜，不是手動表單**（2026-09-17）。
+  它本來開 `pair-modal`——那是兩台機器互相連不到時的退路，要手動填五個欄位、還要自己把 base64 公鑰帶過去。
+  結果這個視圖上最顯眼的按鈕把新手丟進退路，而真正會幫他找到對方機器的交換流程躲在次要連結後面。
+  手動表單仍然只差一步：抽屜頁尾的 `#btn-pair-manual`「手動輸入配對資料…」，那裡本來就有一句話說明什麼時候該用它。
+  （候選列的「改用手動填入…」＝ `prefillPairFrom()` 不變，它本來就是帶著資料進那個表單。）
+  `pair-modal` 的標題因此改成「手動配對」。`frontend/test/pairing-completeness.mjs` 逐項斷言這件事。
 
 **配對抽屜（`pairing-modal`）的順序，由上而下（#63）**：
 
@@ -215,7 +220,7 @@
 - `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
 
 對話框（`.modal`）：
-- `pair-modal` 配對新節點：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
+- `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
