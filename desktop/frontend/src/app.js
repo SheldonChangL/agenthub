@@ -981,7 +981,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // ever allowed to decide a class name.
   function candidateName(candidate) {
     const name = (candidate.displayName || "").trim();
-    return name === "" ? "（未提供名稱）" : name;
+    return name === "" ? t("pair.noName") : name;
   }
 
   // remainingSeconds arrives from the node and is then counted down locally from
@@ -1061,7 +1061,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(PAIR_TEXT.addressEmpty);
       return;
     }
-    await withBusy("送出配對請求", async () => {
+    await withBusy(t("pair.send"), async () => {
       try {
         await api.StartPairRequest(wanted);
       } catch (error) {
@@ -1082,7 +1082,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function decidePairRequest(id, verb) {
     const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
     if (!call) return;
-    const label = { approve: "核准配對", confirm: "確認配對", reject: "拒絕配對" }[verb];
+    const label = t("pair.busy." + verb);
     await withBusy(label, async () => {
       let answer;
       try {
@@ -1139,20 +1139,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return PAIR_TEXT.step[key] ?? "";
   }
 
-  // fingerprintBlock renders the two values the exchange rests on.
-  //
-  // Exactly as the node ordered and labelled them. The order is the same on
-  // both machines by construction — the machine that asked first — which is
-  // what lets two people read down two screens line by line, and sorting or
-  // re-deriving them here would break the only check there is. The labels are
-  // mapped through a fixed table, so a display name a stranger chose can decide
-  // nothing but its own text.
-  function fingerprintBlock(request) {
-    const box = element("div", "fingerprints");
-    writeFingerprintBlock(box, request);
-    return box;
-  }
-
   // fingerprintSignature is what "the same two values, in the same order, with
   // the same labels" means. Anything else and the block is rewritten; the box
   // itself never is, because it is the thing two people are reading off two
@@ -1169,8 +1155,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // A node that answered without the ordered pair. Nothing is invented
       // here: two values in an order this window guessed at are exactly the
       // thing the comparison cannot survive.
-      kids.push(element("div", "muted",
-        "這個節點沒有給出可以比對的指紋組。請改用終端機的 ah pair pending 來比對。"));
+      kids.push(element("div", "muted", t("pair.noFingerprintPair")));
       box.replaceChildren(...kids);
       return;
     }
@@ -1178,7 +1163,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const who = element("div", "who");
       const role = PAIR_TEXT.role[row.role] ?? row.role ?? "";
       if (role) who.append(element("span", "", `${role}　`));
-      who.append(element("span", "", row.machine || "（未提供名稱）"));
+      who.append(element("span", "", row.machine || t("pair.noName")));
       const whose = PAIR_TEXT.whose[row.whose];
       // Only the two labels the node documents get the highlight; anything else
       // is shown as the plain text it is.
@@ -1264,10 +1249,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const parts = row.pairParts;
     const undecided = request.state === "pending" || request.state === "awaiting-confirm";
     row.className = undecided ? "pairrow waiting" : "pairrow";
-    parts.name.textContent = request.displayName || request.nodeId || "（未提供名稱）";
+    parts.name.textContent = request.displayName || request.nodeId || t("pair.noName");
     parts.statePill.className = undecided ? "pill idle" : "pill";
     parts.statePill.textContent = PAIR_TEXT.state[pairStateKey(request)] ?? request.state;
-    parts.meta.textContent = `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`;
+    parts.meta.textContent =
+      `${request.platform || t("pair.noPlatform")} · ${request.address || t("pair.noAddress")}`;
     parts.nodeId.textContent = request.nodeId || "";
     parts.id.textContent = request.id || "";
     if (row.pairCompare !== undecided) {
@@ -1322,7 +1308,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
     if (waiting.length === 0) return;
     line.append(element("div", "stale",
-      `有 ${waiting.length} 個配對請求在等你比對指紋並決定，在這個面板最下面的「${PAIR_TEXT.requestsHeading}」。`));
+      plural(waiting.length, "pair.waiting", { panel: PAIR_TEXT.requestsHeading })));
   }
 
   // The exchange's rows, keyed by request id and kept across renders.
@@ -1383,6 +1369,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const keyed = key !== "" && !seen.has(key);
       seen.add(key);
       let row = keyed ? pairRequestRows.get(key) : undefined;
+      // And a kept row whose fingerprints changed is not the row the owner has
+      // been reading. Rewriting the block inside it swaps the two values under
+      // a pointer that is already there, and keeps the press that was aimed at
+      // the old ones; a fresh row cannot be pressed by a mousedown aimed at its
+      // predecessor.
+      if (row && row.pairFingerprints !== null &&
+          row.pairFingerprints !== fingerprintSignature(request)) {
+        pairRequestRows.delete(key);
+        row = undefined;
+      }
       if (row) {
         updateRequestRow(row, request);
       } else {
@@ -1545,7 +1541,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // a stranger's screen.
   function broadcastWarning(lead, tail = "") {
     const known = Boolean(state.localName);
-    const name = known ? state.localName : "（未知）";
+    const name = known ? state.localName : t("pair.unknownName");
     // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
     // the wrong source is the reason this reads the way it does. And not "read
     // from this machine" unconditionally — follow the instruction below and that
@@ -1557,19 +1553,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // from is a confident claim about something not in hand.
     let origin = "";
     if (known) {
-      origin = state.localNameIsChosen
-        ? "這個名稱是你指定的；"
-        : "這個名稱是節點從這台機器讀來的；";
+      origin = state.localNameIsChosen ? t("pair.nameChosen") : t("pair.nameRead");
     }
     // The space before the name is right for a Latin one and wrong before a
     // fullwidth paren, which carries its own. Dropped in the one case that has
     // one.
-    const before = known ? "並看到它自稱 " : "並看到它自稱";
+    const before = known ? t("pair.announceBefore") : t("pair.announceBeforeUnknown");
     return [
-      element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，" + before),
+      element("span", "", lead + before),
       element("span", "claimed", name),
-      element("span", "",
-        `，以及平台與指紋（不含公鑰）。${tail}${origin}要換掉就用 -display-name 重新啟動節點。`),
+      element("span", "", t("pair.announceAfter", { tail, origin })),
     ];
   }
 
@@ -1612,7 +1605,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const off = el("btn-pairing-off");
 
     if (!pairing) {
-      headline.textContent = "正在讀取配對狀態…";
+      headline.textContent = t("pair.readingState");
       on.disabled = true;
       off.disabled = true;
       note.textContent = "";
@@ -1635,21 +1628,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // window open that nobody can find: rendering it as "off" said the window
     // was shut while it was open and collecting requests.
     if (!windowAvailable && pairing.availability === "off") {
-      headline.textContent = "這台機器沒有在看，也不會廣播。";
-      detail.append(element("div", "stale",
-        "這個節點啟動時沒有 -discover，所以它既不廣播，也看不到別人廣播。" +
-        "這不代表同網段沒有人在廣播——這台機器只是沒有在看。"));
-      note.textContent = "要使用配對模式，請以 -discover 重新啟動節點；還需要 -allow-lan 與一個本機網段位址的 " +
-        "-peer-listen，因為廣播帶的就是 peer listener 綁定的那個位址，而對端只接受「位址與來源相符」的廣播。";
+      headline.textContent = t("pair.notLookingHeadline");
+      detail.append(element("div", "stale", t("pair.notLookingDetail")));
+      note.textContent = t("pair.notLookingNote");
       on.disabled = true;
       off.disabled = true;
       return;
     }
     if (!windowAvailable) {
       headline.textContent = PAIR_TEXT.windowUnavailable;
-      detail.append(element("div", "stale",
-        "無法向本機節點取得配對狀態，所以這裡不顯示任何內容。" +
-        "這是本機的讀取問題，不代表沒有人在廣播。"));
+      detail.append(element("div", "stale", t("pair.stateUnreadable")));
       note.textContent = pairing.error || "";
       on.disabled = true;
       off.disabled = true;
@@ -1696,7 +1684,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // broadcast. On a node that announces nothing, the note that matters is
       // the address above, not a warning about a name nobody will hear.
       if (canAnnounce) {
-        note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
+        note.replaceChildren(...broadcastWarning(t("pair.leadWhileOpen")));
       } else {
         note.textContent = "";
       }
@@ -1705,9 +1693,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // that opening it will put this machine in nobody's candidate list, and
       // that the typed address is what is left.
       headline.textContent = PAIR_TEXT.windowClosed;
-      detail.append(element("div", "stale",
-        "這台機器沒有任何可以廣播的位址，所以就算開啟配對視窗，也不會出現在對方的候選清單裡。" +
-        "視窗本身還是開得起來：把這台的位址給對方輸入就能連進來。"));
+      detail.append(element("div", "stale", t("pair.nothingToAnnounceClosed")));
       // Only when the node said something. 「節點沒有說明原因。」 on its own line
       // is a sentence about the absence of a sentence, and it is under the one
       // explanation that does say something.
@@ -1715,7 +1701,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = "";
     } else {
       headline.textContent = PAIR_TEXT.windowClosed;
-      note.replaceChildren(...broadcastWarning("開啟後，", "這是為了配對而明確接受的取捨，時間到會自動停止。"));
+      note.replaceChildren(...broadcastWarning(t("pair.leadOnOpen"), t("pair.tailTradeoff")));
     }
   }
 
@@ -1733,19 +1719,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // cannot be discovered on the IPv4 group, and an address this build will
       // not deliver to is a third thing. Writing one sentence here for all of
       // them would tell most owners something untrue.
-      const box = element("div", "stale", "這台機器沒有任何可以廣播的位址，所以實際上什麼都沒有送出。");
+      const box = element("div", "stale", t("pair.announceNoAddress"));
       if (announcing.lastError) box.append(element("div", "muted", announcing.lastError));
       return box;
     }
     if (announcing.lastError) {
-      const box = element("div", "stale", "最後一次廣播失敗了，所以現在可能沒有任何人看到這台機器。");
+      const box = element("div", "stale", t("pair.announceFailed"));
       box.append(element("div", "muted", announcing.lastError));
       return box;
     }
     if (announcing.lastAnnouncedAt) {
-      return element("div", "muted", `最後一次廣播：${relative(announcing.lastAnnouncedAt)}`);
+      return element("div", "muted", t("pair.announceLast", { when: relative(announcing.lastAnnouncedAt) }));
     }
-    return element("div", "muted", "還沒有送出第一次廣播。");
+    return element("div", "muted", t("pair.announceNeverYet"));
   }
 
   // tickCountdown updates only the countdown's own text, leaving the rows alone.
@@ -1756,7 +1742,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       line.textContent = "";
       return;
     }
-    line.textContent = left === 0 ? "" : `剩 ${clock(left)}`;
+    line.textContent = left === 0 ? "" : t("pair.timeLeft", { left: clock(left) });
   }
 
   // The candidate rows, keyed by node id and kept across renders.
@@ -1795,19 +1781,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // window: neither is looking, so neither has a list. The difference is
     // what the window panel above says, not what this region contains.
     if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
-      message(keptMessage(rows, 0, "empty",
-        "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。"));
+      message(keptMessage(rows, 0, "empty", t("candidate.notLooking")));
       return;
     }
     if (pairing.availability !== "on") {
-      message(keptMessage(rows, 0, "empty",
-        "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。"));
+      message(keptMessage(rows, 0, "empty", t("candidate.stateUnreadable")));
       return;
     }
     if (pairing.candidatesError) {
       message(
-        keptMessage(rows, 0, "stale",
-          "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"),
+        keptMessage(rows, 0, "stale", t("candidate.listUnreadable")),
         keptMessage(rows, 1, "muted", pairing.candidatesError));
       return;
     }
@@ -1816,9 +1799,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // warning inside them is scrolled away by the reader who most needs it.
     // Measured: with 64 rows it left the view after 600px of scrolling.
     if (pairing.full) {
-      full.append(element("div", "stale",
-        "候選清單已滿。同網段有人可以持續送出封包把清單佔滿，" +
-        "所以你要找的機器有可能因此沒有出現，而不是因為它沒在廣播。"));
+      full.append(element("div", "stale", t("candidate.listFull")));
     }
     const candidates = pairing.candidates ?? [];
     const wanted = [];
@@ -1834,10 +1815,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // for as long as nobody is broadcasting, and rebuilding this div twice a
       // second is the same pointless write the rows were fixed for.
       wanted.push(keptMessage(rows, 0, "empty", state.nodes.length > 0
-        ? "沒有看到任何還沒配對的機器在廣播。已經配對過的節點不會出現在這份清單裡——" +
-          "它們在上方的「已配對節點」。"
-        : "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，" +
-          "所以這份清單空白就是真的什麼都沒收到。"));
+        ? t("candidate.emptyWithPairs")
+        : t("candidate.emptyNoPairs")));
     }
     const seen = new Set();
     for (const candidate of candidates) {
@@ -1927,15 +1906,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.candidateFlags !== flags) {
       row.candidateFlags = flags;
       const pills = [];
-      if (candidate.contested) pills.push(pill("身分有爭用", "bad"));
-      if (candidate.duplicate) pills.push(pill("名稱或指紋重複", "bad"));
+      if (candidate.contested) pills.push(pill(t("candidate.contested"), "bad"));
+      if (candidate.duplicate) pills.push(pill(t("candidate.duplicate"), "bad"));
       parts.line.replaceChildren(parts.name, ...pills);
     }
-    parts.meta.textContent = `${candidate.platform || "平台未提供"} · ${candidate.address}`;
+    parts.meta.textContent = `${candidate.platform || t("pair.noPlatform")} · ${candidate.address}`;
     parts.nodeId.textContent = candidate.nodeId;
     parts.fingerprint.textContent = candidate.fingerprint;
-    parts.seen.textContent =
-      `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`;
+    parts.seen.textContent = t("candidate.seen", {
+      first: relative(candidate.firstSeen),
+      last: relative(candidate.lastSeen),
+    });
     parts.send.disabled = state.busy || !candidate.address;
     parts.send.onclick = () => sendPairRequest(candidate.address);
     parts.use.onclick = () => prefillPairFrom(candidate);
@@ -1966,25 +1947,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is visible, and leaving that behind at the moment of deciding to trust is
     // leaving it behind at the only moment it matters.
     const flags = [];
-    if (candidate.contested) flags.push("身分有爭用");
-    if (candidate.duplicate) flags.push("名稱或指紋重複");
+    if (candidate.contested) flags.push(t("candidate.contested"));
+    if (candidate.duplicate) flags.push(t("candidate.duplicate"));
     if (flags.length > 0) {
       // Both, when both. A ternary picked one, so a row the list flags twice
       // arrived in the dialog — where trust is granted — flagged once.
       note.append(element("div", "stale",
-        "這一列被標記為" + flags.join("、") +
-        "：同網段有另一份廣播與它衝突，其中至少一份是假的。除非你能在對方機器上直接核對，否則不要信任它。"));
+        t("candidate.flagged", { flags: flags.join(t("candidate.flagJoin")) })));
     }
-    note.append(element("div", "",
-      "節點 ID、名稱與平台是從廣播帶進來的，全都是對方自己宣稱的，沒有經過任何驗證。"));
-    note.append(element("div", "",
-      "公鑰不在廣播內容裡，必須在對方機器上執行 ah node 取得。指紋也請看對方螢幕上顯示的那一組，" +
-      "逐組核對後再填進來——這個欄位的意思就是「我核對過了」。"));
+    note.append(element("div", "", t("candidate.prefillClaimed")));
+    note.append(element("div", "", t("candidate.prefillKey")));
     // The node id is what trust is keyed on, and the node only checks that the
     // key matches the fingerprint, never that either belongs to this id.
-    note.append(element("div", "",
-      "同時請確認對方 ah node 顯示的節點 ID 與上面這一組完全相同：信任是記在節點 ID 上的，" +
-      "而本機只會檢查公鑰與指紋相符，不會檢查它們屬於這個 ID。"));
+    note.append(element("div", "", t("candidate.prefillNodeId")));
     note.classList.remove("hidden");
     openPairModal();
   }
@@ -1994,9 +1969,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     container.replaceChildren();
 
     if (state.nodes.length === 0) {
-      container.append(element("div", "empty", "尚未配對任何節點。"));
+      container.append(element("div", "empty", t("network.noNodesYet")));
       el("node-detail-body").replaceChildren(
-        element("div", "empty", "配對一個節點後，這裡會顯示它的身分與最後聯繫時間。")
+        element("div", "empty", t("network.noNodesYetDetail"))
       );
       return;
     }
@@ -2008,11 +1983,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const line = element("div", "line");
       line.append(element("span", `dot ${label.className}`), element("span", "name", node.displayName));
       line.append(element("span", `presence ${label.className}`, label.text));
-      const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)} · 公開給它 ${grantedCount(node.nodeId)} 個`);
+      const meta = element("div", "meta",
+        `${node.platform} · ${lastSeen(node)} · ${plural(grantedCount(node.nodeId), "network.publishedToIt")}`);
       row.append(line, meta);
       // A peer with no address is skipped in silence at delivery time; the
       // list is where that is visible before it happens.
-      if (!node.address) row.append(element("div", "noaddr", "沒有位址：送給它的訊息會被靜默跳過"));
+      if (!node.address) row.append(element("div", "noaddr", t("network.noAddressRow")));
       row.onclick = () => {
         state.selectedNode = node.nodeId;
         render();
@@ -2022,7 +1998,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const selected = state.nodes.find((node) => node.nodeId === state.selectedNode);
     el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
-      element("div", "empty", "選擇左側的節點以檢視詳細資料。"),
+      element("div", "empty", t("network.pickANode")),
     ]));
     el("node-sessions").replaceChildren(...(selected ? nodeSessions(selected) : []));
   }
@@ -2036,48 +2012,40 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // view pass for a current one, which is what issue #15 asks not to happen.
   function nodeSessions(node) {
     const presence = presenceFor(node.nodeId);
-    const heading = element("h3", "", "這個節點公開給我的 session");
+    const heading = element("h3", "", t("network.sessionsHeading"));
 
     // A failure to read presence is a fact about this node, not about the peer.
     // Saying "we have not heard from it" here would turn a transport error into a
     // confident claim that happens to be unfounded.
     if (state.presenceError) {
-      return [heading, element(
-        "div",
-        "stale",
-        "無法向本機節點取得對端狀態，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方離線或沒有公開 session。"
-      )];
+      return [heading, element("div", "stale", t("network.presenceUnreadable"))];
     }
     if (!heardFrom(presence)) {
       return [heading, element(
         "div",
         "empty",
-        heartbeatSilenceReasons +
-        "（配對本身也只確認身分：對方仍須把 session 公開給這個節點才會出現在這裡。）"
+        t(heartbeatSilenceReasonsKey) + t("network.silenceAlsoAudience")
       )];
     }
     if (!presence.online) {
       return [heading, element(
         "div",
         "stale",
-        `這個節點目前離線，最後一次心跳在${relative(presence.receivedAt)}。` +
-        "先前的內容已不再顯示，因為那是過去的狀態，不是現在的。"
+        t("network.peerOffline", { when: relative(presence.receivedAt) })
       )];
     }
     const sessions = presence.sessions ?? [];
     if (presence.sessionsWithheld) {
-      return [heading, element("div", "empty",
-        "本機拒絕了這個節點送來的 session 清單——不符合本機接受的規則，" +
-        "或其中有不屬於它的 session——因此整份都不顯示。" +
-        "這是本機的判斷，不是對方離線；下一次有效的心跳會取代它。")];
+      return [heading, element("div", "empty", t("network.sessionsWithheld"))];
     }
     if (sessions.length === 0) {
-      return [heading, element("div", "empty", "這個節點線上，但沒有公開任何 session 給我。")];
+      return [heading, element("div", "empty", t("network.peerPublishesNothing"))];
     }
 
     const table = element("table", "peer-sessions");
     const head = element("tr");
-    for (const title of ["SESSION", "節點", "PROVIDER", "狀態", "最後活動"]) {
+    for (const title of ["SESSION", t("network.colNode"), "PROVIDER", t("local.colStatus"),
+      t("local.colLastSeen")]) {
       head.append(element("th", "", title));
     }
     const header = element("thead");
@@ -2100,7 +2068,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   function lastSeen(node) {
-    return node.lastSeenAt ? `最後聯繫 ${relative(node.lastSeenAt)}` : "尚未聯繫過";
+    return node.lastSeenAt
+      ? t("network.lastContact", { when: relative(node.lastSeenAt) })
+      : t("network.neverInContact");
   }
 
   /* ---------------- presence ---------------- */
@@ -2129,15 +2099,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // An offline peer must not have its last snapshot rendered as the current
   // state, so the label always says when the information is from.
   function presenceLabel(presence) {
-    if (state.presenceError) return { text: "節點狀態無法取得", className: "unknown" };
+    if (state.presenceError) return { text: t("network.presenceUnknown"), className: "unknown" };
     // Silence has two causes and this side cannot tell them apart. /v1/peers
     // reports what arrived, and nothing arrives either when the peer has not
     // paired back — trust is recorded per machine — or when it has and is simply
     // not sending. Naming one would be a guess; the row names both, and the
     // detail below says where the answer is.
-    if (!heardFrom(presence)) return { text: "尚未收到心跳 · 對方可能還沒配對這台", className: "never" };
-    if (presence.online) return { text: "線上", className: "online" };
-    return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
+    if (!heardFrom(presence)) return { text: t("network.presenceNever"), className: "never" };
+    if (presence.online) return { text: t("network.presenceOnline"), className: "online" };
+    return {
+      text: t("network.presenceOffline", { when: relative(presence.receivedAt) }),
+      className: "offline",
+    };
   }
 
   // heartbeatSilenceReasons spells out both causes of silence, because this node
@@ -2146,52 +2119,38 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The node lists a peer it trusts whether or not that peer trusts it back, and
   // a heartbeat that never arrives looks identical in both cases. The only place
   // the difference is visible is the other machine's own `ah nodes`.
-  const heartbeatSilenceReasons =
-    "尚未收到這個節點的心跳。有兩種可能，這台分不出來是哪一種：" +
-    "（一）對方還沒對這台做配對——配對是每台各自記的，這台信任它不代表它信任這台；" +
-    "（二）對方已經配對了，但還沒送出心跳（節點沒在跑，或沒有這台的位址）。" +
-    "要分辨，在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。";
+  // A getter, not a constant: it is read while rendering, and a constant
+  // evaluated at module load would freeze the language the window started in.
+  const heartbeatSilenceReasonsKey = "network.heartbeatSilence";
 
   function nodeDetail(node) {
     const heading = element("h2", "", node.displayName);
     const fingerprint = element("div", "fingerprint", node.fingerprint);
-    const note = element(
-      "p",
-      "muted",
-      "在對方機器上執行 ah node，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。"
-    );
+    const note = element("p", "muted", t("network.fingerprintNote"));
 
     // Trust is recorded per machine, and this page shows only this machine's
     // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
     // on 2026-09-10, and nothing here said that was half-done — the row simply
     // sat there having never been heard from, which reads as the peer being off.
-    const mutualNote = element(
-      "p",
-      "stale",
-      "配對是每台各自記的：這一列只代表這台已信任對方。對方那台也要對這台做一次配對，" +
-      "否則它送不到這裡，也不會送心跳過來——在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。"
-    );
+    const mutualNote = element("p", "stale", t("network.mutualNote"));
 
     const rows = [
-      ["節點 ID", node.nodeId],
-      ["平台", node.platform],
-      ["配對時間", node.pairedAt ? relative(node.pairedAt) : "—"],
-      ["最後聯繫", node.lastSeenAt ? relative(node.lastSeenAt) : "尚未聯繫過"],
-      ["可見的 session", `${grantedCount(node.nodeId)} 個`],
-      ["記錄的位址", node.address ? node.address : "（沒有）"],
+      [t("identity.nodeId"), node.nodeId],
+      [t("pairManual.platform"), node.platform],
+      [t("network.detailPairedAt"), node.pairedAt ? relative(node.pairedAt) : "—"],
+      [t("network.detailLastContact"),
+        node.lastSeenAt ? relative(node.lastSeenAt) : t("network.neverInContact")],
+      [t("network.detailVisibleSessions"), plural(grantedCount(node.nodeId), "network.sessionCount")],
+      [t("network.detailAddress"), node.address ? node.address : t("network.detailNoAddress")],
     ].map(([label, value]) => {
       const row = element("div", "detailrow");
       row.append(element("span", "muted", label), element("span", "mono", value));
       return row;
     });
 
-    const revoke = element("button", "btn danger", "撤銷信任");
+    const revoke = element("button", "btn danger", t("network.revoke"));
     revoke.onclick = () => revokeSelected(node);
-    const revokeNote = element(
-      "p",
-      "muted",
-      "撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。"
-    );
+    const revokeNote = element("p", "muted", t("network.revokeNote"));
 
     const grid = element("div", "detailgrid");
     grid.append(...rows);
@@ -2217,14 +2176,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function addressSection(node) {
     const parts = [];
     if (node.address) {
-      parts.push(element("p", "muted", `目前記錄的位址是 ${node.address}，訊息會送到這裡。`));
+      parts.push(element("p", "muted", t("network.addressRecorded", { address: node.address })));
     } else {
-      parts.push(element(
-        "p",
-        "noaddress",
-        "沒有位址：送到這個節點的訊息會被靜默跳過，ah send 仍會回 queued。" +
-        "有 --discover 時會自動學到；沒有就在下面填。"
-      ));
+      parts.push(element("p", "noaddress", t("network.addressMissing")));
     }
 
     const input = element("input", "addressinput");
@@ -2243,34 +2197,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.addressDraft = { nodeId: node.nodeId, value: event.target.value };
     };
 
-    const submit = element("button", "btn setaddress", "記錄位址");
+    const submit = element("button", "btn setaddress", t("network.recordAddress"));
     submit.onclick = () => recordAddress(node, input.value);
 
     const form = element("div", "addressform");
     form.append(input, submit);
     parts.push(form);
-    parts.push(element(
-      "p",
-      "muted",
-      "格式是 host:port，由節點驗證——它拒絕自己不會投遞的位址，理由會原文顯示在上方橫幅。"
-    ));
+    parts.push(element("p", "muted", t("network.addressFormat")));
     return parts;
   }
 
   async function recordAddress(node, raw) {
     const address = String(raw ?? "").trim();
     if (address === "") {
-      banner("位址是空的。要記錄一個位址，請填 host:port，例如 192.168.1.20:7463。");
+      banner(t("network.addressEmpty"));
       return;
     }
-    await withBusy("記錄位址", async () => {
+    await withBusy(t("network.recordAddress"), async () => {
       await api.SetNodeAddress(node.nodeId, address);
       // Only once the node has it. A draft cleared before the call would leave a
       // refused address nowhere, with the field back to the value the owner was
       // replacing and nothing to correct.
       state.addressDraft = null;
       await load();
-      banner(`已記錄 ${node.displayName} 的位址 ${address}。`, true);
+      banner(t("network.addressSaved", { name: node.displayName, address }), true);
     });
   }
 
@@ -2286,11 +2236,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function revokeSelected(node) {
-    await withBusy("撤銷", async () => {
+    await withBusy(t("network.revoke"), async () => {
       await api.RevokeNode(node.nodeId);
       state.selectedNode = null;
       await load();
-      banner(`已撤銷 ${node.displayName}，並移除它持有的所有授權。`, true);
+      banner(t("network.revoked", { name: node.displayName }), true);
     });
   }
 
@@ -2313,14 +2263,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function copyLocalPublicKey(statusId = "copy-public-key-status") {
     const status = el(statusId);
     if (!state.localPublicKey) {
-      status.textContent = "還沒有從節點讀到本機公鑰，沒有東西可以複製。";
+      status.textContent = t("identity.noKeyYet");
       return;
     }
     try {
       await api.CopyText(state.localPublicKey);
-      status.textContent = "已複製本機公鑰到剪貼簿";
+      status.textContent = t("identity.keyCopied");
     } catch (error) {
-      status.textContent = `無法寫入剪貼簿（${error}），請手動複製上面那一串，注意結尾的 = 也要一起。`;
+      status.textContent = t("identity.keyCopyFailed", { error });
     }
   }
 
@@ -2363,7 +2313,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       label.append(box, element("span", `dot ${presence.className}`), element("span", "", node.displayName), element("span", "mono", node.nodeId));
       list.append(label);
     }
-    if (state.nodes.length === 0) list.append(element("p", "muted", "還沒有配對任何節點。"));
+    if (state.nodes.length === 0) list.append(element("p", "muted", t("audience.noNodesYet")));
     el("audience-node-input").value = "";
   }
 
@@ -2412,9 +2362,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const note = el("audience-autowake-note");
     note.replaceChildren();
     if (!state.nodeAutoWake) {
-      note.append(element("div", "muted",
-        "這台節點沒有開自動喚醒（agenthub-node 沒帶 -auto-wake），勾了也不會有任何 session 被叫醒。" +
-        "用 ah service install … --auto-wake 重裝或重啟節點才會生效。"));
+      note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
       return;
     }
     // Which providers are selected decides which of the remaining obstacles
@@ -2424,13 +2372,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
     );
     if (providers.has("codex")) {
-      note.append(element("div", "muted", "Codex session 會由節點透過 app-server 叫醒（真機驗過）。"));
+      note.append(element("div", "muted", t("audience.autoWakeCodex")));
     }
     if (providers.has("claude")) {
-      note.append(element("div", "muted",
-        "Claude Code 還需要該 session 的 agenthub-mcp 帶 -channel，" +
-        "而且目前量測到 Claude Code 不會注入這類推送（見 docs/channel-push-not-observed.md）" +
-        "——勾了訊息仍只會躺在收件匣。"));
+      note.append(element("div", "muted", t("audience.autoWakeClaude")));
     }
   }
 
