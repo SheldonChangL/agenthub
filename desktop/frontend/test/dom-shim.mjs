@@ -8,6 +8,27 @@ import { fileURLToPath } from "node:url";
 // its input as raw markup — exactly how a browser treats them. That difference
 // is what the render test measures.
 
+// The language these checks are written in.
+//
+// Every check here asserts the window's actual sentences, and they were written
+// against the Traditional Chinese ones. app.js picks its language from
+// navigator.language (src/i18n/index.js), and node has no navigator at all — so
+// without this the whole suite would silently move to English and every prose
+// assertion in it would have to be rewritten to say the same thing twice.
+//
+// The English half is not left untested: test/i18n.mjs overrides this and boots
+// the window in en-US, which is what a machine outside a zh locale gets.
+// defineProperty, not assignment: node ships its own navigator as a getter-only
+// property, so `globalThis.navigator = …` throws there.
+export function useLocale(locale) {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { language: locale },
+    configurable: true,
+    writable: true,
+  });
+}
+useLocale("zh-TW");
+
 // Which element has the keyboard, for the one guard that asks. A browser
 // answers <body> when nothing is focused; null is this shim's stand-in for
 // "nothing", since there is no body here to hand back.
