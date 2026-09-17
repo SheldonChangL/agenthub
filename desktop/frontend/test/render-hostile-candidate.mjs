@@ -30,8 +30,8 @@ const el = (id) => document.getElementById(id);
 // The window's three parts, which are separate elements so the countdown can
 // tick without the rows being rebuilt.
 const panel = () =>
-  el("pairing-headline").serialize() + el("pairing-countdown").serialize() +
-  el("pairing-detail").serialize();
+  el("pairing-sub").serialize() + el("pairing-headline").serialize() +
+  el("pairing-countdown").serialize() + el("pairing-detail").serialize();
 
 const hostile = {
   nodeId: 'node_evil<img src=x onerror="alert(1)">',
@@ -184,8 +184,14 @@ const cannot = panel() + el("pairing-note").serialize();
 if (!cannot.includes("不會出現在對方的候選清單")) {
   failures.push("a node that announces nothing did not say it will be in nobody's candidate list");
 }
-if (cannot.includes("開啟後，同網段的人都會知道")) {
-  failures.push("the broadcast tradeoff was promised on a node that broadcasts nothing");
+// Both spellings. The promise lived twice: once in the note, with a comma, and
+// once as a fixed subtitle in index.html without one — and the check only knew
+// about the first, so the drawer went on telling the owner of a silent node
+// that the segment would hear it.
+for (const promise of ["開啟後，同網段的人都會知道", "開啟後同網段的人都會知道"]) {
+  if (cannot.includes(promise)) {
+    failures.push(`the broadcast tradeoff was promised on a node that broadcasts nothing: ${promise}`);
+  }
 }
 if (el("btn-pairing-on").disabled) {
   failures.push("the open button is dead on a node whose only way to pair is the window it opens");

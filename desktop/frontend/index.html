@@ -310,7 +310,10 @@
         <header>
           <div>
             <h2>配對模式</h2>
-            <div class="sub muted">開啟後同網段的人都會知道這台機器在跑 AgentHub。</div>
+            <!-- Rendered from JS: the sentence is only true on a node that
+                 actually announces, and it sat at the top of the panel whose
+                 point is that nobody will see a node that does not. -->
+            <div class="sub muted" id="pairing-sub"></div>
           </div>
           <button id="pairing-close" class="ghost">關閉</button>
         </header>

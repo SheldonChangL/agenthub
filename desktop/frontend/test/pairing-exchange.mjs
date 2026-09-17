@@ -121,11 +121,15 @@ let pairingAnswer = {
 };
 const Pairing = async () => pairingAnswer;
 
-const Overview = async () => ({
-  node: { id: "node_local00000", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: LOCAL_FP },
-  sessions: [], nodes: [], peers: [], counts: { total: 0 },
-  nodeUrl: "http://127.0.0.1:7462", reachable: true,
-});
+let overviewCalls = 0;
+const Overview = async () => {
+  overviewCalls += 1;
+  return {
+    node: { id: "node_local00000", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: LOCAL_FP },
+    sessions: [], nodes: [], peers: [], counts: { total: 0 },
+    nodeUrl: "http://127.0.0.1:7462", reachable: true,
+  };
+};
 const noop = async () => ({});
 
 const { configure, boot } = await import("../src/app.js");
@@ -186,18 +190,35 @@ if (html.indexOf(THEIR_FP) > html.indexOf(LOCAL_FP)) {
 for (const required of ["ubuntu-lab", "sheldon-mbp", PAIR_TEXT.whose["this machine"], PAIR_TEXT.whose["the other machine"]]) {
   if (!html.includes(required)) failures.push(`the fingerprint block omits ${required}`);
 }
-if (!html.includes(PAIR_TEXT.compare)) {
-  failures.push("an undecided row carries no instruction about comparing before deciding");
+for (const sentence of PAIR_TEXT.compare) {
+  if (!html.includes(sentence)) {
+    failures.push(`an undecided row carries no instruction about comparing before deciding: ${sentence}`);
+  }
 }
 // Once, and above the two lines it is about — the layout the node's own wording
 // assumes ("two fingerprints are shown: the requester first…"). Below them it
 // reads as a comment on the decision instead of as the instruction for reading.
-if (html.indexOf(PAIR_TEXT.compare) > html.indexOf(THEIR_FP)) {
+if (html.indexOf(PAIR_TEXT.compare[0]) > html.indexOf(THEIR_FP)) {
   failures.push("the fingerprint notice is printed below the fingerprints it describes");
 }
 const firstRow = el("pair-requests").children[0].serialize();
-if (firstRow.split(PAIR_TEXT.compare).length - 1 !== 1) {
-  failures.push("the fingerprint notice is printed more than once on one row");
+for (const sentence of PAIR_TEXT.compare) {
+  if (firstRow.split(sentence).length - 1 !== 1) {
+    failures.push(`the fingerprint notice is printed more than once on one row: ${sentence}`);
+  }
+}
+// The step sentence sits UNDER the fingerprint block, so it cannot tell the
+// owner to compare the two groups 下面. It said exactly that, and a sentence
+// pointing the wrong way sends people looking for a pair that is not there.
+const compareLine = PAIR_TEXT.step["pending-incoming"];
+if (compareLine.includes("比對") && firstRow.indexOf(compareLine) > firstRow.indexOf(THEIR_FP)
+  && !compareLine.includes("上面")) {
+  failures.push(`the instruction under the fingerprints points 下面 at them: ${compareLine}`);
+}
+for (const sentence of [PAIR_TEXT.step["pending-incoming"], PAIR_TEXT.step["awaiting-confirm"]]) {
+  if (sentence.includes("比對下面")) {
+    failures.push(`a step rendered below the fingerprints says 比對下面: ${sentence}`);
+  }
 }
 // And the node's `ah pair approve <id>` sentence is NOT on it: correct advice
 // for the terminal it was written for, and directly above an approve button it
@@ -272,6 +293,23 @@ el("pair-requests-all").checked = false;
 await el("pair-requests-all").onchange();
 await settle();
 
+// A refusal on the fingerprints is not an ordinary 已拒絕: it is the one
+// outcome that says something about the network rather than about a decision,
+// and the node carries the reason for exactly that purpose.
+const mismatched = {
+  ...outgoing, id: "pair_mismatch00001", state: "rejected", reason: "fingerprint_mismatch",
+  displayName: "lab-box", nextStep: "lab-box rejected it: the fingerprints did not match.",
+};
+const mismatchBox = document.createElement("div");
+mismatchBox.replaceChildren(scope.pairRequestRow(mismatched));
+const mismatchHTML = mismatchBox.serialize();
+if (!mismatchHTML.includes(PAIR_TEXT.step["rejected-fingerprint-mismatch"])) {
+  failures.push("a rejection the node blamed on the fingerprints was shown as an ordinary refusal");
+}
+if (mismatchHTML.includes(PAIR_TEXT.step.rejected)) {
+  failures.push("a fingerprint mismatch was also given the wording for a plain 拒絕");
+}
+
 /* ---------------- 4. the buttons reach the bindings ---------------------- */
 
 function find(node, className, found = []) {
@@ -313,6 +351,17 @@ await rejectButton.onclick();
 await settle();
 if (decisions.at(-1)?.[0] !== "reject") {
   failures.push(`拒絕 called ${JSON.stringify(decisions.at(-1))}`);
+}
+// And the banner answers in this window's language. The node's own sentence is
+// English and names `ah` subcommands; shown alone it is the one reply in the
+// whole window nobody here can read, and dropped it takes with it the one thing
+// this window cannot work out — whether the other machine could be told.
+const rejectBanner = el("banner").textContent;
+if (!/[\u4e00-\u9fff]/.test(rejectBanner)) {
+  failures.push(`a decision was answered only in the node's English: ${rejectBanner}`);
+}
+if (!rejectBanner.includes("done: reject")) {
+  failures.push(`the node's own account of the decision was dropped: ${rejectBanner}`);
 }
 
 // Nothing anywhere decides for the owner. An auto-approve or a "skip the
@@ -433,6 +482,13 @@ if (!rowsHTML().includes(PAIR_TEXT.requestsEmpty)) {
 
 /* ---------------- 8. the address the other machine types ----------------- */
 
+function buttonsUnder(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (node.tagName === "button") found.push(node);
+  for (const child of node.children ?? []) buttonsUnder(child, found);
+  return found;
+}
+
 // A node that announces nothing still opens a window, and then this address is
 // the whole way in. Shown in the key font with a copy button rather than left
 // inside the notice's prose, which is how the last hand-carried string lost a
@@ -505,15 +561,88 @@ if (el("pair-here-note").textContent !== PAIR_TEXT.hereNoteAnnouncing) {
   failures.push("an announcing node was told the address is its only way in");
 }
 
-// A node with no address to give hides the block rather than showing a dash.
+// 8a. The node every fresh install is: no -allow-lan, a peer listener on
+//     loopback, and therefore NO peerAddress key in the answer at all — the node
+//     does not offer 127.0.0.1 as somewhere another machine could dial. The
+//     panel used to hide the whole block here, so the owner of a default node
+//     saw an open window, no address, no reason and nothing to press, and the
+//     only reason the tests passed was that they fed an address the node never
+//     sends.
 pairingAnswer = {
   availability: "on", windowAvailable: true,
-  state: { open: true, remainingSeconds: 200, displayName: "sheldon-mbp", announcing: { announceableAddresses: 1 } },
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0 },
+  },
   candidates: [],
 };
 await scope.loadPairing();
-if (!el("pair-here").classList.contains("hidden")) {
-  failures.push("the typed-address block is shown on a node that has no address to give");
+if (el("pair-here").classList.contains("hidden")) {
+  failures.push("a node that gave no address hid the block, so nothing on screen says why nobody can connect");
+}
+const noAddress = el("pair-here").serialize() + el("pair-here-note").serialize();
+for (const required of ["允許區網連線", "節點設定"]) {
+  if (!noAddress.includes(required)) {
+    failures.push(`the no-address explanation omits ${required}, so it names no remedy`);
+  }
+}
+if (!buttonsUnder(el("pair-here-note")).some((b) => b.textContent === PAIR_TEXT.hereFix)) {
+  failures.push("a node that gave no address offers no button to the setting that fixes it");
+}
+if (!el("copy-pair-address").disabled) {
+  failures.push("the copy button is live on a node that has no address at all");
+}
+if (el("pairing-headline").textContent !== PAIR_TEXT.windowOpenUnreachable) {
+  failures.push(`a window nobody can reach is headlined ${JSON.stringify(el("pairing-headline").textContent)}`);
+}
+
+// 8a-ii. The same node once it answers for itself (#172): the node says the
+//        address is no use and why, and an answer from the node beats this
+//        window's own guess at the string. Its sentence rides under the remedy,
+//        not instead of it.
+pairingAnswer = {
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0 },
+    peerAddress: "192.168.50.10:7463",
+    peerAddressReachable: false,
+    peerAddressProblem: "the peer listener answers on 127.0.0.1 only",
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+const nodeSaidStuck = el("pair-here").serialize() + el("pair-here-note").serialize();
+if (el("pair-local-address").textContent.includes("192.168.50.10")) {
+  failures.push("an address the node itself called unreachable was handed over as the one to type");
+}
+if (!nodeSaidStuck.includes("the peer listener answers on 127.0.0.1 only")) {
+  failures.push("the node's own account of what is wrong with its address was dropped");
+}
+if (!el("copy-pair-address").disabled) {
+  failures.push("the copy button is live on an address the node called unreachable");
+}
+
+// 8a-iii. And the node's word is taken the other way too: a real LAN address it
+//         vouched for is shown as the address, not second-guessed here.
+pairingAnswer = {
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 1 },
+    peerAddress: "192.168.50.10:7463", peerAddressReachable: true,
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+if (el("pair-local-address").textContent !== "192.168.50.10:7463") {
+  failures.push(`a reachable LAN address is shown as ${JSON.stringify(el("pair-local-address").textContent)}`);
+}
+if (el("copy-pair-address").disabled) {
+  failures.push("the copy button is dead on an address that works");
+}
+if (el("pairing-headline").textContent !== PAIR_TEXT.windowOpen) {
+  failures.push(`an open window with a reachable address is headlined ${JSON.stringify(el("pairing-headline").textContent)}`);
 }
 
 /* ---------------- 8b. an address nobody can reach ------------------------ */
@@ -569,12 +698,6 @@ if (!el("copy-pair-address").disabled) {
 
 // The remedy is a button, not a sentence about where to click: the fix is two
 // tabs away and the owner has just been told their node is unreachable.
-function buttonsUnder(node, found = []) {
-  if (!node || typeof node !== "object") return found;
-  if (node.tagName === "button") found.push(node);
-  for (const child of node.children ?? []) buttonsUnder(child, found);
-  return found;
-}
 const fix = buttonsUnder(el("pair-here-note")).find((b) => b.textContent === PAIR_TEXT.hereFix);
 if (!fix) {
   failures.push("no button takes the owner to the setting that makes this node reachable");
@@ -590,6 +713,30 @@ if (!fix) {
   scope.openPairingDrawer();
   await settle();
 }
+
+/* ---------------- 8c. the list behind the drawer keeps up ---------------- */
+
+// The drawer is a modal, so it holds the fifteen-second refresh off for as long
+// as it is open. Everything decided inside it reloads that list, and a change
+// made outside — `ah revoke` in a terminal — did not, leaving the node list
+// naming a node this machine had already stopped trusting.
+scope.openPairingDrawer();
+await settle();
+const beforeTick = overviewCalls;
+fastTick?.fn();
+await settle();
+if (overviewCalls === beforeTick) {
+  failures.push("the drawer's own poll does not refresh the trusted-node list it sits over");
+}
+// ...and not while a decision is in flight, which is what state.busy is for.
+state.busy = true;
+const whileBusy = overviewCalls;
+fastTick?.fn();
+await settle();
+if (overviewCalls !== whileBusy) {
+  failures.push("the drawer polled while a decision was in flight");
+}
+state.busy = false;
 
 /* ---------------- 9. every string from the wire is text ------------------ */
 
