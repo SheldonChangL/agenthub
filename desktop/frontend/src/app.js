@@ -701,8 +701,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         label: t("onboarding.reachable.retry"),
         primary: true,
         run: () => {
+          // Only the failure is cleared here. The once-per-window latch was
+          // already released by the read that failed — that is the fix for the
+          // wedge — so this button has one thing to undo, not two.
           state.nodeSettingsUnreadable = false;
-          onboardingSettingsAsked = false;
           renderOnboarding();
         },
       }];
