@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -864,6 +865,79 @@ func TestARequesterRejectRevokesAnApprovalAlreadyGiven(t *testing.T) {
 	}
 }
 
+// The refusal and the approval arriving at once, decided in that order.
+//
+// The bug this pins: the receiving handler read the request's row before
+// decoding the body and verifying the signature, and branched on that snapshot.
+// An approval landing in between made every branch wrong at once — the refusal
+// saw `pending`, skipped the revoke, and its Settle(pending→rejected) failed
+// into a discarded error — so the requester was told `rejected` while this node
+// kept the row approved with the trust row written: exactly the machine still
+// trusting a key its owner had refused that the push exists to prevent.
+//
+// The approval is injected at the one instant that produces it rather than
+// raced for, because a fix for a race has to be held against the race.
+func TestAnApproveLandingInsideARejectDoesNotLeaveTrustBehind(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	// The receiving owner approves once, from inside the refusal that is
+	// already being handled. Recorded rather than asserted here: this runs on
+	// the peer server's goroutine, where t.Fatal is not allowed.
+	var approve struct {
+		sync.Mutex
+		done bool
+		code int
+		body string
+	}
+	receiver.server.afterRejectRead = func() {
+		approve.Lock()
+		defer approve.Unlock()
+		if approve.done {
+			return
+		}
+		approve.done = true
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost,
+			"/v1/pair/requests/"+outgoing.ID+"/approve", strings.NewReader("{}"))
+		request.Header.Set("Content-Type", "application/json")
+		receiver.owner.ServeHTTP(recorder, request)
+		approve.code, approve.body = recorder.Code, recorder.Body.String()
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	approve.Lock()
+	defer approve.Unlock()
+	if !approve.done {
+		t.Fatal("the approval was never injected, so this test proves nothing")
+	}
+	if approve.code != http.StatusOK {
+		t.Fatalf("the injected approval = %d %s", approve.code, approve.body)
+	}
+	// One decision on both machines, and it is the refusal: it is the later
+	// word from the owner whose key is being trusted.
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the receiver kept the request %q while the requester was told rejected", state)
+	}
+	if trusted := receiver.trusted(); len(trusted) != 0 {
+		t.Errorf("the refused machine is still trusted: %v", trusted)
+	}
+	if state := requester.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the requester sees %q, want %q", state, pairing.StateRejected)
+	}
+}
+
 // The same push before any approval: the other owner is told, and approving
 // afterwards is refused in words they can act on.
 func TestARequesterRejectBlocksALaterApprove(t *testing.T) {
@@ -990,6 +1064,19 @@ func TestARejectDoesNotRevokeATrustStoredUnderAnotherKey(t *testing.T) {
 	}
 	if trusted[0].PublicKey != identity.EncodePublicKey(replacement.Public) {
 		t.Errorf("the stored key changed: %q", trusted[0].PublicKey)
+	}
+	// And the row says what the node actually did. It used to say "the trust
+	// written here has been withdrawn" on every refusal of an approved request,
+	// including this one — where something is still trusted and only the owner
+	// can decide about it.
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "withdrawn") {
+		t.Errorf("the row claims a withdrawal that did not happen: %q", step)
+	}
+	for _, want := range []string{"left in place", "different key", "ah revoke " + requester.node.ID} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
 	}
 }
 

@@ -202,3 +202,15 @@ where it was.
   run. There is no retry queue: this node has just decided not to trust that
   machine, and keeping a job that dials it would be the wrong thing to hold on
   to.
+
+- **The per-source bound is a bound on a host, not on a machine.** `MaxPendingPerSource`
+  keys the flood limit on the address a request arrived from, which is the one
+  thing its sender cannot choose — but two machines can share that address:
+  another container or user on this same host, or anything behind the same NAT
+  when the owner's machine is behind it too. An attacker in that position holds
+  three pending rows from the shared source and the owner's own request is then
+  answered `TOO_MANY_FROM_SOURCE`, with the incoming list otherwise empty. The
+  owner's remedy is to refuse the rows they do not recognise, which the list
+  shows with their fingerprints; closing it properly would need a bound on
+  something the sender cannot share, and at pairing time — before any key is
+  trusted — there is no such thing.

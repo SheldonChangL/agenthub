@@ -53,6 +53,13 @@ type Server struct {
 	// pretending a request was recorded: the manual `ah pair` still works.
 	pairRequests *pairing.Requests
 	pairDialer   *transport.PairDialer
+	// afterRejectRead runs inside a received refusal, between reading the
+	// request's row and settling it. Nil everywhere but in the test that lands
+	// this owner's approval in exactly that window, which is the interleaving
+	// that used to leave the requester told "rejected" while this node kept the
+	// row approved and the trust row written. A race that can only be produced
+	// by winning a scheduling gamble is a race nothing can hold a fix against.
+	afterRejectRead func()
 	// peerAddress is where this node's peer listener answers, as host:port, so
 	// a pairing request can tell the far side where to deliver to. Empty when
 	// there is no address worth claiming, which records nothing rather than

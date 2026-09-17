@@ -323,12 +323,19 @@ func TestServiceRunNodeStartsTheNodeAndReturns(t *testing.T) {
 
 	// The node is detached, so its first line lands after this process has
 	// moved on. Waiting for the file is the whole assertion: an empty log
-	// after a second means nothing was started.
-	deadline := time.Now().Add(5 * time.Second)
+	// after the deadline means nothing was started.
+	//
+	// The wait is for the line, not for the file to be non-empty, and it is
+	// thirty seconds rather than five. Both because of the same flake: under a
+	// loaded machine this failed once and passed on a re-run, and the two ways
+	// that happens are a fork that had not got there in five seconds and a read
+	// that caught the write half-done — non-empty, and asserted against
+	// immediately. Waiting for what is being asserted covers both.
+	deadline := time.Now().Add(30 * time.Second)
 	var content []byte
 	for time.Now().Before(deadline) {
 		content, _ = os.ReadFile(logPath)
-		if len(content) > 0 {
+		if strings.Contains(string(content), "--db /tmp/x.db") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)

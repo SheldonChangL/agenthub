@@ -254,6 +254,17 @@ func (s *Server) writePairingState(w http.ResponseWriter, status int, state pair
 	if s.peerAddress != "" {
 		body["peerAddress"] = s.peerAddress
 	}
+	// And whether that address is one the other machine could actually be told
+	// to type. A node on loopback — the default — has nowhere another machine
+	// can reach, and a reader that printed the address anyway sent the owner to
+	// type 127.0.0.1 on the far side. Stated as a field rather than left to be
+	// parsed out of the address, so a UI branches on the fact rather than
+	// re-deriving it.
+	problem := pairing.PeerAddressProblem(s.peerAddress)
+	body["peerAddressReachable"] = problem == ""
+	if problem != "" {
+		body["peerAddressProblem"] = problem
+	}
 	if state.Open {
 		body["openedAt"] = state.OpenedAt
 		body["expiresAt"] = state.ExpiresAt
@@ -285,10 +296,13 @@ func (s *Server) announceNotice() string {
 	}
 	notice := "this node is not announcing itself over mDNS, so a window opened here will not " +
 		"put it in anyone's candidate list: " + reason
-	if s.peerAddress != "" {
-		return notice + ". The other machine can still pair by typing this address: " +
-			"`ah pair request " + s.peerAddress + "`"
-	}
-	return notice + ". The other machine can still pair with " +
-		"`ah pair request <this machine's host:port>`, or by hand with `ah pair`"
+	// The address itself is not repeated here, and no remedy is appended. The
+	// address travels in peerAddress beside this notice — a reader showing both
+	// printed it twice in four lines — and whether it is one the other machine
+	// could use is peerAddressProblem's answer, which is not always this
+	// reason's: a listener on a VPN tunnel is configured correctly and needs a
+	// network, not a different -peer-listen. What this sentence owes the owner
+	// is that mDNS is not the only way in.
+	return notice + ". The other machine can still pair by typing this node's peer address " +
+		"with `ah pair request`, or by hand with `ah pair`"
 }

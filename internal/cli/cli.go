@@ -18,6 +18,7 @@ import (
 
 	"agenthub.local/agenthub/internal/buildinfo"
 	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/pairing"
 )
 
 type runner struct {
@@ -445,8 +446,14 @@ type pairingStateRow struct {
 	// PeerAddress is where the other machine would send its request. Absent on
 	// a node with no peer listener, and on a node too old to report it.
 	PeerAddress string `json:"peerAddress"`
-	Notice      string `json:"notice"`
-	Announcing  struct {
+	// PeerAddressProblem is the node's own words for why that address is not
+	// one the other machine could be told to type. Empty on a node that has a
+	// usable address, and on a node too old to report the field — which is why
+	// the address is checked here as well: printing a loopback address as the
+	// one to type on the other machine is the failure this guards.
+	PeerAddressProblem string `json:"peerAddressProblem"`
+	Notice             string `json:"notice"`
+	Announcing         struct {
 		Addresses   int       `json:"announceableAddresses"`
 		LastSuccess time.Time `json:"lastAnnouncedAt"`
 		LastError   string    `json:"lastError"`
@@ -484,16 +491,33 @@ func (r runner) printPairingState(state pairingStateRow) {
 		_, _ = fmt.Fprintf(r.stdout, "  announcing over mDNS  no (%s)\n", why)
 	}
 	// Printed whether or not this node announces: mDNS does not cross every
-	// network the two machines might be on, and the address always works.
-	address := state.PeerAddress
-	if address == "" {
-		address = "<this machine's host:port>"
+	// network the two machines might be on, and a reachable address always
+	// works. What is never printed as the address to type is one that names
+	// this machine: on the default node the peer listener is on loopback, and
+	// "run ah pair request 127.0.0.1:7463 over there" is an instruction that
+	// cannot work and reads as though it should.
+	if problem := r.peerAddressProblem(state); problem != "" {
+		_, _ = fmt.Fprintf(r.stdout, "  next                  %s\n", problem)
+	} else {
+		_, _ = fmt.Fprintf(r.stdout, "  next                  On the other machine, run: "+
+			"ah pair request %s\n", state.PeerAddress)
 	}
-	_, _ = fmt.Fprintf(r.stdout, "  next                  On the other machine, run: "+
-		"ah pair request %s\n", address)
 	if state.Notice != "" {
 		_, _ = fmt.Fprintf(r.stdout, "\n%s\n", state.Notice)
 	}
+}
+
+// peerAddressProblem is the node's reason when it gave one, and this side's own
+// reading of the address when it did not.
+//
+// Two sources rather than one because the two disagree only in one direction: a
+// node that reports the field is authoritative, and a node too old to report it
+// still must not have a loopback address printed as the one to type elsewhere.
+func (r runner) peerAddressProblem(state pairingStateRow) string {
+	if state.PeerAddressProblem != "" {
+		return state.PeerAddressProblem
+	}
+	return pairing.PeerAddressProblem(state.PeerAddress)
 }
 
 // remainingWords is a countdown a person reads, from the seconds the node

@@ -141,7 +141,15 @@ type Request struct {
 	// other route must not be revoked because a pairing request naming it was
 	// refused, and without this flag a refusal would have no way to tell the
 	// two apart.
-	TrustedByRequest bool      `json:"trustedByRequest,omitempty"`
+	TrustedByRequest bool `json:"trustedByRequest,omitempty"`
+	// TrustLeftInPlace records that a refusal which should have taken that
+	// trust back did not: the key stored under that node id was not the key
+	// this request carried, so the trust in the store came from somewhere else
+	// and this refusal is not the thing that may remove it.
+	//
+	// Recorded rather than recomputed, because what the owner is told has to be
+	// what the node did, and only the handler that ran the revoke knows that.
+	TrustLeftInPlace bool      `json:"trustLeftInPlace,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
