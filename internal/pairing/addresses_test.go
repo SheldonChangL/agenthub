@@ -187,3 +187,50 @@ func TestAPolicyThatRefusesEverythingLeavesNothingToAnnounce(t *testing.T) {
 		t.Errorf("the reason does not carry the policy's own words: %q", endpoint.Unannounceable)
 	}
 }
+
+// Every spelling of "this address names my own machine", and every spelling of
+// one that does not.
+//
+// A table rather than the four cases it started as, because this
+// classification is what decides whether an owner is told to type an address on
+// the other machine, and each spelling is its own way of being wrong.
+// `localhost:7463` and `:7463` both classified as reachable until this test
+// existed: the first is loopback written as a word, the second is the wildcard
+// written short, and either one printed as the address to type sends the owner
+// to a machine that is not this one.
+func TestPeerAddressProblemClassifiesEverySpelling(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		want    string
+	}{
+		{address: "127.0.0.1:7463", want: PeerAddressRemedy},
+		{address: "[::1]:7463", want: PeerAddressRemedy},
+		{address: "0.0.0.0:7463", want: PeerAddressRemedy},
+		{address: "[::]:7463", want: PeerAddressRemedy},
+		{address: "localhost:7463", want: PeerAddressRemedy},
+		{address: ":7463", want: PeerAddressRemedy},
+		// The same address written as a v4-mapped v6 literal. Unmapped before
+		// the question is asked, or it reads as an ordinary v6 address.
+		{address: "[::ffff:127.0.0.1]:7463", want: PeerAddressRemedy},
+		// A zone names an interface on this machine, so the address cannot be
+		// typed on another one however routable it looks.
+		{address: "[fe80::1%en0]:7463", want: PeerAddressZoned},
+		// No address at all is its own answer. It is what a node with a
+		// reachable but unannounceable listener reports — an IPv6 one — and
+		// reading that as loopback told the owner to change a setting that was
+		// already right.
+		{address: "", want: PeerAddressUnknown},
+		{address: "   ", want: PeerAddressUnknown},
+		{address: "192.168.1.5:7463"},
+		{address: "122.122.122.1:7463"},
+		// Beyond loopback ValidatePeerListen refuses a name, so a build that
+		// reaches here with one is not this function's to second-guess.
+		{address: "example.com:7463"},
+	} {
+		t.Run(test.address, func(t *testing.T) {
+			if got := PeerAddressProblem(test.address); got != test.want {
+				t.Errorf("PeerAddressProblem(%q) = %q, want %q", test.address, got, test.want)
+			}
+		})
+	}
+}

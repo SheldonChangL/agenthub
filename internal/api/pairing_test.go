@@ -126,14 +126,29 @@ func TestTheWindowOpensWithoutDiscovery(t *testing.T) {
 	if body["open"] != true {
 		t.Errorf("open = %v", body["open"])
 	}
-	// And it says, in the same answer, that nothing is being announced and what
-	// the other machine has to be told instead. An owner left believing an
-	// unannounced window is advertising waits at the wrong screen.
+	// And it says, in the same answer, that nothing is being announced and why.
+	// An owner left believing an unannounced window is advertising waits at the
+	// wrong screen.
 	notice, _ := body["notice"].(string)
-	for _, want := range []string{"not announcing", "ah pair request"} {
+	for _, want := range []string{"not announcing", "without -discover"} {
 		if !strings.Contains(notice, want) {
 			t.Errorf("notice %q does not say %q", notice, want)
 		}
+	}
+	// What to do about it is not said here. This node has no peer address, so
+	// peerAddressProblem is the one next step in this answer, and the notice
+	// used to add a second one contradicting it: "the other machine can still
+	// pair by typing this node's peer address", beside a field saying there is
+	// no address to type.
+	if strings.Contains(notice, "ah pair request") {
+		t.Errorf("the notice carries a second next step: %q", notice)
+	}
+	problem, _ := body["peerAddressProblem"].(string)
+	if problem == "" {
+		t.Errorf("no next step at all: %s", opened.Body.String())
+	}
+	if body["peerAddressReachable"] != false {
+		t.Errorf("peerAddressReachable = %v on a node with no address", body["peerAddressReachable"])
 	}
 	if closed := perform(t, handler, http.MethodDelete, "/v1/pairing", nil); closed.Code != http.StatusOK {
 		t.Fatalf("closing without -discover = %d %s", closed.Code, closed.Body.String())
@@ -177,6 +192,84 @@ func TestTheWindowAnswerNamesTheAddressToTypeElsewhere(t *testing.T) {
 		if body["peerAddress"] != "192.168.1.42:7463" {
 			t.Errorf("%s answered peerAddress = %v", call.name, body["peerAddress"])
 		}
+	}
+}
+
+// Whether the address is one the other machine could use is a fact of its own,
+// and the answer states it rather than leaving every reader to parse a host out
+// of a string and decide what loopback means.
+func TestTheWindowAnswerSaysWhetherThatAddressIsReachable(t *testing.T) {
+	for name, test := range map[string]struct {
+		address   string
+		reachable bool
+		says      []string
+	}{
+		"a LAN address": {address: "192.168.1.42:7463", reachable: true},
+		// The default node. The address exists and names this machine, which is
+		// the case that sent owners to type 127.0.0.1 on the other machine.
+		"loopback": {address: "127.0.0.1:7463",
+			says: []string{"only listens on this machine", "-allow-lan", "ah service restart"}},
+		// The v6 spellings of the same two, present because a mutation that
+		// stopped treating ::1 as loopback survived a suite that had only the
+		// v4 ones.
+		"IPv6 loopback": {address: "[::1]:7463",
+			says: []string{"only listens on this machine", "-allow-lan", "ah service restart"}},
+		"IPv6 unspecified": {address: "[::]:7463", says: []string{"only listens on this machine"}},
+		"loopback by name": {address: "localhost:7463", says: []string{"only listens on this machine"}},
+		"unspecified":      {address: "0.0.0.0:7463", says: []string{"only listens on this machine"}},
+		"no host at all":   {address: ":7463", says: []string{"only listens on this machine"}},
+		// No address is not the loopback answer. A node reports none whenever
+		// its listener cannot be announced, and an IPv6 listener is reachable,
+		// so "only listens on this machine" would be a claim about a
+		// configuration that is already right.
+		"none at all": {address: "", says: []string{"did not report an address", "ah settings"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "reachable.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+			server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+				WithPairing(pairing.NewMode(), nil, nil),
+				WithPairExchange(pairing.NewRequests(), nil, test.address))
+
+			response := perform(t, server.Handler(), http.MethodGet, "/v1/pairing", nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("read = %d %s", response.Code, response.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["peerAddressReachable"] != test.reachable {
+				t.Errorf("peerAddressReachable = %v, want %v: %s",
+					body["peerAddressReachable"], test.reachable, response.Body.String())
+			}
+			problem, _ := body["peerAddressProblem"].(string)
+			if test.reachable && problem != "" {
+				t.Errorf("a usable address came with a problem: %s", problem)
+			}
+			if !test.reachable && problem == "" {
+				t.Errorf("an unusable address came with no problem: %s", response.Body.String())
+			}
+			for _, want := range test.says {
+				if !strings.Contains(problem, want) {
+					t.Errorf("the problem does not say %q: %s", want, problem)
+				}
+			}
+			if test.address == "" && strings.Contains(problem, "only listens on this machine") {
+				t.Errorf("a node that named no address is described as loopback: %s", problem)
+			}
+			// And the notice never carries the address a second time: a reader
+			// showing both fields printed it twice in the same four lines.
+			if notice, _ := body["notice"].(string); test.address != "" &&
+				strings.Contains(notice, test.address) {
+				t.Errorf("the notice repeats the address beside it: %s", notice)
+			}
+		})
 	}
 }
 
@@ -427,12 +520,23 @@ func TestOpeningSaysWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	if tunnel.Code != http.StatusOK {
 		t.Fatalf("response = %d %s, want 200", tunnel.Code, tunnel.Body.String())
 	}
-	if strings.Contains(tunnel.Body.String(), "-peer-listen") {
-		t.Errorf("a tunnel notice tells the owner to change -peer-listen, which is correct "+
-			"as configured: %s", tunnel.Body.String())
+	// Read from the notice rather than the whole answer: peerAddressProblem is
+	// a separate question about a separate fact — this fixture's node has no
+	// peer address at all — and its remedy naming -peer-listen is correct for
+	// the node it describes. What must not happen is that remedy being welded
+	// onto a reason it does not fit.
+	var tunnelBody struct {
+		Notice string `json:"notice"`
 	}
-	if !strings.Contains(tunnel.Body.String(), "tunnel") {
-		t.Errorf("the notice lost the node's reason: %s", tunnel.Body.String())
+	if err := json.Unmarshal(tunnel.Body.Bytes(), &tunnelBody); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tunnelBody.Notice, "-peer-listen") {
+		t.Errorf("a tunnel notice tells the owner to change -peer-listen, which is correct "+
+			"as configured: %s", tunnelBody.Notice)
+	}
+	if !strings.Contains(tunnelBody.Notice, "tunnel") {
+		t.Errorf("the notice lost the node's reason: %s", tunnelBody.Notice)
 	}
 }
 
