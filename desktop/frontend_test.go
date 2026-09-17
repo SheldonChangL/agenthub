@@ -572,6 +572,17 @@ func TestFrontendShimSelectDoesNotLie(t *testing.T) {
 	runNodeCheck(t, "dom-shim-select.mjs")
 }
 
+// TestFrontendSpeaksBothLanguages covers the half of the window the rest of
+// these checks cannot see.
+//
+// Every other check under frontend/test boots in Traditional Chinese, because
+// that is the language its assertions are written in. This one boots in en-US,
+// which is what a machine outside a zh locale reports, and is therefore the
+// only place the English half of the window is exercised at all.
+func TestFrontendSpeaksBothLanguages(t *testing.T) {
+	runNodeCheck(t, "i18n.mjs")
+}
+
 // runNodeCheck runs one check under frontend/test.
 func runNodeCheck(t *testing.T, name string) {
 	t.Helper()

@@ -28,6 +28,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
+import { TEXT as EN } from "../src/i18n/en.js";
+import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -135,9 +137,19 @@ if (el("local-fingerprint").textContent !== "AAAA BBBB CCCC") {
 }
 // The two are different things and the dialog has to say which is which: the
 // key is carried across and typed in, the fingerprint is compared on screens.
+// The markup carries the key and the tables carry the sentence, so both
+// halves are checked: a key nothing names paints nothing, and a table missing
+// the sentence paints the key.
 const dialog = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
-if (!dialog.includes("對方在配對對話框裡要填的就是這串；指紋則要在兩台螢幕上逐組比對。")) {
-  failures.push("the dialog does not say which of the two strings is typed in and which is compared");
+if (!dialog.includes('data-t="pairManual.localKeyNote"')) {
+  failures.push("the dialog no longer carries the line saying which string is typed in and which is compared");
+}
+if (ZH["pairManual.localKeyNote"] !== "對方在配對對話框裡要填的就是這串；指紋則要在兩台螢幕上逐組比對。") {
+  failures.push("zh-Hant.js no longer says which of the two strings is typed in and which is compared");
+}
+if (!/fingerprint/i.test(EN["pairManual.localKeyNote"] ?? "") ||
+    !/key/i.test(EN["pairManual.localKeyNote"] ?? "")) {
+  failures.push("en.js does not name both the key and the fingerprint in that line");
 }
 
 // The copy button copies that key, and only that key.
