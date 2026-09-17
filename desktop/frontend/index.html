@@ -50,6 +50,18 @@
 
       <!-- ============ local sessions ============ -->
       <main id="local-view" class="view">
+        <!-- The first screen a stranger sees. Every step below is computed
+             from state on each render, so one that regresses comes back; the
+             card as a whole is dismissible and never reopens itself. -->
+        <section id="onboarding" class="card onboarding hidden">
+          <div class="cardhead">
+            <span data-t="onboarding.title"></span>
+            <span class="muted" data-t="onboarding.subtitle"></span>
+            <span class="spacer"></span>
+            <button id="onboarding-dismiss" class="link" data-t="onboarding.dismiss"></button>
+          </div>
+          <div class="cardbody"><div id="onboarding-steps"></div></div>
+        </section>
         <section class="filters">
           <input id="search" type="search" data-t-placeholder="local.searchPlaceholder" autocomplete="off" />
           <div class="filtergroup"><span class="grouplabel">PROVIDER</span><div class="chips" id="chips-provider"></div></div>
@@ -250,6 +262,9 @@
                      costs: the rain is off until it is asked for. -->
                 <p id="appearance-state" class="muted" style="margin: 0"></p>
                 <label class="toggle langrow"><span data-t="appearance.language"></span><select id="settings-lang"></select></label>
+                <!-- A dismissal has to be reversible, or the one screen that
+                     explains the app is gone for good after one click. -->
+                <p class="muted" style="margin: 0"><button id="settings-show-onboarding" class="link" data-t="onboarding.showAgain"></button><span class="why" style="display: block" data-t="onboarding.showAgainWhy"></span></p>
               </div>
             </div>
           </section>

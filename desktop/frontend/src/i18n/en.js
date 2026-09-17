@@ -582,4 +582,44 @@ export const TEXT = {
   "nodeSettings.savedServiceDown": "Saved, but the service is not running after the restart. The settings just changed may be making the node refuse to start. Log: {log}",
   "nodeSettings.noLogPath": "(the node gave no path)",
   "nodeSettings.noStatusRead": "no status was read",
+
+  /* ---------------- the first-launch checklist ---------------- */
+
+  "onboarding.title": "Set up AgentHub",
+  "onboarding.subtitle": "A few steps from a fresh install to two machines that can see each other's sessions.",
+  "onboarding.dismiss": "Hide this",
+  "onboarding.done": "Done",
+  "onboarding.todo": "To do",
+  "onboarding.allDone": "That is everything. This card will not come back.",
+  "onboarding.showAgain": "Show the setup checklist",
+  "onboarding.showAgainWhy": "Puts the first-launch steps back at the top of the sessions list.",
+
+  "onboarding.service.title": "Run the node as a background service",
+  "onboarding.service.body": "This window is only a window. The node is the process that watches your sessions and answers other machines, and as a service it starts with your computer.",
+  "onboarding.service.action": "Install the service",
+  "onboarding.service.titleStart": "Start the node",
+  "onboarding.service.bodyUnsupported": "There is no service manager here that AgentHub can register with, so this window starts and stops the node itself.",
+  "onboarding.service.actionStart": "Start the node",
+  "onboarding.service.actionRestart": "Restart the node",
+  "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot find out what is holding the node: {error}",
+
+  "onboarding.sessions.title": "Find your local sessions",
+  "onboarding.sessions.body": "AgentHub reads the files Claude Code and Codex leave on disk. Scan once and the table fills; after that it keeps itself up to date.",
+  "onboarding.sessions.bodyNoneFound": "The last scan found no Claude Code or Codex session on this machine. AgentHub only knows about the ones those tools have written files for, so start a session in one of them and scan again.",
+  "onboarding.sessions.action": "Scan for sessions",
+
+  "onboarding.reachable.title": "Make this machine reachable",
+  "onboarding.reachable.body": "Until you say otherwise the node listens on 127.0.0.1, which no other machine can reach. Choose an address on your own network and the node restarts on it.",
+  "onboarding.reachable.bodyLoading": "Reading what the node is listening on…",
+  "onboarding.reachable.bodyNoAddress": "This machine has no private network address to offer. Set the listening address by hand in node settings.",
+  "onboarding.reachable.bodyDone": "Another machine can reach this one at {address}.",
+  "onboarding.reachable.openSettings": "Open node settings",
+
+  "onboarding.pair.title": "Pair with another machine",
+  "onboarding.pair.body": "Pairing is two people comparing the same fingerprint on two screens. It shares nothing by itself: what each machine publishes stays a separate decision, made per session.",
+  "onboarding.pair.action": "Open pairing",
+
+  "onboarding.publish.title": "Publish a session",
+  "onboarding.publish.body": "Nothing leaves this machine until you choose it. Tick a session in the table below and set its audience to say who may see it.",
+  "onboarding.publish.action": "Show me",
 };
