@@ -145,7 +145,7 @@ jobs:
               -ldflags "-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}" \
               -o "stage/${bundle}/${command}${suffix}" "./cmd/${command}"
           done
-          cp README.md "stage/${bundle}/"
+          cp README.md LICENSE "stage/${bundle}/"
           echo "bundle=$bundle" >> "$GITHUB_ENV"
 
       # The tag has to be what the binary says, or the release is mislabelled in
@@ -475,7 +475,7 @@ jobs:
           cp build/bin/agenthub-desktop.exe build/bin/ah.exe \
             build/bin/agenthub-node.exe build/bin/agenthub-mcp.exe \
             "build/zip/${staging}/"
-          cp ../README.md "build/zip/${staging}/"
+          cp ../README.md ../LICENSE "build/zip/${staging}/"
           (cd build/zip && 7z a -tzip -bso0 "../../../dist/${staging}.zip" "$staging")
 
       # No Linux desktop packaging format is produced: .deb and .AppImage each
@@ -497,7 +497,7 @@ jobs:
           cp build/bin/agenthub-desktop build/bin/ah \
             build/bin/agenthub-node build/bin/agenthub-mcp \
             "build/tar/${staging}/"
-          cp ../README.md "build/tar/${staging}/"
+          cp ../README.md ../LICENSE "build/tar/${staging}/"
           cat > "build/tar/${staging}/README.txt" <<EOF
           AgentHub desktop ${TAG} — linux/amd64
 
@@ -621,7 +621,7 @@ jobs:
         run: |
           notes=$(mktemp)
           {
-            echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT})."
+            echo "Built from \`${GITHUB_SHA}\` by [run ${GITHUB_RUN_ID}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}). MIT licensed; the LICENSE file travels inside every archive."
             echo
             # The desktop app first, because it is what most people came for
             # and the command line archives are the thing you reach for after.
