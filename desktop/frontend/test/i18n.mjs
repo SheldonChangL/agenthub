@@ -273,9 +273,19 @@ for (const [lang, table, other] of [["en", EN, ZH], ["zh-Hant", ZH, EN], ["en", 
 }
 
 // The MANAGED column is the node's enum, and it used to reach the screen raw.
+//
+// While en.js answered "managed" for session.managed.managed this check could
+// not tell a table lookup from the raw enum going straight through, so the
+// English table carries the capitalised word and both facts are asserted.
 app.setUILanguage("en");
 if (app.managementLabel("managed") !== EN["session.managed.managed"]) {
   failures.push("the managed column did not go through the table in English");
+}
+if (EN["session.managed.managed"] === "managed" || EN["session.managed.unmanaged"] === "unmanaged") {
+  failures.push("en.js repeats the node's enum, so the assertion above cannot see a raw value reaching the screen");
+}
+if (app.managementLabel("managed") === "managed") {
+  failures.push("the node's enum reached the English screen unchanged");
 }
 app.setUILanguage("zh-Hant");
 if (app.managementLabel("unmanaged") !== ZH["session.managed.unmanaged"]) {
@@ -287,6 +297,106 @@ if (app.managementLabel("supervised") !== "supervised") {
   failures.push("an unknown management value was not shown verbatim");
 }
 app.setUILanguage("en");
+
+/* ---------------- the drawers and the title bar ---------------- */
+
+// Three more things a switch has to catch up, none of them re-derived by
+// render(): the inbox list (written once per read, by the one call that was
+// handed the answer), the MCP dialog's status line (written once, at the moment
+// the clipboard answered), and the title bar's node line.
+
+const messageBodies = ["first", "second", "third"];
+// configure() replaces the binding set rather than merging into it, so the
+// ones this section still needs are named again.
+configure({
+  Overview: async () => ({
+    reachable: true, nodeUrl: "http://127.0.0.1:7462",
+    node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
+    sessions: [], nodes: [], peers: [], counts: {},
+  }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  SetNodeAddress: noop, Pairing: async () => ({ availability: "unknown", candidates: [] }),
+  OpenPairing: noop, ClosePairing: noop, ClearInbox: noop, Outbound: noop, Wakes: noop,
+  PairRequests: async () => [], StartPairRequest: noop, ApprovePairRequest: noop,
+  ConfirmPairRequest: noop, RejectPairRequest: noop,
+  ServiceStatus: async () => ({ supported: false }), InstallService: noop, UninstallService: noop,
+  LocalAddresses: async () => [], NodeSettings: async () => ({ error: "not needed" }),
+  SaveNodeSettings: noop, RestartNode: noop, HostPlatform: async () => "darwin",
+  Version: async () => ({ release: "unreleased" }),
+  Inbox: async (sessionId) => ({
+    sessionId,
+    held: 3, capacity: 32, showing: 3, more: false, full: false,
+    messages: messageBodies.map((body, index) => ({
+      from: `node_other/agent-${index}`,
+      createdAt: new Date(Date.now() - 60000).toISOString(),
+      body,
+    })),
+  }),
+  MCPConfig: async () => ({ text: '{"mcpServers":{}}' }),
+  CopyText: async () => ({}),
+});
+
+app.setUILanguage("zh-Hant");
+await app.openInbox("claude:i18n-drawer");
+const zhMeta = el("inbox-meta").textContent;
+if (!zhMeta.includes(ZH["inbox.meta"].replace("{held}", "3").replace("{capacity}", "32"))) {
+  failures.push(`the inbox meta line is not the Chinese one to begin with: ${zhMeta}`);
+}
+app.setUILanguage("en");
+const enMeta = el("inbox-meta").textContent;
+if (han.test(enMeta)) {
+  failures.push(`switching language left the inbox meta line in Chinese: ${enMeta}`);
+}
+if (!enMeta.includes(EN["inbox.meta"].replace("{held}", "3").replace("{capacity}", "32"))) {
+  failures.push(`the inbox meta line was not re-derived in English: ${enMeta}`);
+}
+if (!enMeta.includes("claude:i18n-drawer")) {
+  failures.push(`the inbox meta line lost the session it belongs to: ${enMeta}`);
+}
+const enBody = el("inbox-body").textContent;
+if (han.test(enBody)) {
+  failures.push(`switching language left the inbox list in Chinese: ${enBody.slice(0, 120)}`);
+}
+for (const word of enBody.split(/\s+/)) {
+  if (Object.hasOwn(EN, word)) failures.push(`the inbox list shows the raw key ${word}`);
+}
+for (const body of messageBodies) {
+  if (!enBody.includes(body)) failures.push(`the repaint dropped the message "${body}" from the list`);
+}
+if (!enBody.includes(EN["sender.claimsToBe"].trim())) {
+  failures.push(`the sender lines were not re-derived in English: ${enBody.slice(0, 160)}`);
+}
+
+// The status line, after a copy that succeeded: the one sentence in this dialog
+// the owner acts on.
+app.setUILanguage("zh-Hant");
+await app.openMCPConfig("claude:i18n-drawer");
+if (el("mcp-status").textContent !== ZH["mcp.copied"]) {
+  failures.push(`the MCP status line is not the Chinese "copied": ${el("mcp-status").textContent}`);
+}
+app.setUILanguage("en");
+if (el("mcp-status").textContent !== EN["mcp.copied"]) {
+  failures.push(`switching language left the MCP status line behind: ${el("mcp-status").textContent}`);
+}
+app.closeMCPConfig();
+if (el("mcp-status").textContent !== "") {
+  failures.push("closing the MCP dialog left its status line on screen");
+}
+
+// The title bar's line. index.html keys it "app.connecting", so a switch that
+// stopped at paintStatic left a reachable node reading as one still being
+// looked for.
+await app.load();
+app.setUILanguage("zh-Hant");
+app.setUILanguage("en");
+const nodeLine = el("node-line").textContent;
+if (!nodeLine.includes("local")) {
+  failures.push(`the node line does not name the node after a switch: ${nodeLine}`);
+}
+if (nodeLine === EN["app.connecting"] || nodeLine === ZH["app.connecting"] || rawKey(nodeLine)) {
+  failures.push(`the node line fell back to index.html's placeholder: ${nodeLine}`);
+}
+if (han.test(nodeLine)) failures.push(`the node line is still Chinese: ${nodeLine}`);
 
 /* ---------------- both tables say the same things ---------------- */
 

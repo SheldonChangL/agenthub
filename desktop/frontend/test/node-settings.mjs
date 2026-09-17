@@ -1209,6 +1209,53 @@ if (visitReads <= readsAfterFirstVisit) {
   failures.push("returning to the settings view did not try the node again");
 }
 
+// R29. A language switch changes no field the owner touched — and the one that
+//      looked safest was not. The "this machine only" option carries the value
+//      "", so relabelNodeSettings' `select.value || saved.peerListen` read an
+//      owner who had just moved a saved LAN address back to loopback as "the
+//      form has not been filled in", re-selected the LAN address under them,
+//      and left readNodeSettingsPatch with nothing to send: Save then reported
+//      no change and the node stayed on the LAN (§7.8 rules 1 and 4).
+baseBindings({
+  LocalAddresses: async () => [
+    { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+  ],
+});
+settingsAnswer = async () => ({
+  settings: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: false },
+  saved: { peerListen: "192.168.50.10:7463", allowLan: true, discover: true, treatAsPrivate: [], autoWake: false },
+  sources: { peerListen: "remembered", allowLan: "remembered", discover: "remembered", treatAsPrivate: "default", autoWake: "default" },
+  restartRequired: false,
+});
+app.state.nodeSettings = null;
+await app.loadNodeSettings();
+await tick();
+state_nodePrivateReset();
+// What the owner does: back to this machine only, LAN off, and a range typed
+// into the field by hand.
+el("node-peerlisten").value = "";
+el("node-allow-lan").checked = false;
+el("node-private").value = "10.1.0.0/16";
+const beforeSwitch = JSON.stringify(app.readNodeSettingsPatch());
+if (!beforeSwitch.includes("127.0.0.1:7463")) {
+  failures.push(`the loopback choice did not reach the patch: ${beforeSwitch}`);
+}
+const languageBefore = app.language();
+app.setUILanguage("en");
+app.setUILanguage("zh-Hant");
+if (el("node-peerlisten").value !== "") {
+  failures.push(`a language switch re-selected ${el("node-peerlisten").value} over the owner's "this machine only"`);
+}
+if (el("node-allow-lan").checked) failures.push("a language switch re-ticked allow-LAN");
+if (el("node-private").value !== "10.1.0.0/16") {
+  failures.push(`a language switch rewrote the typed range: ${el("node-private").value}`);
+}
+const afterSwitch = JSON.stringify(app.readNodeSettingsPatch());
+if (afterSwitch !== beforeSwitch) {
+  failures.push(`a language switch changed what Save would send: ${beforeSwitch} -> ${afterSwitch}`);
+}
+app.setUILanguage(languageBefore);
+
 // R23 runs last on purpose. It calls paintAfterSave with literal sequence
 // numbers to control which paint finishes first, and that leaves the module's
 // applied-watermark above anything a later section could reach — every read

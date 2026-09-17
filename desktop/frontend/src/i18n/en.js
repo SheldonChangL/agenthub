@@ -104,8 +104,8 @@ export const TEXT = {
   // "managed" means this app started the session and can stop it. Anything
   // else the node may send one day is shown as it arrived rather than guessed
   // at.
-  "session.managed.managed": "managed",
-  "session.managed.unmanaged": "unmanaged",
+  "session.managed.managed": "Managed",
+  "session.managed.unmanaged": "Unmanaged",
   "local.colAudience": "AUDIENCE",
   "local.colFlags": "FLAGS",
   "local.colCwd": "WORKING DIRECTORY",

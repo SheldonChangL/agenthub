@@ -47,6 +47,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // mcpSession is whose config the MCP dialog is showing. Only the title
     // needs it, and only so a language switch can write that title again.
     mcpSession: null,
+    // And what that dialog's status line says, as a state rather than as a
+    // sentence — "did the clipboard take it" has to survive a language switch.
+    mcpStatus: null,
     // inboxSession is whose inbox the modal is showing, so Clear knows what it
     // would empty and a refresh knows what to re-read.
     inboxSession: null,
@@ -115,6 +118,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // The session the inbox drawer was opened for, set before the read; the
     // clear button's target (inboxSession) is armed only once an answer lands.
     inboxSessionAsked: null,
+    // The view renderInbox was last handed, so a language switch can draw the
+    // same list again instead of leaving the previous language on screen.
+    inboxView: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -2465,6 +2471,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function renderInbox(view) {
     const meta = el("inbox-meta");
     const body = el("inbox-body");
+    // Kept so a language switch can paint this list again. Every sentence below
+    // comes out of t(), and none of them is re-derived by render() — the drawer
+    // is filled by one call per read, so without the argument nothing could
+    // rebuild it and the meta line stayed in the language before the switch.
+    state.inboxView = view;
     body.replaceChildren();
 
     if (view.loading) {
@@ -2662,6 +2673,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("outbound-body").replaceChildren();
     el("wakes-body").replaceChildren();
     el("inbox-meta").textContent = "";
+    state.inboxView = null;
     state.inboxSession = null;
   }
 
@@ -2694,7 +2706,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.mcpSession = sessionId;
     el("mcp-title").textContent = `${t("mcp.title")} · ${sessionId}`;
     el("mcp-text").textContent = "";
-    el("mcp-status").textContent = t("mcp.generating");
+    renderMCPStatus({ kind: "generating" });
     el("mcp-modal").classList.remove("hidden");
 
     let result;
@@ -2715,10 +2727,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Shown here rather than in a banner: this dialog covers the banner, so an
       // error there is an error nobody reads. The most likely one is that
       // agenthub-mcp was not found, and the message says where it looked.
-      el("mcp-status").replaceChildren(
-        element("div", "stale", t("mcp.failed")),
-        element("div", "muted", String(failure))
-      );
+      renderMCPStatus({ kind: "failed", error: String(failure) });
       return;
     }
     // Title and body come from the same answer: this is the reply to the call
@@ -2736,7 +2745,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     mcpApplied = sequence;
     // Whether the clipboard took it. Saying "已複製" when it did not is the one
     // outcome that sends someone to paste nothing into a file.
-    el("mcp-status").textContent = copied ? t("mcp.copied") : t("mcp.copyFailed");
+    renderMCPStatus({ kind: copied ? "copied" : "copyFailed" });
+  }
+
+  // renderMCPStatus is the only writer of #mcp-status, and it writes from
+  // state.mcpStatus rather than from the moment it was called.
+  //
+  // The line is the answer to "did the clipboard take it", which is the one
+  // thing in this dialog the owner acts on — and it was written once, in the
+  // language of that moment. A switch with the dialog still open left the
+  // Chinese sentence under an English window, or index.html's placeholder key.
+  function renderMCPStatus(status) {
+    state.mcpStatus = status ?? null;
+    const node = el("mcp-status");
+    if (!status) {
+      node.textContent = "";
+      return;
+    }
+    if (status.kind === "failed") {
+      node.replaceChildren(
+        element("div", "stale", t("mcp.failed")),
+        element("div", "muted", String(status.error ?? ""))
+      );
+      return;
+    }
+    node.textContent = t({
+      generating: "mcp.generating",
+      copied: "mcp.copied",
+      copyFailed: "mcp.copyFailed",
+    }[status.kind] ?? "mcp.generating");
   }
 
   function closeMCPConfig() {
@@ -2746,7 +2783,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.mcpSession = null;
     el("mcp-modal").classList.add("hidden");
     el("mcp-text").textContent = "";
-    el("mcp-status").textContent = "";
+    renderMCPStatus(null);
   }
 
   /* ---------------- inbox drawer: tabs, outbound, wakes ---------------- */
@@ -3971,7 +4008,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const view = state.nodeSettings;
     if (!view) return;
     const select = el("node-peerlisten");
-    const chosen = select.value || view.saved?.peerListen || "";
+    // The selection as it stands on screen, and nothing else. Falling back to
+    // `saved.peerListen` here undid the owner's own choice: the loopback option
+    // carries the value "" (fillPeerListenOptions writes `select.value = ""` for
+    // it), so an owner who had moved a saved LAN address BACK to "this machine
+    // only" and then switched language had the LAN address re-selected under
+    // them — readNodeSettingsPatch would then find nothing changed and Save
+    // would leave the node listening on the LAN. relabelNodeSettings only ever
+    // runs once applyNodeSettings has populated the form, so "" is always the
+    // loopback option and never "the form has not been filled in yet".
+    const chosen = select.value;
     fillPeerListenOptions(chosen, state.nodeAddresses?.list);
     const running = view.settings ?? {};
     const sources = view.sources ?? {};
@@ -4429,10 +4475,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (state.inboxSessionAsked) {
       el("inbox-title").textContent = state.inboxSessionAsked;
       showInboxTab(state.inboxTab);
+      // The list itself, from the view renderInbox was last handed. Every line
+      // in it — the meta line's counts, "full", "empty", a failed read — is a
+      // translated sentence that only this call writes.
+      if (state.inboxView) renderInbox(state.inboxView);
       renderOutbound();
     }
     if (!el("audience-modal").classList.contains("hidden")) renderAudienceCount();
-    if (state.mcpSession) el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
+    if (state.mcpSession) {
+      el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
+      renderMCPStatus(state.mcpStatus);
+    }
   }
 
   /* ---------------- redesign wiring ---------------- */
@@ -4567,7 +4620,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
-    renderNodeLine, relabelNodeSettings, repaintFromState,
+    renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
     t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
