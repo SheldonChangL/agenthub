@@ -295,10 +295,22 @@ jobs:
       # -X the standalone archives get, so the copies inside the bundle answer
       # `--version` with the tag rather than a revision.
       #
-      # -ldflags passes the same -X to the desktop binary itself. It is a no-op
-      # today — the desktop module does not link internal/buildinfo, and the Go
-      # linker ignores an -X naming a symbol that is not there — and it is here
-      # so that the day the app reports a version, the release already stamps it.
+      # -ldflags stamps the desktop binary itself. `main.release` is the one the
+      # window reads (desktop/buildinfo.go) and reports in its title bar; the
+      # internal/buildinfo one is for the day the desktop module links the root
+      # module — the Go linker ignores an -X naming a symbol that is not there,
+      # so carrying it costs nothing and losing it would be silent.
+      #
+      # info.productVersion is a separate fact from the ldflag and has to be set
+      # separately: it is what wails templates into Info.plist
+      # (CFBundleShortVersionString), into build/windows/info.json and into the
+      # NSIS installer's version. wails.json does not carry it, because the
+      # version belongs to the tag and not to the checkout — unset, wails writes
+      # "1.0.0", and every artifact of every release claims the same version.
+      #
+      # Windows gets the numeric part only: that value reaches goversioninfo's
+      # fixed.file_version, which is a four-number Windows VERSIONINFO field and
+      # not a place a "-rc.1" suffix can go. macOS and Linux get the full tag.
       #
       # -nsis on Windows: the installer is the point of that platform, and the
       # bundling hook has to have run first, because project.nsi packages
@@ -311,6 +323,15 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
         run: |
           ldflags="-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}"
+          ldflags="$ldflags -X main.release=${TAG}"
+          version="${TAG#v}"
+          case "$PLATFORM" in
+          windows/*) product_version="${version%%-*}" ;;
+          *) product_version="$version" ;;
+          esac
+          jq --arg v "$product_version" '.info.productVersion = $v' wails.json > wails.json.tmp
+          mv wails.json.tmp wails.json
+          echo "info.productVersion = $product_version"
           case "$PLATFORM" in
           darwin/*)
             wails build -clean -platform "$PLATFORM" -ldflags "$ldflags"
@@ -371,6 +392,23 @@ jobs:
             "ah ${TAG} "*) ;;
             *) echo "the bundled ah --version does not lead with ${TAG}"; exit 1 ;;
           esac
+
+      # The version wails stamped, read back from the bundle rather than assumed
+      # from the jq above. Getting this wrong is invisible until a stranger
+      # files a bug against "1.0.0", which is every build ever made.
+      - name: the app bundle reports the tag (macos)
+        if: matrix.runner == 'macos-latest'
+        working-directory: desktop
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          plist=build/bin/agenthub-desktop.app/Contents/Info.plist
+          reported=$(defaults read "$PWD/$plist" CFBundleShortVersionString)
+          echo "CFBundleShortVersionString = $reported"
+          if [ "$reported" != "${TAG#v}" ]; then
+            echo "the app bundle says $reported, not ${TAG#v}"
+            exit 1
+          fi
 
       # hdiutil rather than a third-party action: it is in the OS, it is what
       # Apple documents, and a .dmg is the only macOS download a stranger knows
@@ -527,9 +565,11 @@ jobs:
             echo "no archives were downloaded; nothing to publish"; exit 1
           fi
           # Every platform of both products, or the release is half a release
-          # and nobody notices until someone looks for their download. Nine:
-          # six command line archives, three desktop platforms (the Windows
-          # installer and zip are one platform, so ten files).
+          # and nobody notices until someone looks for their download. Ten
+          # files: four desktop (three platforms, with the Windows installer and
+          # zip both counted) and the six command line archives — each of those
+          # is one job, and a job that failed while the others passed is exactly
+          # the case this catches.
           # The pattern is expanded inside the function, not by the for-list:
           # nullglob is on, so an unmatched pattern in a word list vanishes
           # instead of arriving as the string that was not matched.
@@ -538,12 +578,18 @@ jobs:
             'agenthub-desktop_*_darwin_universal.dmg' \
             'agenthub-desktop_*_windows_amd64-installer.exe' \
             'agenthub-desktop_*_windows_amd64.zip' \
-            'agenthub-desktop_*_linux_amd64.tar.gz'; do
+            'agenthub-desktop_*_linux_amd64.tar.gz' \
+            'agenthub_*_linux_amd64.tar.gz' \
+            'agenthub_*_linux_arm64.tar.gz' \
+            'agenthub_*_darwin_amd64.tar.gz' \
+            'agenthub_*_darwin_arm64.tar.gz' \
+            'agenthub_*_windows_amd64.zip' \
+            'agenthub_*_windows_arm64.zip'; do
             found=($expected)
             [ ${#found[@]} -gt 0 ] || missing+=("$expected")
           done
           if [ ${#missing[@]} -ne 0 ]; then
-            echo "a desktop artifact is missing: ${missing[*]}"
+            echo "an artifact is missing: ${missing[*]}"
             ls -l
             exit 1
           fi
@@ -566,7 +612,7 @@ jobs:
             echo
             echo "| Platform | Download | What to do with it |"
             echo "|---|---|---|"
-            echo "| macOS (Apple silicon and Intel) | \`agenthub-desktop_${TAG}_darwin_universal.dmg\` | Open it, drag AgentHub to Applications. First launch: right-click the app → **Open** (see below). |"
+            echo "| macOS (Apple silicon and Intel) | \`agenthub-desktop_${TAG}_darwin_universal.dmg\` | Open it, drag \`agenthub-desktop.app\` to Applications. The first launch needs one extra step (see below). |"
             echo "| Windows 10/11 (x64) | \`agenthub-desktop_${TAG}_windows_amd64-installer.exe\` | Run it. It installs the app, registers the background node and adds a Start menu entry. |"
             echo "| Windows, no installer | \`agenthub-desktop_${TAG}_windows_amd64.zip\` | Unpack it and run \`agenthub-desktop.exe\`; keep the other three files beside it. |"
             echo "| Linux (x64) | \`agenthub-desktop_${TAG}_linux_amd64.tar.gz\` | Unpack it and run \`./agenthub-desktop\`. Needs GTK 3 and WebKit2GTK 4.1 — the README.txt inside names the package. |"
@@ -595,7 +641,7 @@ jobs:
             # signature here, and a reader should meet both at once.
             echo "Nothing here is **code-signed or notarized** (issue #66), so every platform will say so before it lets you run anything. That is expected; check the hash above before you override any of it, because it is the only evidence you have that the download is what this workflow built."
             echo
-            echo "- **macOS.** The app is ad-hoc signed, which is enough to launch but not enough for Gatekeeper. After dragging AgentHub to Applications, right-click it → **Open** → **Open** once; a plain double-click on the first launch only offers to move it to the Bin. Or, from a terminal: \`xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app\`. Loose command line binaries are the same: allow them in System Settings → Privacy & Security, or \`xattr -d com.apple.quarantine <file>\`."
+            echo "- **macOS.** The app is ad-hoc signed, which is enough to launch but not enough for Gatekeeper. On **macOS 15 Sequoia and later**, after dragging \`agenthub-desktop.app\` to Applications: double-click it, get the \"cannot be opened\" / \"Apple could not verify\" dialog, click **Done**, then open **System Settings → Privacy & Security**, scroll down to **Security**, click **Open Anyway** next to the app's name and confirm. Sequoia removed the old right-click → **Open** bypass; on macOS 14 and earlier that still works. Either way, the terminal route is \`xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app\`. Loose command line binaries take the same Privacy & Security detour, or \`xattr -d com.apple.quarantine <file>\`."
             echo "- **Windows.** SmartScreen calls the publisher unknown: More info → Run anyway."
             echo "- **Linux.** No equivalent gate; \`chmod +x\` if the executable bit did not survive."
             echo
