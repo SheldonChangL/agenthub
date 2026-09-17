@@ -24,7 +24,15 @@
 # wails runs a hook with exec, not through a shell, so on Windows the hook is
 # registered as "bash ../bundle-binaries.sh …" (wails.json): a .sh is not an
 # executable there, and git-bash is what the runners and every Windows checkout
-# of this repository already have. The Windows NSIS installer depends on this
+# of this repository already have.
+#
+# On a Windows developer box with WSL installed, `bash` on PATH is often
+# C:\Windows\System32\bash.exe — the WSL launcher, not git-bash. That one runs
+# this script inside the Linux distribution, where the Windows Go toolchain and
+# the /mnt/c/... path translation are not what the hook assumes, and it fails in
+# a way that reads like a bug in this script. Put git-bash's bin directory
+# (usually C:\Program Files\Git\bin) ahead of System32 on PATH before running
+# `wails build` there. The CI runner has no WSL, so this only bites locally. The Windows NSIS installer depends on this
 # hook having run — desktop/build/windows/installer/project.nsi packages
 # ..\..\bin\ah.exe and friends, which only exist because this script put them
 # there before wails invoked makensis.

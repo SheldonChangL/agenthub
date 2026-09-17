@@ -68,7 +68,7 @@ your PATH.
 
 | Platform | File | What to do with it |
 |---|---|---|
-| macOS, Apple silicon and Intel | `agenthub-desktop_<tag>_darwin_universal.dmg` | Open it and drag AgentHub to Applications. On the **first** launch, right-click the app → **Open** → **Open**; a plain double-click only offers to move it to the Bin, because the app is not notarized. |
+| macOS, Apple silicon and Intel | `agenthub-desktop_<tag>_darwin_universal.dmg` | Open it and drag `agenthub-desktop.app` to Applications. The app is not notarized, so the **first** launch needs one extra step — see [the downloads are not signed](#the-downloads-are-not-signed-and-your-machine-will-say-so) below. |
 | Windows 10/11, x64 | `agenthub-desktop_<tag>_windows_amd64-installer.exe` | Run it. It installs the app, registers the background node with Task Scheduler and adds a Start menu entry. |
 | Windows, without an installer | `agenthub-desktop_<tag>_windows_amd64.zip` | Unpack it and run `agenthub-desktop.exe`. Keep the other three binaries in the same folder. |
 | Linux, x64 | `agenthub-desktop_<tag>_linux_amd64.tar.gz` | Unpack it and run `./agenthub-desktop`. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1 — `README.txt` inside names the package for Debian, Fedora and Arch. |
@@ -92,13 +92,19 @@ for one. The consequence is that you will be asked to override a warning:
 | Platform | What you see | How to proceed |
 |---|---|---|
 | Windows | SmartScreen: "Windows protected your PC", unknown publisher | More info → Run anyway |
-| macOS, the `.app` | Gatekeeper will not open it, and offers to move it to the Bin | Right-click the app → **Open** → **Open**, once. Or `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app` |
+| macOS 15 Sequoia and later, the `.app` | "agenthub-desktop.app cannot be opened" / "Apple could not verify it is free of malware" | Double-click it, click **Done**, then System Settings → Privacy & Security → scroll to **Security** → **Open Anyway** → confirm. Or `xattr -dr com.apple.quarantine /Applications/agenthub-desktop.app` |
+| macOS 14 and earlier, the `.app` | Gatekeeper will not open it, and offers to move it to the Bin | Right-click the app → **Open** → **Open**, once. Or the same `xattr` command |
 | macOS, a loose binary | Gatekeeper refuses to open it | System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine <file>` |
 | Linux | Nothing; there is no equivalent gate | `chmod +x` |
 
 The `.app` is ad-hoc signed — enough to launch on Apple silicon, where an app
 whose signature does not verify is killed outright, and not enough to satisfy
 Gatekeeper, which wants a Developer ID and notarization.
+
+macOS 15 Sequoia removed the right-click → **Open** bypass, which is why the
+first row sends you through System Settings instead: on Sequoia and later the
+dialog has no Open button at all, and the override lives in Privacy & Security
+for a few minutes after the app was refused.
 
 Take the warning seriously rather than clicking through it by reflex. It is
 telling you the truth: nothing vouches for this download. Which is why the
