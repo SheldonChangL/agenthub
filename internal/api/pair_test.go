@@ -1040,6 +1040,78 @@ func TestARejectThatCannotRevokeSaysTheTrustIsStillHere(t *testing.T) {
 	}
 }
 
+// An approval that loses to the window running out says the trust is still
+// here, exactly as one that loses to a refusal does.
+//
+// The row this builds is the one the sentence used to get wrong: the approval
+// writes the trust, the window is shut before the transition so the sweep marks
+// the row expired, the transition fails, and the compensation cannot revoke
+// because the store is closed. Every clause about leftover trust used to be
+// gated on `rejected`, so this expired row — with the key still in the store —
+// read "It ran out (expired). Nothing was trusted".
+func TestAnApprovalThatExpiresSaysTheTrustIsStillHere(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	expired := false
+	receiver.server.afterApproveTrustWrite = func() {
+		if expired {
+			return
+		}
+		expired = true
+		// The trust row is in the store at this instant; the pairing row is
+		// still pending and is about to stop being.
+		if trusted := receiver.trusted(); len(trusted) != 1 {
+			t.Errorf("the approval had not written its trust row yet: %v", trusted)
+		}
+		receiver.closeWindow()
+		receiver.server.syncWindow()
+		// And the revoke the compensation is about to attempt fails, which is
+		// what leaves the key behind for the sentence to have to name.
+		if err := receiver.store.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+
+	receiver.decide(t, outgoing.ID, "approve", http.StatusInternalServerError)
+
+	if !expired {
+		t.Fatal("the expiry was never injected, so this test proves nothing")
+	}
+	row := receiver.request(outgoing.ID)
+	if row.State != pairing.StateExpired {
+		t.Fatalf("the receiver sees %q, want %q", row.State, pairing.StateExpired)
+	}
+	if !row.TrustedByRequest || row.TrustLeftInPlace == "" {
+		t.Fatalf("the row does not record the trust it left behind: %+v", row)
+	}
+
+	step := receiver.viewOf(outgoing.ID).NextStep
+	for _, unwanted := range []string{"Nothing was trusted", "withdrawn"} {
+		if strings.Contains(step, unwanted) {
+			t.Errorf("the row says %q while the key is still in the store: %q", unwanted, step)
+		}
+	}
+	for _, want := range []string{
+		string(pairing.StateExpired), "left in place", "could not remove it",
+		"ah revoke " + requester.node.ID,
+	} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
+	}
+}
+
 // The same push before any approval: the other owner is told, and approving
 // afterwards is refused in words they can act on.
 func TestARequesterRejectBlocksALaterApprove(t *testing.T) {
