@@ -48,6 +48,16 @@ type Server struct {
 	pairing    *pairing.Mode
 	candidates *discovery.Candidates
 	announcer  PairingAnnouncer
+	// pairRequests and pairDialer are the fingerprint-confirmed exchange. Nil
+	// on a node built without it, and the endpoints then say so rather than
+	// pretending a request was recorded: the manual `ah pair` still works.
+	pairRequests *pairing.Requests
+	pairDialer   *transport.PairDialer
+	// peerAddress is where this node's peer listener answers, as host:port, so
+	// a pairing request can tell the far side where to deliver to. Empty when
+	// there is no address worth claiming, which records nothing rather than
+	// sending a claim that would be dropped anyway.
+	peerAddress string
 	// refused remembers which stored snapshot was last reported as unservable,
 	// per peer, so a reader that polls /v1/peers — every agent_list call does —
 	// does not write the same line again for as long as the row sits there.
@@ -123,6 +133,22 @@ func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer
 	}
 }
 
+// WithPairExchange gives the API the fingerprint-confirmed pairing exchange:
+// the requests in flight, the dialer that reaches a node this one has not
+// paired with, and the address this node claims as its own.
+//
+// Separate from WithPairing because the two answer different questions. That
+// one is about discovery — who is advertising nearby. This one is the handshake
+// that carries the keys, and it works between machines that never saw each
+// other's announcements, which is the case it exists for.
+func WithPairExchange(requests *pairing.Requests, dialer *transport.PairDialer, peerAddress string) Option {
+	return func(s *Server) {
+		s.pairRequests = requests
+		s.pairDialer = dialer
+		s.peerAddress = peerAddress
+	}
+}
+
 // WithDeliveryPolicy makes the API accept exactly the addresses the publisher
 // will deliver to. The default is loopback only, matching a node that has not
 // been told to serve peers on a network.
@@ -180,6 +206,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/pairing", s.openPairing)
 	mux.HandleFunc("DELETE /v1/pairing", s.closePairing)
 	mux.HandleFunc("GET /v1/pairing/candidates", s.pairingCandidates)
+	// The pairing exchange, owner half. Starting a request, seeing what is
+	// waiting, and the two confirmations. The peer half lives on PeerHandler
+	// and shares the first path deliberately — see the note there.
+	//
+	// approve and confirm are here and nowhere else. They are the moment a key
+	// becomes trusted, and a peer that could reach either would be deciding
+	// that for itself.
+	mux.HandleFunc("POST /v1/pair/requests", s.startPairRequest)
+	mux.HandleFunc("GET /v1/pair/requests", s.listPairRequests)
+	mux.HandleFunc("POST /v1/pair/requests/{id}/approve", s.approvePairRequest)
+	mux.HandleFunc("POST /v1/pair/requests/{id}/confirm", s.confirmPairRequest)
+	mux.HandleFunc("POST /v1/pair/requests/{id}/reject", s.rejectPairRequest)
 	// GET /v1/heartbeat is the owner's preview of what this node would publish.
 	// The peer-facing POST /v1/heartbeat and POST /v1/challenge deliberately do
 	// not appear here: they live only on PeerHandler, so the management port has
@@ -227,6 +265,16 @@ func (s *Server) PeerHandler() http.Handler {
 	// body and decides where the message goes; this one takes a signed
 	// envelope from a paired node and queues it for a local session.
 	mux.HandleFunc("POST /v1/messages", s.receiveMessage)
+	// The pairing exchange, peer half. Like /v1/challenge these answer a caller
+	// that is not in the trust store, because the trust store is what they
+	// exist to write; what bounds them is the owner's pairing window, the rate
+	// limiter below, and a cap on how many requests may wait at once.
+	//
+	// The path is the owner's path on a different mux, as /v1/messages already
+	// is: there it takes an address the owner typed, here a signed envelope
+	// from a machine that wants to be trusted. Approving is on neither.
+	mux.HandleFunc("POST /v1/pair/requests", s.receivePairRequest)
+	mux.HandleFunc("GET /v1/pair/requests/{id}", s.pollPairRequest)
 	// Rate limiting wraps only this surface. Every endpoint here answers an
 	// unauthenticated caller — /v1/challenge signs on request, and both refuse
 	// before knowing who is asking — so a throttle is the only thing bounding

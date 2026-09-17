@@ -342,6 +342,12 @@
       "properties": {
         "node": {
           "$ref": "#/$defs/nodeDescriptor"
+        },
+        "address": {
+          "$comment": "Where the requester answers, as host:port, so an approving node has somewhere to deliver to. Optional, and a claim like every other field here: the receiver checks it against its own address policy before recording it, and records nothing when it does not pass. It is not part of identity.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 262
         }
       },
       "additionalProperties": false
