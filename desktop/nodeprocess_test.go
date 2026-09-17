@@ -88,7 +88,7 @@ func TestRestartNodeStopsBeforeItStarts(t *testing.T) {
 	if strings.Join(fake.steps, ",") != strings.Join(want, ",") {
 		t.Errorf("sequence = %v, want %v", fake.steps, want)
 	}
-	for _, phrase := range []string{"停止了", "啟動了", "回應了"} {
+	for _, phrase := range []string{"stopped the node", "started ", "is answering on"} {
 		if !strings.Contains(result.Output, phrase) {
 			t.Errorf("output does not account for %q:\n%s", phrase, result.Output)
 		}
@@ -133,7 +133,7 @@ func TestRestartNodeSaysWhenTheNodeDoesNotComeBack(t *testing.T) {
 	}
 	// The steps that did happen are still the owner's account of what was done
 	// to their machine, so a failure keeps them.
-	if !strings.Contains(result.Output, "停止了") {
+	if !strings.Contains(result.Output, "stopped the node") {
 		t.Errorf("a failed restart threw away what it had already done:\n%s", result.Output)
 	}
 }

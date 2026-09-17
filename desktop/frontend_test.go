@@ -849,6 +849,76 @@ func readTextTable(t *testing.T, name string) map[string]string {
 	return entries
 }
 
+// dataTKeys is every translation key index.html names, for any of the three
+// attributes.
+var dataTKeys = regexp.MustCompile(`\sdata-t(?:-placeholder|-title)?="([^"]*)"`)
+
+// stripJSComments blanks // and /* */ runs, leaving string literals and the
+// line count intact.
+//
+// Not a parser, and it does not need to be: what it has to get right is that a
+// "//" inside a string is not a comment, which is the case that would hide a
+// literal from the scan below.
+func stripJSComments(source string) string {
+	var out strings.Builder
+	out.Grow(len(source))
+	const (
+		code = iota
+		lineComment
+		blockComment
+	)
+	state := code
+	var quote byte
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		next := byte(0)
+		if i+1 < len(source) {
+			next = source[i+1]
+		}
+		switch {
+		case state == lineComment:
+			if c == '\n' {
+				state = code
+				out.WriteByte(c)
+			} else {
+				out.WriteByte(' ')
+			}
+		case state == blockComment:
+			if c == '*' && next == '/' {
+				state = code
+				out.WriteString("  ")
+				i++
+			} else if c == '\n' {
+				out.WriteByte(c)
+			} else {
+				out.WriteByte(' ')
+			}
+		case quote != 0:
+			out.WriteByte(c)
+			if c == '\\' && i+1 < len(source) {
+				out.WriteByte(next)
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '/' && next == '/':
+			state = lineComment
+			out.WriteString("  ")
+			i++
+		case c == '/' && next == '*':
+			state = blockComment
+			out.WriteString("  ")
+			i++
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+			out.WriteByte(c)
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
 func hasHan(value string) bool {
 	for _, r := range value {
 		if unicode.Is(unicode.Han, r) {
@@ -881,6 +951,51 @@ func TestFrontendKeepsItsWordsInOneTable(t *testing.T) {
 	for key := range en {
 		if _, ok := zh[key]; !ok {
 			t.Errorf("zh-Hant.js has no %q; a key in one table and not the other renders as the key itself", key)
+		}
+	}
+
+	// Every key the markup names has to exist in both, or the window paints the
+	// key itself where a sentence belongs.
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	named := dataTKeys.FindAllStringSubmatch(string(markup), -1)
+	if len(named) == 0 {
+		t.Fatal("index.html carries no data-t attributes; either the static text went back to " +
+			"being written in the markup, or this check now covers nothing")
+	}
+	for _, match := range named {
+		if _, ok := en[match[1]]; !ok {
+			t.Errorf("index.html names %q, which en.js does not define", match[1])
+		}
+		if _, ok := zh[match[1]]; !ok {
+			t.Errorf("index.html names %q, which zh-Hant.js does not define", match[1])
+		}
+	}
+
+	// And the markup itself holds no sentence in any language, comments
+	// included: its Chinese section markers were translated with the rest, so
+	// the rule can be blunt rather than carved around them.
+	for _, line := range strings.Split(string(markup), "\n") {
+		if hasHan(line) {
+			t.Errorf("index.html still holds Han: %s", strings.TrimSpace(line))
+		}
+	}
+
+	// No sentence at a call site. Comments are exempt — this codebase's are a
+	// deliberate mix and they quote the strings they are about — so they are
+	// stripped before the scan, and what is left is string literals.
+	for path, source := range frontendSources(t) {
+		if strings.Contains(filepath.ToSlash(path), "frontend/src/i18n/") {
+			continue
+		}
+		for number, line := range strings.Split(stripJSComments(source), "\n") {
+			if hasHan(line) {
+				t.Errorf("%s:%d holds a Chinese literal outside src/i18n/: %s\n"+
+					"every sentence the window renders lives in the tables, or the English half "+
+					"silently stops being a translation of anything", path, number+1, strings.TrimSpace(line))
+			}
 		}
 	}
 

@@ -79,7 +79,7 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 	if err != nil {
 		return ServiceResult{}, err
 	}
-	result := ServiceResult{Command: binary + "（停止後重新啟動）"}
+	result := ServiceResult{Command: binary + " (stop, then start)"}
 	var steps []string
 	say := func(format string, args ...any) {
 		steps = append(steps, fmt.Sprintf(format, args...))
@@ -102,19 +102,19 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 			" after being asked to stop, so it was not restarted: a second node on the same database " +
 			"would fail to start and leave nothing running")
 	}
-	say("停止了在 %s 回應的節點", nodeURL)
+	say("stopped the node answering on %s", nodeURL)
 
 	if err := startNode(binary, logPath); err != nil {
 		return result, fmt.Errorf("start %s: %w", binary, err)
 	}
-	say("啟動了 %s（log：%s）", binary, logPath)
+	say("started %s (log: %s)", binary, logPath)
 	if !waitForNodeAnswering(ctx, nodeURL) {
 		return result, fmt.Errorf(
 			"the node was started but is not answering on %s after %s; the settings it has just been "+
 				"given are the first thing to suspect, and the log says which: %s",
 			nodeURL, nodeStartTimeout, logPath)
 	}
-	say("節點在 %s 回應了", nodeURL)
+	say("the node is answering on %s", nodeURL)
 	return result, nil
 }
 
