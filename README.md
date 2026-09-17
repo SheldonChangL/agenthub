@@ -503,7 +503,10 @@ a node started without `-discover` still opens a window: it cannot be found on t
 network, and the drawer shows the address the other machine has to be given
 instead. That address is shown whether or not this node is announcing, because
 mDNS that does not carry between two segments is exactly as silent as mDNS that
-is off.
+is off. A node with no `-allow-lan` has nothing to show there — its peer
+listener is on loopback, which no other machine can reach — so the drawer says
+so and offers the settings page rather than handing over an address that cannot
+work.
 
 The manual five-argument form stays at the bottom of that drawer, and is what
 still works when the two machines cannot open a connection to each other at all:

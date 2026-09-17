@@ -124,6 +124,16 @@
    下面就出現 `#pair-here`：`#pair-local-address` 用 `.keyvalue` 大字顯示它，旁邊 `copy-pair-address`
    走 `CopyText`，複製失敗要說出來。**有廣播也要顯示**——mDNS 過不去跟 mDNS 沒開一樣安靜，
    差別只在旁邊那句話（`state.notice` 非空 → 這是唯一的路；否則 → 對方等不到時的退路）。
+
+   **但位址不可達時不准把它當成「對方要輸入的位址」印出來。** 預設節點沒有 `-allow-lan`，
+   只在 `127.0.0.1:7463` 上聽，而 API 回的就是那個位址：它正確回答了「這個節點的 peer listener
+   在哪裡」，卻完全答錯「對方要打什麼」——交出去只會在對方那裡變成連線逾時，兩邊螢幕都沒有線索。
+   `pairAddressReachable()` 判定 loopback（`isLoopbackListen`）與未指定位址（`0.0.0.0`、`::`）
+   都是**還不能用**，此時 `#pair-here` 改成：一句「還沒有人連得進這台機器」＋原因與補救
+   （「允許區網連線」＋挑一個真的區網位址＋重啟節點）＋一顆跳到「設定 → 節點設定」的按鈕
+   （`goToNodeSettings()`，順手關掉抽屜），且 `copy-pair-address` 要 disabled。
+   同時**視窗 headline 不得只說「配對視窗開啟中」**——那讀起來像「好了」，而實際上視窗開著卻沒有入口，
+   使用者會跑去另一台乾等。測試：`pairing-exchange.mjs` §8b。
 2. **`#pair-waiting`**：等你決定的請求有幾個，一句話。請求面板在候選清單下面，短視窗時會在摺線以下。
 3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑。
 4. **`#pair-address` + `btn-pair-send`**：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。
@@ -188,6 +198,7 @@
 | availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
 | `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
 | availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對中 · 剩 m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
+| `state.peerAddress` 是 loopback / `0.0.0.0` / `::` | 「還沒有人連得進這台機器」＋「允許區網連線」＋跳設定按鈕；`copy-pair-address` disabled；headline 不得只說「配對視窗開啟中」 | 把 `127.0.0.1:7463` 當成對方要輸入的位址印出來 |
 | `state.peerAddress` 非空 | `#pair-here` 一律顯示，**有沒有廣播都顯示**；旁邊那句依 `state.notice` 有無而不同 | 只在沒廣播時才顯示 |
 | 送出請求被 `PEER_PAIRING_BUSY` 拒 | 節點原文（對端自己的理由＋補救）；**不得**出現錯誤碼 | 本地自己寫的一句話（它蓋掉的是兩種不同的 429） |
 | 配對請求列（未決） | 兩組指紋、節點給的標籤、`PAIR_TEXT.compare`、按鈕在指紋**下面** | 只顯示一組指紋；`ah pair approve`（GUI 裡跟按鈕自相矛盾） |
