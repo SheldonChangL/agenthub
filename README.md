@@ -494,7 +494,7 @@ half-done looks like.
 
 **In the desktop app**, the same exchange runs from the Network tab's Pairing
 mode drawer: press **Pair with another machine** on the machine that decides,
-then on the other one either press **Send a pairing request** on its row in the
+then on the other one either press **Send pairing request** on its row in the
 candidate list or type the address it shows into **Address shown on the other
 screen**. Both windows then list the request with the same two fingerprints in
 the same order, and each owner presses **Fingerprints match, approve** or
@@ -522,7 +522,7 @@ With `--discover` running, each node learns the other's address from the
 announcements; no `PUT /v1/nodes/{id}/address` is needed.
 
 **4. Publish a session.** Pairing on its own shares nothing. In the app's
-Local sessions tab, tick the sessions and press **Set audience…**, then choose
+Local sessions tab, tick the sessions and press **Set the audience…**, then choose
 who and tick **Let them queue messages** and **Let this session send messages
 out**. Doing many at once is why the app exists.
 
