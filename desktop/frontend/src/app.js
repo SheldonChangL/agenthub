@@ -1359,7 +1359,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const nodeSaid = typeof state_.peerAddressReachable === "boolean";
     return {
       address,
-      reachable: nodeSaid ? state_.peerAddressReachable : pairAddressReachable(address),
+      // No address is unreachable whatever the node says about it. A node that
+      // sent `peerAddressReachable: true` with no string to go with it would
+      // otherwise put a blank line where the address belongs, under a live copy
+      // button that copies nothing — the one screen that has to carry a value
+      // across to another machine, carrying none and saying nothing is wrong.
+      reachable: address !== ""
+        && (nodeSaid ? state_.peerAddressReachable : pairAddressReachable(address)),
       // Only ever the node's own words, and only when the node also said the
       // address was no good. A problem sentence beside a working address would
       // be a warning about nothing.
@@ -1376,6 +1382,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.settingsSection = "settings-node";
     render();
     el("settings-node")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+    // And the keyboard goes with the eye. Scrolling alone leaves focus back on
+    // a button in a drawer that has just been closed, so the next Tab or Space
+    // acts on nothing the owner can see — and a keyboard-only owner arrives at
+    // the remedy with no way to reach it but hunting for it again. 允許區網連線
+    // is the setting the button was pressed for.
+    el("node-allow-lan")?.focus?.();
   }
 
   // renderPairHere shows the address the other machine has to type.
@@ -1650,33 +1662,56 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     line.textContent = left === 0 ? "" : `剩 ${clock(left)}`;
   }
 
+  // The candidate rows, keyed by node id and kept across renders.
+  //
+  // This list is re-rendered under an owner who is reaching for it. The drawer's
+  // own two-second tick ends in a full render (the contract asks it to refresh
+  // the trusted-node list the modal sits over), and the five-second pairing poll
+  // does the same. A row rebuilt at that rate is a row that cannot be pressed:
+  // the focus on 送出配對請求 is dropped, and a press whose mousedown and mouseup
+  // land on either side of the rebuild is swallowed without ever becoming a
+  // click. So a row that is still about the same machine is the same element it
+  // was, with its text written in place, and the list itself is only written
+  // when a machine actually arrived, left, or changed places.
+  const candidateRows = new Map();
+
   function renderCandidates() {
     const rows = el("candidate-rows");
     const notice = el("candidate-notice");
     const full = el("candidate-full");
-    rows.replaceChildren();
     full.replaceChildren();
     notice.textContent = "";
+    // Every path that shows a message instead of rows forgets the kept rows:
+    // they are off screen, and reusing one when the list comes back would put a
+    // machine's old claims on screen without anything having re-read them.
+    const message = (...kids) => {
+      candidateRows.clear();
+      rows.replaceChildren(...kids);
+    };
 
     const pairing = state.pairing;
-    if (!pairing) return;
+    if (!pairing) {
+      message();
+      return;
+    }
     // "off" and "openNotAnnouncing" are the same node, with and without a
     // window: neither is looking, so neither has a list. The difference is
     // what the window panel above says, not what this region contains.
     if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
-      rows.append(element("div", "empty",
+      message(element("div", "empty",
         "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。"));
       return;
     }
     if (pairing.availability !== "on") {
-      rows.append(element("div", "empty",
+      message(element("div", "empty",
         "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。"));
       return;
     }
     if (pairing.candidatesError) {
-      rows.append(element("div", "stale",
-        "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"));
-      rows.append(element("div", "muted", pairing.candidatesError));
+      message(
+        element("div", "stale",
+          "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"),
+        element("div", "muted", pairing.candidatesError));
       return;
     }
     // In its own element above the list, not the first row of it. A full list is
@@ -1689,6 +1724,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         "所以你要找的機器有可能因此沒有出現，而不是因為它沒在廣播。"));
     }
     const candidates = pairing.candidates ?? [];
+    const wanted = [];
     if (candidates.length === 0) {
       // The node filters paired nodes out of this list on purpose
       // (internal/discovery/candidates.go), so an empty list does not mean the
@@ -1697,39 +1733,67 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // broken — they were already paired with each other, which is precisely
       // why neither appeared. So the sentence says which of the two it is, and
       // where the missing machine actually is.
-      rows.append(element("div", "empty", state.nodes.length > 0
+      wanted.push(element("div", "empty", state.nodes.length > 0
         ? "沒有看到任何還沒配對的機器在廣播。已經配對過的節點不會出現在這份清單裡——" +
           "它們在上方的「已配對節點」。"
         : "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，" +
           "所以這份清單空白就是真的什麼都沒收到。"));
     }
+    const seen = new Set();
     for (const candidate of candidates) {
-      rows.append(candidateRow(candidate));
+      // The node id is what says "the same machine". A candidate that announced
+      // none — or one another row in this same list already used — cannot be
+      // matched to a kept row, so it gets a fresh one rather than somebody
+      // else's: a forger who repeats a neighbour's id must not be able to take
+      // over the row the owner was about to press.
+      const key = String(candidate.nodeId ?? "");
+      const keyed = key !== "" && !seen.has(key);
+      seen.add(key);
+      let row = keyed ? candidateRows.get(key) : undefined;
+      if (row) {
+        updateCandidateRow(row, candidate);
+      } else {
+        row = candidateRow(candidate);
+        if (keyed) candidateRows.set(key, row);
+      }
+      wanted.push(row);
     }
+    for (const key of [...candidateRows.keys()]) {
+      if (!seen.has(key)) candidateRows.delete(key);
+    }
+    // And the list is written only when it differs. replaceChildren detaches
+    // every child before re-appending it, so handing it the very same elements
+    // in the very same order still costs the focus and still eats the press.
+    const current = rows.children ?? [];
+    const unchanged = current.length === wanted.length
+      && wanted.every((node, index) => current[index] === node);
+    if (!unchanged) rows.replaceChildren(...wanted);
     // The node's own words about what this list is worth, so the warning here
     // cannot drift from the guarantees the node actually makes.
     if (pairing.notice) notice.textContent = pairing.notice;
   }
 
+  // candidateRow builds the row once. Everything that changes between renders is
+  // written by updateCandidateRow into these same elements, so the row and its
+  // two buttons outlive every tick.
   function candidateRow(candidate) {
     const row = element("div", "candidaterow");
     const line = element("div", "line");
-    line.append(element("span", "name", candidateName(candidate)));
-    // A flag is how impersonation is visible at all from this side, so it is
-    // shown on the row rather than in a detail view someone has to open.
-    if (candidate.contested) line.append(pill("身分有爭用", "bad"));
-    if (candidate.duplicate) line.append(pill("名稱或指紋重複", "bad"));
+    const name = element("span", "name");
+    line.append(name);
     row.append(line);
-    row.append(element("div", "meta", `${candidate.platform || "平台未提供"} · ${candidate.address}`));
+    const meta = element("div", "meta");
+    row.append(meta);
     // The node id and the fingerprint in full, never a prefix: comparing the
     // first few groups is exactly what a forger can defeat, and these are the two
     // values that decide which machine gets trusted. `ah candidates` prints every
     // field, and #61 asks the two surfaces to agree, so nothing is omitted here
     // either.
-    row.append(element("div", "fingerprint", candidate.nodeId));
-    row.append(element("div", "fingerprint", candidate.fingerprint));
-    row.append(element("div", "muted",
-      `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`));
+    const nodeId = element("div", "fingerprint");
+    const fingerprint = element("div", "fingerprint");
+    row.append(nodeId, fingerprint);
+    const seen = element("div", "muted");
+    row.append(seen);
     // One click, and it carries the announced address and nothing else. The
     // address is where to knock; everything that decides identity — the key,
     // and the fingerprint derived from it — arrives over the connection this
@@ -1738,16 +1802,48 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // matters.
     const actions = element("div", "decide");
     const send = element("button", "primary", PAIR_TEXT.sendFromCandidate);
-    send.disabled = state.busy || !candidate.address;
-    send.onclick = () => sendPairRequest(candidate.address);
     actions.append(send);
     // The manual five-field form stays reachable from the row, as a secondary
     // path for two machines that cannot open a connection to each other.
     const use = element("button", "ghost", PAIR_TEXT.sendManual);
-    use.onclick = () => prefillPairFrom(candidate);
     actions.append(use);
     row.append(actions);
+    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use };
+    // No flags yet, which is what the empty string means: a row that does carry
+    // one differs from this and gets its line written on the first update.
+    row.candidateFlags = "";
+    updateCandidateRow(row, candidate);
     return row;
+  }
+
+  // updateCandidateRow writes this candidate into an existing row.
+  //
+  // textContent on the element that already holds the text, never a rebuilt
+  // subtree: the two buttons must survive, and 「最後 X 秒前」 changes on every
+  // single tick, so a row compared as a whole would never be reusable at all.
+  function updateCandidateRow(row, candidate) {
+    const parts = row.candidateParts;
+    parts.name.textContent = candidateName(candidate);
+    // A flag is how impersonation is visible at all from this side, so it is
+    // shown on the row rather than in a detail view someone has to open. The
+    // line is rewritten only when the flags themselves change; the buttons are
+    // not in it, so nothing pressable moves when they do.
+    const flags = `${candidate.contested ? "c" : ""}${candidate.duplicate ? "d" : ""}`;
+    if (row.candidateFlags !== flags) {
+      row.candidateFlags = flags;
+      const pills = [];
+      if (candidate.contested) pills.push(pill("身分有爭用", "bad"));
+      if (candidate.duplicate) pills.push(pill("名稱或指紋重複", "bad"));
+      parts.line.replaceChildren(parts.name, ...pills);
+    }
+    parts.meta.textContent = `${candidate.platform || "平台未提供"} · ${candidate.address}`;
+    parts.nodeId.textContent = candidate.nodeId;
+    parts.fingerprint.textContent = candidate.fingerprint;
+    parts.seen.textContent =
+      `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`;
+    parts.send.disabled = state.busy || !candidate.address;
+    parts.send.onclick = () => sendPairRequest(candidate.address);
+    parts.use.onclick = () => prefillPairFrom(candidate);
   }
 
   // prefillPairFrom copies the announced claims into the pairing form.

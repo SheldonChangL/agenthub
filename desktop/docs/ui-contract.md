@@ -241,6 +241,12 @@
 
 行為契約：
 - 倒數 tick **不得**重建候選列元素（測試比對 element identity）。
+- 候選列由 nodeId 當 key、可重複呼叫：同一台機器沿用同一個 row 元素，文字就地改寫，
+  只有新增／消失／換位才動 `candidate-rows` 本身。這條對**每一次** render 都成立，
+  不只倒數——抽屜那個 2 秒 tick 最後也會走完整 render，而 `replaceChildren` 就算把同一批
+  元素放回去，瀏覽器仍會把每個 child 拆下再掛上：焦點掉了，橫跨 tick 的那一次按壓
+  （mousedown 與 mouseup 分屬前後）也不會變成 click。測試除了比對 element identity，
+  還會在候選內容沒變時計算 `candidate-rows.replaceChildren` 的呼叫次數，必須是 0。
 - 配對抽屜開著時，那個 2 秒 tick 除了讀請求，還要順手重讀一次 overview
   （`load({ background: true, exceptPairingDrawer: true })`）：抽屜是 modal，會把 15 秒的
   背景重讀擋住，於是在終端機跑 `ah revoke` 之後，抽屜後面那份已配對節點清單會一直停在舊的。

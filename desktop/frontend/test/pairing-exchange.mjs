@@ -645,6 +645,31 @@ if (el("pairing-headline").textContent !== PAIR_TEXT.windowOpen) {
   failures.push(`an open window with a reachable address is headlined ${JSON.stringify(el("pairing-headline").textContent)}`);
 }
 
+// 8a-iv. And a node that vouches for an address it did not send. The two
+//        fields are independent on the wire, so `peerAddressReachable: true`
+//        can arrive with no string beside it — and read on its own it put a
+//        blank line where the address belongs, under a live copy button that
+//        copies nothing. There is nothing to hand across, so it is unreachable.
+if (scope.pairHereState({ peerAddress: "", peerAddressReachable: true }).reachable) {
+  failures.push("an empty address was called reachable because the node said so, leaving nothing to type");
+}
+pairingAnswer = {
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0 },
+    peerAddress: "", peerAddressReachable: true,
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+if (el("pair-local-address").textContent.trim() === "") {
+  failures.push("a node that vouched for an empty address showed a blank line as the address to type");
+}
+if (!el("copy-pair-address").disabled) {
+  failures.push("the copy button is live on an empty address the node happened to vouch for");
+}
+
 /* ---------------- 8b. an address nobody can reach ------------------------ */
 
 // The default node has no -allow-lan and listens on 127.0.0.1:7463, which is
@@ -709,6 +734,13 @@ if (!fix) {
   if (!el("pairing-modal").classList.contains("hidden")) {
     failures.push("the fix button left the pairing drawer open on top of the settings it opened");
   }
+  // The keyboard goes where the eye was sent. Scrolling alone leaves focus on a
+  // button inside the drawer this just closed, so the owner arrives at the
+  // remedy with the next keystroke landing on something they cannot see.
+  if (document.activeElement !== el("node-allow-lan")) {
+    failures.push("the fix button scrolled the node settings into view but focused nothing there");
+  }
+  el("node-allow-lan").blur();
   state.view = "network";
   scope.openPairingDrawer();
   await settle();
@@ -737,6 +769,145 @@ if (overviewCalls !== whileBusy) {
   failures.push("the drawer polled while a decision was in flight");
 }
 state.busy = false;
+
+/* ---------------- 8d. the rows survive a tick ---------------------------- */
+
+// The drawer's two-second tick ends in a full render, because the contract asks
+// it to refresh the trusted-node list the modal sits over. That render used to
+// rebuild every candidate row: the focus on 送出配對請求 was dropped twice a
+// second, and a press whose mousedown and mouseup fell on either side of one
+// never became a click at all. The contract asks for element identity across a
+// tick, so it is measured on the element the owner actually presses.
+const candidateRowsOf = () =>
+  el("candidate-rows").children.filter((child) => (child.className ?? "").includes("candidaterow"));
+const sendButtonOf = (row) => buttonsUnder(row).find((b) => b.textContent === PAIR_TEXT.sendFromCandidate);
+
+const ticking = {
+  nodeId: "node_ticking0001", displayName: "lab-box", platform: "linux/amd64",
+  address: "192.168.50.12:7463", fingerprint: "BBBB CCCC",
+  firstSeen: new Date().toISOString(), lastSeen: new Date().toISOString(),
+};
+const neighbour = {
+  ...ticking, nodeId: "node_ticking0002", displayName: "win-bench",
+  address: "192.168.50.13:7463", fingerprint: "DDDD EEEE",
+};
+const listing = (candidates) => ({
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 1 },
+    peerAddress: "192.168.50.10:7463", peerAddressReachable: true,
+  },
+  candidates,
+});
+
+pairingAnswer = listing([ticking, neighbour]);
+await scope.loadPairing();
+const kept = candidateRowsOf()[0];
+const keptSend = kept && sendButtonOf(kept);
+if (!kept || !keptSend) {
+  failures.push("the candidate list rendered no row with a 送出配對請求 button to measure");
+} else {
+  // The tick with the very same candidates: nothing here changed, so nothing
+  // here may be written. Identity alone is not enough to measure that —
+  // replaceChildren hands the same elements back, and a browser still detaches
+  // and re-attaches every one of them, which is what costs the focus. So the
+  // write itself is counted.
+  const rowsBox = el("candidate-rows");
+  const realReplace = rowsBox.replaceChildren;
+  let writes = 0;
+  rowsBox.replaceChildren = function spy(...kids) {
+    writes += 1;
+    return realReplace.apply(this, kids);
+  };
+  fastTick?.fn();
+  await settle();
+  scope.tickCountdown();
+  await scope.loadPairing();
+  if (writes !== 0) {
+    failures.push(`a tick over unchanged candidates rewrote the list ${writes} times, detaching every row`);
+  }
+  delete rowsBox.replaceChildren;
+  const afterTick = candidateRowsOf()[0];
+  if (afterTick !== kept) {
+    failures.push("the drawer's tick rebuilt the candidate row the owner is reaching for");
+  }
+  if (sendButtonOf(afterTick ?? {}) !== keptSend) {
+    failures.push("the tick replaced 送出配對請求, so a press that spans a tick is swallowed");
+  }
+
+  // A row whose announcement DID change still updates — in place, on the row
+  // that was already there, because it is still the same machine.
+  pairingAnswer = listing([
+    { ...ticking, displayName: "lab-box-renamed", address: "192.168.50.99:7463" },
+    neighbour,
+  ]);
+  await scope.loadPairing();
+  const changed = candidateRowsOf()[0];
+  if (changed !== kept) {
+    failures.push("a candidate that changed was given a new row instead of its own being written");
+  }
+  const changedHTML = (changed ?? kept).serialize();
+  if (!changedHTML.includes("lab-box-renamed") || !changedHTML.includes("192.168.50.99:7463")) {
+    failures.push(`a changed candidate still shows its old announcement: ${changedHTML}`);
+  }
+  // ...and the button on it now dials the new address rather than the old one.
+  await sendButtonOf(changed ?? kept)?.onclick();
+  await settle();
+  if (started.at(-1) !== "192.168.50.99:7463") {
+    failures.push(`the kept row's button still dials ${JSON.stringify(started.at(-1))}`);
+  }
+
+  // A machine that stopped announcing takes its row with it.
+  pairingAnswer = listing([neighbour]);
+  await scope.loadPairing();
+  if (el("candidate-rows").serialize().includes("lab-box-renamed")) {
+    failures.push("a candidate that stopped announcing kept its row");
+  }
+  if (candidateRowsOf().length !== 1) {
+    failures.push(`the list kept ${candidateRowsOf().length} rows for one candidate`);
+  }
+}
+
+/* ---------------- 8e. the summary line in the node list's foot ----------- */
+
+// The one line an owner reads without opening the drawer. It used to tell every
+// openNotAnnouncing node to hand over "the address shown there" — advice about
+// an address a default node does not have, sending its owner to read out
+// something that was never on the screen. So the two cases say different things.
+pairingAnswer = {
+  availability: "openNotAnnouncing", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0 },
+    peerAddress: "192.168.50.10:7463",
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+const withAddress = el("pairing-summary-line").textContent;
+if (!withAddress.includes("本機位址")) {
+  failures.push(`a node that has an address to hand over is not told to hand it over: ${withAddress}`);
+}
+pairingAnswer = {
+  availability: "openNotAnnouncing", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0 },
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+const withoutAddress = el("pairing-summary-line").textContent;
+if (withoutAddress === withAddress) {
+  failures.push("a node with no address to give was told to read out the address shown in the panel");
+}
+if (withoutAddress.includes("本機位址")) {
+  failures.push(`a node with no address is still sent to read one out: ${withoutAddress}`);
+}
+if (!withoutAddress.includes("打開配對面板")) {
+  failures.push(`the no-address summary names nowhere to go next: ${withoutAddress}`);
+}
 
 /* ---------------- 9. every string from the wire is text ------------------ */
 
