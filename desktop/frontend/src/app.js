@@ -3492,7 +3492,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.pairRequestsAll = Boolean(el("pair-requests-all").checked);
     loadPairRequests().catch(() => {});
   };
-  el("pair-address-note").textContent = PAIR_TEXT.addressNote;
 
 
   /* ---------------- node settings ---------------- */
