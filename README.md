@@ -258,7 +258,6 @@ may not have done anything.
 | Windows / macOS / Ubuntu acceptance on real hosts | Open. [#21](https://github.com/SheldonChangL/agenthub/issues/21) |
 | Signed binaries | Not done, and not planned until this is worth a certificate |
 
-
 ---
 
 <details>
