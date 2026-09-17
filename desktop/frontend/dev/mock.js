@@ -326,4 +326,9 @@ configure({
     { id: "w2", messageId: "m9", sourceNodeId: "node_a91c3e7b2d5f8046c0e1", sourceSession: "codex:77ab-serial-bench", destinationSession: session, hops: 1, outcome: "refused_session_rate", detail: "3 wakes in 10m", at: ago(200) },
   ], limits: { hops: 3, pair: 6, pairWindow: "10m0s", session: 3, sessionWindow: "10m0s", node: 30, nodeWindow: "1h0m0s" } }),
 });
-boot({ backdropUrl: backdrop });
+const preview = boot({ backdropUrl: backdrop });
+// The window follows the OS locale, which is right for the app and useless for
+// a preview: the screenshots in a pull request have to show either language
+// whatever the machine taking them is set to. `?lang=en` / `?lang=zh-Hant`.
+const previewLanguage = query.get("lang");
+if (previewLanguage) preview.setUILanguage(previewLanguage);
