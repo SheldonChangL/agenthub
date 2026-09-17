@@ -577,4 +577,44 @@ export const TEXT = {
   "nodeSettings.savedServiceDown": "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；看 log：{log}",
   "nodeSettings.noLogPath": "（節點沒有給路徑）",
   "nodeSettings.noStatusRead": "沒有讀到狀態",
+
+  /* ---------------- 第一次啟動的設定清單 ---------------- */
+
+  "onboarding.title": "設定 AgentHub",
+  "onboarding.subtitle": "從剛裝好到兩台機器看得到彼此的 session，只有幾個步驟。",
+  "onboarding.dismiss": "隱藏",
+  "onboarding.done": "完成",
+  "onboarding.todo": "待辦",
+  "onboarding.allDone": "都完成了，這張卡片不會再出現。",
+  "onboarding.showAgain": "重新顯示設定清單",
+  "onboarding.showAgainWhy": "把第一次啟動的步驟放回 session 列表上方。",
+
+  "onboarding.service.title": "把節點跑成背景服務",
+  "onboarding.service.body": "這個視窗只是視窗。真正在看你的 session、回應其他機器的是節點；裝成服務之後它會跟著電腦一起啟動。",
+  "onboarding.service.action": "安裝服務",
+  "onboarding.service.titleStart": "啟動節點",
+  "onboarding.service.bodyUnsupported": "這個平台沒有 AgentHub 可以註冊的服務管理員，所以節點由這個視窗自己啟動和停止。",
+  "onboarding.service.actionStart": "啟動節點",
+  "onboarding.service.actionRestart": "重新啟動節點",
+  "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，所以這個視窗查不出節點是被什麼帶起來的：{error}",
+
+  "onboarding.sessions.title": "找出這台機器上的 session",
+  "onboarding.sessions.body": "AgentHub 是讀 Claude Code 和 Codex 留在硬碟上的檔案。掃描一次表格就會有東西，之後它會自己保持更新。",
+  "onboarding.sessions.bodyNoneFound": "上次掃描在這台機器上找不到任何 Claude Code 或 Codex 的 session。AgentHub 只認得那些工具寫過檔案的 session，先在其中一邊開一個再掃一次。",
+  "onboarding.sessions.action": "掃描 session",
+
+  "onboarding.reachable.title": "讓這台機器連得到",
+  "onboarding.reachable.body": "在你改它之前，節點只聽 127.0.0.1，別台機器連不進來。挑一個自己網路上的位址，節點會用它重新啟動。",
+  "onboarding.reachable.bodyLoading": "正在讀節點聽在哪裡…",
+  "onboarding.reachable.bodyNoAddress": "這台機器沒有可以提供的私有網路位址。請到節點設定裡自己填對外位址。",
+  "onboarding.reachable.bodyDone": "別台機器可以用 {address} 連到這一台。",
+  "onboarding.reachable.openSettings": "打開節點設定",
+
+  "onboarding.pair.title": "和另一台機器配對",
+  "onboarding.pair.body": "配對是兩個人各看一個螢幕、比對同一組指紋。它本身不會分享任何東西：每台機器要公開什麼，仍然是一個一個 session 分開決定的。",
+  "onboarding.pair.action": "打開配對",
+
+  "onboarding.publish.title": "公開一個 session",
+  "onboarding.publish.body": "在你選之前，沒有東西會離開這台機器。在下面的表格勾一個 session，再設定它的對象，決定誰看得到。",
+  "onboarding.publish.action": "帶我去",
 };
