@@ -164,6 +164,12 @@ if (el("pairing-sub").textContent !== ZH["pair.drawerSubUnknown"]) {
 if (el("btn-reload").textContent !== ZH["app.reload"]) {
   failures.push("switching language did not repaint the static markup");
 }
+// A sentence written once during the wiring is written before loadPrefs() has
+// picked a language, and never again after a switch. This one was: it sat in
+// English under a Chinese drawer until it became a data-t like the rest.
+if (el("pair-address-note").textContent !== ZH["pair.addressNote"]) {
+  failures.push(`the pairing form's note did not follow the language: ${el("pair-address-note").textContent}`);
+}
 if (app.state.ui.lang !== "zh-Hant") failures.push("the language choice was not kept in the preferences");
 app.state.view = "settings";
 app.render();

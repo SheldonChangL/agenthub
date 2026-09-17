@@ -307,7 +307,7 @@ col.c-session { width: 264px; }
 col.c-status { width: 84px; }
 col.c-mgmt { width: 128px; }
 col.c-audience { width: 112px; }
-col.c-flags { width: 138px; }
+col.c-flags { width: 164px; }
 col.c-last { width: 92px; }
 /* Wide enough for all three buttons plus the cell's padding: measured at 241px
    (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font

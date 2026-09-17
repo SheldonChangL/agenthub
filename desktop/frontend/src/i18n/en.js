@@ -271,7 +271,7 @@ export const TEXT = {
   "time.daysAgo.other": "{n} days ago",
 
   "audience.cell.allPaired": "Every paired node",
-  "audience.cell.selectedNone": "Chosen nodes (none)",
+  "audience.cell.selectedNone": "Chosen (none)",
   "audience.cell.nodeCount.one": "{n} node",
   "audience.cell.nodeCount.other": "{n} nodes",
   "audience.cell.none": "Not published",
@@ -390,7 +390,7 @@ export const TEXT = {
   "network.lastContact": "last contact {when}",
   "network.neverInContact": "never in contact",
   "network.presenceUnknown": "node state unavailable",
-  "network.presenceNever": "no heartbeat yet · they may not have paired with this machine",
+  "network.presenceNever": "no heartbeat yet · they may not have paired back",
   "network.presenceOnline": "online",
   "network.presenceOffline": "offline · as of {when}",
   "network.fingerprintNote": "Run ah node on the other machine and check that the fingerprint it shows matches the one above, group by group. A mismatch means somebody on this network is using this node's name.",
