@@ -21,6 +21,22 @@
 #
 #     desktop/build/bundle-binaries.sh darwin/arm64 path/to/Contents/MacOS/desktop
 #
+# wails runs a hook with exec, not through a shell, so on Windows the hook is
+# registered as "bash ../bundle-binaries.sh …" (wails.json): a .sh is not an
+# executable there, and git-bash is what the runners and every Windows checkout
+# of this repository already have.
+#
+# On a Windows developer box with WSL installed, `bash` on PATH is often
+# C:\Windows\System32\bash.exe — the WSL launcher, not git-bash. That one runs
+# this script inside the Linux distribution, where the Windows Go toolchain and
+# the /mnt/c/... path translation are not what the hook assumes, and it fails in
+# a way that reads like a bug in this script. Put git-bash's bin directory
+# (usually C:\Program Files\Git\bin) ahead of System32 on PATH before running
+# `wails build` there. The CI runner has no WSL, so this only bites locally. The Windows NSIS installer depends on this
+# hook having run — desktop/build/windows/installer/project.nsi packages
+# ..\..\bin\ah.exe and friends, which only exist because this script put them
+# there before wails invoked makensis.
+#
 # darwin/universal is accepted and is what wails passes for a universal build:
 # each command is built for both architectures and merged with lipo, which is
 # what wails does for the app executable itself after this hook has run.
@@ -49,7 +65,13 @@ if [ "$#" -ne 2 ]; then
 fi
 
 platform=$1
-app_binary=$2
+# wails builds this path with filepath.Join, so on Windows it arrives with
+# backslashes — and `dirname` in the git-bash that runs the hook there treats a
+# backslash as an ordinary character and answers ".", which would put the
+# binaries in build/bin's parent instead of beside the app. Normalising here is
+# what lets one script serve all three platforms rather than a second,
+# drifting PowerShell copy.
+app_binary=${2//\\//}
 
 goos=${platform%%/*}
 goarch=${platform##*/}

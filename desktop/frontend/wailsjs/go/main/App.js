@@ -110,6 +110,10 @@ export function UninstallService() {
   return window['go']['main']['App']['UninstallService']();
 }
 
+export function Version() {
+  return window['go']['main']['App']['Version']();
+}
+
 export function Wakes(arg1, arg2) {
   return window['go']['main']['App']['Wakes'](arg1, arg2);
 }

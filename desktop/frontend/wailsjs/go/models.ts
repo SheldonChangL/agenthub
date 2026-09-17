@@ -817,6 +817,22 @@ export namespace main {
 	}
 	
 	
+	export class VersionInfo {
+	    release: string;
+	    goos: string;
+	    goarch: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new VersionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.release = source["release"];
+	        this.goos = source["goos"];
+	        this.goarch = source["goarch"];
+	    }
+	}
 	export class VisibilityResult {
 	    changed: number;
 	    failed: number;

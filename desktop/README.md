@@ -67,6 +67,18 @@ Windows) and copies them in beside the app executable — `Contents/MacOS` in th
 bundle, the unpacked directory on Linux and Windows — then seals the macOS
 bundle again, since adding files to a signed bundle invalidates its signature.
 
+On Windows the hook is registered as `bash ../bundle-binaries.sh …`, and with
+WSL installed `bash` on PATH is usually `C:\Windows\System32\bash.exe` — the
+WSL launcher, which runs the hook inside the Linux distribution instead of
+git-bash and fails there. Put `C:\Program Files\Git\bin` ahead of System32 on
+PATH before `wails build`.
+
+The version in the title bar comes from `main.release` (`buildinfo.go`), which
+only the release workflow stamps; a local `wails build` says `unreleased`, and
+that is the honest answer. The workflow also sets `info.productVersion` in
+`wails.json` from the tag, so `Info.plist` and the Windows installer carry it
+too — the checked-in `wails.json` deliberately has no version in it.
+
 Those copies are how the app finds them. The service panel runs `ah service`,
 the MCP dialog names `agenthub-mcp`, and both use the same search: the
 `AGENTHUB_AH` / `AGENTHUB_MCP` / `AGENTHUB_NODE` override, beside the
