@@ -15,15 +15,15 @@ const S = (id, provider, status, cwd, audience, at, management = "managed", titl
   id: `${provider}:${id}`, provider, providerSessionId: id, status, cwd, audience, management, title, lastSeenAt: ago(at), updatedAt: ago(at),
 });
 const sessions = [
-  S("8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", "claude", "active", "/Users/sheldon/Projects/others/agenthub", aud("all_paired", [], { cwd: 1, msg: 1, out: 1, wake: 1 }), 12, "managed", "Restart the node from the app after a settings change"),
-  S("41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", "claude", "active", "/Users/sheldon/Projects/jet/prm-tools", aud("selected", ["node_a91c3e7b2d5f8046c0e1", "node_c30d8e2f4a6b19d571fa"], { cwd: 1, msg: 1 }), 60, "managed", "PRM issue state transitions"),
-  S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/Users/sheldon/Projects/others/serialwrap", aud("none"), 180, "unmanaged", "Build frontend testing workflows"),
-  S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/Users/sheldon/Projects/others/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60, "managed", "Show the conversation title in the main column, fall back to the session id"),
-  S("b61f0d5c-2b3c-4d4e-9f0a-patents00005", "claude", "idle", "/Users/sheldon/Projects/jet/patent-search", aud("selected", []), 42 * 60),
-  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/Users/sheldon/Projects/jet/fw-bootloader", aud("none"), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
+  S("8f3a2c1e-5b1d-4d1e-9a2b-agenthub0001", "claude", "active", "/home/alex/projects/agenthub", aud("all_paired", [], { cwd: 1, msg: 1, out: 1, wake: 1 }), 12, "managed", "Restart the node from the app after a settings change"),
+  S("41d9e7b0-9c1f-4c7d-8e3a-prmflow00002", "claude", "active", "/home/alex/projects/prm-tools", aud("selected", ["node_a91c3e7b2d5f8046c0e1", "node_c30d8e2f4a6b19d571fa"], { cwd: 1, msg: 1 }), 60, "managed", "PRM issue state transitions"),
+  S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/home/alex/projects/serialwrap", aud("none"), 180, "unmanaged", "Build frontend testing workflows"),
+  S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/home/alex/projects/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60, "managed", "Show the conversation title in the main column, fall back to the session id"),
+  S("b61f0d5c-2b3c-4d4e-9f0a-patents00005", "claude", "idle", "/home/alex/projects/patent-search", aud("selected", []), 42 * 60),
+  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/home/alex/projects/fw-bootloader", aud("none"), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
   S("d05e3b21-3c4d-4e5f-a0b1-docs00000007", "claude", "idle", "", aud("selected", ["node_a91c3e7b2d5f8046c0e1"], { cwd: 1 }), 5 * 3600, "managed", "Docs version, branch state and progress"),
-  S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/Users/sheldon/Projects/old/thing", aud("none"), 3 * 86400, "managed", "OTA update .bin files"),
-  S("f28a5d43-thread-inactive-00000000009", "codex", "inactive", "/Users/sheldon/Projects/old/other", aud("none"), 9 * 86400, "unmanaged"),
+  S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/home/alex/projects/archive/thing", aud("none"), 3 * 86400, "managed", "OTA update .bin files"),
+  S("f28a5d43-thread-inactive-00000000009", "codex", "inactive", "/home/alex/projects/archive/other", aud("none"), 9 * 86400, "unmanaged"),
   S("0a1b2c3d-hostile-<img src=x onerror=\"alert(1)\">", "claude", "<script>steal()</script>", "/tmp/<b>x</b>", aud("none"), 99, "managed", "</b><iframe onload=\"steal()\"></iframe>"),
 ];
 const counts = { total: sessions.length, claude: 7, codex: 3, active: 3, idle: 4, inactive: 2, all_paired: 2, selected: 3, none: 5 };
@@ -54,7 +54,43 @@ let pairingOpen = true;
 // all in the answer — and it is reachable here with `?pair=loopback`, or
 // `?pair=problem` for a node that reports the trouble itself. Those two are the
 // shapes the panel got wrong while nobody was looking at them.
-const pairShape = new URLSearchParams(globalThis.location?.search ?? "").get("pair") ?? "";
+const query = new URLSearchParams(globalThis.location?.search ?? "");
+const pairShape = query.get("pair") ?? "";
+
+// The first-launch checklist, which the finished window above can never show:
+// every one of its triggers is a thing this preview already has. `?onboarding=`
+// takes them away.
+//
+//   ?onboarding=fresh   nothing done at all — what the installer leaves behind
+//   ?onboarding=mixed   the shape worth looking at: two steps ticked, the node
+//                       still on loopback and nobody paired
+//   ?onboarding=unreachable
+//                       the node does not answer at all. This is the one
+//                       situation the card exists for, and it was the one this
+//                       preview could not show: Overview rejects, so the window
+//                       never learns an address, a session or a peer, and the
+//                       card has to offer a way to start the node rather than a
+//                       tick over a machine showing "cannot reach".
+//   ?onboarding=slow    the same as `fresh`, except ServiceStatus takes three
+//                       seconds. The window renders before that read lands, so
+//                       this is what every real launch looks like for its first
+//                       seconds — the state in which the step used to read
+//                       "Install the service" on a machine that already had one.
+//
+// Both put the node's peer listener back on 127.0.0.1 and drop the bind
+// failure, because "this machine cannot be reached" and "the address it was
+// given is gone" are different screens and only the first one is a first run.
+const onboarding = query.get("onboarding") ?? "";
+// Anything other than "fresh" keeps the sessions and the service, so the card
+// shows with two steps ticked and three still open, which is the state worth
+// looking at: a tick that never appears proves nothing about the tick.
+const firstRun = onboarding === "fresh" || onboarding === "slow";
+const unreachable = onboarding === "unreachable";
+// ServiceStatus behind a delay, because the defect it uncovers is a race: the
+// first render happens with no status at all, and what the card says then is
+// only visible if something answers slower than the first paint.
+const serviceStatusDelayMs = onboarding === "slow" ? 3000 : 0;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PAIR_ADDRESS = {
   // A default node answers with no peerAddress rather than with 127.0.0.1: an
   // address the other machine cannot use is not an answer to "what do I type".
@@ -67,14 +103,14 @@ const PAIR_ADDRESS = {
       peerAddressProblem: "the peer listener is bound to 127.0.0.1, which no other machine can reach",
     },
   },
-}[pairShape] ?? {
+}[onboarding ? "loopback" : pairShape] ?? {
   announceable: 1,
   address: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true },
 };
 const pairing = () => ({
   availability: "on",
   windowAvailable: true,
-  state: { open: pairingOpen, remainingSeconds: 252, displayName: "sheldon-mbp", nameIsChosen: false,
+  state: { open: pairingOpen, remainingSeconds: 252, displayName: "studio-mac", nameIsChosen: false,
     ...PAIR_ADDRESS.address,
     announcing: { announceableAddresses: PAIR_ADDRESS.announceable, lastAnnouncedAt: ago(3) } },
   candidates: pairingOpen ? [
@@ -93,7 +129,7 @@ const log = (...a) => console.log("[mock]", ...a);
 // The fingerprints come as the node sends them — the ordered pair, requester
 // first on both machines, each labelled with the name that machine calls itself
 // — so the preview shows what two people holding two screens would read.
-const LOCAL_NAME = "sheldon-mbp";
+const LOCAL_NAME = "studio-mac";
 const LOCAL_FP = "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30";
 const fp = (role, machine, whose, fingerprint) => ({ role, machine, whose, fingerprint });
 const pairNotice = "Two fingerprints are shown: the requester (the machine that asked) first, " +
@@ -176,8 +212,26 @@ const nodeSettings = {
     message: "no interface on this machine holds 122.122.0.7:7463 any more",
   },
 };
+// A first run has none of the above; the middle one has the sessions and the
+// service but nothing to send them to.
+if (onboarding) {
+  nodeSettings.settings = { ...nodeSettings.settings, peerListen: "127.0.0.1:7463", allowLan: false };
+  nodeSettings.saved = { ...nodeSettings.settings };
+  nodeSettings.restartRequired = false;
+  delete nodeSettings.peerListenProblem;
+}
+const overviewSessions = firstRun ? [] : sessions;
+const overviewNodes = onboarding ? [] : nodes;
+const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
+
 configure({
-  Overview: async () => ({ reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions, nodes, peers, counts }),
+  // A node that is not answering: `reachable` false and the dial error, shaped
+  // exactly as App.Overview shapes it in Go — that binding never rejects, it
+  // fills Error and leaves every list empty — so load() takes the same
+  // unreachable path here as it does in the built app.
+  Overview: async () => (unreachable
+    ? { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: "Get \"http://127.0.0.1:7462/v1/node\": dial tcp 127.0.0.1:7462: connect: connection refused", sessions: [], nodes: [], peers: [], counts: {} }
+    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions, nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts }),
   Discover: async () => ({ claude: 7, codex: 3, total: 10, skipped: 0 }),
   SetAudience: async (ids, audience) => { log("SetAudience", ids, audience); for (const s of sessions) if (ids.includes(s.id)) s.audience = { ...audience }; return { changed: ids.length, failed: 0 }; },
   SetVisibility: async () => ({ changed: 0, failed: 0 }),
@@ -192,6 +246,8 @@ configure({
   // the node filters them, so the "show finished" toggle does something here.
   PairRequests: async (all) => {
     log("PairRequests", { all });
+    // A first run has nobody waiting at another keyboard.
+    if (onboarding) return [];
     return all ? pairRequests : pairRequests.filter((r) => r.state === "pending" || r.state === "awaiting-confirm");
   },
   StartPairRequest: async (address) => {
@@ -228,7 +284,11 @@ configure({
   // The node remembers its own start-up settings (#116). The fake keeps them in
   // a variable so a save really changes what the next read answers, including
   // the rule that turning allowLan off pulls peerListen back to loopback.
-  NodeSettings: async () => ({ ...nodeSettings }),
+  // A node that is not answering cannot answer this either, and the settings
+  // panel's own unreadable path is what should be on screen when it does not.
+  NodeSettings: async () => (unreachable
+    ? Promise.reject(new Error("dial tcp 127.0.0.1:7462: connect: connection refused"))
+    : { ...nodeSettings }),
   SaveNodeSettings: async (patch) => {
     const next = { ...nodeSettings.settings, ...patch };
     let message = "";
@@ -270,7 +330,11 @@ configure({
   RestartNode: async () => { log("RestartNode"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // Installed the old way, with the node's settings burned into the unit, so
   // the panel's offer to re-register it cleanly is visible here too.
-  ServiceStatus: async () => ({ tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/Projects/agenthub/data/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
+  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), unreachable
+    ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
+    : firstRun
+    ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
+    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
   InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }, { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
@@ -292,4 +356,9 @@ configure({
     { id: "w2", messageId: "m9", sourceNodeId: "node_a91c3e7b2d5f8046c0e1", sourceSession: "codex:77ab-serial-bench", destinationSession: session, hops: 1, outcome: "refused_session_rate", detail: "3 wakes in 10m", at: ago(200) },
   ], limits: { hops: 3, pair: 6, pairWindow: "10m0s", session: 3, sessionWindow: "10m0s", node: 30, nodeWindow: "1h0m0s" } }),
 });
-boot({ backdropUrl: backdrop });
+const preview = boot({ backdropUrl: backdrop });
+// The window follows the OS locale, which is right for the app and useless for
+// a preview: the screenshots in a pull request have to show either language
+// whatever the machine taking them is set to. `?lang=en` / `?lang=zh-Hant`.
+const previewLanguage = query.get("lang");
+if (previewLanguage) preview.setUILanguage(previewLanguage);

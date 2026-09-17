@@ -119,11 +119,10 @@ export const TEXT = {
   "local.deselect": "Clear selection",
 
   "network.pairedNodes": "Paired nodes",
-  "network.pairNew": "Pair a new node…",
-  "network.pairNewTitle": "Pair a new node",
+  "network.pairNew": "Pair another machine…",
+  "network.pairNewTitle": "Pair by hand",
   "network.pairingMode": "Pairing mode",
   "network.pairingLoading": "Reading…",
-  "network.openPairingPanel": "Open the pairing panel",
   "network.pairingOnlyIdentity": "Pairing only establishes identity. To let the other machine see a session you still set its audience, one session at a time, in the local view.",
   "network.pickANode": "Pick a node on the left to see its details.",
 
@@ -398,7 +397,7 @@ export const TEXT = {
   "network.presenceNever": "no heartbeat yet · they may not have paired with this machine yet",
   "network.presenceOnline": "online",
   "network.presenceOffline": "offline · as of {when}",
-  "network.fingerprintNote": "Run ah node on the other machine and check that the fingerprint it shows matches the one above, group by group. A mismatch means somebody on this network is using this node's name.",
+  "network.fingerprintNote": "Both screens showed this fingerprint when you paired. If you ever see a different one for this name, someone is using its name.",
   "network.mutualNote": "Pairing is recorded by each machine separately: this row only means this machine trusts the other one. The other machine has to pair with this one as well, or it can neither reach this machine nor send it a heartbeat — run ah nodes over there and see whether this machine's node ID is in the list.",
   "network.detailPairedAt": "Paired",
   "network.detailLastContact": "Last contact",
@@ -582,4 +581,50 @@ export const TEXT = {
   "nodeSettings.savedServiceDown": "Saved, but the service is not running after the restart. The settings just changed may be making the node refuse to start. Log: {log}",
   "nodeSettings.noLogPath": "(the node gave no path)",
   "nodeSettings.noStatusRead": "no status was read",
+
+  /* ---------------- the first-launch checklist ---------------- */
+
+  "onboarding.title": "Set up AgentHub",
+  "onboarding.subtitle": "A few steps to get two machines seeing each other's sessions.",
+  "onboarding.dismiss": "Hide the checklist",
+  "onboarding.done": "Done",
+  "onboarding.todo": "To do",
+  "onboarding.allDone": "That is everything. This card will not come back.",
+  "onboarding.showAgain": "Show the setup checklist",
+  "onboarding.showAgainWhy": "Puts the first-launch steps back at the top of the sessions list.",
+
+  "onboarding.service.title": "Run the node as a background service",
+  "onboarding.service.body": "This window only shows you what the node knows. The node is the process that watches your sessions and answers other machines, and as a service it starts with your computer.",
+  "onboarding.service.action": "Install the service",
+  "onboarding.service.bodyChecking": "Checking the background service…",
+  "onboarding.service.bodyNodeDown": "The node is not answering, so nothing on this machine can read your sessions or reach another machine. Start it and the rest of this list can be checked.",
+  "onboarding.service.titleStart": "Start the node",
+  "onboarding.service.bodyUnsupported": "There is no service manager here that AgentHub can register with, so this window starts and stops the node itself.",
+  "onboarding.service.actionStart": "Start the node",
+  "onboarding.service.actionRestart": "Restart the node",
+  "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot find out what is holding the node: {error}",
+
+  "onboarding.sessions.title": "Find your local sessions",
+  "onboarding.sessions.body": "AgentHub reads the files Claude Code and Codex leave on disk. Scan once to fill the table below; after that it keeps itself up to date.",
+  "onboarding.sessions.bodyNoneFound": "The last scan found no Claude Code or Codex session on this machine. AgentHub only knows about the ones those tools have written files for, so start a session in one of them and scan again.",
+  "onboarding.sessions.action": "Scan for sessions",
+
+  "onboarding.reachable.title": "Make this machine reachable",
+  "onboarding.reachable.body": "Until you say otherwise the node only accepts connections from this computer. Choose an address on your own network and the node restarts on it.",
+  "onboarding.reachable.bodyLoading": "Waiting for the node to say what it is listening on…",
+  "onboarding.reachable.bodyNoAddress": "This machine has no private network address to offer. Set the listening address by hand in node settings.",
+  "onboarding.reachable.bodyDone": "Another machine can reach this one at {address}.",
+  "onboarding.reachable.bodyNodeDown": "The node is not answering, so it cannot say what it is listening on. Start it in step 1 first.",
+  "onboarding.reachable.bodyUnreadable": "The node settings could not be read, so there is nothing to offer here yet.",
+  "onboarding.reachable.retry": "Try reading again",
+  "onboarding.reachable.formDirty": "Settings has unsaved changes; save or discard them first.",
+  "onboarding.reachable.openSettings": "Open node settings",
+
+  "onboarding.pair.title": "Pair with another machine",
+  "onboarding.pair.body": "Pairing links this machine to another: each of you checks the same fingerprint is on both screens. It shares nothing by itself: what each machine publishes stays a separate decision, made per session.",
+  "onboarding.pair.action": "Open pairing",
+
+  "onboarding.publish.title": "Publish a session",
+  "onboarding.publish.body": "Nothing leaves this machine until you choose it. Tick a session in the table below and set its audience to say who may see it.",
+  "onboarding.publish.action": "Take me to the table",
 };

@@ -114,11 +114,10 @@ export const TEXT = {
   "local.deselect": "取消選取",
 
   "network.pairedNodes": "已配對節點",
-  "network.pairNew": "配對新節點…",
-  "network.pairNewTitle": "配對新節點",
+  "network.pairNew": "配對另一台機器…",
+  "network.pairNewTitle": "手動配對",
   "network.pairingMode": "配對模式",
   "network.pairingLoading": "讀取中…",
-  "network.openPairingPanel": "開啟配對面板",
   "network.pairingOnlyIdentity": "配對只確認身分。要讓對方看到 session，仍須在本機視圖逐一設定公開對象。",
   "network.pickANode": "選擇左側的節點以檢視詳細資料。",
 
@@ -393,7 +392,7 @@ export const TEXT = {
   "network.presenceNever": "尚未收到心跳 · 對方可能還沒配對這台",
   "network.presenceOnline": "線上",
   "network.presenceOffline": "離線 · 資料截至 {when}",
-  "network.fingerprintNote": "在對方機器上執行 ah node，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。",
+  "network.fingerprintNote": "配對的時候，兩邊螢幕上顯示的都是這組指紋。哪天同一個名稱底下換成另一組，就是有人在冒用這個名稱。",
   "network.mutualNote": "配對是每台各自記的：這一列只代表這台已信任對方。對方那台也要對這台做一次配對，否則它送不到這裡，也不會送心跳過來——在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。",
   "network.detailPairedAt": "配對時間",
   "network.detailLastContact": "最後聯繫",
@@ -577,4 +576,50 @@ export const TEXT = {
   "nodeSettings.savedServiceDown": "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；看 log：{log}",
   "nodeSettings.noLogPath": "（節點沒有給路徑）",
   "nodeSettings.noStatusRead": "沒有讀到狀態",
+
+  /* ---------------- 第一次啟動的設定清單 ---------------- */
+
+  "onboarding.title": "設定 AgentHub",
+  "onboarding.subtitle": "只要幾個步驟，就能讓兩台機器看得到彼此的 session。",
+  "onboarding.dismiss": "隱藏這張清單",
+  "onboarding.done": "完成",
+  "onboarding.todo": "待辦",
+  "onboarding.allDone": "都完成了，這張卡片不會再出現。",
+  "onboarding.showAgain": "重新顯示設定清單",
+  "onboarding.showAgainWhy": "把第一次啟動的步驟放回 session 列表上方。",
+
+  "onboarding.service.title": "把節點跑成背景服務",
+  "onboarding.service.body": "這個視窗只是把節點知道的事顯示給你看。真正在看你的 session、回應其他機器的是節點；裝成服務之後它會跟著電腦一起啟動。",
+  "onboarding.service.action": "安裝服務",
+  "onboarding.service.bodyChecking": "正在確認背景服務…",
+  "onboarding.service.bodyNodeDown": "節點沒有回應，所以這台機器上沒有東西讀得到你的 session，也連不到別台機器。先把它啟動，這張清單剩下的才查得下去。",
+  "onboarding.service.titleStart": "啟動節點",
+  "onboarding.service.bodyUnsupported": "這個平台沒有 AgentHub 可以註冊的服務管理員，所以節點由這個視窗自己啟動和停止。",
+  "onboarding.service.actionStart": "啟動節點",
+  "onboarding.service.actionRestart": "重新啟動節點",
+  "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，所以這個視窗查不出節點是被什麼帶起來的：{error}",
+
+  "onboarding.sessions.title": "找出這台機器上的 session",
+  "onboarding.sessions.body": "AgentHub 是讀 Claude Code 和 Codex 留在硬碟上的檔案。掃描一次，下面的表格就會有東西；之後它會自己保持更新。",
+  "onboarding.sessions.bodyNoneFound": "上次掃描在這台機器上找不到任何 Claude Code 或 Codex 的 session。AgentHub 只認得那些工具寫過檔案的 session，先在其中一邊開一個再掃一次。",
+  "onboarding.sessions.action": "掃描 session",
+
+  "onboarding.reachable.title": "讓這台機器連得到",
+  "onboarding.reachable.body": "在你改它之前，節點只接受這台電腦自己的連線。挑一個自己網路上的位址，節點會用它重新啟動。",
+  "onboarding.reachable.bodyLoading": "正在等節點回答它聽在哪裡…",
+  "onboarding.reachable.bodyNoAddress": "這台機器沒有可以提供的私有網路位址。請到節點設定裡自己填對外位址。",
+  "onboarding.reachable.bodyDone": "別台機器可以用 {address} 連到這一台。",
+  "onboarding.reachable.bodyNodeDown": "節點沒有回應，說不出它聽在哪裡。請先在步驟 1 把它啟動。",
+  "onboarding.reachable.bodyUnreadable": "讀不到節點設定，所以這裡暫時沒有東西可以給你按。",
+  "onboarding.reachable.retry": "重新讀取一次",
+  "onboarding.reachable.formDirty": "設定頁還有沒存的改動，請先存檔或還原。",
+  "onboarding.reachable.openSettings": "打開節點設定",
+
+  "onboarding.pair.title": "和另一台機器配對",
+  "onboarding.pair.body": "配對是把這台機器和另一台接起來：你們各自確認兩個螢幕上是同一組指紋。它本身不會分享任何東西：每台機器要公開什麼，仍然是一個一個 session 分開決定的。",
+  "onboarding.pair.action": "打開配對",
+
+  "onboarding.publish.title": "公開一個 session",
+  "onboarding.publish.body": "在你選之前，沒有東西會離開這台機器。在下面的表格勾一個 session，再設定它的對象，決定誰看得到。",
+  "onboarding.publish.action": "帶我去表格",
 };
