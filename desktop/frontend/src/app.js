@@ -864,6 +864,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     hereNoteAnnouncing: "這台機器有在廣播，正常情況下會出現在對方的候選清單裡。" +
       "如果對方等不到，就把上面這個位址念給他們，填進他們視窗的「對方畫面顯示的位址」欄位。",
     hereNoAddress: "節點沒有給出可以讓對方連進來的位址，所以只剩下最底下的手動配對。",
+    // The default node listens on 127.0.0.1:7463. That address is what the API
+    // answers with, and it is an address no other machine can reach — so
+    // printing it under 「對方要輸入的本機位址」 would hand someone a string that
+    // cannot work, and the failure lands on the other machine as a timeout with
+    // nothing to explain it.
+    hereUnreachableHeadline: "還沒有人連得進這台機器。",
+    hereUnreachable: "節點目前只在本機回路（loopback）上聽，所以這個位址只有這台機器自己連得到，" +
+      "對方輸入它會連不上。到「設定 → 節點設定」打開「允許區網連線」，" +
+      "選一個這台機器實際有的區網位址，再重新啟動節點；之後這裡就會顯示對方可以輸入的位址。",
+    hereFix: "去設定節點位址…",
+    // Said on the window panel too, because "配對視窗開啟中" on its own reads as
+    // done, and it is not: the window is open and unreachable.
+    windowOpenUnreachable: "配對視窗開著，但還沒有人連得進來。",
     hereCopied: "已複製位址到剪貼簿",
     hereCopyFailed: "無法寫入剪貼簿，請手動複製上面那一串。",
     // Sending a request.
@@ -1235,13 +1248,41 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const request of requests) rows.append(pairRequestRow(request));
   }
 
+  // pairAddressReachable says whether the address the node answers with is one
+  // another machine could actually connect to.
+  //
+  // A node started without -allow-lan listens on 127.0.0.1:7463, and that is
+  // what the API reports. It is a true answer to "where does this node's peer
+  // listener answer" and a useless one to "what does the other machine type":
+  // handed across, it fails over there as a connection timeout, with nothing on
+  // either screen to say why. An unspecified host is the same problem — nobody
+  // types 0.0.0.0 — so both are treated as "not yet".
+  function pairAddressReachable(address) {
+    const value = String(address ?? "").trim();
+    if (value === "") return false;
+    if (isLoopbackListen(value)) return false;
+    const host = hostOf(value).toLowerCase();
+    return host !== "0.0.0.0" && host !== "::" && host !== "";
+  }
+
+  // goToNodeSettings is the remedy as a button rather than as a sentence about
+  // where to click. The address is fixed two tabs away, and an owner who has
+  // just been told their node is unreachable should not also have to find it.
+  function goToNodeSettings() {
+    closePairingDrawer();
+    state.view = "settings";
+    state.settingsSection = "settings-node";
+    render();
+    el("settings-node")?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  }
+
   // renderPairHere shows the address the other machine has to type.
   //
-  // Only when the node says it is not announcing, because then this is the
-  // whole way in: the window is open, nothing is being broadcast, and the other
-  // machine will wait forever for a candidate row that is not coming. Shown in
-  // the key font with a copy button rather than inside the notice's prose,
-  // which is how the last hand-carried string lost a character.
+  // Shown in the key font with a copy button rather than inside the notice's
+  // prose, which is how the last hand-carried string lost a character. Shown
+  // whether or not this node is announcing: mDNS that does not carry between
+  // two segments is exactly as silent as mDNS that is off, and the sentence
+  // beside the address is what differs.
   function renderPairHere() {
     const box = el("pair-here");
     const value = el("pair-local-address");
@@ -1254,6 +1295,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     box.classList.remove("hidden");
+    // An address nobody can reach is not shown as the address to type. What
+    // goes here instead is what is wrong and the button that fixes it.
+    if (!pairAddressReachable(address)) {
+      value.textContent = PAIR_TEXT.hereUnreachableHeadline;
+      el("copy-pair-address-status").textContent = "";
+      note.replaceChildren(element("div", "", PAIR_TEXT.hereUnreachable));
+      const fix = element("button", "primary", PAIR_TEXT.hereFix);
+      fix.onclick = () => goToNodeSettings();
+      note.append(fix);
+      el("copy-pair-address").disabled = true;
+      return;
+    }
+    el("copy-pair-address").disabled = false;
     value.textContent = address;
     // Two sentences, because the two situations have different remedies: on a
     // node that announces nothing this address is the only way in, and on one
@@ -1393,7 +1447,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // and the whole point of carrying `announcing` is that it does not follow.
       // The node closes the window itself; this machine only knows the count
       // reached zero. Saying so beats counting "剩 0:00" until the next read.
-      headline.textContent = left === 0 ? PAIR_TEXT.windowExpiring : PAIR_TEXT.windowOpen;
+      // "配對視窗開啟中" on its own reads as done. On a node whose peer listener
+      // is on loopback it is not: the window is open and there is no way in,
+      // and an owner who reads it as done goes to the other machine and waits.
+      const reachable = pairAddressReachable(window_.peerAddress);
+      headline.textContent = left === 0
+        ? PAIR_TEXT.windowExpiring
+        : (reachable ? PAIR_TEXT.windowOpen : PAIR_TEXT.windowOpenUnreachable);
       detail.append(announceLine(announcing));
       // The broadcast tradeoff is only a tradeoff where something is actually
       // broadcast. On a node that announces nothing, the note that matters is
@@ -4107,6 +4167,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
+    pairAddressReachable, goToNodeSettings,
     pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,

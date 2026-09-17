@@ -516,6 +516,81 @@ if (!el("pair-here").classList.contains("hidden")) {
   failures.push("the typed-address block is shown on a node that has no address to give");
 }
 
+/* ---------------- 8b. an address nobody can reach ------------------------ */
+
+// The default node has no -allow-lan and listens on 127.0.0.1:7463, which is
+// exactly what the API answers with. It is a true answer to "where does this
+// node's peer listener answer" and a useless one to "what does the other
+// machine type": handed across, it fails over there as a connection timeout
+// with nothing on either screen to say why. So it is not shown as the address,
+// and the window is not described as done.
+for (const unreachable of ["127.0.0.1:7463", "localhost:7463", "[::1]:7463", "0.0.0.0:7463"]) {
+  if (scope.pairAddressReachable(unreachable)) {
+    failures.push(`${unreachable} was treated as an address another machine could type`);
+  }
+}
+for (const reachable of ["192.168.50.10:7463", "10.0.0.7:7463", "[fd00::1]:7463"]) {
+  if (!scope.pairAddressReachable(reachable)) {
+    failures.push(`${reachable} was treated as unreachable, so a working address would be hidden`);
+  }
+}
+
+pairingAnswer = {
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 0, lastError: "the peer listener is on loopback" },
+    peerAddress: "127.0.0.1:7463",
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+if (el("pair-local-address").textContent.includes("127.0.0.1")) {
+  failures.push("a loopback address was handed to the owner as the one the other machine types");
+}
+const stuck = el("pair-here").serialize() + el("pair-here-note").serialize();
+for (const required of ["允許區網連線", "節點設定"]) {
+  if (!stuck.includes(required)) {
+    failures.push(`the unreachable-address explanation omits ${required}, so it names no remedy`);
+  }
+}
+// The window is open and there is no way in. Saying only 開啟中 reads as done,
+// and an owner who reads it as done goes to the other machine and waits.
+if (el("pairing-headline").textContent === PAIR_TEXT.windowOpen) {
+  failures.push("an open window nobody can reach was described as simply open");
+}
+if (el("pairing-headline").textContent !== PAIR_TEXT.windowOpenUnreachable) {
+  failures.push(`the headline on an unreachable open window is ${JSON.stringify(el("pairing-headline").textContent)}`);
+}
+// And copying it is off: the whole point is that this string must not travel.
+if (!el("copy-pair-address").disabled) {
+  failures.push("the copy button is live on an address that cannot work on the other machine");
+}
+
+// The remedy is a button, not a sentence about where to click: the fix is two
+// tabs away and the owner has just been told their node is unreachable.
+function buttonsUnder(node, found = []) {
+  if (!node || typeof node !== "object") return found;
+  if (node.tagName === "button") found.push(node);
+  for (const child of node.children ?? []) buttonsUnder(child, found);
+  return found;
+}
+const fix = buttonsUnder(el("pair-here-note")).find((b) => b.textContent === PAIR_TEXT.hereFix);
+if (!fix) {
+  failures.push("no button takes the owner to the setting that makes this node reachable");
+} else {
+  fix.onclick();
+  if (state.view !== "settings" || state.settingsSection !== "settings-node") {
+    failures.push(`the fix button left the window on ${state.view}/${state.settingsSection}`);
+  }
+  if (!el("pairing-modal").classList.contains("hidden")) {
+    failures.push("the fix button left the pairing drawer open on top of the settings it opened");
+  }
+  state.view = "network";
+  scope.openPairingDrawer();
+  await settle();
+}
+
 /* ---------------- 9. every string from the wire is text ------------------ */
 
 const hostile = {
