@@ -1113,6 +1113,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     row.append(element("div", "meta",
       `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`));
     row.append(element("div", "fingerprint", request.nodeId || ""));
+    // The request id, because it is the handle the other surface uses: an owner
+    // holding this window and a terminal has to be able to tell that the row
+    // here and the row `ah pair pending` prints are the same exchange.
+    row.append(element("div", "meta", request.id || ""));
     row.append(fingerprintBlock(request));
     const step = pairStepText(request);
     if (step) row.append(element("div", "nextstep", step));

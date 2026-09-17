@@ -439,6 +439,22 @@ func TestFrontendPairingIsCompleteFromInsideTheWindow(t *testing.T) {
 	}
 }
 
+// TestFrontendPairsTwoMachinesWithoutCopyingAKey drives the pairing exchange
+// from inside the window (issue #63).
+//
+// The node moves the keys and derives the fingerprints; what decides whether
+// two machines are the ones they claim is a person reading two screens. So what
+// this pins is what that person is shown: both fingerprints, in the order the
+// node gave them, with the node's own labels — one value per screen is the
+// version people get wrong, because they see two different strings, assume that
+// is how it works, and confirm. The decision sits after the values it is about,
+// nothing anywhere offers to decide without comparing, and a candidate row —
+// every field of which a stranger on the segment wrote — can pick who is
+// dialled and nothing else.
+func TestFrontendPairsTwoMachinesWithoutCopyingAKey(t *testing.T) {
+	runNodeCheck(t, "pairing-exchange.mjs")
+}
+
 // TestFrontendRunsEverySessionsFilterCheck covers the filter model behind the
 // session table: three groups that OR within and AND across, and counts that
 // answer "how many of what you are already looking at".
