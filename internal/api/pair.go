@@ -125,6 +125,25 @@ func (s *Server) view(request pairing.Request) pairRequestView {
 // pairNextStep says what happens now and where, in one sentence.
 func pairNextStep(request pairing.Request, otherName string) string {
 	switch {
+	case request.TrustedByRequest && request.TrustLeftInPlace != "":
+		// First, and stated without naming a state, because trust can outlive
+		// the decision that should have taken it back under more than one of
+		// them. A refusal is the obvious one; an expiry is the one that used to
+		// fall through here — the approval writes the trust row, the window
+		// runs out before the transition, the sweep marks the row expired, and
+		// the compensation cannot revoke. A state-specific case then left the
+		// owner reading "Nothing was trusted" with the key still in the store.
+		//
+		// The revoke is skipped when the key stored under that node id is not
+		// the key this request carried, because then the trust came from
+		// somewhere else, and it can also simply fail. Saying "withdrawn" here
+		// — which this sentence used to do unconditionally — would tell the
+		// owner the one thing that is not true: something is still trusted, and
+		// only they can decide about it. The row carries which of the two
+		// happened, so this sentence states it rather than guessing.
+		return fmt.Sprintf("This request ended as %s after this machine had trusted %s, and that "+
+			"trust was left in place: %s. Check it with `ah trust list` and remove it yourself "+
+			"with: ah revoke %s", request.State, otherName, request.TrustLeftInPlace, request.NodeID)
 	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
 		// Both halves, because the requester who is told only the first half
 		// stalls: the approval on the far side does not finish the pairing, and
@@ -145,18 +164,6 @@ func pairNextStep(request pairing.Request, otherName string) string {
 			"them to confirm. If they never do, undo it with: ah revoke %s", otherName, request.NodeID)
 	case request.State == pairing.StateApproved:
 		return fmt.Sprintf("Done: %s is trusted here, and this machine is trusted there.", otherName)
-	case request.State == pairing.StateRejected && request.TrustedByRequest &&
-		request.TrustLeftInPlace != "":
-		// The revoke is skipped when the key stored under that node id is not
-		// the key this request carried, because then the trust came from
-		// somewhere else, and it can also simply fail. Saying "withdrawn" here
-		// — which this sentence used to do unconditionally — would tell the
-		// owner the one thing that is not true: something is still trusted, and
-		// only they can decide about it. The row carries which of the two
-		// happened, so this sentence states it rather than guessing.
-		return fmt.Sprintf("Refused by %s after this machine had trusted it. The trust written "+
-			"here was left in place: %s. Check it with `ah trust list` and remove it yourself "+
-			"with: ah revoke %s", otherName, request.TrustLeftInPlace, request.NodeID)
 	case request.State == pairing.StateRejected && request.TrustedByRequest:
 		// This machine had already approved, and the refusal arrived after.
 		// Saying only "refused" would leave the owner with no way to know a
@@ -712,11 +719,19 @@ func (s *Server) undoApprovalThatLost(
 	ctx context.Context, w http.ResponseWriter, request pairing.Request, settleErr error,
 ) {
 	current, ok := s.pairRequests.Get(request.ID)
+	// What the owner is told this request is now. Read from the row when there
+	// still is one; "gone" when the sweep took it between the transition and
+	// here, because the only copy left is the pending one this call started
+	// from, and answering out of it would say the request "is pending, so it
+	// cannot be approved now" about a request that no longer exists.
+	state := string(current.State)
 	if !ok {
 		// Swept between the transition and here. There is no row left to
 		// attribute the trust to, so it goes, and the owner is told the request
 		// is gone.
 		current = request
+		state = "gone"
+		settleErr = pairing.ErrNoSuchRequest
 	}
 	if ok && current.State == pairing.StateApproved && current.TrustedByRequest {
 		writePairStateError(w, current, "approved", settleErr)
@@ -729,7 +744,7 @@ func (s *Server) undoApprovalThatLost(
 	leftInPlace, err := s.untrustFromRequest(ctx, written)
 	if err != nil {
 		log.Printf("pairing request %s: the approval lost to %s and taking its trust row for %s "+
-			"back failed: %v", request.ID, current.State, request.NodeID, err)
+			"back failed: %v", request.ID, state, request.NodeID, err)
 		leftInPlace = trustLeftByFailedRevoke
 	}
 	if leftInPlace == "" {
@@ -749,7 +764,7 @@ func (s *Server) undoApprovalThatLost(
 	writeInternalError(w, "PAIRING_FAILED", fmt.Sprintf(
 		"this request was %s before the approval landed, and the trust it had written for %s "+
 			"could not be taken back; remove it with `ah revoke %s`",
-		current.State, displayNameOr(request.DisplayName, request.NodeID), request.NodeID),
+		state, displayNameOr(request.DisplayName, request.NodeID), request.NodeID),
 		errors.New(leftInPlace))
 }
 
@@ -948,8 +963,12 @@ func (s *Server) receivePairReject(w http.ResponseWriter, r *http.Request) {
 // it goes first: an approval that lands between the read and the Settle loses
 // there, is seen by the re-read, and is refused properly instead of being
 // papered over by a branch chosen from a row the node has already left. The
-// revoke follows the state change rather than preceding it, because once the
-// row says rejected no approval can still be in flight behind it.
+// revoke follows the state change rather than preceding it: an approval can
+// still be in flight behind a row that says rejected, and it is not this side's
+// to find. That approval loses its own transition and compensates itself —
+// undoApprovalThatLost takes back the trust row it had already written — so
+// revoking here is about the trust an approval that already won left standing,
+// and nothing else.
 //
 // A request already refused or expired is returned as it stands: the requester
 // is telling this node something it already believes, and saying so is a better

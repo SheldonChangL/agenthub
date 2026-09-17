@@ -132,6 +132,14 @@ where it was.
    recording fails, the refusal answers 500 rather than letting a row be read as
    a withdrawal.
 
+   The guarantee is stated about the row, not about a state. An approval loses
+   the transition to an expiry as well as to a refusal — the window runs out
+   between the trust write and `SettleFrom`, the sweep marks the row `expired`,
+   and the compensation records `trustLeftInPlace` on an expired row. The
+   sentence the owner reads is therefore chosen by `trustLeftInPlace` before any
+   state is looked at; while it was chosen by `rejected` first, an expired row
+   with a key still in the store read "Nothing was trusted".
+
 7. **Pairing writes identity and nothing else.** No `session_audience` row is
    created. Two machines that have paired can see nothing of each other until
    somebody sets an audience per session.

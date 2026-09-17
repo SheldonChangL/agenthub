@@ -147,8 +147,10 @@ func reachableAt(policy func(address string) error, host string, port int) (neti
 	if parsed.Is6() {
 		return netip.Addr{}, "the peer listener is on an IPv6 address, and announcements go out " +
 				"on the IPv4 group, so no other machine could discover this one",
-			"nothing, unless discovery matters: the listener is reachable, and pairing by typing " +
-				"its address or by hand with `ah pair` works"
+			"nothing, unless discovery matters: the listener is reachable, and pairing by hand " +
+				"with `ah pair` works. An address that cannot be announced is not reported to " +
+				"the pairing window either, so `ah pairing` will say this node named no address: " +
+				"read the peer listener with `ah settings` here and type that on the other machine"
 	}
 	// The policy has the last word, and is the only word on everything else.
 	// PrivateNetworks refuses the unspecified address explicitly and refuses
