@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // Provider metadata is untrusted input (docs/architecture.md). The desktop
@@ -796,5 +797,93 @@ func TestFrontendDoesNotBlurOverMovingPixels(t *testing.T) {
 	if count := strings.Count(string(stylesheet), "backdrop-filter:"); count > 0 {
 		t.Errorf("style.css has %d backdrop-filter rules; each one resamples the moving backdrop "+
 			"every frame, which is what made the window unusable on an Intel HD 520 (#156)", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// i18n: the window keeps its words in one table, in both languages.
+// ---------------------------------------------------------------------------
+
+// tableEntry is a regex over a flat "key": "value" line. The two tables are
+// kept expression-free precisely so this is sufficient: the moment they hold a
+// template literal or a concatenation, the only honest parser is a JS one, and
+// a test that needs a JS parser is a test that gets deleted.
+var tableEntry = regexp.MustCompile(`(?m)^\s*"([^"]+)":\s*"((?:[^"\\]|\\.)*)",\s*$`)
+
+func readTextTable(t *testing.T, name string) map[string]string {
+	t.Helper()
+	path := filepath.Join("frontend", "src", "i18n", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	source := string(data)
+	// The table must stay data. A backtick or a "${" in here is an expression,
+	// and the parity check above would then be reading whatever the regex
+	// happened to match rather than what the window renders.
+	if strings.Contains(source, "${") {
+		t.Errorf("%s interpolates at runtime; the tables hold flat strings with {named} "+
+			"placeholders so this file stays parseable and the parity check stays honest", path)
+	}
+	entries := map[string]string{}
+	for _, match := range tableEntry.FindAllStringSubmatch(source, -1) {
+		if _, seen := entries[match[1]]; seen {
+			t.Errorf("%s defines %q twice; the later one silently wins", path, match[1])
+		}
+		entries[match[1]] = match[2]
+	}
+	if len(entries) == 0 {
+		t.Fatalf("no entries parsed out of %s; the table's shape changed and this test now covers nothing", path)
+	}
+	return entries
+}
+
+func hasHan(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFrontendKeepsItsWordsInOneTable is what stops the second language rotting.
+//
+// A bilingual window is only bilingual for as long as nothing adds a literal at
+// a call site. Nobody notices a missed string on the language they do not read,
+// so the rule is checked rather than remembered: every sentence lives in
+// src/i18n/, both tables carry the same keys, and no English value is a
+// copy-pasted Chinese one.
+//
+// Comments are exempt by design. This codebase's comments are a deliberate mix
+// of English and Chinese — they quote the strings they are about — and the rule
+// is about what reaches the screen.
+func TestFrontendKeepsItsWordsInOneTable(t *testing.T) {
+	zh := readTextTable(t, "zh-Hant.js")
+	en := readTextTable(t, "en.js")
+
+	for key := range zh {
+		if _, ok := en[key]; !ok {
+			t.Errorf("en.js has no %q; a key in one table and not the other renders as the key itself", key)
+		}
+	}
+	for key := range en {
+		if _, ok := zh[key]; !ok {
+			t.Errorf("zh-Hant.js has no %q; a key in one table and not the other renders as the key itself", key)
+		}
+	}
+
+	for key, value := range en {
+		if hasHan(value) {
+			t.Errorf("en.js still holds Han in %q: %s", key, value)
+		}
+		// A value copied across unchanged is the commonest way a string goes
+		// untranslated, and it is invisible to anyone reading only one of the
+		// two. Names, punctuation and bare identifiers legitimately match, so
+		// only values carrying letters are judged.
+		if other, ok := zh[key]; ok && other == value && strings.ContainsFunc(value, unicode.IsLetter) {
+			t.Errorf("en.js and zh-Hant.js hold the same value for %q (%s); if that is deliberate "+
+				"the string has no business being in the tables", key, value)
+		}
 	}
 }

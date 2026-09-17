@@ -6,6 +6,7 @@
 // handlers, starts the intervals and does the first load.
 import { api } from "./api.js";
 import * as F from "./sessions/filter.js";
+import { t, plural, paintStatic, pickLanguage, setLanguage, language, LANGUAGES } from "./i18n/index.js";
 export { configure } from "./api.js";
 
 export function boot({ start = true, backdropUrl = "" } = {}) {
@@ -84,7 +85,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // 101.7% with it running, 2.4% with it off, #156), which is not something
     // to spend on a machine whose owner has not asked for it. The photo is
     // free by comparison and stays on.
-    ui: { backdrop: true, motion: false },
+    // lang is "" until the owner picks one: empty means "follow the OS",
+    // which is what pickLanguage does with navigator.language.
+    ui: { backdrop: true, motion: false, lang: "" },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -138,7 +141,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Opt-in, so a stored file written before the rain had a switch — or one
       // with the key missing — leaves it off rather than on.
       state.ui.motion = ui.motion === true;
+      // Only a language this build has. A stored value from a newer build, or a
+      // hand-edited one, falls back to the locale rather than to the key names.
+      state.ui.lang = typeof ui.lang === "string" ? ui.lang : "";
     }
+    // Applied here rather than at the call site so every path that reads the
+    // preferences — boot, and the node checks that call loadPrefs directly —
+    // ends up with the same language the stored override asks for.
+    setLanguage(pickLanguage(globalThis.navigator?.language, state.ui.lang));
   }
 
   // Typing in the search box would otherwise write localStorage on every
@@ -884,179 +894,68 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // Every user-facing string of the pairing exchange, in one object.
   //
-  // One object rather than literals at the call sites so that translating this
-  // panel later is a swap of this object and nothing else — the English pass is
-  // its own change, and a pass that has to find forty literals scattered
-  // through the renderers is a pass that misses some.
+  // The object is now a window onto the `pair.*` slice of the active language
+  // table (src/i18n/). It is kept because the renderers and the node checks
+  // both reach for it by name, and because every property is a live getter the
+  // whole panel changes language without anything re-reading this object.
   //
   // The state wording mirrors `ah pair pending` deliberately: two owners on two
   // machines, one in a terminal and one in this window, have to be able to say
   // the same thing to each other about the same row.
-  const PAIR_TEXT = {
-    open: "與另一台機器配對",
-    close: "關閉配對視窗",
-    // The window, said as what it is for rather than as what it broadcasts:
-    // the window is now what the exchange needs, and announcing is a separate
-    // half that a node without -discover simply does not have.
-    windowOpen: "配對視窗開啟中",
-    windowClosed: "配對視窗未開啟。",
-    windowExpiring: "配對視窗已到期，正在向節點確認…",
-    windowUnavailable: "配對狀態讀不到。",
-    // The address half, for a node that is not announcing.
-    hereHeading: "對方要輸入的本機位址",
-    hereNote: "這台機器沒有在廣播，所以不會出現在對方的候選清單裡。把上面這個位址念給對方，" +
-      "讓他們填進自己視窗的「對方畫面顯示的位址」欄位。",
-    // Shown on a node that IS announcing. mDNS not carrying between two
-    // segments is exactly as silent as mDNS being off, so the address is worth
-    // having on screen either way — stated as the remedy rather than as a
-    // problem, because here there may not be one.
-    hereNoteAnnouncing: "這台機器有在廣播，正常情況下會出現在對方的候選清單裡。" +
-      "如果對方等不到，就把上面這個位址念給他們，填進他們視窗的「對方畫面顯示的位址」欄位。",
-    hereNoAddress: "節點沒有給出可以讓對方連進來的位址。",
-    // The default node has no -allow-lan, its peer listener is on loopback, and
-    // it therefore answers the pairing endpoint with no peerAddress at all
-    // rather than with 127.0.0.1. So "no address" is not a rare shape: it is
-    // what a fresh install looks like, and hiding the block there left the
-    // owner with an open window, no address, no reason and nothing to press.
-    // Same remedy as the loopback case, because it is the same setting.
-    hereNoAddressWhy: "節點沒有給出任何可以讓對方連進來的位址——預設啟動的節點只在本機回路（loopback）上聽，" +
-      "那種位址對方連不上，所以節點不會拿它當對外位址。" +
-      "到「設定 → 節點設定」打開「允許區網連線」，選一個這台機器實際有的區網位址，再重新啟動節點；" +
-      "之後這裡就會顯示對方可以輸入的位址。",
-    // The default node listens on 127.0.0.1:7463. That address is what the API
-    // answers with, and it is an address no other machine can reach — so
-    // printing it under 「對方要輸入的本機位址」 would hand someone a string that
-    // cannot work, and the failure lands on the other machine as a timeout with
-    // nothing to explain it.
-    // The headline over the remedy block. It used to state the negative a third
-    // time — the window panel's headline says nobody can get in, the announce
-    // line said nothing is being sent, and then this said it again — and a
-    // screen that says the same bad news three times before naming the fix is a
-    // screen people stop reading before the fix. So the negative is said once,
-    // above, and this line is the instruction; the explanation is under it.
-    hereFixHeadline: "先讓對方連得進來",
-    hereUnreachable: "節點目前只在本機回路（loopback）上聽，所以這個位址只有這台機器自己連得到，" +
-      "對方輸入它會連不上。到「設定 → 節點設定」打開「允許區網連線」，" +
-      "選一個這台機器實際有的區網位址，再重新啟動節點；之後這裡就會顯示對方可以輸入的位址。",
-    hereFix: "去設定節點位址…",
-    // The drawer's subtitle. It used to be one fixed sentence in index.html
-    // promising that opening the window tells the segment this machine is here.
-    // That is only true where something is actually broadcast; on a node that
-    // announces nothing it was a flat falsehood at the top of the one panel
-    // whose whole point is that nobody out there will see this machine.
-    drawerSubAnnouncing: "開啟後同網段的人都會知道這台機器在跑 AgentHub。",
-    drawerSubNotAnnouncing: "這台機器不會廣播，開啟後也不會出現在對方的候選清單裡；對方要用下面這個位址連進來。",
-    // The third case, and the commonest one: a default node announces nothing
-    // AND has no address anyone can reach. The "not announcing" sentence ends
-    // 「對方要用下面這個位址連進來」 while the block directly beneath it says
-    // 「還沒有人連得進這台機器。」 and shows no address at all — the subtitle
-    // promising exactly what the panel then withholds.
-    drawerSubUnreachable: "這台機器不會廣播，目前也還沒有人連得進來；先照下面的說明設定位址。",
-    drawerSubUnknown: "配對視窗開著的時候，對方才連得進來。",
-    // Said on the window panel too, because "配對視窗開啟中" on its own reads as
-    // done, and it is not: the window is open and unreachable.
-    windowOpenUnreachable: "配對視窗開著，但還沒有人連得進來。",
-    hereCopied: "已複製位址到剪貼簿",
-    hereCopyFailed: "無法寫入剪貼簿，請手動複製上面那一串。",
-    // Sending a request.
-    send: "送出配對請求",
-    sendFromCandidate: "送出配對請求",
-    sendManual: "改用手動填入…",
-    addressEmpty: "請先填入對方畫面上顯示的位址，格式是 host:port，例如 192.168.1.20:7463。",
-    addressNote: "對方要先在自己的視窗按「與另一台機器配對」，這台才連得進去。" +
-      "送出後兩台螢幕會各自顯示同樣的兩組指紋，逐組比對過才按核准。",
-    sent: "配對請求已送出，等對方核准。兩邊的指紋要逐組比對過才按確認。",
-    // The requests panel.
-    requestsHeading: "配對請求",
-    showDecided: "顯示已結束",
-    requestsEmpty: "目前沒有等待處理的配對請求。",
-    requestsEmptyAll: "沒有任何配對請求。已結束的請求只留十分鐘。",
-    requestsUnread: "還沒有向節點讀過配對請求。",
-    requestsFailed: "無法向本機節點取得配對請求，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方沒有送出。",
-    // The one instruction attached to a decision. The node writes the same
-    // sentence in English beside every undecided row; this is that sentence in
-    // the window's own language, kept next to the buttons it governs rather
-    // than in a banner somewhere else.
-    // Three lines rather than one hundred-character paragraph. This is the one
-    // instruction in the window that a person carries out step by step, and a
-    // wall of text is the thing people skim before pressing a button.
-    compare: [
-      "下面兩組指紋，上面是發起方（發出請求的那台），下面是被詢問方（被問的那台）——跟旁邊的標籤同一個詞。",
-      "對方螢幕上是同樣的兩個值、同樣的順序。逐組比對，只要有一組不同就按拒絕——那表示中間有東西。",
-      "兩邊各自說好之前，什麼都還沒有被信任。",
-    ],
-    approve: "指紋一致，核准",
-    confirm: "指紋一致，確認",
-    reject: "拒絕",
-    // What each state means, in one phrase, and what happens next in one line.
-    state: {
-      "pending-incoming": "等你核准",
-      "pending-outgoing": "等待對方核准",
-      "awaiting-confirm": "對方已核准，等你確認",
-      approved: "已完成",
-      rejected: "已拒絕",
-      expired: "已結束",
-    },
-    step: {
-      // 上面, not 下面: this sentence is rendered under the fingerprint block,
-      // and one that points the wrong way sends the owner looking for a second
-      // pair that does not exist.
-      "pending-incoming": "比對上面兩組指紋，一致就按「指紋一致，核准」；不一致按「拒絕」。",
-      // Both halves. A requester told only the first half stalls: the approval
-      // over there does not finish the pairing, and without this sentence
-      // nothing on this screen says a confirm is still coming back here.
-      "pending-outgoing": "請對方在他們的視窗按「指紋一致，核准」。他們按了之後，這一列會換成等你確認——" +
-        "到時候比對指紋，再按「指紋一致，確認」，配對才算完成。",
-      "awaiting-confirm": "對方已經核准了。比對上面兩組指紋，一致就按「指紋一致，確認」。",
-      "approved-incoming": "這台已經信任對方了。剩下的在對方那台，等他們按確認；他們一直沒按的話，就撤銷這個節點。",
-      "approved-outgoing": "兩邊都完成了。",
-      rejected: "已拒絕，兩邊都沒有留下任何信任。",
-      // The node carries this reason on its own (`fingerprint_mismatch`), and
-      // rendering it as a plain 已拒絕 threw away the only refusal that says
-      // something about the network rather than about somebody's decision.
-      "rejected-fingerprint-mismatch": "因為指紋不一致被拒絕：兩邊螢幕上的指紋對不起來，中間可能有東西。" +
-        "什麼都沒有被信任。不要直接重送，先確認你連的是哪一台。",
-      expired: "這次配對沒有在時限內完成，兩邊都沒有留下任何信任。要配對就重新送一次。",
-      displaced: "這一列被後來的請求擠掉了，不是你逾時。要配對就重新送一次。",
-    },
-    // What a decision did, in this window's own language. The node answers with
-    // an English nextStep that names `ah` subcommands — right for the terminal
-    // it was written for — and a Chinese window that answers a button press in
-    // English is one whose messages people stop reading. The node's words are
-    // kept behind these rather than dropped: after a refusal they say whether
-    // the other machine could be told.
-    decided: {
-      approve: "已核准。剩下的在對方那台，等他們按確認。",
-      confirm: "已確認，這次配對完成。",
-      reject: "已拒絕，兩邊都沒有留下任何信任。",
-    },
-    nodeSaid: "節點回報",
-    // The node's own labels, mapped one-for-one. A fixed table, so a string
-    // from the wire can never choose the words around it — and the fingerprint
-    // values themselves are rendered exactly as the node ordered them.
-    whose: { "this machine": "這一台", "the other machine": "對方那台" },
-    role: { requester: "發起方", receiver: "被詢問方" },
-    // What the node's refusals mean, and what to do about each. The node's own
-    // sentences are English and name `ah` subcommands, which is the wrong
-    // advice in a window with buttons.
-    errors: {
-      PEER_TOO_OLD: "對方那台跑的是還沒有配對交換功能的舊版 AgentHub。請先在那台更新 AgentHub，" +
-        "或用最底下的手動配對。",
-      PEER_PAIRING_CLOSED: "對方那台沒有在配對模式。請他們在自己的視窗按「與另一台機器配對」，再送一次。",
-      PEER_PAIRING_DUPLICATE: "對方那台已經有一個來自這台機器的請求在等他們決定了。請他們先處理那一列。",
-      PAIRING_BUSY: "這台機器等待中的配對請求已經滿了。先處理或拒絕掉現有的，再送一次。",
-      PAIRING_DUPLICATE: "那台機器已經有一個請求在這裡等著了，先處理下面那一列。",
-      PAIRING_STATE: "這個請求已經不在等這個動作了——可能已經被拒絕、逾時，或是已經完成。" +
-        "清單重新整理後再看一次，需要的話重新送出請求。",
-      PAIRING_EXCHANGE_DISABLED: "這個節點啟動時沒有帶配對交換，只能用最底下的手動配對。",
-      PEER_UNREACHABLE: "連不到那個位址。確認位址沒打錯、兩台在同一個網段，而且對方的節點正在跑。",
-      PEER_KEY_MISMATCH: "那台機器用一把金鑰完成連線，卻自稱是另一把——中間有東西在轉送這條連線。" +
-        "什麼都沒有被配對，不要重試，先確認你連的是哪一台。",
-      ADDRESS_NOT_ALLOWED: "這個節點不會送資料到那個位址。要嘛位址打錯了，要嘛它不在這個節點視為私有的網段裡" +
-        "（設定頁的「視為私有網段」）。",
-      NOT_FOUND: "找不到這個配對請求，它可能已經逾時被清掉了。重新送一次。",
-    },
+  const pairGroup = (prefix, keys) => {
+    const group = {};
+    for (const key of keys) {
+      Object.defineProperty(group, key, {
+        get: () => t(prefix + "." + (key.startsWith("_") ? key.slice(1) : key)),
+        enumerable: true,
+      });
+    }
+    return group;
   };
+  const PAIR_TEXT = pairGroup("pair", [
+    "open", "close", "windowOpen", "windowClosed", "windowExpiring", "windowUnavailable",
+    "hereHeading", "hereNote", "hereNoteAnnouncing", "hereNoAddress", "hereNoAddressWhy",
+    "hereFixHeadline", "hereUnreachable", "hereFix",
+    "drawerSubAnnouncing", "drawerSubNotAnnouncing", "drawerSubUnreachable", "drawerSubUnknown",
+    "windowOpenUnreachable", "hereCopied", "hereCopyFailed",
+    "send", "sendFromCandidate", "sendManual", "addressEmpty", "addressNote", "sent",
+    "requestsHeading", "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
+    "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
+  ]);
+  // The three sentences a person carries out step by step, as an array because
+  // that is what reads them.
+  Object.defineProperty(PAIR_TEXT, "compare", {
+    get: () => [t("pair.compare.1"), t("pair.compare.2"), t("pair.compare.3")],
+    enumerable: true,
+  });
+  PAIR_TEXT.state = pairGroup("pair.state", [
+    "pending-incoming", "pending-outgoing", "awaiting-confirm", "approved", "rejected", "expired",
+  ]);
+  PAIR_TEXT.step = pairGroup("pair.step", [
+    "pending-incoming", "pending-outgoing", "awaiting-confirm", "approved-incoming",
+    "approved-outgoing", "rejected", "rejected-fingerprint-mismatch", "expired", "displaced",
+  ]);
+  PAIR_TEXT.decided = pairGroup("pair.decided", ["approve", "confirm", "reject"]);
+  // The node's own labels, mapped one-for-one. A fixed table, so a string from
+  // the wire can never choose the words around it — and the fingerprint values
+  // themselves are rendered exactly as the node ordered them.
+  PAIR_TEXT.whose = {};
+  Object.defineProperty(PAIR_TEXT.whose, "this machine", {
+    get: () => t("pair.whose.this-machine"), enumerable: true,
+  });
+  Object.defineProperty(PAIR_TEXT.whose, "the other machine", {
+    get: () => t("pair.whose.the-other-machine"), enumerable: true,
+  });
+  PAIR_TEXT.role = pairGroup("pair.role", ["requester", "receiver"]);
+  // What the node's refusals mean, and what to do about each. The node's own
+  // sentences are English and name `ah` subcommands, which is the wrong advice
+  // in a window with buttons. Keyed by the node's code, which is a contract
+  // (docs/ui-contract.md §4.3).
+  PAIR_TEXT.errors = pairGroup("pair.errors", [
+    "PEER_TOO_OLD", "PEER_PAIRING_CLOSED", "PEER_PAIRING_DUPLICATE", "PAIRING_BUSY",
+    "PAIRING_DUPLICATE", "PAIRING_STATE", "PAIRING_EXCHANGE_DISABLED", "PEER_UNREACHABLE",
+    "PEER_KEY_MISMATCH", "ADDRESS_NOT_ALLOWED", "NOT_FOUND",
+  ]);
 
   // Every field of a candidate was chosen by whoever sent the packet, on a
   // multicast group anyone on the segment can write to. So this whole panel is
@@ -4465,6 +4364,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     output.classList.remove("hidden");
   }
 
+  // setUILanguage repaints in place rather than reloading. A reload would drop
+  // the pairing drawer's state, the filter selection and anything half-typed,
+  // which is a high price for a string swap.
+  function setUILanguage(next) {
+    state.ui.lang = setLanguage(next);
+    savePrefs();
+    paintStatic();
+    render();
+  }
+
   /* ---------------- redesign wiring ---------------- */
 
   el("select-all-visible").onchange = setSelectionForVisible;
@@ -4532,6 +4441,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   };
 
   loadPrefs();
+  // The markup's own words, before the first render: index.html carries keys,
+  // not sentences.
+  paintStatic();
   el("search").value = state.search;
   applyBackdrop();
   if (backdropUrl) el("backdrop-photo").src = backdropUrl;
@@ -4583,6 +4495,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
+    t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
