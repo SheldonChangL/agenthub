@@ -242,7 +242,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         const on = state.filters[group].has(chip.value);
         const n = counts[`${group}:${chip.value}`] ?? 0;
         button.className = `chip${on ? " on" : ""}${n === 0 && !on ? " zero" : ""}`;
-        button.append(chip.label, element("span", "n", String(n)));
+        button.append(chip.labelKey ? t(chip.labelKey) : chip.label, element("span", "n", String(n)));
         button.onclick = () => {
           state.filters = F.toggleChip(state.filters, group, chip.value);
           savePrefs();
@@ -258,12 +258,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // describeAudience answers "published to whom" in one cell.
   function describeAudience(audience) {
     const mode = audience?.mode ?? "none";
-    if (mode === "all_paired") return { text: "所有已配對", published: true };
+    if (mode === "all_paired") return { text: t("audience.cell.allPaired"), published: true };
     if (mode === "selected") {
       const count = audience?.nodes?.length ?? 0;
-      return { text: count === 0 ? "指定節點（無）" : `${count} 個節點`, published: count > 0 };
+      return {
+        text: count === 0 ? t("audience.cell.selectedNone") : plural(count, "audience.cell.nodeCount"),
+        published: count > 0,
+      };
     }
-    return { text: "不公開", published: false };
+    return { text: t("audience.cell.none"), published: false };
   }
 
   function shortId(id) {
@@ -275,10 +278,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const then = new Date(iso).getTime();
     if (!Number.isFinite(then)) return "—";
     const seconds = Math.max(0, (Date.now() - then) / 1000);
-    if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分鐘前`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小時前`;
-    return `${Math.floor(seconds / 86400)} 天前`;
+    if (seconds < 60) return plural(Math.floor(seconds), "time.secondsAgo");
+    if (seconds < 3600) return plural(Math.floor(seconds / 60), "time.minutesAgo");
+    if (seconds < 86400) return plural(Math.floor(seconds / 3600), "time.hoursAgo");
+    return plural(Math.floor(seconds / 86400), "time.daysAgo");
   }
 
   // Icons for the row actions are text, not glyphs: the buttons are small but
@@ -315,12 +318,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await write;
     } catch (error) {
       if (sequence !== resumeRequest) return;
-      banner(`無法寫入剪貼簿（${error}），請手動輸入：${command}`);
+      banner(t("row.resumeCopyFailed", { error, command }));
       return;
     }
     if (sequence !== resumeRequest) return;
-    const where = session.cwd ? `，在 ${session.cwd} 執行` : "";
-    banner(`已複製 ${command}${where}。`, true);
+    banner(session.cwd
+      ? t("row.resumeCopiedIn", { command, cwd: session.cwd })
+      : t("row.resumeCopied", { command }), true);
   }
 
   function flagChip(label, on, warn = false) {
@@ -381,9 +385,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const chips = element("span", "flagchips");
       chips.append(
         flagChip("CWD", Boolean(a.exportCwd)),
-        flagChip("收", Boolean(a.acceptMessages)),
-        flagChip("送", Boolean(a.allowOutbound)),
-        flagChip("醒", Boolean(a.autoWake), true),
+        flagChip(t("row.flagIn"), Boolean(a.acceptMessages)),
+        flagChip(t("row.flagOut"), Boolean(a.allowOutbound)),
+        flagChip(t("row.flagWake"), Boolean(a.autoWake), true),
       );
       flags.append(chips);
 
@@ -403,10 +407,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const actions = element("td", "col-actions");
       const group = element("span", "rowactions");
       group.append(
-        rowActionButton("inbox", "收件匣", "這個 session 收到的訊息、送出紀錄與喚醒紀錄", () => {
-          openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
+        rowActionButton("inbox", t("inbox.title"), t("row.inboxTitle"), () => {
+          openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
         }),
-        rowActionButton("resume", "resume", `複製 ${resumeCommand(session)}`, () =>
+        rowActionButton("resume", "resume", t("row.resumeTitle", { command: resumeCommand(session) }), () =>
           copyResumeCommand(session)),
       );
       actions.append(group);
@@ -585,9 +589,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // being drawn, and what the moving one costs, so the switch is a decision
   // and not a surprise.
   function describeBackdropState() {
-    if (!state.ui.backdrop) return "已關閉：純深色底。";
-    if (!state.ui.motion) return "照片顯示中。數字雨預設關閉：它在較舊的內顯上會吃掉整顆 CPU 核心。";
-    return "照片與數字雨都在顯示。數字雨在較舊的內顯上會吃掉整顆 CPU 核心；覺得風扇吵就關掉它。";
+    if (!state.ui.backdrop) return t("appearance.stateOff");
+    if (!state.ui.motion) return t("appearance.statePhotoOnly");
+    return t("appearance.stateBoth");
   }
 
   // buildRain makes the falling 0/1 columns once. Pure CSS animation after
@@ -640,7 +644,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const pairing = state.pairing;
     if (!pairing) {
       pill_.className = "pill";
-      pill_.textContent = "讀取中…";
+      pill_.textContent = t("network.pairingLoading");
       line.textContent = "";
       return;
     }
@@ -649,37 +653,39 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // this one is an address read off this screen and typed on the other.
     if (pairing.availability === "openNotAnnouncing") {
       pill_.className = "pill idle";
-      pill_.textContent = `配對中 · 剩 ${clock(pairingRemaining())}`;
+      pill_.textContent = t("network.summaryPairing", { left: clock(pairingRemaining()) });
       // Same sentence the drawer had to stop telling: "hand them the address
       // shown there" is advice about an address this node may not have. A
       // default node has none, and the summary line was sending its owner to
       // read out something that was never on the screen.
       line.textContent = pairHereState(pairing.state ?? {}).reachable
-        ? "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。打開配對面板，把裡面顯示的本機位址給對方輸入。"
-        : "視窗開著，但這台沒有在廣播，也還沒有人連得進來。打開配對面板看原因和補救。";
+        ? t("network.summaryOpenNotAnnouncing")
+        : t("network.summaryOpenUnreachable");
       return;
     }
     if (pairing.availability === "off") {
       pill_.className = "pill";
-      pill_.textContent = "未啟用";
-      line.textContent = "節點啟動時沒有 -discover，這台機器不廣播也不看；" +
-        "仍可按「與另一台機器配對」開視窗，用位址配對。";
+      pill_.textContent = t("network.summaryOff");
+      line.textContent = t("network.summaryOffLine");
       return;
     }
     if (pairing.availability !== "on") {
       pill_.className = "pill bad";
-      pill_.textContent = "讀不到";
-      line.textContent = "配對狀態讀不到；這是本機的讀取問題。";
+      pill_.textContent = t("network.summaryUnreadable");
+      line.textContent = t("network.summaryUnreadableLine");
       return;
     }
     const open = Boolean(pairing.state?.open);
     const candidates = pairing.candidates?.length ?? 0;
     const flagged = (pairing.candidates ?? []).filter((c) => c.contested || c.duplicate).length;
     pill_.className = open ? "pill idle" : "pill";
-    pill_.textContent = open ? `廣播中 · 剩 ${clock(pairingRemaining())}` : "未開啟";
+    pill_.textContent = open
+      ? t("network.summaryAnnouncing", { left: clock(pairingRemaining()) })
+      : t("network.summaryClosed");
     line.textContent = candidates === 0
-      ? "目前沒有看到還沒配對的機器在廣播。"
-      : `正在廣播的機器 ${candidates} 台` + (flagged ? `，其中 ${flagged} 台身分有爭用或重複。` : "。");
+      ? t("network.summaryNoCandidates")
+      : plural(candidates, "network.summaryCandidates") +
+        (flagged ? t("network.summaryFlagged", { flagged }) : t("network.summaryStop"));
   }
 
 
@@ -835,16 +841,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const version = state.appVersion ? ` · ${state.appVersion}` : "";
     el("node-line").textContent = reachable
       ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}${version}`
-      : `無法連線到 ${overview.nodeUrl}${version}`;
+      : t("app.unreachable", { url: overview.nodeUrl, version });
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
     if (!reachable) {
       // The banner has to say which of the two situations this is, or a stale
       // list reads as the current truth.
-      const shown = state.loadedOnce
-        ? "下面顯示的是上次成功載入的資料，可能已經過期。"
-        : "還沒有載入過任何資料。";
-      banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或到「設定」分頁把它安裝成背景服務（若這裡支援）。`);
+      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
+      banner(t("app.notConnected", { error: overview.error || "unknown error", shown }));
     } else {
       hideBanner();
     }
@@ -872,24 +876,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     try {
       await fn();
     } catch (error) {
-      banner(`${label}失敗：${error}`);
+      banner(t("busy.failed", { action: label, error }));
     } finally {
       state.busy = false;
       render();
     }
   }
 
-  async function applyAudience(audience, noun) {
+  // mode is the audience's own mode, not a sentence: the two languages put the
+  // verb and the count in different places, so each one gets its own key rather
+  // than a noun glued to a template.
+  async function applyAudience(audience, mode) {
     const ids = [...state.selected];
-    await withBusy(noun, async () => {
+    await withBusy(t("audience.verb." + mode), async () => {
       const result = await api.SetAudience(ids, audience);
       await load();
       if (result.failed > 0) {
-        banner(`${noun}：${result.changed} 個成功、${result.failed} 個失敗 — ${(result.errors || [])[0] || ""}`);
+        banner(t("audience.partlyApplied", {
+          action: t("audience.verb." + mode),
+          changed: result.changed,
+          failed: result.failed,
+          error: (result.errors || [])[0] || "",
+        }));
       } else {
         state.selected.clear();
         closeAudienceModal();
-        banner(`已${noun} ${result.changed} 個 session。`, true);
+        banner(plural(result.changed, "audience.applied." + mode), true);
       }
     });
   }
@@ -3382,21 +3394,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
     if (audience.mode === "selected" && audience.nodes.length === 0) {
-      banner("指定節點需要至少一個節點 ID；要不公開請選「不公開」。");
+      banner(t("audience.needsANode"));
       return;
     }
-    const noun =
-      audience.mode === "none" ? "收回" : audience.mode === "all_paired" ? "公開給所有已配對節點" : "公開給指定節點";
-    applyAudience(audience, noun);
+    applyAudience(audience, audience.mode);
   };
 
   el("btn-unpublish").onclick = () =>
     applyAudience(
       { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
-      "收回",
+      "none",
     );
 
-  el("btn-reload").onclick = () => withBusy("重新整理", load);
+  el("btn-reload").onclick = () => withBusy(t("app.reload"), load);
 
   el("btn-discover").onclick = () =>
     withBusy("掃描", async () => {

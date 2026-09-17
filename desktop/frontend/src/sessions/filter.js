@@ -18,9 +18,13 @@ export const CHIPS = Object.freeze([
   { group: "status", value: "active", label: "active" },
   { group: "status", value: "idle", label: "idle" },
   { group: "status", value: "inactive", label: "inactive" },
-  { group: "audience", value: "all_paired", label: "所有已配對" },
-  { group: "audience", value: "selected", label: "指定節點" },
-  { group: "audience", value: "none", label: "不公開" },
+  // The three audience chips are the only ones whose label is a word rather
+  // than a name: "Claude", "Codex", "active" read the same in both languages
+  // and have no business in a translation table, so they stay literal and
+  // these carry a key the renderer looks up instead.
+  { group: "audience", value: "all_paired", labelKey: "audience.cell.allPaired" },
+  { group: "audience", value: "selected", labelKey: "audience.chip.selected" },
+  { group: "audience", value: "none", labelKey: "audience.cell.none" },
 ]);
 
 export function emptyFilters() {
@@ -29,7 +33,8 @@ export function emptyFilters() {
 
 // audienceMode is the value the audience group filters on. A "selected" mode
 // with no nodes is not published to anyone, but it is still what the owner
-// chose, so it filters as "selected" — the table cell says 「指定節點（無）」.
+// chose, so it filters as "selected" — the table cell says so, under the key
+// audience.cell.selectedNone.
 export function audienceMode(session) {
   return session?.audience?.mode ?? "none";
 }
