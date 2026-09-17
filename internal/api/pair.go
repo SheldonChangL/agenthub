@@ -142,7 +142,7 @@ func pairNextStep(request pairing.Request, otherName string) string {
 		// only they can decide about it. The row carries which of the two
 		// happened, so this sentence states it rather than guessing.
 		return fmt.Sprintf("This request ended as %s after this machine had trusted %s, and that "+
-			"trust was left in place: %s. Check it with `ah trust list` and remove it yourself "+
+			"trust was left in place: %s. Check it with `ah nodes` and remove it yourself "+
 			"with: ah revoke %s", request.State, otherName, request.TrustLeftInPlace, request.NodeID)
 	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
 		// Both halves, because the requester who is told only the first half
