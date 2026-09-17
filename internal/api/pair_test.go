@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -864,6 +865,253 @@ func TestARequesterRejectRevokesAnApprovalAlreadyGiven(t *testing.T) {
 	}
 }
 
+// The refusal and the approval arriving at once, decided in that order.
+//
+// The bug this pins: the receiving handler read the request's row before
+// decoding the body and verifying the signature, and branched on that snapshot.
+// An approval landing in between made every branch wrong at once — the refusal
+// saw `pending`, skipped the revoke, and its Settle(pending→rejected) failed
+// into a discarded error — so the requester was told `rejected` while this node
+// kept the row approved with the trust row written: exactly the machine still
+// trusting a key its owner had refused that the push exists to prevent.
+//
+// The approval is injected at the one instant that produces it rather than
+// raced for, because a fix for a race has to be held against the race.
+func TestAnApproveLandingInsideARejectDoesNotLeaveTrustBehind(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	// The receiving owner approves once, from inside the refusal that is
+	// already being handled. Recorded rather than asserted here: this runs on
+	// the peer server's goroutine, where t.Fatal is not allowed.
+	var approve struct {
+		sync.Mutex
+		done bool
+		code int
+		body string
+	}
+	receiver.server.afterRejectRead = func() {
+		approve.Lock()
+		defer approve.Unlock()
+		if approve.done {
+			return
+		}
+		approve.done = true
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost,
+			"/v1/pair/requests/"+outgoing.ID+"/approve", strings.NewReader("{}"))
+		request.Header.Set("Content-Type", "application/json")
+		receiver.owner.ServeHTTP(recorder, request)
+		approve.code, approve.body = recorder.Code, recorder.Body.String()
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	approve.Lock()
+	defer approve.Unlock()
+	if !approve.done {
+		t.Fatal("the approval was never injected, so this test proves nothing")
+	}
+	if approve.code != http.StatusOK {
+		t.Fatalf("the injected approval = %d %s", approve.code, approve.body)
+	}
+	// One decision on both machines, and it is the refusal: it is the later
+	// word from the owner whose key is being trusted.
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the receiver kept the request %q while the requester was told rejected", state)
+	}
+	if trusted := receiver.trusted(); len(trusted) != 0 {
+		t.Errorf("the refused machine is still trusted: %v", trusted)
+	}
+	if state := requester.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the requester sees %q, want %q", state, pairing.StateRejected)
+	}
+}
+
+// The other half of the same pair of windows: the refusal arrives after the
+// approval has written its trust row and before the row says so.
+//
+// The bug this pins is the one the order above left open. The approval used to
+// settle the row and set trustedByRequest first and write the trust store
+// after, so a refusal reading between those two writes settled `rejected`,
+// found no trust row recorded against the request, revoked nothing — and the
+// approval then wrote the trust row it had already decided on. The requester
+// was told rejected, and this machine kept the key.
+//
+// The order is now the other way round and the compensation is the approval's:
+// it writes the trust row first, loses the transition to the refusal, and takes
+// its own write back. The refusal is injected at the one instant that produces
+// the interleaving rather than raced for.
+func TestARejectLandingInsideAnApproveLeavesNothingTrusted(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	var rejected struct {
+		sync.Mutex
+		done bool
+	}
+	receiver.server.afterApproveTrustWrite = func() {
+		rejected.Lock()
+		defer rejected.Unlock()
+		if rejected.done {
+			return
+		}
+		rejected.done = true
+		// At this instant the trust row is in the receiver's store and its
+		// pairing row still says pending, trusted by nobody.
+		if trusted := receiver.trusted(); len(trusted) != 1 {
+			t.Errorf("the approval had not written its trust row yet: %v", trusted)
+		}
+		requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+	}
+
+	// The approval loses: the row is no longer pending when it gets there.
+	receiver.decide(t, outgoing.ID, "approve", http.StatusConflict)
+
+	rejected.Lock()
+	defer rejected.Unlock()
+	if !rejected.done {
+		t.Fatal("the refusal was never injected, so this test proves nothing")
+	}
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Errorf("the receiver sees %q, want %q", state, pairing.StateRejected)
+	}
+	if trusted := receiver.trusted(); len(trusted) != 0 {
+		t.Errorf("the refused machine is still trusted: %v", trusted)
+	}
+	// And nothing on the owner's screen says a trust row was left behind,
+	// because none was.
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "left in place") {
+		t.Errorf("the row claims a leftover that was taken back: %q", step)
+	}
+}
+
+// A refusal that cannot take the trust back says so, and never says the
+// opposite.
+//
+// The store is closed under the handler, which is the failing store this path
+// has no other way to meet: the refusal is already recorded when the revoke is
+// attempted, so an error there leaves the row saying rejected with a key still
+// trusted behind it. Returning the error and stopping — which is what this used
+// to do — left `trustedByRequest` set and `trustLeftInPlace` unset, which is
+// the combination the owner's row renders as "the trust written here has been
+// withdrawn".
+func TestARejectThatCannotRevokeSaysTheTrustIsStillHere(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	outgoing := approvedRequest(t, requester, receiver)
+
+	if err := receiver.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "withdrawn") {
+		t.Errorf("the row claims a withdrawal that could not happen: %q", step)
+	}
+	for _, want := range []string{"left in place", "could not remove it", "ah revoke " + requester.node.ID} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
+	}
+}
+
+// An approval that loses to the window running out says the trust is still
+// here, exactly as one that loses to a refusal does.
+//
+// The row this builds is the one the sentence used to get wrong: the approval
+// writes the trust, the window is shut before the transition so the sweep marks
+// the row expired, the transition fails, and the compensation cannot revoke
+// because the store is closed. Every clause about leftover trust used to be
+// gated on `rejected`, so this expired row — with the key still in the store —
+// read "It ran out (expired). Nothing was trusted".
+func TestAnApprovalThatExpiresSaysTheTrustIsStillHere(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	expired := false
+	receiver.server.afterApproveTrustWrite = func() {
+		if expired {
+			return
+		}
+		expired = true
+		// The trust row is in the store at this instant; the pairing row is
+		// still pending and is about to stop being.
+		if trusted := receiver.trusted(); len(trusted) != 1 {
+			t.Errorf("the approval had not written its trust row yet: %v", trusted)
+		}
+		receiver.closeWindow()
+		receiver.server.syncWindow()
+		// And the revoke the compensation is about to attempt fails, which is
+		// what leaves the key behind for the sentence to have to name.
+		if err := receiver.store.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+
+	receiver.decide(t, outgoing.ID, "approve", http.StatusInternalServerError)
+
+	if !expired {
+		t.Fatal("the expiry was never injected, so this test proves nothing")
+	}
+	row := receiver.request(outgoing.ID)
+	if row.State != pairing.StateExpired {
+		t.Fatalf("the receiver sees %q, want %q", row.State, pairing.StateExpired)
+	}
+	if !row.TrustedByRequest || row.TrustLeftInPlace == "" {
+		t.Fatalf("the row does not record the trust it left behind: %+v", row)
+	}
+
+	step := receiver.viewOf(outgoing.ID).NextStep
+	for _, unwanted := range []string{"Nothing was trusted", "withdrawn"} {
+		if strings.Contains(step, unwanted) {
+			t.Errorf("the row says %q while the key is still in the store: %q", unwanted, step)
+		}
+	}
+	for _, want := range []string{
+		string(pairing.StateExpired), "left in place", "could not remove it",
+		"ah revoke " + requester.node.ID,
+	} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
+	}
+}
+
 // The same push before any approval: the other owner is told, and approving
 // afterwards is refused in words they can act on.
 func TestARequesterRejectBlocksALaterApprove(t *testing.T) {
@@ -990,6 +1238,19 @@ func TestARejectDoesNotRevokeATrustStoredUnderAnotherKey(t *testing.T) {
 	}
 	if trusted[0].PublicKey != identity.EncodePublicKey(replacement.Public) {
 		t.Errorf("the stored key changed: %q", trusted[0].PublicKey)
+	}
+	// And the row says what the node actually did. It used to say "the trust
+	// written here has been withdrawn" on every refusal of an approved request,
+	// including this one — where something is still trusted and only the owner
+	// can decide about it.
+	step := receiver.viewOf(outgoing.ID).NextStep
+	if strings.Contains(step, "withdrawn") {
+		t.Errorf("the row claims a withdrawal that did not happen: %q", step)
+	}
+	for _, want := range []string{"left in place", "different key", "ah revoke " + requester.node.ID} {
+		if !strings.Contains(step, want) {
+			t.Errorf("the row does not say %q: %q", want, step)
+		}
 	}
 }
 
