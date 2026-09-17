@@ -324,8 +324,21 @@
             <div id="pairing-detail"></div>
           </div>
           <div class="pairing-actions">
-            <button id="btn-pairing-on" class="primary">開啟配對模式</button>
-            <button id="btn-pairing-off" class="ghost">停止廣播</button>
+            <button id="btn-pairing-on" class="primary">與另一台機器配對</button>
+            <button id="btn-pairing-off" class="ghost">關閉配對視窗</button>
+          </div>
+          <!-- The address the other machine has to type. Shown only when the
+               node says it is not announcing, because then this is the whole
+               way in — and shown in the key font, not in prose, so it is read
+               and copied rather than retyped from the middle of a sentence. -->
+          <div id="pair-here" class="localidentity hidden">
+            <div class="line">
+              <span class="muted">對方要輸入的本機位址</span>
+              <button id="copy-pair-address" class="ghost">複製</button>
+            </div>
+            <div id="pair-local-address" class="keyvalue">—</div>
+            <div id="copy-pair-address-status" class="muted"></div>
+            <div id="pair-here-note" class="muted"></div>
           </div>
           <p id="pairing-note" class="muted"></p>
           <div class="nodelist-head"><span>正在廣播的機器</span><span class="muted" style="font-weight: 400; letter-spacing: 0">已配對的節點不會出現在這裡</span></div>
@@ -335,9 +348,24 @@
           <div id="candidate-full"></div>
           <div id="candidate-rows"></div>
           <p id="candidate-notice" class="muted"></p>
+          <!-- Typing the address is the path that works when nothing is
+               announcing, which is every node without -discover and every pair
+               of machines on a cable. -->
+          <div class="nodelist-head"><span>對方畫面顯示的位址</span></div>
+          <div class="pairform">
+            <input id="pair-address" type="text" spellcheck="false" placeholder="192.168.1.20:7463" />
+            <button id="btn-pair-send" class="primary">送出配對請求</button>
+          </div>
+          <p id="pair-address-note" class="muted"></p>
+          <div class="nodelist-head">
+            <span>配對請求</span>
+            <label class="showdecided muted"><input id="pair-requests-all" type="checkbox" /> 顯示已結束</label>
+          </div>
+          <div id="pair-requests"></div>
+          <p id="pair-requests-note" class="muted"></p>
         </div>
         <footer>
-          <span class="muted">沒有看到你要的機器？仍可用 <code>ah pair</code> 手動配對。</span>
+          <span class="muted">兩台機器連不上彼此時的退路：手動填 5 個欄位，公鑰要自己帶過去。</span>
           <button id="btn-pair-manual" class="ghost">手動輸入配對資料…</button>
         </footer>
       </div>

@@ -574,7 +574,64 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .candidaterow .name { font-weight: 600; }
 .candidaterow .meta { font-size: 11.5px; color: var(--muted); }
 .candidaterow .fingerprint { font-family: var(--mono); letter-spacing: 0.06em; font-size: 12px; user-select: text; }
-.candidaterow button { align-self: flex-end; height: 24px; font-size: 12px; }
+.candidaterow .decide { display: flex; gap: 8px; justify-content: flex-end; }
+.candidaterow button { height: 24px; font-size: 12px; }
+
+/* ---------- the pairing exchange (#63) ---------- */
+
+.pairform { display: flex; gap: 8px; padding: 10px 14px 4px; }
+.pairform input {
+  flex: 1;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+#pair-address-note, #pair-requests-note { padding: 0 14px 10px; font-size: 11.5px; line-height: 1.6; }
+#pair-here { margin: 0 14px 10px; }
+#pair-local-address { font-size: 17px; letter-spacing: 0.06em; }
+#copy-pair-address-status:empty { display: none; }
+.showdecided { display: flex; align-items: center; gap: 6px; font-weight: 400; letter-spacing: 0; }
+
+/* The rows scroll, like the candidate list: an attacker on the segment can
+   hold this list at its bound too, and what a clipped list hides is the
+   buttons under the fingerprints. */
+#pair-requests {
+  max-height: 46vh;
+  overflow-y: auto;
+  padding: 0 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.pairrow {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.pairrow.waiting { border-color: rgba(224, 163, 62, 0.45); }
+.pairrow .line { display: flex; align-items: center; gap: 8px; }
+.pairrow .name { font-weight: 600; }
+.pairrow .meta { font-size: 11.5px; color: var(--muted); }
+.pairrow .nextstep { font-size: 12px; line-height: 1.55; }
+
+/* The two values the whole exchange rests on. Grouped, monospaced and
+   selectable, one per line in the order the node gave them, so two people
+   holding two screens read down the same two lines. */
+.fingerprints {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 2px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.fingerprints .who { font-size: 11px; color: var(--muted); }
+.fingerprints .who .mine { color: var(--amber); font-weight: 600; }
+.fingerprints .fingerprint { font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Below the fingerprints, never beside them: a button level with the values
+   is one that can be pressed before they have been read. */
+.pairrow .decide { display: flex; gap: 8px; justify-content: flex-end; }
+.pairrow .decide button { height: 26px; font-size: 12px; }
 
 .pairingsummary { padding: 12px 14px; border-top: 1px solid var(--line); }
 .pairingsummary .head { display: flex; align-items: center; justify-content: space-between; }
