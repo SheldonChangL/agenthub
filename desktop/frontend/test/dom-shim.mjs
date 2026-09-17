@@ -8,6 +8,27 @@ import { fileURLToPath } from "node:url";
 // its input as raw markup — exactly how a browser treats them. That difference
 // is what the render test measures.
 
+// The language these checks are written in.
+//
+// Every check here asserts the window's actual sentences, and they were written
+// against the Traditional Chinese ones. app.js picks its language from
+// navigator.language (src/i18n/index.js), and node has no navigator at all — so
+// without this the whole suite would silently move to English and every prose
+// assertion in it would have to be rewritten to say the same thing twice.
+//
+// The English half is not left untested: test/i18n.mjs overrides this and boots
+// the window in en-US, which is what a machine outside a zh locale gets.
+// defineProperty, not assignment: node ships its own navigator as a getter-only
+// property, so `globalThis.navigator = …` throws there.
+export function useLocale(locale) {
+  Object.defineProperty(globalThis, "navigator", {
+    value: { language: locale },
+    configurable: true,
+    writable: true,
+  });
+}
+useLocale("zh-TW");
+
 // Which element has the keyboard, for the one guard that asks. A browser
 // answers <body> when nothing is focused; null is this shim's stand-in for
 // "nothing", since there is no body here to hand back.
@@ -47,6 +68,14 @@ class Node {
 
   set title(value) {
     this.attrs.title = String(value);
+  }
+
+  // A setter without a getter answered undefined, so a check could only ever
+  // assert what a title serialized to — not what it is. paintStatic writes
+  // this one from index.html, and reading it back is how test/i18n.mjs knows
+  // the write happened.
+  get title() {
+    return this.attrs.title ?? "";
   }
 
   // Enough of focus for a test that needs to say "the owner is in this field".
@@ -171,11 +200,21 @@ const byId = new Map();
 // panel was un-hidden passes whether or not anything un-hid it. Measured:
 // deleting the classList.remove("hidden") that opens the pairing dialog left
 // the whole suite green, so a click could have opened nothing.
+const markupSource = (() => {
+  try {
+    return fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+  } catch {
+    // A shim that cannot find the markup is still usable; it is just back to
+    // fabricating bare elements, which is what it did before.
+    return "";
+  }
+})();
+
 const initialClasses = (() => {
   const classes = new Map();
-  try {
-    const markup = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+  {
+    const markup = markupSource;
     const tag = /<[a-zA-Z][^>]*>/g;
     for (const [element] of markup.matchAll(tag)) {
       const id = /\sid="([^"]+)"/.exec(element);
@@ -183,12 +222,34 @@ const initialClasses = (() => {
       const className = /\sclass="([^"]*)"/.exec(element);
       classes.set(id[1], className ? className[1] : "");
     }
-  } catch {
-    // A shim that cannot find the markup is still usable; it is just back to
-    // fabricating bare elements, which is what it did before.
   }
   return classes;
 })();
+
+// The elements index.html keys for translation, as real nodes.
+//
+// paintStatic() walks querySelectorAll("[data-t]") and writes textContent, so
+// a shim answering [] would make every assertion about the static text vacuous
+// — the same blindness initialClasses exists for. An element that also carries
+// an id has to be the very node getElementById hands back, or a check would
+// read one object while the paint wrote to another. test/i18n.mjs counts these
+// against index.html so a shim that quietly went back to [] is a failure.
+const keyedElements = (markup) => {
+  const found = { "data-t": [], "data-t-placeholder": [], "data-t-title": [] };
+  const property = { "data-t": "t", "data-t-placeholder": "tPlaceholder", "data-t-title": "tTitle" };
+  for (const [element] of markup.matchAll(/<[a-zA-Z][^>]*>/g)) {
+    for (const attribute of Object.keys(found)) {
+      const key = new RegExp(`\\s${attribute}="([^"]*)"`).exec(element);
+      if (!key) continue;
+      const id = /\sid="([^"]+)"/.exec(element);
+      const node = id ? document.getElementById(id[1]) : new Node("span");
+      node.dataset[property[attribute]] = key[1];
+      found[attribute].push(node);
+    }
+  }
+  return found;
+};
+let keyed = null;
 
 export const document = {
   get activeElement() {
@@ -206,8 +267,14 @@ export const document = {
   },
   // The module's wiring queries for the view switch and the audience radios.
   // Empty is right for a test that drives the renderers directly: there is no
-  // markup here for those to be found in.
-  querySelectorAll: () => [],
+  // markup here for those to be found in. The translation selectors are the
+  // exception — those are answered from index.html itself, above.
+  querySelectorAll: (selector) => {
+    const attribute = /^\[(data-t(?:-placeholder|-title)?)\]$/.exec(String(selector));
+    if (!attribute) return [];
+    keyed ??= keyedElements(markupSource);
+    return keyed[attribute[1]];
+  },
   // And null for a single one, which is what "nothing is selected" looks like.
   // Returning undefined instead made every caller throw on the optional chain
   // that follows, which reads as a broken shim rather than an empty document.

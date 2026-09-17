@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // Provider metadata is untrusted input (docs/architecture.md). The desktop
@@ -23,27 +24,39 @@ var unsafeSinks = []string{
 
 func frontendSources(t *testing.T) map[string]string {
 	t.Helper()
-	root := filepath.Join("frontend", "src")
+	return frontendSourcesUnder(t, filepath.Join("frontend", "src"))
+}
+
+// frontendSourcesUnder is frontendSources with the roots named, because not
+// every rule here covers the same files. The shipped window is frontend/src.
+// frontend/dev is the preview page: it is not in the build, so the sink rules
+// do not reach it (it assigns index.html to innerHTML on purpose, and says
+// so) — but the words it puts on screen are read by people, and a preview in
+// the wrong language is what the screenshots in a pull request show.
+func frontendSourcesUnder(t *testing.T, roots ...string) map[string]string {
+	t.Helper()
 	sources := map[string]string{}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || filepath.Ext(path) != ".js" {
+	for _, root := range roots {
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || filepath.Ext(path) != ".js" {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sources[path] = string(data)
 			return nil
-		}
-		data, err := os.ReadFile(path)
+		})
 		if err != nil {
-			return err
+			t.Fatalf("walk %s: %v", root, err)
 		}
-		sources[path] = string(data)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
 	}
 	if len(sources) == 0 {
-		t.Fatalf("no frontend sources found under %s", root)
+		t.Fatalf("no frontend sources found under %v", roots)
 	}
 	return sources
 }
@@ -571,6 +584,17 @@ func TestFrontendShimSelectDoesNotLie(t *testing.T) {
 	runNodeCheck(t, "dom-shim-select.mjs")
 }
 
+// TestFrontendSpeaksBothLanguages covers the half of the window the rest of
+// these checks cannot see.
+//
+// Every other check under frontend/test boots in Traditional Chinese, because
+// that is the language its assertions are written in. This one boots in en-US,
+// which is what a machine outside a zh locale reports, and is therefore the
+// only place the English half of the window is exercised at all.
+func TestFrontendSpeaksBothLanguages(t *testing.T) {
+	runNodeCheck(t, "i18n.mjs")
+}
+
 // runNodeCheck runs one check under frontend/test.
 func runNodeCheck(t *testing.T, name string) {
 	t.Helper()
@@ -796,5 +820,229 @@ func TestFrontendDoesNotBlurOverMovingPixels(t *testing.T) {
 	if count := strings.Count(string(stylesheet), "backdrop-filter:"); count > 0 {
 		t.Errorf("style.css has %d backdrop-filter rules; each one resamples the moving backdrop "+
 			"every frame, which is what made the window unusable on an Intel HD 520 (#156)", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// i18n: the window keeps its words in one table, in both languages.
+// ---------------------------------------------------------------------------
+
+// tableEntry is a regex over a flat "key": "value" line. The two tables are
+// kept expression-free precisely so this is sufficient: the moment they hold a
+// template literal or a concatenation, the only honest parser is a JS one, and
+// a test that needs a JS parser is a test that gets deleted.
+var tableEntry = regexp.MustCompile(`(?m)^\s*"([^"]+)":\s*"((?:[^"\\]|\\.)*)",\s*$`)
+
+func readTextTable(t *testing.T, name string) map[string]string {
+	t.Helper()
+	path := filepath.Join("frontend", "src", "i18n", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	source := string(data)
+	// The table must stay data. A backtick or a "${" in here is an expression,
+	// and the parity check above would then be reading whatever the regex
+	// happened to match rather than what the window renders.
+	if strings.Contains(source, "${") {
+		t.Errorf("%s interpolates at runtime; the tables hold flat strings with {named} "+
+			"placeholders so this file stays parseable and the parity check stays honest", path)
+	}
+	entries := map[string]string{}
+	for _, match := range tableEntry.FindAllStringSubmatch(source, -1) {
+		if _, seen := entries[match[1]]; seen {
+			t.Errorf("%s defines %q twice; the later one silently wins", path, match[1])
+		}
+		entries[match[1]] = match[2]
+	}
+	if len(entries) == 0 {
+		t.Fatalf("no entries parsed out of %s; the table's shape changed and this test now covers nothing", path)
+	}
+	return entries
+}
+
+// dataTKeys is every translation key index.html names, for any of the three
+// attributes.
+var dataTKeys = regexp.MustCompile(`\sdata-t(?:-placeholder|-title)?="([^"]*)"`)
+
+// stripJSComments blanks // and /* */ runs, leaving string literals and the
+// line count intact.
+//
+// Not a parser, and it does not need to be: what it has to get right is that a
+// "//" inside a string is not a comment, which is the case that would hide a
+// literal from the scan below.
+func stripJSComments(source string) string {
+	var out strings.Builder
+	out.Grow(len(source))
+	const (
+		code = iota
+		lineComment
+		blockComment
+	)
+	state := code
+	var quote byte
+	for i := 0; i < len(source); i++ {
+		c := source[i]
+		next := byte(0)
+		if i+1 < len(source) {
+			next = source[i+1]
+		}
+		switch {
+		case state == lineComment:
+			if c == '\n' {
+				state = code
+				out.WriteByte(c)
+			} else {
+				out.WriteByte(' ')
+			}
+		case state == blockComment:
+			if c == '*' && next == '/' {
+				state = code
+				out.WriteString("  ")
+				i++
+			} else if c == '\n' {
+				out.WriteByte(c)
+			} else {
+				out.WriteByte(' ')
+			}
+		case quote != 0:
+			out.WriteByte(c)
+			if c == '\\' && i+1 < len(source) {
+				out.WriteByte(next)
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+		case c == '/' && next == '/':
+			state = lineComment
+			out.WriteString("  ")
+			i++
+		case c == '/' && next == '*':
+			state = blockComment
+			out.WriteString("  ")
+			i++
+		case c == '"' || c == '\'' || c == '`':
+			quote = c
+			out.WriteByte(c)
+		default:
+			out.WriteByte(c)
+		}
+	}
+	return out.String()
+}
+
+func hasHan(value string) bool {
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFrontendKeepsItsWordsInOneTable is what stops the second language rotting.
+//
+// A bilingual window is only bilingual for as long as nothing adds a literal at
+// a call site. Nobody notices a missed string on the language they do not read,
+// so the rule is checked rather than remembered: every sentence lives in
+// src/i18n/, both tables carry the same keys, and no English value is a
+// copy-pasted Chinese one.
+//
+// Comments are exempt by design. This codebase's comments are a deliberate mix
+// of English and Chinese — they quote the strings they are about — and the rule
+// is about what reaches the screen.
+func TestFrontendKeepsItsWordsInOneTable(t *testing.T) {
+	zh := readTextTable(t, "zh-Hant.js")
+	en := readTextTable(t, "en.js")
+
+	for key := range zh {
+		if _, ok := en[key]; !ok {
+			t.Errorf("en.js has no %q; a key in one table and not the other renders as the key itself", key)
+		}
+	}
+	for key := range en {
+		if _, ok := zh[key]; !ok {
+			t.Errorf("zh-Hant.js has no %q; a key in one table and not the other renders as the key itself", key)
+		}
+	}
+
+	// Every key the markup names has to exist in both, or the window paints the
+	// key itself where a sentence belongs.
+	markup, err := os.ReadFile(filepath.Join("frontend", "index.html"))
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+	named := dataTKeys.FindAllStringSubmatch(string(markup), -1)
+	if len(named) == 0 {
+		t.Fatal("index.html carries no data-t attributes; either the static text went back to " +
+			"being written in the markup, or this check now covers nothing")
+	}
+	for _, match := range named {
+		if _, ok := en[match[1]]; !ok {
+			t.Errorf("index.html names %q, which en.js does not define", match[1])
+		}
+		if _, ok := zh[match[1]]; !ok {
+			t.Errorf("index.html names %q, which zh-Hant.js does not define", match[1])
+		}
+	}
+
+	// And the markup itself holds no sentence in any language, comments
+	// included: its Chinese section markers were translated with the rest, so
+	// the rule can be blunt rather than carved around them.
+	for _, line := range strings.Split(string(markup), "\n") {
+		if hasHan(line) {
+			t.Errorf("index.html still holds Han: %s", strings.TrimSpace(line))
+		}
+	}
+
+	// No sentence at a call site. Comments are exempt — this codebase's are a
+	// deliberate mix and they quote the strings they are about — so they are
+	// stripped before the scan, and what is left is string literals.
+	// frontend/dev too: the preview page is where the screenshots in a pull
+	// request come from, and a mock that answers in Chinese where the node
+	// answers in English shows a window this app cannot actually produce.
+	for path, source := range frontendSourcesUnder(t,
+		filepath.Join("frontend", "src"), filepath.Join("frontend", "dev")) {
+		if strings.Contains(filepath.ToSlash(path), "frontend/src/i18n/") {
+			continue
+		}
+		for number, line := range strings.Split(stripJSComments(source), "\n") {
+			if hasHan(line) {
+				t.Errorf("%s:%d holds a Chinese literal outside src/i18n/: %s\n"+
+					"every sentence the window renders lives in the tables, or the English half "+
+					"silently stops being a translation of anything", path, number+1, strings.TrimSpace(line))
+			}
+		}
+	}
+
+	// English has two forms for a count and the tables carry both, so a .one
+	// that is a copy of its .other is a plural that was never written — and
+	// nothing else here can see it: the cross-language check compares en
+	// against zh, and zh resolves both forms to the same string by design.
+	for key, value := range en {
+		one, isOne := strings.CutSuffix(key, ".one")
+		if !isOne {
+			continue
+		}
+		other, ok := en[one+".other"]
+		if ok && other == value {
+			t.Errorf("en.js gives %q and %q the same value (%s); English counts one thing "+
+				"differently from many, and a plural that reads the same for both is one "+
+				"nobody wrote", key, one+".other", value)
+		}
+	}
+
+	for key, value := range en {
+		if hasHan(value) {
+			t.Errorf("en.js still holds Han in %q: %s", key, value)
+		}
+		// A value copied across unchanged is the commonest way a string goes
+		// untranslated, and it is invisible to anyone reading only one of the
+		// two. Names, punctuation and bare identifiers legitimately match, so
+		// only values carrying letters are judged.
+		if other, ok := zh[key]; ok && other == value && strings.ContainsFunc(value, unicode.IsLetter) {
+			t.Errorf("en.js and zh-Hant.js hold the same value for %q (%s); if that is deliberate "+
+				"the string has no business being in the tables", key, value)
+		}
 	}
 }

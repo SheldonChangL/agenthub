@@ -247,6 +247,11 @@
   元素放回去，瀏覽器仍會把每個 child 拆下再掛上：焦點掉了，橫跨 tick 的那一次按壓
   （mousedown 與 mouseup 分屬前後）也不會變成 click。測試除了比對 element identity，
   還會在候選內容沒變時計算 `candidate-rows.replaceChildren` 的呼叫次數，必須是 0。
+- 配對請求列（`pair-requests`）套同一條規則，key 是 request id：同一個交換沿用同一個 row，
+  指紋區塊只在節點答出不同的值時就地改寫，容器只有新增／消失／換位才動。
+  **例外，且是安全性的例外**：一個沿用中的 row 若指紋簽章變了，那就不是擁有者一直在比對的那一列——
+  就地改寫等於在游標已經停在上面時把兩個值換掉，而瞄準舊值的那次按壓仍然算數。
+  這種情況要把 row 丟掉重建，讓瞄準前一個元素的 mousedown 不可能變成 click。
 - 配對抽屜開著時，那個 2 秒 tick 除了讀請求，還要順手重讀一次 overview
   （`load({ background: true, exceptPairingDrawer: true })`）：抽屜是 modal，會把 15 秒的
   背景重讀擋住，於是在終端機跑 `ah revoke` 之後，抽屜後面那份已配對節點清單會一直停在舊的。
@@ -553,3 +558,24 @@
    加一個 4px gap 與兩側各 10px padding。兩顆的版面沒有重新量過，所以這個數字只保證算術正確。
    `TestFrontendKeepsTheRowActionsReachable` 守這條。
 4. `ah` **沒有**產生 `.mcp.json` 的指令，所以移除入口之後，UI 上不再有任何地方拿得到那份設定。要恢復可得性，選項是放回按鈕、移到設定頁、或補一個 `ah mcp-config <session>`。
+
+
+## 11. 雙語：zh-Hant 與 en，非 zh locale 預設英文
+
+視窗的每一句話都住在 `frontend/src/i18n/{zh-Hant,en}.js`，平面表格、dotted key、`{named}` 佔位符，沒有任何運算式或樣板字串（Go 端用 regex 讀它們）。`t(key, params)` 找不到就回傳 key 本身；`plural(n, key)` 讀 `<key>.one` / `<key>.other`。
+
+語言的決定順序：存下來的覆寫 → `navigator.language` 開頭是 `zh` 就 zh-Hant → 其餘一律 en。覆寫存在既有的 `UI_PREFS_KEY` localStorage 物件裡（`state.ui.lang`），**不**經過節點：節點的設定是啟動組態（§7.8 規則 1），視窗的顯示語言不是。設定 → 外觀的 `<select id="settings-lang">` 改語言，`setUILanguage()` 會存檔並就地 `paintStatic()` + `render()`，不重新載入——重載會丟掉配對抽屜的狀態、篩選條件與打到一半的欄位。
+
+`index.html` 只帶 key，不帶句子：`data-t`（textContent）、`data-t-placeholder`、`data-t-title`，由 `paintStatic()` 在 boot 與每次換語言時寫入。**帶 `data-t` 的元素不能有子元素**——`paintStatic` 寫的是 `textContent`，會把它們刪掉——所以句子裡有 `<code>` 或 `<b>` 時，要拆成一段文字一個 key。
+
+契約（`TestFrontendKeepsItsWordsInOneTable` 逐條守）：
+
+1. `frontend/src/` 底下、`src/i18n/` 以外的 `.js`，字串字面值裡不得出現漢字（註解先被剝掉：這個 codebase 的註解是刻意的中英混寫）。
+2. `index.html` 完全不得出現漢字，註解也算——它原本的中文段落標記在這次一起翻掉了，所以這條可以是絕對的。
+3. 兩張表的 key 必須一一對應；`en.js` 的值不得含漢字；同一個 key 兩邊值相同且含字母時視為漏翻。
+4. `index.html` 裡每一個 `data-t*` 指到的 key，兩張表都要有。
+5. 表格裡不得出現運算式（`${`）。名字（`Claude`、`Codex`、`active`）與純分隔符刻意不進表格：兩種語言一樣，放進去只會變成必須手動保持同步的重複。
+
+`frontend/test/` 底下除了 `i18n.mjs`，全部跑在 zh-TW（`dom-shim.mjs` 的 `useLocale`），因為那些斷言是用中文寫的；英文那一半由 `i18n.mjs` 以 en-US 開機覆蓋，`TestFrontendSpeaksBothLanguages` 帶它跑。shim 的 `querySelectorAll("[data-t]")` 直接從 `index.html` 解出真的元素，並且 `i18n.mjs` 會把 shim 給的數量跟檔案裡的數量對起來——它以前回傳 `[]`，那會讓整段靜態文案的斷言全部落空。
+
+不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。

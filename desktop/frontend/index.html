@@ -1,11 +1,21 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgentHub</title>
   </head>
   <body>
+    <!--
+      This file carries keys, not sentences. Every word on screen lives in
+      src/i18n/{zh-Hant,en}.js and is written here by paintStatic() at boot and
+      again whenever the language changes; data-t names the key for an
+      element's text, data-t-placeholder and data-t-title for those attributes.
+      An element carrying data-t must hold no child elements — paintStatic
+      writes textContent, which would delete them — so a sentence with markup
+      inside it is split into one key per run of text, as with the <code> and
+      <b> spans below.
+    -->
     <div id="app">
       <!-- Photo and rain sit behind everything; app.js fills the rain once. -->
       <div class="backdrop" id="backdrop" aria-hidden="true">
@@ -19,35 +29,35 @@
           <span class="dot" id="conn-dot"></span>
           <div>
             <h1>AgentHub</h1>
-            <p id="node-line">連線中…</p>
+            <p id="node-line" data-t="app.connecting"></p>
           </div>
         </div>
         <nav class="tabs" id="view-switch">
-          <span data-view="local" class="tab on">本機 session <span class="n" id="tab-local-n">–</span></span>
-          <span data-view="network" class="tab">區網 <span class="n" id="tab-network-n">–</span></span>
-          <span data-view="settings" class="tab">設定</span>
+          <span data-view="local" class="tab on"><span data-t="app.tab.local"></span> <span class="n" id="tab-local-n">–</span></span>
+          <span data-view="network" class="tab"><span data-t="app.tab.network"></span> <span class="n" id="tab-network-n">–</span></span>
+          <span data-view="settings" class="tab" data-t="app.tab.settings"></span>
         </nav>
         <div class="spacer"></div>
         <div class="actions">
-          <button id="service-pill" class="servicepill" title="背景服務狀態；點開設定"><span class="dot"></span><span id="service-pill-text">服務狀態讀取中…</span></button>
-          <button id="btn-reload" class="ghost">重新整理</button>
-          <button id="btn-discover" class="ghost">重新掃描</button>
-          <button id="btn-heartbeat" class="ghost">預覽 heartbeat</button>
+          <button id="service-pill" class="servicepill" data-t-title="app.servicePillTitle"><span class="dot"></span><span id="service-pill-text" data-t="service.pillLoading"></span></button>
+          <button id="btn-reload" class="ghost" data-t="app.reload"></button>
+          <button id="btn-discover" class="ghost" data-t="app.rescan"></button>
+          <button id="btn-heartbeat" class="ghost" data-t="app.previewHeartbeat"></button>
         </div>
       </header>
 
       <div id="banner" class="banner hidden"></div>
 
-      <!-- ============ 本機 session ============ -->
+      <!-- ============ local sessions ============ -->
       <main id="local-view" class="view">
         <section class="filters">
-          <input id="search" type="search" placeholder="搜尋標題、ID、目錄、管理方式…" autocomplete="off" />
+          <input id="search" type="search" data-t-placeholder="local.searchPlaceholder" autocomplete="off" />
           <div class="filtergroup"><span class="grouplabel">PROVIDER</span><div class="chips" id="chips-provider"></div></div>
-          <div class="filtergroup"><span class="grouplabel">狀態</span><div class="chips" id="chips-status"></div></div>
-          <div class="filtergroup"><span class="grouplabel">公開對象</span><div class="chips" id="chips-audience"></div></div>
+          <div class="filtergroup"><span class="grouplabel" data-t="local.groupStatus"></span><div class="chips" id="chips-status"></div></div>
+          <div class="filtergroup"><span class="grouplabel" data-t="local.groupAudience"></span><div class="chips" id="chips-audience"></div></div>
           <div class="spacer"></div>
           <span id="match-count"></span>
-          <button id="btn-clear-filters" class="link hidden">清除篩選</button>
+          <button id="btn-clear-filters" class="link hidden" data-t="local.clearFilters"></button>
         </section>
 
         <div class="tablewrap">
@@ -58,106 +68,101 @@
               </colgroup>
               <thead>
                 <tr>
-                  <th class="col-check"><input type="checkbox" id="select-all" title="全選目前篩選結果" /></th>
+                  <th class="col-check"><input type="checkbox" id="select-all" data-t-title="local.selectAllTitle" /></th>
                   <th class="sortable" data-sort="id">SESSION</th>
-                  <th class="sortable" data-sort="status">狀態</th>
-                  <th class="sortable" data-sort="management">管理</th>
-                  <th class="sortable" data-sort="audience">公開對象</th>
-                  <th>旗標</th>
-                  <th class="sortable" data-sort="cwd">工作目錄</th>
-                  <th class="sortable" data-sort="lastSeenAt">最後活動</th>
-                  <th class="col-actions">動作</th>
+                  <th class="sortable" data-sort="status" data-t="local.colStatus"></th>
+                  <th class="sortable" data-sort="management" data-t="local.colManagement"></th>
+                  <th class="sortable" data-sort="audience" data-t="local.colAudience"></th>
+                  <th data-t="local.colFlags"></th>
+                  <th class="sortable" data-sort="cwd" data-t="local.colCwd"></th>
+                  <th class="sortable" data-sort="lastSeenAt" data-t="local.colLastSeen"></th>
+                  <th class="col-actions" data-t="local.colActions"></th>
                 </tr>
               </thead>
               <tbody id="rows"></tbody>
             </table>
-            <p id="empty" class="empty hidden">沒有符合條件的 session。</p>
+            <p id="empty" class="empty hidden" data-t="local.empty"></p>
           </div>
 
           <!-- Floats over the table once something is selected; hidden otherwise. -->
           <div id="selectionbar" class="selectionbar hidden">
-            <span id="selection-count">未選取</span>
-            <label class="checkline muted"><input type="checkbox" id="select-all-visible" /><span id="select-label">全選目前篩選結果</span></label>
+            <span id="selection-count" data-t="local.noneSelected"></span>
+            <label class="checkline muted"><input type="checkbox" id="select-all-visible" /><span id="select-label" data-t="local.selectAllFiltered"></span></label>
             <span class="vr"></span>
-            <button id="btn-audience" class="primary" disabled>設定公開對象…</button>
-            <button id="btn-unpublish" class="danger" disabled>收回</button>
-            <button id="btn-deselect" class="ghost">取消選取</button>
+            <button id="btn-audience" class="primary" disabled data-t="local.setAudience"></button>
+            <button id="btn-unpublish" class="danger" disabled data-t="local.unpublish"></button>
+            <button id="btn-deselect" class="ghost" data-t="local.deselect"></button>
           </div>
         </div>
       </main>
 
-      <!-- ============ 區網 ============ -->
+      <!-- ============ the network view ============ -->
       <section id="network-view" class="view networkwrap hidden">
         <aside class="nodelist">
           <div class="nodelist-head">
-            <span id="nodelist-title">已配對節點</span>
-            <button id="btn-pair" class="primary">配對新節點…</button>
+            <span id="nodelist-title" data-t="network.pairedNodes"></span>
+            <button id="btn-pair" class="primary" data-t="network.pairNew"></button>
           </div>
           <div id="node-rows"></div>
           <div class="nodelist-foot">
             <div class="pairingsummary">
               <div class="head">
-                <span class="grouplabel">配對模式</span>
-                <span id="pairing-summary" class="pill">讀取中…</span>
+                <span class="grouplabel" data-t="network.pairingMode"></span>
+                <span id="pairing-summary" class="pill" data-t="network.pairingLoading"></span>
               </div>
               <p id="pairing-summary-line" class="muted"></p>
-              <button id="btn-open-pairing">開啟配對面板</button>
+              <button id="btn-open-pairing" data-t="network.openPairingPanel"></button>
             </div>
-            <p class="muted">配對只確認身分。要讓對方看到 session，仍須在本機視圖逐一設定公開對象。</p>
+            <p class="muted" data-t="network.pairingOnlyIdentity"></p>
           </div>
         </aside>
         <div class="nodedetail">
-          <div id="node-detail-body" class="empty">選擇左側的節點以檢視詳細資料。</div>
+          <div id="node-detail-body" class="empty" data-t="network.pickANode"></div>
           <div id="node-sessions"></div>
         </div>
       </section>
 
-      <!-- ============ 設定 ============ -->
+      <!-- ============ settings ============ -->
       <section id="settings-view" class="view settingswrap hidden">
         <nav class="settingsnav" id="settings-nav">
-          <a data-target="settings-service" class="on">背景服務</a>
-          <a data-target="settings-node">節點設定</a>
-          <a data-target="settings-identity">本機身分</a>
-          <a data-target="settings-appearance">外觀</a>
+          <a data-target="settings-service" class="on" data-t="settings.nav.service"></a>
+          <a data-target="settings-node" data-t="settings.nav.node"></a>
+          <a data-target="settings-identity" data-t="settings.nav.identity"></a>
+          <a data-target="settings-appearance" data-t="settings.nav.appearance"></a>
         </nav>
         <div class="settingsbody">
           <section id="settings-service">
-            <h2>背景服務</h2>
+            <h2 data-t="settings.nav.service"></h2>
             <p class="muted">
-              節點會由作業系統在登入時啟動，不再跟著哪個視窗或終端機活著。
-              <strong>意外結束時會自己回來的只有 macOS 與 Linux</strong>：Windows 的排程工作
-              只負責在登入時啟動，節點停了就會一直停著，要用下面的「重新啟動節點」把它叫回來。
-              同一個人在兩台機器上會拿到不同的可靠性，所以這裡講明，而不是讓人自己撞見。
+              <span data-t="service.introBefore"></span>
+              <strong data-t="service.introStrong"></strong><span data-t="service.introAfter"></span>
             </p>
             <div id="service-panel" class="hidden">
               <div class="service-head">
-                <div id="service-line" class="line">背景服務狀態讀取中…</div>
-                <button id="service-refresh" class="ghost">重新讀取</button>
-                <button id="service-restart" class="ghost hidden">重新啟動節點</button>
-                <button id="service-open" class="ghost">安裝為背景服務…</button>
-                <button id="service-uninstall" class="ghost danger">移除服務…</button>
+                <div id="service-line" class="line" data-t="service.lineLoading"></div>
+                <button id="service-refresh" class="ghost" data-t="service.refresh"></button>
+                <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
+                <button id="service-open" class="ghost" data-t="service.install"></button>
+                <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
               </div>
               <div id="service-repair"></div>
               <div id="service-form" class="card hidden">
-                <div class="cardhead"><span>安裝為背景服務</span><span class="muted">安裝會取代已有的登記。</span></div>
+                <div class="cardhead"><span data-t="service.install2"></span><span class="muted" data-t="service.formHeadNote"></span></div>
                 <div class="cardbody serviceform">
-                  <p class="muted" style="margin: 0">
-                    對外位址、允許區網、探索與自動喚醒都由節點自己記住，改它們到「節點設定」，
-                    不必重裝服務。這裡只有安裝本身需要知道的事。
-                  </p>
+                  <p class="muted" style="margin: 0" data-t="service.formIntro"></p>
                   <div class="fieldgrid">
                     <label>
-                      <span class="fieldlabel">資料庫路徑<small>留空＝節點預設位置</small></span>
-                      <input id="service-db" type="text" placeholder="留空＝節點預設位置" autocomplete="off" />
+                      <span class="fieldlabel"><span data-t="service.dbLabel"></span><small data-t="service.dbHint"></small></span>
+                      <input id="service-db" type="text" data-t-placeholder="service.dbHint" autocomplete="off" />
                     </label>
                   </div>
                   <div id="service-db-note" class="muted"></div>
                 </div>
                 <div class="cardfoot">
-                  <span class="muted">節點的顯示名稱不在這裡設：它會記住上次用 <code>--display-name</code> 給的名字。</span>
+                  <span class="muted"><span data-t="service.displayNameNoteBefore"></span><code>--display-name</code><span data-t="service.displayNameNoteAfter"></span></span>
                   <span>
-                    <button id="service-cancel" class="ghost">取消</button>
-                    <button id="service-install" class="primary">安裝為背景服務</button>
+                    <button id="service-cancel" class="ghost" data-t="common.cancel"></button>
+                    <button id="service-install" class="primary" data-t="service.install2"></button>
                   </span>
                 </div>
               </div>
@@ -166,13 +171,10 @@
           </section>
 
           <section id="settings-node">
-            <h2>節點設定</h2>
-            <p class="muted">
-              這些是節點自己記住的啟動設定，改了不用重裝服務。
-              節點只在啟動時讀它們，所以存檔之後要重新啟動才會生效。
-            </p>
+            <h2 data-t="settings.nav.node"></h2>
+            <p class="muted" data-t="nodeSettings.intro"></p>
             <div class="card">
-              <div class="cardhead"><span>啟動設定</span><span id="node-settings-state" class="muted"></span></div>
+              <div class="cardhead"><span data-t="nodeSettings.cardHead"></span><span id="node-settings-state" class="muted"></span></div>
               <div class="cardbody serviceform">
                 <!-- Filled from the node's answer on every read and every write:
                      turning allowLan off pulls peerListen back to loopback in
@@ -184,40 +186,37 @@
                 <div id="node-settings-combination"></div>
                 <div class="fieldgrid">
                   <label>
-                    <span class="fieldlabel">對外位址<small>其他機器連進來的地方<span id="node-peerlisten-source" class="sourcetag"></span></small></span>
-                    <select id="node-peerlisten"><option value="">只在本機（127.0.0.1:7463）</option></select>
+                    <span class="fieldlabel"><span data-t="nodeSettings.peerListenLabel"></span><small><span data-t="nodeSettings.peerListenHint"></span><span id="node-peerlisten-source" class="sourcetag"></span></small></span>
+                    <select id="node-peerlisten"><option value="" data-t="nodeSettings.loopbackOption"></option></select>
                   </label>
                   <label>
-                    <span class="fieldlabel">視為私有網段<small>直連網路線常需要，逗號分隔<span id="node-private-source" class="sourcetag"></span></small></span>
-                    <input id="node-private" type="text" placeholder="例如 122.122.0.0/16" autocomplete="off" />
+                    <span class="fieldlabel"><span data-t="nodeSettings.privateLabel"></span><small><span data-t="nodeSettings.privateHint"></span><span id="node-private-source" class="sourcetag"></span></small></span>
+                    <input id="node-private" type="text" data-t-placeholder="nodeSettings.privatePlaceholder" autocomplete="off" />
                   </label>
                 </div>
                 <p id="node-private-note" class="muted hidden" style="margin: 0"></p>
                 <div class="flagrows">
                   <label>
                     <input type="checkbox" id="node-allow-lan" />
-                    <span>允許區網連線<span id="node-allowlan-source" class="sourcetag"></span>
-                      <span id="node-lan-note" class="why warn hidden" style="display: block">
-                        這是唯一會讓資料離開這台機器的開關。開了之後，配對過的節點才能連進來；沒配對的仍然連不上，
-                        但同網段的人會看得到這個 port 在聽。選了非本機位址就需要它。
-                      </span>
+                    <span><span data-t="nodeSettings.allowLan"></span><span id="node-allowlan-source" class="sourcetag"></span>
+                      <span id="node-lan-note" class="why warn hidden" style="display: block" data-t="nodeSettings.allowLanWhy"></span>
                     </span>
                   </label>
                   <label>
                     <input type="checkbox" id="node-discover" />
-                    <span>在區網上尋找配對節點的位址<span id="node-discover-source" class="sourcetag"></span></span>
+                    <span><span data-t="nodeSettings.discover"></span><span id="node-discover-source" class="sourcetag"></span></span>
                   </label>
                   <label>
                     <input type="checkbox" id="node-autowake" />
-                    <span>允許訊息自動喚醒 agent<span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block">每個 session 仍要各自打開。</span></span>
+                    <span><span data-t="nodeSettings.autoWake"></span><span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block" data-t="nodeSettings.autoWakeWhy"></span></span>
                   </label>
                 </div>
               </div>
               <div class="cardfoot">
-                <span id="node-settings-hint" class="muted">節點只在啟動時讀這些值。</span>
+                <span id="node-settings-hint" class="muted" data-t="nodeSettings.hint"></span>
                 <span>
-                  <button id="node-settings-reload" class="ghost">重新讀取</button>
-                  <button id="node-settings-save" class="primary">儲存並重啟服務</button>
+                  <button id="node-settings-reload" class="ghost" data-t="service.refresh"></button>
+                  <button id="node-settings-save" class="primary" data-t="nodeSettings.save"></button>
                 </span>
               </div>
             </div>
@@ -225,31 +224,32 @@
           </section>
 
           <section id="settings-identity">
-            <h2>本機身分</h2>
-            <p class="muted">對方配對時要填的是公鑰；指紋則要在兩台螢幕上逐組比對，不要用貼的。</p>
+            <h2 data-t="settings.nav.identity"></h2>
+            <p class="muted" data-t="identity.intro"></p>
             <div class="card">
               <div class="cardbody identityrows">
-                <div class="row"><span class="k">節點 ID</span><span class="v" id="identity-node-id">—</span></div>
-                <div class="row"><span class="k">指紋</span><span class="v fingerprint" id="identity-fingerprint">—</span></div>
+                <div class="row"><span class="k" data-t="identity.nodeId"></span><span class="v" id="identity-node-id">—</span></div>
+                <div class="row"><span class="k" data-t="identity.fingerprint"></span><span class="v fingerprint" id="identity-fingerprint">—</span></div>
                 <div class="row">
-                  <span class="k">公鑰</span>
+                  <span class="k" data-t="identity.publicKey"></span>
                   <span class="v keyvalue" id="identity-public-key">—</span>
-                  <span><button id="copy-identity-key" class="ghost">複製公鑰</button> <span id="identity-copy-status" class="muted"></span></span>
+                  <span><button id="copy-identity-key" class="ghost" data-t="identity.copyKey"></button> <span id="identity-copy-status" class="muted"></span></span>
                 </div>
               </div>
             </div>
           </section>
 
           <section id="settings-appearance">
-            <h2>外觀</h2>
-            <p class="muted">背景的照片與數字雨只是視覺；關掉不影響任何功能。系統開了「減少動態效果」時數字雨自動停用。</p>
+            <h2 data-t="settings.nav.appearance"></h2>
+            <p class="muted" data-t="appearance.intro"></p>
             <div class="card">
               <div class="cardbody" style="display: flex; flex-direction: column; gap: 12px">
-                <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span>顯示背景照片與數字雨<span class="why" style="display: block">關掉後是純深色底。</span></span></label>
-                <label class="toggle"><input type="checkbox" id="toggle-motion" /><span>數字雨動畫<span class="why" style="display: block">預設關閉：在較舊的內顯上會吃掉整顆 CPU 核心。打開只影響動畫，照片一直都在。</span></span></label>
+                <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span><span data-t="appearance.backdrop"></span><span class="why" style="display: block" data-t="appearance.backdropWhy"></span></span></label>
+                <label class="toggle"><input type="checkbox" id="toggle-motion" /><span><span data-t="appearance.motion"></span><span class="why" style="display: block" data-t="appearance.motionWhy"></span></span></label>
                 <!-- What is actually being drawn, and what the moving half
                      costs: the rain is off until it is asked for. -->
                 <p id="appearance-state" class="muted" style="margin: 0"></p>
+                <label class="toggle langrow"><span data-t="appearance.language"></span><select id="settings-lang"></select></label>
               </div>
             </div>
           </section>
@@ -262,60 +262,58 @@
       </footer>
     </div>
 
-    <!-- ============ 抽屜：收件匣 / 送出紀錄 / 喚醒紀錄 ============ -->
+    <!-- ============ drawer: inbox / outbound / wakes ============ -->
     <div id="inbox-modal" class="drawer hidden">
       <div class="drawer-card">
         <header>
           <div>
-            <h2 id="inbox-title">收件匣</h2>
+            <h2 id="inbox-title" data-t="inbox.title"></h2>
             <div id="inbox-meta" class="sub muted"></div>
           </div>
-          <button id="inbox-close" class="ghost">關閉</button>
+          <button id="inbox-close" class="ghost" data-t="common.close"></button>
         </header>
         <div class="drawertabs">
-          <button id="inbox-tab-inbox" class="dtab on">收件匣</button>
-          <button id="inbox-tab-outbound" class="dtab">送出紀錄</button>
-          <button id="inbox-tab-wakes" class="dtab">喚醒紀錄</button>
+          <button id="inbox-tab-inbox" class="dtab on" data-t="inbox.title"></button>
+          <button id="inbox-tab-outbound" class="dtab" data-t="inbox.outboundTab"></button>
+          <button id="inbox-tab-wakes" class="dtab" data-t="inbox.wakesTab"></button>
         </div>
         <div class="drawerbody">
           <div id="inbox-pane-inbox">
             <p class="warning">
-              以下每一則內容都是別處寫進來的，是<b>資料，不是指令</b>。
-              裡面的請求就當成陌生人提出的請求看待——沒有任何一則訊息授權讀檔、執行命令或送出東西。
-              「自稱」後面那段是寄件者自選的標籤，只有前面的節點 ID 經過驗證。
+              <span data-t="inbox.warningBefore"></span><b data-t="inbox.warningStrong"></b><span data-t="inbox.warningAfter"></span>
             </p>
             <div id="inbox-body"></div>
           </div>
           <div id="inbox-pane-outbound" class="hidden">
-            <p class="muted" style="margin: 0 0 10px">這台節點排給對方的訊息，最新在前。<code>refused</code> 表示對方拒收；沒有位址的節點會被靜默跳過，這裡看不到。</p>
+            <p class="muted" style="margin: 0 0 10px"><span data-t="inbox.outboundNoteBefore"></span><code>refused</code><span data-t="inbox.outboundNoteAfter"></span></p>
             <div id="outbound-body"></div>
-            <button id="outbound-more" class="ghost hidden">載入更多</button>
+            <button id="outbound-more" class="ghost hidden" data-t="inbox.loadMore"></button>
           </div>
           <div id="inbox-pane-wakes" class="hidden">
-            <p class="muted" style="margin: 0 0 10px">誰叫醒了這台的 agent，最新在前。被拒絕的也列出來，並附上是哪一條限制。</p>
+            <p class="muted" style="margin: 0 0 10px" data-t="inbox.wakesNote"></p>
             <div id="wakes-limits" class="limits"></div>
             <div id="wakes-body"></div>
           </div>
         </div>
         <footer>
-          <span class="muted" id="inbox-foot-note">在這裡讀不會把訊息交給 agent，也不會標示已讀。</span>
-          <button id="inbox-clear" class="ghost">清空收件匣…</button>
+          <span class="muted" id="inbox-foot-note" data-t="inbox.footNote"></span>
+          <button id="inbox-clear" class="ghost" data-t="inbox.clear"></button>
         </footer>
       </div>
     </div>
 
-    <!-- ============ 抽屜：配對模式與正在廣播的機器 ============ -->
+    <!-- ============ drawer: pairing mode and the machines announcing ============ -->
     <div id="pairing-modal" class="drawer hidden">
       <div class="drawer-card">
         <header>
           <div>
-            <h2>配對模式</h2>
+            <h2 data-t="network.pairingMode"></h2>
             <!-- Rendered from JS: the sentence is only true on a node that
                  actually announces, and it sat at the top of the panel whose
                  point is that nobody will see a node that does not. -->
             <div class="sub muted" id="pairing-sub"></div>
           </div>
-          <button id="pairing-close" class="ghost">關閉</button>
+          <button id="pairing-close" class="ghost" data-t="common.close"></button>
         </header>
         <div class="drawerbody" style="padding: 0">
           <div class="pairing-state">
@@ -327,8 +325,8 @@
             <div id="pairing-detail"></div>
           </div>
           <div class="pairing-actions">
-            <button id="btn-pairing-on" class="primary">與另一台機器配對</button>
-            <button id="btn-pairing-off" class="ghost">關閉配對視窗</button>
+            <button id="btn-pairing-on" class="primary" data-t="pair.open"></button>
+            <button id="btn-pairing-off" class="ghost" data-t="pair.close"></button>
           </div>
           <!-- A row waiting for this owner is the one time-critical thing in
                this drawer, and the panel holding it is below the candidate
@@ -340,15 +338,15 @@
                and copied rather than retyped from the middle of a sentence. -->
           <div id="pair-here" class="localidentity hidden">
             <div class="line">
-              <span class="muted">對方要輸入的本機位址</span>
-              <button id="copy-pair-address" class="ghost">複製</button>
+              <span class="muted" data-t="pair.hereHeading"></span>
+              <button id="copy-pair-address" class="ghost" data-t="common.copy"></button>
             </div>
             <div id="pair-local-address" class="keyvalue">—</div>
             <div id="copy-pair-address-status" class="muted"></div>
             <div id="pair-here-note" class="muted"></div>
           </div>
           <p id="pairing-note" class="muted"></p>
-          <div class="nodelist-head"><span>正在廣播的機器</span><span class="muted" style="font-weight: 400; letter-spacing: 0">已配對的節點不會出現在這裡</span></div>
+          <div class="nodelist-head"><span data-t="pair.announcingHeading"></span><span class="muted" style="font-weight: 400; letter-spacing: 0" data-t="pair.announcingNote"></span></div>
           <!-- Outside the scroller below, because it qualifies every row in
                it: inside, a full list scrolls its own warning out of view,
                which is exactly the state an attacker can hold. -->
@@ -358,36 +356,36 @@
           <!-- Typing the address is the path that works when nothing is
                announcing, which is every node without -discover and every pair
                of machines on a cable. -->
-          <div class="nodelist-head"><span>對方畫面顯示的位址</span></div>
+          <div class="nodelist-head"><span data-t="pair.manualAddressHeading"></span></div>
           <div class="pairform">
             <input id="pair-address" type="text" spellcheck="false" placeholder="192.168.1.20:7463" />
-            <button id="btn-pair-send" class="primary">送出配對請求</button>
+            <button id="btn-pair-send" class="primary" data-t="pair.send"></button>
           </div>
-          <p id="pair-address-note" class="muted"></p>
+          <p id="pair-address-note" class="muted" data-t="pair.addressNote"></p>
           <div class="nodelist-head">
-            <span>配對請求</span>
-            <label class="showdecided muted"><input id="pair-requests-all" type="checkbox" /> 顯示已結束</label>
+            <span data-t="pair.requestsHeading"></span>
+            <label class="showdecided muted"><input id="pair-requests-all" type="checkbox" /> <span data-t="pair.showDecided"></span></label>
           </div>
           <div id="pair-requests"></div>
           <p id="pair-requests-note" class="muted"></p>
         </div>
         <footer>
-          <span class="muted">兩台機器連不上彼此時的退路：手動填 5 個欄位，公鑰要自己帶過去。</span>
-          <button id="btn-pair-manual" class="ghost">手動輸入配對資料…</button>
+          <span class="muted" data-t="pairManual.footNote"></span>
+          <button id="btn-pair-manual" class="ghost" data-t="pairManual.open"></button>
         </footer>
       </div>
     </div>
 
-    <!-- ============ 對話框：配對新節點 ============ -->
+    <!-- ============ dialog: pair a new node by hand ============ -->
     <div id="pair-modal" class="modal hidden">
       <div class="modal-card">
         <header>
-          <h2>配對新節點</h2>
-          <button id="pair-close" class="ghost">取消</button>
+          <h2 data-t="network.pairNewTitle"></h2>
+          <button id="pair-close" class="ghost" data-t="common.cancel"></button>
         </header>
         <p class="muted">
-          請在對方機器上執行 <code>ah node</code>，把顯示的欄位填進來。
-          <b>指紋必須逐組完全相符</b>——只核對開頭幾組是可以被偽造的。
+          <span data-t="pairManual.introBefore"></span><code>ah node</code><span data-t="pairManual.introAfter"></span>
+          <b data-t="pairManual.introStrong"></b><span data-t="pairManual.introTail"></span>
         </p>
         <!-- This machine's own identity, for the person at the other keyboard.
              The public key was only ever obtainable by running `ah node` on
@@ -397,84 +395,81 @@
              valid Ed25519 key". -->
         <div class="localidentity">
           <div class="line">
-            <span class="muted">本機公鑰</span>
-            <button id="copy-local-public-key" class="ghost">複製</button>
+            <span class="muted" data-t="pairManual.localPublicKey"></span>
+            <button id="copy-local-public-key" class="ghost" data-t="common.copy"></button>
           </div>
           <div id="local-public-key" class="keyvalue">—</div>
           <div id="copy-public-key-status" class="muted"></div>
-          <p class="muted">
-            對方在配對對話框裡要填的就是這串；指紋則要在兩台螢幕上逐組比對。
-          </p>
+          <p class="muted" data-t="pairManual.localKeyNote"></p>
           <div class="line">
-            <span class="muted">本機指紋</span>
+            <span class="muted" data-t="pairManual.localFingerprint"></span>
             <code id="local-fingerprint">—</code>
           </div>
         </div>
         <div class="pairform">
-          <label>節點 ID<input id="pair-node-id" type="text" autocomplete="off" /></label>
-          <label>顯示名稱<input id="pair-display-name" type="text" autocomplete="off" /></label>
-          <label>平台<input id="pair-platform" type="text" placeholder="linux/amd64" autocomplete="off" /></label>
-          <label>公鑰<input id="pair-public-key" type="text" autocomplete="off" /></label>
-          <label>對方顯示的指紋<input id="pair-fingerprint" type="text" placeholder="2DCF 9604 DBA9 778A 6DDD 035B" autocomplete="off" /></label>
+          <label><span data-t="pairManual.nodeId"></span><input id="pair-node-id" type="text" autocomplete="off" /></label>
+          <label><span data-t="pairManual.displayName"></span><input id="pair-display-name" type="text" autocomplete="off" /></label>
+          <label><span data-t="pairManual.platform"></span><input id="pair-platform" type="text" placeholder="linux/amd64" autocomplete="off" /></label>
+          <label><span data-t="pairManual.publicKey"></span><input id="pair-public-key" type="text" autocomplete="off" /></label>
+          <label><span data-t="pairManual.theirFingerprint"></span><input id="pair-fingerprint" type="text" placeholder="2DCF 9604 DBA9 778A 6DDD 035B" autocomplete="off" /></label>
         </div>
         <p id="pair-prefill-note" class="muted hidden"></p>
         <p class="warning">
-          配對是每台各自記的。這裡按下去只代表<b>這台信任對方</b>；
-          對方那台也要對這台做一次配對，否則它送不到這裡，也不會送心跳過來。
+          <span data-t="pairManual.warnBefore"></span><b data-t="pairManual.warnStrong"></b><span data-t="pairManual.warnAfter"></span>
         </p>
         <div class="modal-actions">
-          <span class="muted">配對只確認身分，不會公開任何 session。</span>
-          <button id="pair-submit" class="primary">指紋一致，信任此節點</button>
+          <span class="muted" data-t="pairManual.actionsNote"></span>
+          <button id="pair-submit" class="primary" data-t="pairManual.submit"></button>
         </div>
       </div>
     </div>
 
-    <!-- ============ 對話框：設定公開對象 ============ -->
+    <!-- ============ dialog: set the audience ============ -->
     <div id="audience-modal" class="modal hidden">
       <div class="modal-card" style="width: min(640px, 88vw)">
         <header>
-          <h2>設定公開對象</h2>
-          <button id="audience-close" class="ghost">取消</button>
+          <h2 data-t="audience.title"></h2>
+          <button id="audience-close" class="ghost" data-t="common.cancel"></button>
         </header>
-        <p class="muted">套用到已選取的 <b id="audience-count">0</b> 個 session。公開只會送出中繼資料，不含任何對話內容。</p>
+        <p class="muted" id="audience-count"></p>
         <div id="audience-selected" class="selectedlist"></div>
 
-        <div class="sectionlabel">誰看得到</div>
+        <div class="sectionlabel" data-t="audience.whoHeading"></div>
         <div class="options">
           <label class="option">
             <input type="radio" name="audience-mode" value="none" checked />
             <span>
-              <b>不公開</b>
-              <em>僅本機可見，不會出現在任何 heartbeat。</em>
+              <b data-t="audience.modeNone"></b>
+              <em data-t="audience.modeNoneWhy"></em>
             </span>
           </label>
           <label class="option">
             <input type="radio" name="audience-mode" value="all_paired" />
             <span>
-              <b>所有已配對節點</b>
-              <em>日後新配對的節點會自動看得到。</em>
+              <b data-t="audience.modeAllPaired"></b>
+              <em data-t="audience.modeAllPairedWhy"></em>
             </span>
           </label>
           <label class="option">
             <input type="radio" name="audience-mode" value="selected" />
             <span>
-              <b>指定節點</b>
-              <em>只有勾選的節點看得到；新節點預設看不到。</em>
+              <b data-t="audience.modeSelected"></b>
+              <em data-t="audience.modeSelectedWhy"></em>
             </span>
           </label>
           <div id="audience-nodes" class="nodes hidden">
             <div id="audience-node-list"></div>
-            <input id="audience-node-input" type="text" placeholder="或輸入節點 ID，以空白或逗號分隔" autocomplete="off" />
-            <p class="muted">只能授權給已配對節點。</p>
+            <input id="audience-node-input" type="text" data-t-placeholder="audience.nodeInputPlaceholder" autocomplete="off" />
+            <p class="muted" data-t="audience.pairedOnly"></p>
           </div>
         </div>
 
-        <div class="sectionlabel">他們可以做什麼 <span style="font-weight: 400; letter-spacing: 0">— 每次開啟都從全關開始</span></div>
+        <div class="sectionlabel"><span data-t="audience.whatHeading"></span> <span style="font-weight: 400; letter-spacing: 0" data-t="audience.whatHeadingNote"></span></div>
         <div class="flags">
-          <label><input type="checkbox" id="audience-cwd" /><span><b>包含工作目錄路徑</b><em>對方會看到 cwd</em></span></label>
-          <label><input type="checkbox" id="audience-messages" /><span><b>允許對方排入訊息</b><em>進收件匣，不會自動交給 agent</em></span></label>
-          <label><input type="checkbox" id="audience-outbound" /><span><b>允許這個 session 主動送出訊息</b><em>這個 session 可以寄給對方</em></span></label>
-          <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b>訊息抵達時自動喚醒這個 agent</b><em>無人在場也會動作</em></span></label>
+          <label><input type="checkbox" id="audience-cwd" /><span><b data-t="audience.flagCwd"></b><em data-t="audience.flagCwdWhy"></em></span></label>
+          <label><input type="checkbox" id="audience-messages" /><span><b data-t="audience.flagMessages"></b><em data-t="audience.flagMessagesWhy"></em></span></label>
+          <label><input type="checkbox" id="audience-outbound" /><span><b data-t="audience.flagOutbound"></b><em data-t="audience.flagOutboundWhy"></em></span></label>
+          <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b data-t="audience.flagAutoWake"></b><em data-t="audience.flagAutoWakeWhy"></em></span></label>
         </div>
         <!-- Why the box above may do nothing. Filled in by the dialog from
              the node's own -auto-wake flag and the providers of whatever is
@@ -483,48 +478,43 @@
         <div id="audience-autowake-note"></div>
 
         <div class="modal-actions">
-          <span id="audience-note" class="muted">重新掃描不會改變這裡的設定。</span>
-          <button id="audience-apply" class="primary">套用</button>
+          <span id="audience-note" class="muted" data-t="audience.rescanNote"></span>
+          <button id="audience-apply" class="primary" data-t="audience.apply"></button>
         </div>
       </div>
     </div>
 
-    <!-- ============ 對話框：MCP 設定 ============ -->
+    <!-- ============ dialog: MCP configuration ============ -->
     <div id="mcp-modal" class="modal hidden">
       <div class="modal-card">
         <header>
-          <h2 id="mcp-title">MCP 設定</h2>
-          <button id="mcp-close" class="ghost">關閉</button>
+          <h2 id="mcp-title" data-t="mcp.title"></h2>
+          <button id="mcp-close" class="ghost" data-t="common.close"></button>
         </header>
         <p class="muted">
-          把下面的內容存成這個 agent 專案裡的 <code>.mcp.json</code>。
-          <code>command</code> 是這台機器上 <code>agenthub-mcp</code> 的絕對路徑，
-          <code>-as</code> 是這一列的 session。
+          <span data-t="mcp.introBefore"></span><code>.mcp.json</code><span data-t="mcp.introCommand"></span><code>command</code><span data-t="mcp.introMiddle"></span><code>agenthub-mcp</code><span data-t="mcp.introAfter"></span><code>-as</code><span data-t="mcp.introTail"></span>
         </p>
         <pre id="mcp-text"></pre>
         <div id="mcp-status" class="muted"></div>
         <p class="warning">
-          這份設定是 per-project 的；同一個目錄下的第二個 Claude Code 會以同一個 session
-          身分啟動 <code>agenthub-mcp</code>。每個 session 給自己的設定檔，或用
-          <code>--strict-mcp-config</code> 指定獨立的檔。
+          <span data-t="mcp.warnBefore"></span><code>agenthub-mcp</code><span data-t="mcp.warnMiddle"></span><code>--strict-mcp-config</code><span data-t="mcp.warnAfter"></span>
         </p>
         <div class="modal-actions">
           <span class="muted">
-            這個 session 要能主動送出訊息，還要 owner 開 <code>--outbound</code>
-            （<code>ah audience &lt;id&gt; ... --outbound</code>）。
+            <span data-t="mcp.outboundBefore"></span><code>--outbound</code><span data-t="mcp.outboundMiddle"></span><code>ah audience &lt;id&gt; ... --outbound</code><span data-t="mcp.outboundAfter"></span>
           </span>
         </div>
       </div>
     </div>
 
-    <!-- ============ 對話框：heartbeat 預覽 ============ -->
+    <!-- ============ dialog: heartbeat preview ============ -->
     <div id="modal" class="modal hidden">
       <div class="modal-card">
         <header>
-          <h2>Broker heartbeat 預覽</h2>
-          <button id="modal-close" class="ghost">關閉</button>
+          <h2 data-t="heartbeat.title"></h2>
+          <button id="modal-close" class="ghost" data-t="common.close"></button>
         </header>
-        <p class="muted">這是本機產生的已簽章 envelope 聯集預覽。實際 transport 會再依接收節點套用 audience。</p>
+        <p class="muted" data-t="heartbeat.note"></p>
         <pre id="modal-body"></pre>
       </div>
     </div>
