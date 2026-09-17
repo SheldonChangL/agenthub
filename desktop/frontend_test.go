@@ -538,6 +538,12 @@ func TestFrontendServicePanelOffersTheRestartWhereItIsSafe(t *testing.T) {
 	runNodeCheck(t, "service-panel.mjs")
 }
 
+// The build is named on screen, including while the node is unreachable, which
+// is when someone is most likely to file the report that needs it.
+func TestFrontendNodeLineNamesTheBuild(t *testing.T) {
+	runNodeCheck(t, "version-line.mjs")
+}
+
 // TestFrontendShimSelectDoesNotLie covers the fake <select> the other checks
 // run against.
 //
