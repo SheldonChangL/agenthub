@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -231,6 +232,16 @@ func run() error {
 		}
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
+	// The pairing exchange is wired whether or not discovery is: the case it
+	// exists for is two machines that cannot hear each other's announcements,
+	// where the owner types one address instead of copying a public key.
+	// Accepting a request still needs an open pairing window, which is the
+	// consent; asking for one is always this owner's own deliberate act.
+	options = append(options, api.WithPairExchange(
+		pairing.NewRequests(),
+		transport.NewPairDialer(deliveryPolicy),
+		announceablePeerAddress(deliveryPolicy, settings.PeerListen),
+	))
 	// Waking is off at the node as well as at the session, and both have to be
 	// open. A per-session switch alone would mean an owner who set one months
 	// ago, before this existed, finds turns starting after an upgrade; a node
@@ -831,4 +842,23 @@ func shutDown(ctx context.Context, apiServer drainable, owner, peers *http.Serve
 		return fmt.Errorf("shutdown peer listener: %w", peerErr)
 	}
 	return nil
+}
+
+// announceablePeerAddress is where a peer could reach this node, as host:port,
+// or empty when there is no address worth claiming.
+//
+// A pairing request carries it so the approving machine has somewhere to
+// deliver to without its owner typing an address in a second step. Empty is a
+// perfectly good answer: the far side then records no address, which means
+// "nothing to deliver to" rather than a destination somebody invented.
+func announceablePeerAddress(policy func(string) error, peerListen string) string {
+	endpoint, err := pairing.PeerEndpoint(policy, peerListen)
+	if err != nil || endpoint.Unannounceable != "" {
+		return ""
+	}
+	addresses := endpoint.Addresses()
+	if len(addresses) == 0 {
+		return ""
+	}
+	return net.JoinHostPort(addresses[0].String(), strconv.Itoa(endpoint.Port))
 }
