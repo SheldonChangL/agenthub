@@ -189,6 +189,16 @@ for (const required of ["ubuntu-lab", "sheldon-mbp", PAIR_TEXT.whose["this machi
 if (!html.includes(PAIR_TEXT.compare)) {
   failures.push("an undecided row carries no instruction about comparing before deciding");
 }
+// Once, and above the two lines it is about — the layout the node's own wording
+// assumes ("two fingerprints are shown: the requester first…"). Below them it
+// reads as a comment on the decision instead of as the instruction for reading.
+if (html.indexOf(PAIR_TEXT.compare) > html.indexOf(THEIR_FP)) {
+  failures.push("the fingerprint notice is printed below the fingerprints it describes");
+}
+const firstRow = el("pair-requests").children[0].serialize();
+if (firstRow.split(PAIR_TEXT.compare).length - 1 !== 1) {
+  failures.push("the fingerprint notice is printed more than once on one row");
+}
 // And the node's `ah pair approve <id>` sentence is NOT on it: correct advice
 // for the terminal it was written for, and directly above an approve button it
 // is an instruction that contradicts the screen.
@@ -211,11 +221,19 @@ if (!html.includes(PAIR_TEXT.reject)) failures.push("an undecided row offers no 
 pending = [outgoingPending];
 await scope.loadPairRequests();
 const outgoingOnly = rowsHTML();
-if (outgoingOnly.includes(PAIR_TEXT.confirm)) {
+// The buttons, not the text: the instruction on that row names 確認 on purpose,
+// because a requester told only "they will approve" stalls without knowing a
+// confirm is still coming back here.
+const outgoingButtons = (el("pair-requests").children[0]?.serialize() ?? "").match(/<button[^>]*>([^<]*)</g) ?? [];
+if (outgoingButtons.some((b) => b.includes(PAIR_TEXT.confirm))) {
   failures.push("an outgoing request still waiting for the other owner offered a 確認 button");
 }
 if (!outgoingOnly.includes(PAIR_TEXT.state["pending-outgoing"])) {
   failures.push("an outgoing pending row is not labelled as waiting for the other machine");
+}
+// ...and it does say that a confirm is coming back here.
+if (!outgoingOnly.includes("確認")) {
+  failures.push("an outgoing pending row does not say the pairing still needs a confirm on this machine");
 }
 
 // The decided rows are out of the default list and in the all list. A row
@@ -247,7 +265,7 @@ if (!withDecided.includes("Nothing was trusted; start again")) {
 }
 // And a finished row is not still asking to be decided.
 const expiredRow = withDecided.slice(withDecided.indexOf("pair_expired000001"));
-if (expiredRow.includes(PAIR_TEXT.approve) || expiredRow.includes(PAIR_TEXT.confirm)) {
+if ((expiredRow.match(/<button/g) ?? []).length > 0) {
   failures.push("a finished request still offers a decision");
 }
 el("pair-requests-all").checked = false;
@@ -365,6 +383,25 @@ for (const [code, expected] of Object.entries(PAIR_TEXT.errors)) {
   }
 }
 startThrow = "";
+// PEER_PAIRING_BUSY is deliberately NOT translated: its body carries the peer's
+// own reason and the remedy, and the 429 it relays covers two refusals that are
+// undone in different places. A sentence written here would pick one and be
+// wrong about the other, so the node's words are surfaced as they are.
+startThrow = "PEER_PAIRING_BUSY: 192.168.1.5:7463 will not take another pairing request right now: " +
+  "no more than 3 pairing requests from one address may be pending at once. Reject what is waiting " +
+  "there or let it expire, then try again";
+el("pair-address").value = "192.168.1.5:7463";
+await el("btn-pair-send").onclick();
+await settle();
+for (const fragment of ["no more than 3 pairing requests from one address", "Reject what is waiting"]) {
+  if (!el("banner").textContent.includes(fragment)) {
+    failures.push(`the peer's own reason for refusing was lost: ${el("banner").textContent}`);
+  }
+}
+if (el("banner").textContent.startsWith("PEER_PAIRING_BUSY")) {
+  failures.push("the error code was shown to the owner; it is for a log, not for a person");
+}
+startThrow = "";
 // A code nobody translated keeps the node's own words: a refusal swallowed
 // leaves the owner with nothing at all.
 startThrow = "SOMETHING_NEW: the node explained itself";
@@ -401,7 +438,10 @@ if (!rowsHTML().includes(PAIR_TEXT.requestsEmpty)) {
 // inside the notice's prose, which is how the last hand-carried string lost a
 // character.
 pairingAnswer = {
-  availability: "off",
+  // Not "off": the window is OPEN and collecting requests, it just cannot be
+  // found on the network. Rendered as off, the panel said the window was shut
+  // while it was open, and sent the owner to reopen what was already there.
+  availability: "openNotAnnouncing",
   windowAvailable: true,
   state: {
     open: true, remainingSeconds: 200, displayName: "sheldon-mbp", nameIsChosen: false,
@@ -409,7 +449,7 @@ pairingAnswer = {
     notice: "this node is not announcing itself over mDNS, so a window opened here will not put it in " +
       "anyone's candidate list: discovery is off (this node was started without -discover). The other " +
       "machine can still pair by typing this address: `ah pair request 192.168.50.10:7463`",
-    pairAddress: "192.168.50.10:7463",
+    peerAddress: "192.168.50.10:7463",
   },
   candidates: [],
 };
@@ -439,8 +479,33 @@ if (el("copy-pair-address-status").textContent.includes("已複製")) {
 }
 copyThrows = false;
 
-// A node that IS announcing has no notice, and the block stays away: a panel
-// that always shows it is one nobody reads.
+// The candidate region says the same thing "off" does — this node is not
+// looking — while the window panel above says the window is open.
+if (el("candidate-rows").serialize().includes("讀不到")) {
+  failures.push("a node with an open window and no discovery had its empty candidate list blamed on a failed read");
+}
+
+// A node that IS announcing still shows the address: mDNS not carrying between
+// two segments is exactly as silent as mDNS being off, and the owner whose node
+// announces perfectly well is the one left with nothing to say when the other
+// machine's list stays empty. What changes is the sentence beside it.
+pairingAnswer = {
+  availability: "on", windowAvailable: true,
+  state: {
+    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    announcing: { announceableAddresses: 1 }, peerAddress: "192.168.50.10:7463",
+  },
+  candidates: [],
+};
+await scope.loadPairing();
+if (el("pair-here").classList.contains("hidden")) {
+  failures.push("a node that is announcing did not show the address the other machine can still be given");
+}
+if (el("pair-here-note").textContent !== PAIR_TEXT.hereNoteAnnouncing) {
+  failures.push("an announcing node was told the address is its only way in");
+}
+
+// A node with no address to give hides the block rather than showing a dash.
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: { open: true, remainingSeconds: 200, displayName: "sheldon-mbp", announcing: { announceableAddresses: 1 } },
@@ -448,7 +513,7 @@ pairingAnswer = {
 };
 await scope.loadPairing();
 if (!el("pair-here").classList.contains("hidden")) {
-  failures.push("the typed-address block is shown on a node that is announcing");
+  failures.push("the typed-address block is shown on a node that has no address to give");
 }
 
 /* ---------------- 9. every string from the wire is text ------------------ */

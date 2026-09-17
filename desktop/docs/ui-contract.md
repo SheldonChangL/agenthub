@@ -36,8 +36,11 @@
   `receivedAt`、`online=false`，且**不得**顯示舊 session 清單）、線上。
 - Candidate 每一個欄位都是對方自稱的。`contested` 與 `duplicate` 兩個旗標要在
   列上顯示，而且**跟著進配對對話框**（兩個都有時兩個都要說）。
-- PairingState.availability 三種：`off`（節點沒開 `-discover`）、`on`、其他
-  （讀不到）。三種文案不能合併（測試 `render-hostile-candidate.mjs`）。
+- PairingState.availability 四種：`off`（沒開 `-discover`，視窗也沒開）、
+  `openNotAnnouncing`（同一種節點但視窗開著：沒人找得到它，送到它位址的請求仍然會到）、
+  `on`、其他（讀不到）。四種文案不能合併（測試 `render-hostile-candidate.mjs`、
+  `pairing-exchange.mjs`）。把 `openNotAnnouncing` 畫成 `off` 等於在視窗開著並收著請求時
+  說它是關的，會叫使用者去重開已經開著的東西。
 - InboxView 有 loading、error、cleared、full、more 五個獨立狀態，加上空清單。
   loading 和空清單**不能長一樣**。
 
@@ -116,21 +119,25 @@
 
 **配對抽屜（`pairing-modal`）的順序，由上而下（#63）**：
 
-1. **`btn-pairing-on`「與另一台機器配對」**：開視窗，永遠可按。節點沒在廣播時（`state.notice` 非空）
-   下面出現 `#pair-here`：`#pair-local-address` 用 `.keyvalue` 大字顯示 `state.pairAddress`，
-   旁邊 `copy-pair-address` 走 `CopyText`，複製失敗要說出來。位址是 desktop 從 notice 那句裡取出來的，
-   節點沒有獨立欄位（見 `client.go` 的 `pairAddressFromNotice`）。
+1. **`btn-pairing-on`「與另一台機器配對」**：開視窗，**永遠可按**（`windowAvailable`；
+   availability 為 `off` 或 `openNotAnnouncing` 都不影響）。只要節點給了 `state.peerAddress`，
+   下面就出現 `#pair-here`：`#pair-local-address` 用 `.keyvalue` 大字顯示它，旁邊 `copy-pair-address`
+   走 `CopyText`，複製失敗要說出來。**有廣播也要顯示**——mDNS 過不去跟 mDNS 沒開一樣安靜，
+   差別只在旁邊那句話（`state.notice` 非空 → 這是唯一的路；否則 → 對方等不到時的退路）。
 2. **`#pair-waiting`**：等你決定的請求有幾個，一句話。請求面板在候選清單下面，短視窗時會在摺線以下。
 3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑。
 4. **`#pair-address` + `btn-pair-send`**：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。
 5. **`#pair-requests` 請求面板**：
-   - 每列：名稱 + 狀態 pill、平台 · 位址、完整 nodeId、request id、**指紋區塊**、一句中文指示、
-     `PAIR_TEXT.compare` 警語、按鈕。
+   - 每列，由上而下：名稱 + 狀態 pill、平台 · 位址、完整 nodeId、request id、
+     **`PAIR_TEXT.compare` 警語（在指紋區塊之上，一列只印一次）**、**指紋區塊**、
+     一句中文指示、按鈕。警語在上面是因為節點自己的文案就是這樣假設的
+     （「下面兩組指紋，上面是發起方…」）；放在下面會被讀成對「決定」的註解，而不是對「怎麼讀上面兩行」的指示。
    - **指紋區塊照節點給的 `fingerprints` 陣列原樣渲染**：順序是節點排的（發起方在上，兩台一致），
      標籤 `role`／`whose` 走固定對照表，值本身一個字都不動。前端**不得**自己排序、推導或只顯示一組。
      節點沒給這個陣列時不自己湊一組，改說去終端機用 `ah pair pending` 比對。
    - 按鈕**一定在指紋下面**：`incoming/pending` →「指紋一致，核准」＋「拒絕」；
-     `awaiting-confirm` →「指紋一致，確認」＋「拒絕」；`outgoing/pending` 只有「拒絕」。
+     `awaiting-confirm` →「指紋一致，確認」＋「拒絕」；`outgoing/pending` 只有「拒絕」，
+     但**文字要說出之後還要回到這台按確認**——只被告知「等對方核准」的發起方會卡在那裡。
    - 已結束（approved/rejected/expired，含 `reason: displaced`）不進預設清單，
      `pair-requests-all` 勾選 → `all=true`。已結束的列才顯示節點的 `nextStep`。
    - **任何地方都不得有自動核准或略過比對的入口。**
@@ -180,6 +187,9 @@
 | 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」、無名時「（未提供名稱）」 | 候選資料進 class |
 | availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
 | `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
+| availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對中 · 剩 m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
+| `state.peerAddress` 非空 | `#pair-here` 一律顯示，**有沒有廣播都顯示**；旁邊那句依 `state.notice` 有無而不同 | 只在沒廣播時才顯示 |
+| 送出請求被 `PEER_PAIRING_BUSY` 拒 | 節點原文（對端自己的理由＋補救）；**不得**出現錯誤碼 | 本地自己寫的一句話（它蓋掉的是兩種不同的 429） |
 | 配對請求列（未決） | 兩組指紋、節點給的標籤、`PAIR_TEXT.compare`、按鈕在指紋**下面** | 只顯示一組指紋；`ah pair approve`（GUI 裡跟按鈕自相矛盾） |
 | 配對請求列（已結束） | 一句結果 + 節點的 `nextStep` | 核准／確認按鈕 |
 | 配對面板任何位置 | | 「自動核准」「略過比對」「全部核准」「不比對」 |
@@ -223,9 +233,14 @@
 在一個按鈕就在旁邊的視窗裡是錯的建議。所以 `PAIR_TEXT.errors` 把下列碼各翻成**一句話 + 一個補救**，
 其餘的碼**原樣保留節點的話**（沒人翻譯的拒絕仍然是答案，吞掉它才是把使用者留在原地）：
 
-`PEER_TOO_OLD`、`PEER_PAIRING_CLOSED`、`PEER_PAIRING_BUSY`、`PEER_PAIRING_DUPLICATE`、
-`PAIRING_BUSY`、`PAIRING_DUPLICATE`、`PAIRING_STATE`、`PAIRING_EXCHANGE_DISABLED`、
-`PEER_UNREACHABLE`、`PEER_KEY_MISMATCH`、`ADDRESS_NOT_ALLOWED`、`NOT_FOUND`。
+`PEER_TOO_OLD`、`PEER_PAIRING_CLOSED`、`PEER_PAIRING_DUPLICATE`、`PAIRING_BUSY`、
+`PAIRING_DUPLICATE`、`PAIRING_STATE`、`PAIRING_EXCHANGE_DISABLED`、`PEER_UNREACHABLE`、
+`PEER_KEY_MISMATCH`、`ADDRESS_NOT_ALLOWED`、`NOT_FOUND`。
+
+`PEER_PAIRING_BUSY` **刻意不翻**：它的 body 帶著對端自己的理由與補救，而它轉述的 429 蓋著兩種
+不同的拒絕（同一來源位址的上限，以及整份清單滿了），兩者要在不同地方解。在這裡寫死一句話一定會
+挑其中一種、對另一種說錯話。比對錯誤碼是**從字串開頭錨定**的，不是子字串比對——
+`PAIRING_BUSY` 曾經因此替 `PEER_PAIRING_BUSY` 回答，把「這台滿了」說成了對面那台的事。
 
 所有新增的使用者可見字串都放在 `app.js` 的單一 `PAIR_TEXT` 物件裡，之後的英文化是換掉這個物件，
 不是在四十個呼叫點裡找字串。

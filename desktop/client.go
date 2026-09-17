@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -158,41 +157,14 @@ type PairingState struct {
 	// can be told this one's address and type it. Empty when the node is
 	// announcing, because a notice that is always there is one nobody reads.
 	Notice string `json:"notice,omitempty"`
-	// PairAddress is the host:port the other machine has to type, pulled out of
-	// Notice so the panel can show it large and copy it in one click.
+	// PeerAddress is the host:port the other machine types to reach this one.
 	//
-	// Pulled out rather than read from a field of its own because the node has
-	// no such field: /v1/pairing answers the address only inside that sentence.
-	// Extracting here keeps the guess in one place — a UI that asked a person
-	// to select the right substring out of a paragraph is how a truncated
-	// address gets typed on the other machine. Empty whenever the sentence does
-	// not carry one, and the notice is still shown in full either way.
-	PairAddress string `json:"pairAddress,omitempty"`
-}
-
-// pairAddressFromNotice reads the address out of the node's own sentence.
-//
-// The node writes it as "`ah pair request 192.168.1.20:7463`". Anything else —
-// a node with no peer address, an older node, a reworded notice — yields "",
-// which the panel renders as "no address to show" rather than as a wrong one.
-func pairAddressFromNotice(notice string) string {
-	const marker = "ah pair request "
-	start := strings.Index(notice, marker)
-	if start < 0 {
-		return ""
-	}
-	rest := notice[start+len(marker):]
-	if end := strings.IndexAny(rest, "`\n "); end >= 0 {
-		rest = rest[:end]
-	}
-	// The placeholder form, which is an instruction and not an address.
-	if strings.HasPrefix(rest, "<") {
-		return ""
-	}
-	if _, _, err := net.SplitHostPort(rest); err != nil {
-		return ""
-	}
-	return rest
+	// The node answers it whether or not it is announcing, which is the right
+	// shape: mDNS not carrying between two segments is exactly as silent as
+	// mDNS being off, and an owner whose node announces perfectly well still
+	// needs this string when the other machine's list stays empty. Empty on a
+	// node with no peer listener address to give.
+	PeerAddress string `json:"peerAddress,omitempty"`
 }
 
 // PairFingerprint is one machine's fingerprint, labelled as the node labelled
@@ -407,7 +379,6 @@ func (c *client) decodePairingState(ctx context.Context, method string, input an
 	if err := json.Unmarshal(body, &state); err != nil {
 		return PairingState{}, fmt.Errorf("decode pairing state: %w", err)
 	}
-	state.PairAddress = pairAddressFromNotice(state.Notice)
 	return state, nil
 }
 
