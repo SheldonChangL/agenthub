@@ -606,8 +606,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (pairing.availability === "openNotAnnouncing") {
       pill_.className = "pill idle";
       pill_.textContent = `配對中 · 剩 ${clock(pairingRemaining())}`;
-      line.textContent = "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。" +
-        "打開配對面板，把上面顯示的本機位址給對方輸入。";
+      // Same sentence the drawer had to stop telling: "hand them the address
+      // shown there" is advice about an address this node may not have. A
+      // default node has none, and the summary line was sending its owner to
+      // read out something that was never on the screen.
+      line.textContent = pairHereState(pairing.state ?? {}).reachable
+        ? "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。打開配對面板，把裡面顯示的本機位址給對方輸入。"
+        : "視窗開著，但這台沒有在廣播，也還沒有人連得進來。打開配對面板看原因和補救。";
       return;
     }
     if (pairing.availability === "off") {
