@@ -57,6 +57,14 @@ type HelloPayload struct {
 
 type PairRequestPayload struct {
 	Node NodeDescriptor `json:"node"`
+	// Address is where the requester answers, as host:port, so an approving
+	// node has somewhere to deliver to without the owner typing it in a second
+	// step. Optional, and a claim like every other field here: the receiver
+	// checks it against its own address policy before recording it, and an
+	// address that does not pass is simply not recorded. It is not part of
+	// identity — trust says who a node is, the address says where it currently
+	// answers — so a wrong one costs a delivery, never a wrong pairing.
+	Address string `json:"address,omitempty"`
 }
 
 type PairApprovePayload struct {
