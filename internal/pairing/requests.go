@@ -25,6 +25,18 @@ const RequestTTL = 5 * time.Minute
 // machine is buried in — not memory.
 const MaxPending = 16
 
+// MaxPendingPerSource bounds how many incoming requests one address may have
+// waiting.
+//
+// MaxPending alone is not a bound on an attacker: node identifiers are chosen
+// by whoever sends the request, so sixteen fresh ones from one machine filled
+// the list and the owner's real machine was answered PAIRING_BUSY during the
+// very window they had opened to pair it. The source address is the one thing
+// in an incoming request the sender cannot invent freely, so it is what the
+// bound is keyed on. Three, because a person retrying a request they think was
+// lost is normal and a fourth simultaneous one from the same machine is not.
+const MaxPendingPerSource = 3
+
 // retainDecided is how long a decided or expired request stays visible.
 //
 // Kept rather than deleted, because "rejected" and "expired" are different
@@ -66,11 +78,19 @@ const (
 	ReasonDeclined            = "declined"
 	ReasonExpired             = "expired"
 	ReasonFingerprintMismatch = "fingerprint_mismatch"
+	// ReasonDisplaced is a pending incoming request pushed out of a full list
+	// by a newer one. Distinct from "expired" because the owner did not run out
+	// of time: something filled the list.
+	ReasonDisplaced = "displaced"
 )
 
 var (
 	// ErrTooManyRequests reports that the pending list is full.
 	ErrTooManyRequests = fmt.Errorf("no more than %d pairing requests may be pending at once", MaxPending)
+	// ErrTooManyFromSource reports that one address already has as many
+	// requests waiting here as it may have.
+	ErrTooManyFromSource = fmt.Errorf(
+		"no more than %d pairing requests from one address may be pending at once", MaxPendingPerSource)
 	// ErrNoSuchRequest reports an id that names nothing here.
 	ErrNoSuchRequest = errors.New("no such pairing request")
 	// ErrWrongState reports a request that cannot take this decision now.
@@ -106,11 +126,24 @@ type Request struct {
 	// Address is where the other machine answers, as host:port: the address
 	// this node dialled for an outgoing request, and the one the requester
 	// claimed for an incoming one. Empty when there is none to record.
-	Address   string       `json:"address,omitempty"`
-	State     RequestState `json:"state"`
-	Reason    string       `json:"reason,omitempty"`
-	CreatedAt time.Time    `json:"createdAt"`
-	ExpiresAt time.Time    `json:"expiresAt"`
+	Address string `json:"address,omitempty"`
+	// SourceHost is the host half of the address an incoming request actually
+	// arrived from, as the listener saw it. Unlike NodeID it is not the
+	// sender's to choose, which is why the flood bound is keyed on it. Empty on
+	// an outgoing request: this machine is the source.
+	SourceHost string       `json:"sourceHost,omitempty"`
+	State      RequestState `json:"state"`
+	Reason     string       `json:"reason,omitempty"`
+	// TrustedByRequest records that this exact request is what wrote the other
+	// machine into this node's trust store.
+	//
+	// It is the guard on undoing that write. A node paired months ago by some
+	// other route must not be revoked because a pairing request naming it was
+	// refused, and without this flag a refusal would have no way to tell the
+	// two apart.
+	TrustedByRequest bool      `json:"trustedByRequest,omitempty"`
+	CreatedAt        time.Time `json:"createdAt"`
+	ExpiresAt        time.Time `json:"expiresAt"`
 }
 
 // Decided reports whether this request is finished, one way or another.
@@ -145,23 +178,51 @@ func (q *Requests) Now() time.Time { return q.now() }
 
 // Add records a new request. The caller has already derived the fingerprints
 // and decided the expiry.
+//
+// A full incoming list makes room for the newcomer by displacing the oldest
+// request still waiting, rather than refusing. The owner is standing at two
+// machines with a window open, and the failure that matters is their own
+// machine's request being turned away because something filled the list first;
+// an older unanswered row is the cheaper thing to lose. Per-source bound first,
+// so displacing cannot be driven from one address either.
 func (q *Requests) Add(request Request) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.sweep()
 
 	pending := 0
+	fromSource := 0
+	oldest := ""
 	for _, id := range q.order {
 		row := q.rows[id]
-		if row.Direction == request.Direction && !row.Decided() {
-			pending++
-			if row.NodeID == request.NodeID {
-				return ErrDuplicateRequest
-			}
+		if row.Direction != request.Direction || row.Decided() {
+			continue
+		}
+		pending++
+		if row.NodeID == request.NodeID {
+			return ErrDuplicateRequest
+		}
+		if request.SourceHost != "" && row.SourceHost == request.SourceHost {
+			fromSource++
+		}
+		if oldest == "" || q.rows[oldest].CreatedAt.After(row.CreatedAt) {
+			oldest = id
 		}
 	}
+	if fromSource >= MaxPendingPerSource {
+		return ErrTooManyFromSource
+	}
 	if pending >= MaxPending {
-		return ErrTooManyRequests
+		// An outgoing request is this owner's own deliberate act and there is
+		// no attacker to absorb: sixteen of them means the owner asked for
+		// sixteen, and silently cancelling one of those would be this node
+		// deciding which of their pairings to abandon.
+		if request.Direction != Incoming || oldest == "" {
+			return ErrTooManyRequests
+		}
+		displaced := q.rows[oldest]
+		displaced.State = StateExpired
+		displaced.Reason = ReasonDisplaced
 	}
 	if _, clash := q.rows[request.ID]; clash {
 		return fmt.Errorf("pairing request %q already exists", request.ID)

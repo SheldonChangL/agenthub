@@ -275,6 +275,11 @@ func (s *Server) PeerHandler() http.Handler {
 	// from a machine that wants to be trusted. Approving is on neither.
 	mux.HandleFunc("POST /v1/pair/requests", s.receivePairRequest)
 	mux.HandleFunc("GET /v1/pair/requests/{id}", s.pollPairRequest)
+	// The requester withdrawing, signed and directed at this node. It is the
+	// only peer route that changes a decision here, and the only one that can
+	// take a trust row back: an owner who refused because the fingerprints did
+	// not match must not leave the other machine trusting the key they refused.
+	mux.HandleFunc("POST /v1/pair/requests/{id}/reject", s.receivePairReject)
 	// Rate limiting wraps only this surface. Every endpoint here answers an
 	// unauthenticated caller — /v1/challenge signs on request, and both refuse
 	// before knowing who is asking — so a throttle is the only thing bounding

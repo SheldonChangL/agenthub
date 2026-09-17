@@ -177,15 +177,18 @@ func run() error {
 	}
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
-	// Pairing mode and the candidate list exist only when this node is
-	// listening on the local network. Without -discover the endpoints say that
-	// rather than answering with an empty list: "nobody is advertising" and
-	// "this node is not looking" are different facts.
+	// The pairing window is a node-level state and exists whatever the flags
+	// say: it is this owner declaring they are willing to be asked, and the
+	// exchange in internal/api/pair.go needs that and nothing else. The
+	// candidate list and the announce loop exist only when this node is
+	// listening on the local network — without -discover those endpoints say so
+	// rather than answering with an empty list, because "nobody is advertising"
+	// and "this node is not looking" are different facts.
 	options := []api.Option{api.WithDeliveryPolicy(deliveryPolicy)}
+	pairingMode := pairing.NewMode()
 	var candidates *discovery.Candidates
 	var announcer *pairing.Announcer
 	if settings.Discover {
-		pairingMode := pairing.NewMode()
 		candidates = discovery.NewCandidates(node.ID, store.IsPaired, deliveryPolicy)
 		// Built before the API rather than beside the listen loop, because the
 		// API answers with what this announcer is actually managing to do: an
@@ -230,6 +233,13 @@ func run() error {
 			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s",
 				settings.PeerListen, reason)
 		}
+	}
+	// A typed nil put into the interface would not compare equal to nil there,
+	// and the API asks exactly that question to decide whether this node can
+	// announce. Passed as an untyped nil instead.
+	if announcer == nil {
+		options = append(options, api.WithPairing(pairingMode, candidates, nil))
+	} else {
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
 	// The pairing exchange is wired whether or not discovery is: the case it

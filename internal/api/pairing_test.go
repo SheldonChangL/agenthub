@@ -87,31 +87,78 @@ func pairingHandler(t *testing.T, mode *pairing.Mode) (http.Handler, *discovery.
 	return server.Handler(), candidates, announcer
 }
 
-// Without -discover this node can neither advertise nor see anyone. Answering
-// with an empty list would tell the owner to keep waiting for something that is
-// never coming.
+// Without -discover this node can neither advertise nor see anyone advertising.
+// Answering the candidate list with an empty one would tell the owner to keep
+// waiting for something that is never coming.
 func TestPairingEndpointsSayWhenDiscoveryIsOff(t *testing.T) {
 	_, handler := testServer(t)
-	for name, request := range map[string]struct {
-		method, path string
-	}{
-		"state":      {http.MethodGet, "/v1/pairing"},
-		"open":       {http.MethodPost, "/v1/pairing"},
-		"close":      {http.MethodDelete, "/v1/pairing"},
-		"candidates": {http.MethodGet, "/v1/pairing/candidates"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			response := perform(t, handler, request.method, request.path, nil)
-			if response.Code != http.StatusConflict {
-				t.Fatalf("response = %d %s; want 409", response.Code, response.Body.String())
-			}
-			for _, want := range []string{"-discover", "-allow-lan", "ah pair"} {
-				if !strings.Contains(response.Body.String(), want) {
-					t.Errorf("the refusal does not mention %q: %s", want, response.Body.String())
-				}
-			}
-		})
+	response := perform(t, handler, http.MethodGet, "/v1/pairing/candidates", nil)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("response = %d %s; want 409", response.Code, response.Body.String())
 	}
+	for _, want := range []string{"-discover", "-allow-lan", "ah pair"} {
+		if !strings.Contains(response.Body.String(), want) {
+			t.Errorf("the refusal does not mention %q: %s", want, response.Body.String())
+		}
+	}
+}
+
+// The window is not discovery. It is this owner saying they are willing to be
+// asked, and the pairing exchange — one owner typing the other machine's
+// address — needs that and nothing else. Requiring -discover to open it made
+// that exchange unusable in exactly the case it exists for: two machines that
+// cannot hear each other's announcements.
+func TestTheWindowOpensWithoutDiscovery(t *testing.T) {
+	handler, mode, _ := pairingServerWithoutDiscovery(t)
+
+	opened := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
+	if opened.Code != http.StatusOK {
+		t.Fatalf("opening a window without -discover = %d %s; want 200",
+			opened.Code, opened.Body.String())
+	}
+	if !mode.IsOpen() {
+		t.Fatal("the window did not open")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(opened.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["open"] != true {
+		t.Errorf("open = %v", body["open"])
+	}
+	// And it says, in the same answer, that nothing is being announced and what
+	// the other machine has to be told instead. An owner left believing an
+	// unannounced window is advertising waits at the wrong screen.
+	notice, _ := body["notice"].(string)
+	for _, want := range []string{"not announcing", "ah pair request"} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("notice %q does not say %q", notice, want)
+		}
+	}
+	if closed := perform(t, handler, http.MethodDelete, "/v1/pairing", nil); closed.Code != http.StatusOK {
+		t.Fatalf("closing without -discover = %d %s", closed.Code, closed.Body.String())
+	}
+	// The candidate list is the part that really does need the network.
+	if listed := perform(t, handler, http.MethodGet, "/v1/pairing/candidates", nil); listed.Code != http.StatusConflict {
+		t.Fatalf("candidates without -discover = %d %s; want 409", listed.Code, listed.Body.String())
+	}
+}
+
+// pairingServerWithoutDiscovery is a node started without -discover: a window,
+// no candidate list, no announcer.
+func pairingServerWithoutDiscovery(t *testing.T) (http.Handler, *pairing.Mode, *registry.Registry) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "nodiscovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	mode := pairing.NewMode()
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+		WithPairing(mode, nil, nil))
+	return server.Handler(), mode, store
 }
 
 // Closed until asked, open for a bounded time, and closed again by the clock.
@@ -300,10 +347,14 @@ func TestAnUnrepresentableWindowIsRefusedRatherThanWrapped(t *testing.T) {
 }
 
 // The failure this makes visible: -discover on a node whose peer listener is on
-// loopback has no address a peer could reach, so the window opens, announces
-// nothing, and the owner waits at the other machine for a candidate that will
-// never appear.
-func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
+// loopback has no address a peer could reach, so the window announces nothing
+// and an owner waiting at the other machine for a candidate would wait forever.
+//
+// The window still opens — it can be paired against by typing an address — and
+// the answer says, in the node's own words, that nothing is being announced and
+// why. It used to be refused outright, which was right while being found on the
+// network was the only way to pair.
+func TestOpeningSaysWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	handler, mode, _, announcer := pairingServerWithAnnouncer(t)
 	// The reason a real node gives, remedy included — see reachableAt. The
 	// handler adds nothing to it, so the string has to carry the fix itself.
@@ -311,22 +362,22 @@ func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 		"Restart the node with -allow-lan and -peer-listen on one of this machine's network addresses"
 
 	response := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("response = %d %s, want 409", response.Code, response.Body.String())
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s, want 200", response.Code, response.Body.String())
 	}
-	// The refusal carries the node's own reason, so an owner is told which of
+	// The answer carries the node's own reason, so an owner is told which of
 	// several possible causes applies, and that reason carries its own remedy —
 	// nothing in the UI can restart the node.
-	for _, want := range []string{"loopback", "-peer-listen"} {
+	for _, want := range []string{"loopback", "-peer-listen", "not announcing"} {
 		if !strings.Contains(response.Body.String(), want) {
-			t.Errorf("the refusal does not name %q: %s", want, response.Body.String())
+			t.Errorf("the answer does not name %q: %s", want, response.Body.String())
 		}
 	}
-	if mode.IsOpen() {
-		t.Error("the window opened on a node that cannot announce")
+	if !mode.IsOpen() {
+		t.Error("the window did not open on a node that can still be paired by address")
 	}
-	if announcer.wakeCount() != 0 {
-		t.Error("a refused open still asked the announcer to announce")
+	if announcer.wakeCount() == 0 {
+		t.Error("the announcer was not woken; it is what reports the failure to announce")
 	}
 
 	// And no remedy is appended to every reason. The fixes differ: a loopback
@@ -337,15 +388,15 @@ func TestOpeningIsRefusedWhenThereIsNoAddressToAnnounce(t *testing.T) {
 	announcer.reason = "utun3 holds 10.8.0.2 but is a point-to-point interface — a tunnel — " +
 		"which has no local network segment for a peer to answer on"
 	tunnel := perform(t, handler, http.MethodPost, "/v1/pairing", nil)
-	if tunnel.Code != http.StatusConflict {
-		t.Fatalf("response = %d %s, want 409", tunnel.Code, tunnel.Body.String())
+	if tunnel.Code != http.StatusOK {
+		t.Fatalf("response = %d %s, want 200", tunnel.Code, tunnel.Body.String())
 	}
 	if strings.Contains(tunnel.Body.String(), "-peer-listen") {
-		t.Errorf("a tunnel refusal tells the owner to change -peer-listen, which is correct "+
+		t.Errorf("a tunnel notice tells the owner to change -peer-listen, which is correct "+
 			"as configured: %s", tunnel.Body.String())
 	}
 	if !strings.Contains(tunnel.Body.String(), "tunnel") {
-		t.Errorf("the refusal lost the node's reason: %s", tunnel.Body.String())
+		t.Errorf("the notice lost the node's reason: %s", tunnel.Body.String())
 	}
 }
 
@@ -435,9 +486,11 @@ func TestTheCountdownComesFromTheWindowsOwnClock(t *testing.T) {
 	}
 }
 
-// The three pairing pieces are wired together or not at all. Half-wired, the
-// handlers would answer some questions and panic on others, and a panic in an
-// HTTP handler is a 200 with an empty body to whoever asked.
+// Half-wired, every handler still answers something an owner can act on. The
+// window needs only the mode; the candidate list needs the discovery half and
+// refuses without it. What must never happen is a handler reaching into a piece
+// that is not there: a panic in an HTTP handler is a 200 with an empty body to
+// whoever asked.
 func TestPairingIsRefusedRatherThanHalfWired(t *testing.T) {
 	ctx := context.Background()
 	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "half.db"))
@@ -451,20 +504,28 @@ func TestPairingIsRefusedRatherThanHalfWired(t *testing.T) {
 	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
 		WithPairing(mode, candidates, nil))
 
+	// The window works: it needs the mode and nothing else, and a node with no
+	// announcer simply announces nothing and says so.
 	for _, request := range []struct{ method, path string }{
 		{http.MethodGet, "/v1/pairing"},
 		{http.MethodPost, "/v1/pairing"},
 		{http.MethodDelete, "/v1/pairing"},
-		{http.MethodGet, "/v1/pairing/candidates"},
 	} {
 		response := perform(t, server.Handler(), request.method, request.path, nil)
-		if response.Code != http.StatusConflict {
-			t.Errorf("%s %s = %d %s, want 409", request.method, request.path,
+		if response.Code != http.StatusOK {
+			t.Errorf("%s %s = %d %s, want 200", request.method, request.path,
 				response.Code, response.Body.String())
 		}
 	}
+	// The candidate list needs the announcer's half of the wiring, and says so
+	// rather than panicking — a panic in an HTTP handler is a 200 with an empty
+	// body to whoever asked.
+	listed := perform(t, server.Handler(), http.MethodGet, "/v1/pairing/candidates", nil)
+	if listed.Code != http.StatusConflict {
+		t.Errorf("GET /v1/pairing/candidates = %d %s, want 409", listed.Code, listed.Body.String())
+	}
 	if mode.IsOpen() {
-		t.Error("a half-wired node opened a pairing window")
+		t.Error("the window was left open by a test that closed it")
 	}
 }
 

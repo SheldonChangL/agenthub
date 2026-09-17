@@ -238,6 +238,15 @@ func (a *App) Pairing() Pairing {
 
 	candidates, full, notice, err := activeClient.candidates(a.ctx)
 	if err != nil {
+		// A node without -discover now answers the window endpoints — the
+		// window is a node-level state and the pairing exchange needs only that
+		// — and refuses the candidate list. That is still "this node is not
+		// looking", which is what the panel says with "off"; rendering it as a
+		// failure to read would tell the owner to fix the wrong thing.
+		if isDiscoveryDisabled(err) {
+			result.Availability = pairingOff
+			return result
+		}
 		result.CandidatesError = err.Error()
 		return result
 	}

@@ -5,11 +5,14 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -107,7 +110,7 @@ func (n *pairNode) closeWindow() { n.server.pairing.Close() }
 // which is also what refreshes an outgoing request.
 func (n *pairNode) requests() []pairing.Request {
 	n.t.Helper()
-	response := perform(n.t, n.owner, http.MethodGet, "/v1/pair/requests", nil)
+	response := perform(n.t, n.owner, http.MethodGet, "/v1/pair/requests?all=true", nil)
 	if response.Code != http.StatusOK {
 		n.t.Fatalf("list pairing requests = %d %s", response.Code, response.Body.String())
 	}
@@ -161,10 +164,33 @@ func (n *pairNode) audienceRows() int {
 }
 
 // startRequest is `ah pair request <address>` on this node.
-func (n *pairNode) startRequest(address, name string) *httptest.ResponseRecorder {
+func (n *pairNode) startRequest(address string) *httptest.ResponseRecorder {
 	n.t.Helper()
 	return perform(n.t, n.owner, http.MethodPost, "/v1/pair/requests",
-		map[string]string{"address": address, "name": name})
+		map[string]string{"address": address})
+}
+
+// viewOf is one request as the owner API renders it: the ordered fingerprints,
+// the next step and the notice, which is what a person actually reads.
+func (n *pairNode) viewOf(id string) pairRequestView {
+	n.t.Helper()
+	response := perform(n.t, n.owner, http.MethodGet, "/v1/pair/requests?all=true", nil)
+	if response.Code != http.StatusOK {
+		n.t.Fatalf("list pairing requests = %d %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Requests []pairRequestView `json:"requests"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		n.t.Fatal(err)
+	}
+	for _, row := range decoded.Requests {
+		if row.ID == id {
+			return row
+		}
+	}
+	n.t.Fatalf("node %s has no pairing request %s", n.node.DisplayName, id)
+	return pairRequestView{}
 }
 
 func (n *pairNode) decide(t *testing.T, requestID, verb string, wantCode int) {
@@ -190,7 +216,7 @@ func TestPairingExchangeTrustsBothSidesAfterTwoConfirmations(t *testing.T) {
 	receiver := newPairNode(t, "decides")
 	receiver.openWindow()
 
-	started := requester.startRequest(receiver.address(), "the other laptop")
+	started := requester.startRequest(receiver.address())
 	if started.Code != http.StatusCreated {
 		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
 	}
@@ -269,10 +295,12 @@ func TestPairingExchangeTrustsBothSidesAfterTwoConfirmations(t *testing.T) {
 			t.Errorf("%s has %d session_audience rows after pairing, want 0", pair.name, rows)
 		}
 	}
-	// The name the owner typed is the name they see, not the one the far side
-	// chose for itself.
-	if name := requester.trusted()[0].DisplayName; name != "the other laptop" {
-		t.Errorf("stored display name = %q, want the name the owner gave", name)
+	// A node is called what it calls itself, on both machines. A local rename
+	// here would put a different name on each screen while the exchange asks
+	// the owner to check that the two screens agree.
+	if name := requester.trusted()[0].DisplayName; name != receiver.node.DisplayName {
+		t.Errorf("stored display name = %q, want the peer's own name %q",
+			name, receiver.node.DisplayName)
 	}
 }
 
@@ -284,7 +312,7 @@ func TestPairingRejectionWritesNothingAnywhere(t *testing.T) {
 	receiver := newPairNode(t, "decides")
 	receiver.openWindow()
 
-	started := requester.startRequest(receiver.address(), "")
+	started := requester.startRequest(receiver.address())
 	if started.Code != http.StatusCreated {
 		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
 	}
@@ -317,7 +345,7 @@ func TestPairingExpiresWithTheWindowAndWritesNothing(t *testing.T) {
 	receiver := newPairNode(t, "decides")
 	receiver.openWindow()
 
-	started := requester.startRequest(receiver.address(), "")
+	started := requester.startRequest(receiver.address())
 	if started.Code != http.StatusCreated {
 		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
 	}
@@ -354,7 +382,7 @@ func TestPairingRefusedWhileTheWindowIsClosed(t *testing.T) {
 	receiver := newPairNode(t, "decides")
 	// No openWindow: the receiving owner has not consented to anything.
 
-	started := requester.startRequest(receiver.address(), "")
+	started := requester.startRequest(receiver.address())
 	if started.Code != http.StatusConflict {
 		t.Fatalf("start against a closed window = %d %s", started.Code, started.Body.String())
 	}
@@ -418,7 +446,7 @@ func TestPairingAbortsWhenTheTLSKeyIsNotTheDescribedKey(t *testing.T) {
 		})
 	})
 
-	started := requester.startRequest(middle, "")
+	started := requester.startRequest(middle)
 	if started.Code != http.StatusBadGateway {
 		t.Fatalf("relayed pairing = %d %s; want 502", started.Code, started.Body.String())
 	}
@@ -442,7 +470,7 @@ func TestPairingAgainstAnOlderNodeSaysSo(t *testing.T) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such route")
 	})
 
-	started := requester.startRequest(older, "")
+	started := requester.startRequest(older)
 	if started.Code != http.StatusConflict {
 		t.Fatalf("pairing with an older node = %d %s", started.Code, started.Body.String())
 	}
@@ -507,4 +535,493 @@ func decodeError(t *testing.T, body []byte) struct {
 		t.Fatalf("decode error body %q: %v", body, err)
 	}
 	return decoded
+}
+
+// The command the owner was told to run has to work when run exactly as told.
+//
+// `ah pair request` prints "run ah pair confirm <id> here", and an owner who
+// does that without listing first used to be answered "it is pending, not
+// awaiting-confirm" — for an approval the other machine had already given.
+// Learning of the approval happened only in the list handler. This test does
+// not list.
+func TestConfirmWorksWithoutListingFirst(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+	// The receiving owner approves. The requesting owner has read nothing since
+	// starting the request, so this node still believes the row is pending.
+	receiver.decide(t, outgoing.ID, "approve", http.StatusOK)
+	if row, _ := requester.server.pairRequests.Get(outgoing.ID); row.State != pairing.StatePending {
+		t.Fatalf("the requester already knows the answer (%q); this test is not testing anything", row.State)
+	}
+
+	requester.decide(t, outgoing.ID, "confirm", http.StatusOK)
+
+	trusted := requester.trusted()
+	if len(trusted) != 1 || trusted[0].NodeID != receiver.node.ID {
+		t.Fatalf("confirming without listing first trusted %v", trusted)
+	}
+}
+
+// Both machines print the same two fingerprints in the same order, so two
+// people reading two screens compare line with line. Each machine printing its
+// own first means the order is reversed between them, and a notice claiming
+// otherwise is worse than none.
+func TestBothMachinesShowTheFingerprintsInOneOrder(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	here := requester.viewOf(outgoing.ID)
+	there := receiver.viewOf(outgoing.ID)
+	if len(here.Fingerprints) != 2 || len(there.Fingerprints) != 2 {
+		t.Fatalf("each machine must show both fingerprints: %v / %v", here.Fingerprints, there.Fingerprints)
+	}
+	for i, want := range []struct {
+		role        string
+		machine     string
+		fingerprint string
+	}{
+		{"requester", requester.node.DisplayName, identity.Fingerprint(requester.keypair.Public)},
+		{"receiver", receiver.node.DisplayName, identity.Fingerprint(receiver.keypair.Public)},
+	} {
+		for name, got := range map[string]pairFingerprintView{
+			"requesting machine": here.Fingerprints[i],
+			"receiving machine":  there.Fingerprints[i],
+		} {
+			if got.Role != want.role || got.Machine != want.machine || got.Fingerprint != want.fingerprint {
+				t.Errorf("%s line %d = %+v, want role %q, machine %q, fingerprint %q",
+					name, i, got, want.role, want.machine, want.fingerprint)
+			}
+		}
+	}
+	// Each machine still says which of the two lines is its own.
+	if here.Fingerprints[0].Whose != whoseThis || there.Fingerprints[0].Whose != whoseOther {
+		t.Errorf("the lines are not labelled from each machine's own position: %q / %q",
+			here.Fingerprints[0].Whose, there.Fingerprints[0].Whose)
+	}
+	// The notice describes what is on the screen, and each screen says which
+	// machine runs the next command.
+	if !strings.Contains(here.Notice, "same two values in the same order") {
+		t.Errorf("notice does not describe what is printed: %q", here.Notice)
+	}
+	if !strings.Contains(here.NextStep, "On "+receiver.node.DisplayName) ||
+		!strings.Contains(here.NextStep, "ah pair approve") {
+		t.Errorf("the requester is not told which machine approves: %q", here.NextStep)
+	}
+	if !strings.Contains(there.NextStep, "on this machine") {
+		t.Errorf("the receiver is not told it is the one to approve: %q", there.NextStep)
+	}
+
+	// And a finished row stops repeating the instruction: there is nothing left
+	// to compare, and a notice there sends the owner looking for something to do.
+	receiver.decide(t, outgoing.ID, "reject", http.StatusOK)
+	if done := receiver.viewOf(outgoing.ID); done.Notice != "" {
+		t.Errorf("a decided row still carries the compare notice: %q", done.Notice)
+	}
+}
+
+// The fingerprint shown is derived from the key that arrived, never read from
+// the descriptor beside it. A substituted key that carried the fingerprint of
+// the key it replaced would otherwise pass the only check there is.
+//
+// The wire here is honest about the key and lies about the fingerprint, which
+// is the mutation the display must not follow.
+func TestAReceivedFingerprintIsNeverTheOneOnTheWire(t *testing.T) {
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	liar, liarID := throwawayIdentity(t)
+	lying := model.NodeIdentity{
+		ID: liarID, DisplayName: "not what it seems", Platform: "test",
+		PublicKey: identity.EncodePublicKey(liar.Public),
+		// The lie: a fingerprint of some other key entirely.
+		Fingerprint: "0000 0000 0000 0000 0000 0000",
+	}
+	envelope, err := protocol.NewHeartbeatBuilder(receiver.store, lying, liar).
+		BuildPairRequest(time.Now(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted := perform(t, receiver.server.PeerHandler(), http.MethodPost, "/v1/pair/requests", envelope)
+	if posted.Code != http.StatusAccepted {
+		t.Fatalf("pair request = %d %s", posted.Code, posted.Body.String())
+	}
+
+	rows := receiver.requests()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v", rows)
+	}
+	want := identity.Fingerprint(liar.Public)
+	if rows[0].Fingerprint != want {
+		t.Fatalf("the receiver shows %q, want %q derived from the key that arrived",
+			rows[0].Fingerprint, want)
+	}
+	// And what a decision writes is that same locally derived value.
+	receiver.decide(t, rows[0].ID, "approve", http.StatusOK)
+	trusted := receiver.trusted()
+	if len(trusted) != 1 || trusted[0].Fingerprint != want {
+		t.Fatalf("stored %v, want fingerprint %q", trusted, want)
+	}
+}
+
+// The same rule on the answer path: the requester derives the receiver's
+// fingerprint from the key that terminated the TLS connection, not from the
+// string in the descriptor that came back with it.
+func TestTheAnswersFingerprintIsDerivedFromTheKeyThatAnswered(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	keypair, nodeID := throwawayIdentity(t)
+	address := fakePeerWithKey(t, keypair, nodeID, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"requestId": "pair_liar0000000000000000",
+			"node": protocol.NodeDescriptor{
+				NodeID: nodeID, DisplayName: "answers", Platform: "test",
+				PublicKey: identity.EncodePublicKey(keypair.Public),
+				// The lie again, this time from the machine being asked.
+				Fingerprint: "0000 0000 0000 0000 0000 0000",
+			},
+		})
+	})
+
+	started := requester.startRequest(address)
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+	if want := identity.Fingerprint(keypair.Public); outgoing.Fingerprint != want {
+		t.Fatalf("the requester shows %q, want %q", outgoing.Fingerprint, want)
+	}
+}
+
+// An approval carries the peer's descriptor a second time, signed. The key in
+// it must be the key this exchange is pinned to: a peer that signs an approval
+// naming a different key is describing a machine other than the one whose
+// fingerprint the owner is comparing, and the approval is discarded.
+func TestAnApprovalNamingAnotherKeyIsDiscarded(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	keypair, nodeID := throwawayIdentity(t)
+	elsewhere, _ := throwawayIdentity(t)
+	requestID := "pair_swapped000000000000"
+
+	address := fakePeerWithKey(t, keypair, nodeID, func(w http.ResponseWriter, r *http.Request) {
+		descriptor := protocol.NodeDescriptor{
+			NodeID: nodeID, DisplayName: "answers", Platform: "test",
+			PublicKey:   identity.EncodePublicKey(keypair.Public),
+			Fingerprint: identity.Fingerprint(keypair.Public),
+		}
+		if r.Method == http.MethodPost {
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"requestId": requestID, "node": descriptor,
+			})
+			return
+		}
+		// Signed by the pinned key, directed at the requester, naming the right
+		// request — and carrying somebody else's public key.
+		swapped := descriptor
+		swapped.PublicKey = identity.EncodePublicKey(elsewhere.Public)
+		swapped.Fingerprint = identity.Fingerprint(elsewhere.Public)
+		envelope, err := protocol.NewDirectedEnvelope(nodeID, requester.node.ID,
+			protocol.TypePairApprove, protocol.At(time.Now()),
+			protocol.PairApprovePayload{Node: swapped, RequestID: requestID}, keypair)
+		if err != nil {
+			t.Error(err)
+			writeError(w, http.StatusInternalServerError, "TEST", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"requestId": requestID, "state": string(pairing.StateApproved), "envelope": envelope,
+		})
+	})
+
+	started := requester.startRequest(address)
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+
+	// Reading the list polls, which is where the approval is checked.
+	row := requester.request(requestID)
+	if row.State != pairing.StatePending {
+		t.Fatalf("state = %q; an approval carrying another key was accepted", row.State)
+	}
+	requester.decide(t, requestID, "confirm", http.StatusConflict)
+	if len(requester.trusted()) != 0 {
+		t.Fatalf("a swapped approval trusted %v", requester.trusted())
+	}
+}
+
+// Sixteen fresh node ids from one machine used to fill the incoming list, and
+// the owner's real machine was answered PAIRING_BUSY during the very window
+// they had opened to pair it. Node ids are the sender's to choose; the address
+// it dials from is not.
+func TestOneAddressCannotFillTheIncomingList(t *testing.T) {
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	peer := receiver.server.PeerHandler()
+
+	accepted := 0
+	for range pairing.MaxPending {
+		keypair, nodeID := throwawayIdentity(t)
+		node := model.NodeIdentity{
+			ID: nodeID, DisplayName: "flood", Platform: "test",
+			PublicKey: identity.EncodePublicKey(keypair.Public), Fingerprint: keypair.Fingerprint(),
+		}
+		envelope, err := protocol.NewHeartbeatBuilder(receiver.store, node, keypair).
+			BuildPairRequest(time.Now(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if posted := perform(t, peer, http.MethodPost, "/v1/pair/requests", envelope); posted.Code == http.StatusAccepted {
+			accepted++
+		}
+	}
+	if accepted > pairing.MaxPendingPerSource {
+		t.Fatalf("one address got %d pending requests in, want at most %d",
+			accepted, pairing.MaxPendingPerSource)
+	}
+	// And the owner's own machine still gets in, which is the whole point.
+	requester := newPairNode(t, "asks")
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("the real machine was turned away: %d %s", started.Code, started.Body.String())
+	}
+}
+
+// A refusal on the requesting side reaches the other machine.
+//
+// The worst case is the one this covers: the owner refused because the
+// fingerprints did not match, and the other owner had already approved. Without
+// the push, that machine went on trusting the key its owner had been told to
+// refuse, and nothing on either screen said so.
+func TestARequesterRejectRevokesAnApprovalAlreadyGiven(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+	receiver.decide(t, outgoing.ID, "approve", http.StatusOK)
+	if len(receiver.trusted()) != 1 {
+		t.Fatalf("the approval wrote %v", receiver.trusted())
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	if trusted := receiver.trusted(); len(trusted) != 0 {
+		t.Fatalf("the refused machine is still trusted: %v", trusted)
+	}
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Fatalf("the receiver sees %q after the refusal, want %q", state, pairing.StateRejected)
+	}
+	if len(requester.trusted()) != 0 {
+		t.Fatalf("the refusing machine trusted something: %v", requester.trusted())
+	}
+}
+
+// The same push before any approval: the other owner is told, and approving
+// afterwards is refused in words they can act on.
+func TestARequesterRejectBlocksALaterApprove(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	if state := receiver.request(outgoing.ID).State; state != pairing.StateRejected {
+		t.Fatalf("the receiver sees %q, want %q", state, pairing.StateRejected)
+	}
+	refused := perform(t, receiver.owner, http.MethodPost,
+		"/v1/pair/requests/"+outgoing.ID+"/approve", map[string]string{})
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("approving a withdrawn request = %d %s, want 409", refused.Code, refused.Body.String())
+	}
+	if code := errorCode(t, refused.Body.Bytes()); code != "PAIRING_STATE" {
+		t.Errorf("error code = %q, want PAIRING_STATE", code)
+	}
+	// One sentence with one remedy, not the same fact said three ways.
+	message := errorMessage(t, refused.Body.Bytes())
+	if strings.Count(message, "pairing request") != 1 || !strings.Contains(message, "was refused") {
+		t.Errorf("message stutters or does not say what happened: %q", message)
+	}
+	if len(receiver.trusted()) != 0 {
+		t.Fatalf("a withdrawn request trusted %v", receiver.trusted())
+	}
+}
+
+// A refusal may only take back what the refused request itself wrote. A node
+// paired earlier by some other route is not revoked because a pairing request
+// naming it was withdrawn.
+func TestARejectDoesNotRevokeATrustItDidNotWrite(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+	// Paired by hand, before any of this.
+	if err := receiver.store.TrustNode(context.Background(), registry.TrustedNode{
+		NodeID: requester.node.ID, DisplayName: "paired by hand", Platform: "test",
+		PublicKey:   identity.EncodePublicKey(requester.keypair.Public),
+		Fingerprint: identity.Fingerprint(requester.keypair.Public),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+	// Refused without this request ever having written anything.
+	requester.decide(t, outgoing.ID, "reject", http.StatusOK)
+
+	if trusted := receiver.trusted(); len(trusted) != 1 {
+		t.Fatalf("the earlier pairing was revoked by an unrelated refusal: %v", trusted)
+	}
+}
+
+// A refusal that is not signed by the machine whose request it names changes
+// nothing. The peer surface is unauthenticated in the sense that the caller is
+// not in the trust store, and authenticated in the sense that matters.
+func TestAForgedRejectIsRefused(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	receiver := newPairNode(t, "decides")
+	receiver.openWindow()
+
+	started := requester.startRequest(receiver.address())
+	if started.Code != http.StatusCreated {
+		t.Fatalf("start pairing request = %d %s", started.Code, started.Body.String())
+	}
+	var outgoing pairing.Request
+	if err := json.Unmarshal(started.Body.Bytes(), &outgoing); err != nil {
+		t.Fatal(err)
+	}
+	receiver.decide(t, outgoing.ID, "approve", http.StatusOK)
+
+	forger, forgerID := throwawayIdentity(t)
+	envelope, err := protocol.NewDirectedEnvelope(forgerID, receiver.node.ID,
+		protocol.TypePairReject, protocol.At(time.Now()),
+		protocol.PairRejectPayload{RequestID: outgoing.ID, Reason: pairing.ReasonDeclined}, forger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := perform(t, receiver.server.PeerHandler(), http.MethodPost,
+		"/v1/pair/requests/"+outgoing.ID+"/reject", envelope)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("a forged refusal = %d %s, want 403", response.Code, response.Body.String())
+	}
+	if len(receiver.trusted()) != 1 {
+		t.Fatalf("a forged refusal revoked a real pairing: %v", receiver.trusted())
+	}
+}
+
+// Pending outgoing rows are polled at once, not one after another. Serially, at
+// the delivery timeout each, a handful of machines that have gone away was
+// minutes of silence at a prompt.
+func TestPendingPollsOutgoingRequestsConcurrently(t *testing.T) {
+	requester := newPairNode(t, "asks")
+	// Listeners that accept and never answer: the request runs to its timeout.
+	for i := range 4 {
+		silent, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = silent.Close() })
+		go func() {
+			for {
+				connection, err := silent.Accept()
+				if err != nil {
+					return
+				}
+				t.Cleanup(func() { _ = connection.Close() })
+			}
+		}()
+		keypair, nodeID := throwawayIdentity(t)
+		now := requester.server.pairRequests.Now()
+		if err := requester.server.pairRequests.Add(pairing.Request{
+			ID: fmt.Sprintf("pair_silent%013d", i), Direction: pairing.Outgoing,
+			NodeID: nodeID, DisplayName: "gone", Platform: "test",
+			PublicKey:   identity.EncodePublicKey(keypair.Public),
+			Fingerprint: identity.Fingerprint(keypair.Public),
+			Address:     silent.Addr().String(),
+			State:       pairing.StatePending,
+			CreatedAt:   now.UTC(), ExpiresAt: now.Add(pairing.RequestTTL).UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	started := time.Now()
+	requester.requests()
+	elapsed := time.Since(started)
+	// Four rows, serially, would be four timeouts. Two is slack for a slow
+	// machine and still nowhere near serial.
+	if elapsed > 2*pairPollTimeout {
+		t.Fatalf("listing took %s for four unreachable rows; the poll is serial", elapsed)
+	}
+}
+
+// throwawayIdentity is a keypair and a node id for a machine that exists only
+// for the length of one test.
+func throwawayIdentity(t *testing.T) (identity.Keypair, string) {
+	t.Helper()
+	keypair, err := identity.LoadOrCreateKeypair(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, err := id.New("node_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keypair, nodeID
+}
+
+// fakePeerWithKey is fakePeer against a key the test holds, so it can sign what
+// the peer would sign.
+func fakePeerWithKey(t *testing.T, keypair identity.Keypair, nodeID string, handler http.HandlerFunc) string {
+	t.Helper()
+	certificate, err := keypair.TLSCertificate(nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS13}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return server.Listener.Addr().String()
 }
