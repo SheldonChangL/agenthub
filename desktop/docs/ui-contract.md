@@ -53,8 +53,13 @@
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、banner |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；banner 說明同時移除授權 |
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | `btn-pairing-on` | **一定傳 0**（用節點預設時長） |
+| `OpenPairing(0)` | `btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
 | `ClosePairing()` | `btn-pairing-off` | |
+| `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；**只在抽屜開著時讀**（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定 |
+| `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走 banner，錯誤碼翻成中文（§4.3） |
+| `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」 | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
+| `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」 | 同上 |
+| `RejectPairRequest(id)` | 任一未決請求列「拒絕」 | 成功後把節點回的 `nextStep` 放進 banner——推不出去的拒絕只有這裡會說 |
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `confirm` 後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
@@ -106,8 +111,30 @@
 左欄（`nodelist`）：
 - 已配對節點列表：每列 presence 點 + 名稱 + presence 文字 + 平台 · 最後聯繫。空：「尚未配對任何節點。」
 - 配對模式面板：headline、倒數（獨立元素，每秒只改這一個）、detail、開啟／停止按鈕、note（含 `broadcastWarning`，把本機名稱和它的來源說出來）。
-- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「用這一列開始配對…」）、`candidate-notice`（節點自己的免責文字）。
+- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字）。
 - 「配對新節點…」按鈕與說明。
+
+**配對抽屜（`pairing-modal`）的順序，由上而下（#63）**：
+
+1. **`btn-pairing-on`「與另一台機器配對」**：開視窗，永遠可按。節點沒在廣播時（`state.notice` 非空）
+   下面出現 `#pair-here`：`#pair-local-address` 用 `.keyvalue` 大字顯示 `state.pairAddress`，
+   旁邊 `copy-pair-address` 走 `CopyText`，複製失敗要說出來。位址是 desktop 從 notice 那句裡取出來的，
+   節點沒有獨立欄位（見 `client.go` 的 `pairAddressFromNotice`）。
+2. **`#pair-waiting`**：等你決定的請求有幾個，一句話。請求面板在候選清單下面，短視窗時會在摺線以下。
+3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑。
+4. **`#pair-address` + `btn-pair-send`**：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。
+5. **`#pair-requests` 請求面板**：
+   - 每列：名稱 + 狀態 pill、平台 · 位址、完整 nodeId、request id、**指紋區塊**、一句中文指示、
+     `PAIR_TEXT.compare` 警語、按鈕。
+   - **指紋區塊照節點給的 `fingerprints` 陣列原樣渲染**：順序是節點排的（發起方在上，兩台一致），
+     標籤 `role`／`whose` 走固定對照表，值本身一個字都不動。前端**不得**自己排序、推導或只顯示一組。
+     節點沒給這個陣列時不自己湊一組，改說去終端機用 `ah pair pending` 比對。
+   - 按鈕**一定在指紋下面**：`incoming/pending` →「指紋一致，核准」＋「拒絕」；
+     `awaiting-confirm` →「指紋一致，確認」＋「拒絕」；`outgoing/pending` 只有「拒絕」。
+   - 已結束（approved/rejected/expired，含 `reason: displaced`）不進預設清單，
+     `pair-requests-all` 勾選 → `all=true`。已結束的列才顯示節點的 `nextStep`。
+   - **任何地方都不得有自動核准或略過比對的入口。**
+6. 底部 footer：手動 5 欄位配對，是兩台連不上彼此時的退路。
 
 右欄（`nodedetail`）：
 - 節點詳情：名稱、完整指紋、核對說明、節點 ID／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
@@ -151,7 +178,11 @@
 | 清空失敗 | 「沒有變動」+ 錯誤原文 | |
 | 清空成功 | 「移除 N 則」 | |
 | 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」、無名時「（未提供名稱）」 | 候選資料進 class |
-| availability=off | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
+| availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
+| `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
+| 配對請求列（未決） | 兩組指紋、節點給的標籤、`PAIR_TEXT.compare`、按鈕在指紋**下面** | 只顯示一組指紋；`ah pair approve`（GUI 裡跟按鈕自相矛盾） |
+| 配對請求列（已結束） | 一句結果 + 節點的 `nextStep` | 核准／確認按鈕 |
+| 配對面板任何位置 | | 「自動核准」「略過比對」「全部核准」「不比對」 |
 | availability 未知 | 「不可信」、錯誤原文 | 「-discover」「機器在廣播。」 |
 | 配對視窗開啟 | headline 含「開啟中」；倒數含 `:` | 到期時「0:00」 |
 | 配對視窗到期 | 「已到期」，且觸發一次 `Pairing()` | |
@@ -163,7 +194,8 @@
 
 行為契約：
 - 倒數 tick **不得**重建候選列元素（測試比對 element identity）。
-- 模組只能註冊**三個** `setInterval`：5 秒 pairing 輪詢（僅區網視圖）、1 秒倒數、
+- 模組只能註冊**四個** `setInterval`：5 秒 pairing 輪詢（僅區網視圖）、2 秒配對請求輪詢
+  （僅區網視圖**且配對抽屜開著**，`state.busy` 時跳過——每次讀都會讓節點去對端輪詢）、1 秒倒數、
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
@@ -181,6 +213,22 @@
    `btn-pairing-off`、`audience-cwd`、`audience-messages`、`audience-outbound`、
    `audience-autowake`、以及 peer 測試自己插入的 `probe-*` 容器。
    改 id 就要同步改測試；改前先確認測試仍在測同一件事。
+   #63 又加了一組：`pair-here`、`pair-local-address`、`copy-pair-address`、
+   `copy-pair-address-status`、`pair-here-note`、`pair-waiting`、`pair-address`、
+   `btn-pair-send`、`pair-address-note`、`pair-requests`、`pair-requests-all`、`pair-requests-note`。
+
+### 4.3 配對交換的錯誤碼 → 中文句子（#63）
+
+節點的錯誤是 `CODE: message`，message 是英文而且會叫人去跑 `ah` 子指令——那是寫給終端機的，
+在一個按鈕就在旁邊的視窗裡是錯的建議。所以 `PAIR_TEXT.errors` 把下列碼各翻成**一句話 + 一個補救**，
+其餘的碼**原樣保留節點的話**（沒人翻譯的拒絕仍然是答案，吞掉它才是把使用者留在原地）：
+
+`PEER_TOO_OLD`、`PEER_PAIRING_CLOSED`、`PEER_PAIRING_BUSY`、`PEER_PAIRING_DUPLICATE`、
+`PAIRING_BUSY`、`PAIRING_DUPLICATE`、`PAIRING_STATE`、`PAIRING_EXCHANGE_DISABLED`、
+`PEER_UNREACHABLE`、`PEER_KEY_MISMATCH`、`ADDRESS_NOT_ALLOWED`、`NOT_FOUND`。
+
+所有新增的使用者可見字串都放在 `app.js` 的單一 `PAIR_TEXT` 物件裡，之後的英文化是換掉這個物件，
+不是在四十個呼叫點裡找字串。
 
 ## 5. 這次要修的 UX 問題（建議，非契約）
 
