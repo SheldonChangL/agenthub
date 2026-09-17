@@ -125,6 +125,25 @@ func (s *Server) view(request pairing.Request) pairRequestView {
 // pairNextStep says what happens now and where, in one sentence.
 func pairNextStep(request pairing.Request, otherName string) string {
 	switch {
+	case request.TrustedByRequest && request.TrustLeftInPlace != "":
+		// First, and stated without naming a state, because trust can outlive
+		// the decision that should have taken it back under more than one of
+		// them. A refusal is the obvious one; an expiry is the one that used to
+		// fall through here — the approval writes the trust row, the window
+		// runs out before the transition, the sweep marks the row expired, and
+		// the compensation cannot revoke. A state-specific case then left the
+		// owner reading "Nothing was trusted" with the key still in the store.
+		//
+		// The revoke is skipped when the key stored under that node id is not
+		// the key this request carried, because then the trust came from
+		// somewhere else, and it can also simply fail. Saying "withdrawn" here
+		// — which this sentence used to do unconditionally — would tell the
+		// owner the one thing that is not true: something is still trusted, and
+		// only they can decide about it. The row carries which of the two
+		// happened, so this sentence states it rather than guessing.
+		return fmt.Sprintf("This request ended as %s after this machine had trusted %s, and that "+
+			"trust was left in place: %s. Check it with `ah nodes` and remove it yourself "+
+			"with: ah revoke %s", request.State, otherName, request.TrustLeftInPlace, request.NodeID)
 	case request.State == pairing.StatePending && request.Direction == pairing.Outgoing:
 		// Both halves, because the requester who is told only the first half
 		// stalls: the approval on the far side does not finish the pairing, and
@@ -642,37 +661,111 @@ func (s *Server) approvePairRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such incoming pairing request")
 		return
 	}
-	// The state is moved first, so two clicks cannot write the trust store
-	// twice, and put back if the write fails.
-	settled, err := s.pairRequests.Settle(request.ID, pairing.StatePending, pairing.StateApproved, "")
-	if err != nil {
-		writePairStateError(w, request, "approved", err)
+	// Refused here rather than by the transition below, so a row that is
+	// already decided is answered without the trust store being touched at all.
+	if request.State != pairing.StatePending {
+		writePairStateError(w, request, "approved", pairing.ErrWrongState)
 		return
 	}
-	// Recorded before the trust store is written, not after, so a refusal
-	// landing in between cannot read a row that says this request trusted
-	// nobody and skip the revoke — the window between the two writes was small
-	// and the thing left behind was a trusted key the owner had just refused.
-	// Erring the other way is harmless: untrustFromRequest finds no row, or one
-	// under a different key, and does nothing.
-	settled, err = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
-		row.TrustedByRequest = true
-	})
-	if err != nil {
-		writePairStateError(w, request, "approved", err)
-		return
-	}
-	if err := s.trustFromRequest(r.Context(), settled); err != nil {
-		_, _ = s.pairRequests.Update(request.ID, func(row *pairing.Request) {
-			row.TrustedByRequest = false
-		})
-		_, _ = s.pairRequests.Settle(request.ID, pairing.StateApproved, pairing.StatePending, "")
+	// The trust row goes in first, and the decision that keeps it is taken
+	// afterwards in one atomic step. The interleavings, with a refusal arriving
+	// from the other owner at every point:
+	//
+	//   before the write — the refusal settles rejected, this approval's
+	//     transition fails because the row is no longer pending, and nothing
+	//     was written to take back;
+	//   between the write and the transition — the refusal settles rejected
+	//     and finds trustedByRequest unset, so it revokes nothing; this
+	//     approval's transition then fails and it takes back the row it wrote
+	//     itself. That compensation is why the write comes first: the refusal
+	//     cannot revoke what it cannot see, but the approval always can;
+	//   after the transition — the row says approved and trustedByRequest in
+	//     the same instant, so the refusal reads both or neither, settles
+	//     rejected from approved, and revokes.
+	//
+	// The order it replaced was settle-then-write, and its unguarded window was
+	// the one that mattered: a refusal reading between the settle and the trust
+	// write left the key its owner had just refused in the store with the row
+	// saying nothing was trusted.
+	if err := s.trustFromRequest(r.Context(), request); err != nil {
 		writeRegistryError(w, err)
+		return
+	}
+	if s.afterApproveTrustWrite != nil {
+		s.afterApproveTrustWrite()
+	}
+	settled, _, err := s.pairRequests.SettleFrom(request.ID,
+		[]pairing.RequestState{pairing.StatePending}, pairing.StateApproved, "",
+		func(row *pairing.Request) { row.TrustedByRequest = true })
+	if err != nil {
+		s.undoApprovalThatLost(r.Context(), w, request, err)
 		return
 	}
 	log.Printf("paired with node %s (fingerprint %s) after its request %s was approved",
 		settled.NodeID, settled.Fingerprint, settled.ID)
 	writeJSON(w, http.StatusOK, s.view(settled))
+}
+
+// undoApprovalThatLost takes back the trust row an approval wrote when the
+// approval itself did not stand, and answers the owner with the state that beat
+// it rather than with the one they asked for.
+//
+// The one case where nothing is taken back is another approval of this same
+// request having won the transition: the trust row this one wrote is the row
+// that approval now stands on, and revoking it would un-pair a machine the
+// owner has just paired. Only an approval that lost to a refusal or to an
+// expiry has something to undo.
+func (s *Server) undoApprovalThatLost(
+	ctx context.Context, w http.ResponseWriter, request pairing.Request, settleErr error,
+) {
+	current, ok := s.pairRequests.Get(request.ID)
+	// What the owner is told this request is now. Read from the row when there
+	// still is one; "gone" when the sweep took it between the transition and
+	// here, because the only copy left is the pending one this call started
+	// from, and answering out of it would say the request "is pending, so it
+	// cannot be approved now" about a request that no longer exists.
+	state := string(current.State)
+	if !ok {
+		// Swept between the transition and here. There is no row left to
+		// attribute the trust to, so it goes, and the owner is told the request
+		// is gone.
+		current = request
+		state = "gone"
+		settleErr = pairing.ErrNoSuchRequest
+	}
+	if ok && current.State == pairing.StateApproved && current.TrustedByRequest {
+		writePairStateError(w, current, "approved", settleErr)
+		return
+	}
+	// TrustedByRequest is set on the copy only: the row never carried it, which
+	// is exactly why the refusal that won left this trust row standing.
+	written := request
+	written.TrustedByRequest = true
+	leftInPlace, err := s.untrustFromRequest(ctx, written)
+	if err != nil {
+		log.Printf("pairing request %s: the approval lost to %s and taking its trust row for %s "+
+			"back failed: %v", request.ID, state, request.NodeID, err)
+		leftInPlace = trustLeftByFailedRevoke
+	}
+	if leftInPlace == "" {
+		writePairStateError(w, current, "approved", settleErr)
+		return
+	}
+	// Something is trusted here that no decision stands behind, so the row has
+	// to say so: every sentence that reads "nothing from this request is
+	// trusted" would otherwise be false.
+	if _, updateErr := s.pairRequests.Update(request.ID, func(row *pairing.Request) {
+		row.TrustedByRequest = true
+		row.TrustLeftInPlace = leftInPlace
+	}); updateErr != nil {
+		log.Printf("pairing request %s: %s is trusted here with nothing standing behind it, and "+
+			"the row could not be marked: %v", request.ID, request.NodeID, updateErr)
+	}
+	writeInternalError(w, "PAIRING_FAILED", fmt.Sprintf(
+		"this request was %s before the approval landed, and the trust it had written for %s "+
+			"could not be taken back; remove it with `ah revoke %s`",
+		state, displayNameOr(request.DisplayName, request.NodeID), request.NodeID),
+		errors.New(leftInPlace))
 }
 
 // confirmPairRequest is the requesting owner saying the fingerprints match.
@@ -841,28 +934,119 @@ func (s *Server) receivePairReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Decided() && request.State != pairing.StateApproved {
-		// Already refused or run out. Saying so rather than failing: the
-		// requester is telling this node something it already believes.
-		writeJSON(w, http.StatusOK, map[string]any{"requestId": request.ID, "state": string(request.State)})
+	// Everything above read a snapshot taken before the body was decoded and
+	// the signature checked, and this owner can approve inside that window. A
+	// decision branched off the stale row was the bug: the refusal saw
+	// `pending`, skipped the revoke, and its Settle(pending→rejected) then
+	// failed into a discarded error — so the requester was told `rejected`
+	// while this node kept the row approved with the trust row written.
+	settled, err := s.settleReceivedReject(r.Context(), request.ID)
+	switch {
+	case errors.Is(err, pairing.ErrNoSuchRequest):
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such pairing request")
+		return
+	case errors.Is(err, pairing.ErrWrongState):
+		writeError(w, http.StatusConflict, "PAIR_REJECT_REFUSED", err.Error())
+		return
+	case err != nil:
+		writeRegistryError(w, err)
 		return
 	}
-	if request.State == pairing.StateApproved {
-		if err := s.untrustFromRequest(r.Context(), request); err != nil {
-			writeRegistryError(w, err)
-			return
-		}
-		_, _ = s.pairRequests.Settle(request.ID, pairing.StateApproved, pairing.StateRejected,
-			pairing.ReasonDeclined)
-		log.Printf("pairing request %s: %s refused after this node approved it; trust withdrawn",
-			request.ID, request.NodeID)
-	} else {
-		_, _ = s.pairRequests.Settle(request.ID, pairing.StatePending, pairing.StateRejected,
-			pairing.ReasonDeclined)
-		log.Printf("pairing request %s from %s was withdrawn by its own owner", request.ID, request.NodeID)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"requestId": request.ID, "state": string(pairing.StateRejected)})
+		"requestId": settled.ID, "state": string(settled.State)})
+}
+
+// settleReceivedReject records the refusal against whatever state the request
+// is actually in now, and takes back the trust an approval wrote.
+//
+// The order is the point. Settle is the one atomic decision in the exchange, so
+// it goes first: an approval that lands between the read and the Settle loses
+// there, is seen by the re-read, and is refused properly instead of being
+// papered over by a branch chosen from a row the node has already left. The
+// revoke follows the state change rather than preceding it: an approval can
+// still be in flight behind a row that says rejected, and it is not this side's
+// to find. That approval loses its own transition and compensates itself —
+// undoApprovalThatLost takes back the trust row it had already written — so
+// revoking here is about the trust an approval that already won left standing,
+// and nothing else.
+//
+// A request already refused or expired is returned as it stands: the requester
+// is telling this node something it already believes, and saying so is a better
+// answer than a conflict.
+func (s *Server) settleReceivedReject(ctx context.Context, id string) (pairing.Request, error) {
+	// Bounded rather than open: each pass can only lose to a decision some
+	// other request actually took, so a second is already generous, and the
+	// bound is what stops a pathological interleaving spinning here.
+	for attempt := 0; attempt < 4; attempt++ {
+		request, ok := s.pairRequests.Get(id)
+		if !ok || request.Direction != pairing.Incoming {
+			return pairing.Request{}, pairing.ErrNoSuchRequest
+		}
+		if request.Decided() && request.State != pairing.StateApproved {
+			return request, nil
+		}
+		if s.afterRejectRead != nil {
+			s.afterRejectRead()
+		}
+		// Whether this request had been approved is learnt from the transition
+		// itself rather than from the read above, because that is the answer
+		// that decides whether a trust row is revoked — the one destructive
+		// step here — and the row read a moment ago may not be the row settled.
+		settled, previous, err := s.pairRequests.SettleFrom(id,
+			[]pairing.RequestState{pairing.StatePending, pairing.StateApproved},
+			pairing.StateRejected, pairing.ReasonDeclined, nil)
+		if errors.Is(err, pairing.ErrWrongState) {
+			// Somebody moved it between the read and here. Read what it is now
+			// and decide from that, rather than from what it was.
+			continue
+		}
+		if err != nil {
+			return pairing.Request{}, err
+		}
+		if previous != pairing.StateApproved {
+			// Nothing was approved here, so there is nothing of this request's
+			// in the trust store. An approval that wrote its trust row and had
+			// not yet reached its transition is the one exception, and it takes
+			// that row back itself when its transition fails against this one.
+			log.Printf("pairing request %s from %s was withdrawn by its own owner",
+				settled.ID, settled.NodeID)
+			return settled, nil
+		}
+		leftInPlace, err := s.untrustFromRequest(ctx, settled)
+		if err != nil {
+			// The refusal is already recorded and the trust is still here. The
+			// error is not returned in place of the row, because a row that
+			// says rejected while the sentence beside it claims a withdrawal
+			// is the exact lie this whole path exists to prevent: it is
+			// recorded on the row instead, and the reason is logged.
+			log.Printf("pairing request %s: revoking %s after its owner refused it failed: %v",
+				settled.ID, settled.NodeID, err)
+			leftInPlace = trustLeftByFailedRevoke
+		}
+		if leftInPlace != "" {
+			// Recorded on the row, because the sentence the owner reads about
+			// this request has to say what the node did with the trust, and
+			// only this call knows.
+			updated, updateErr := s.pairRequests.Update(id, func(row *pairing.Request) {
+				row.TrustLeftInPlace = leftInPlace
+			})
+			if updateErr != nil {
+				log.Printf("pairing request %s: %s is still trusted here and the row could not "+
+					"be marked, so nothing may claim the trust was withdrawn: %v",
+					settled.ID, settled.NodeID, updateErr)
+				return pairing.Request{}, fmt.Errorf(
+					"%s is still trusted here after this refusal and this node could not record "+
+						"that: %w", settled.NodeID, updateErr)
+			}
+			settled = updated
+		}
+		log.Printf("pairing request %s: %s refused after this node approved it; trust %s",
+			settled.ID, settled.NodeID,
+			map[bool]string{true: "left in place", false: "withdrawn"}[leftInPlace != ""])
+		return settled, nil
+	}
+	return pairing.Request{}, fmt.Errorf("%w: it kept changing while this refusal was recorded",
+		pairing.ErrWrongState)
 }
 
 // untrustFromRequest takes back exactly what this request wrote.
@@ -871,24 +1055,37 @@ func (s *Server) receivePairReject(w http.ResponseWriter, r *http.Request) {
 // what trusted that node, and the key stored under that node id must still be
 // the key this request carried. Either one failing means the trust in the store
 // came from somewhere else, and somewhere else is not this refusal's to undo.
-func (s *Server) untrustFromRequest(ctx context.Context, request pairing.Request) error {
+//
+// Reports why trust this request wrote was left standing, in the words the
+// owner is shown, and empty when nothing was left: the one case is a stored key
+// that is not this request's. A node with nothing stored is not "left in
+// place": there is nothing there to leave.
+func (s *Server) untrustFromRequest(ctx context.Context, request pairing.Request) (string, error) {
 	if !request.TrustedByRequest {
-		return nil
+		return "", nil
 	}
 	stored, err := s.store.TrustedNode(ctx, request.NodeID)
 	if errors.Is(err, registry.ErrNotFound) {
-		return nil
+		return "", nil
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	if stored.PublicKey != request.PublicKey {
 		log.Printf("pairing request %s: not revoking %s, its trusted key is not the one this "+
 			"request carried", request.ID, request.NodeID)
-		return nil
+		return fmt.Sprintf("%s is trusted here under a different key from the one this request "+
+			"carried, so this refusal did not remove it",
+			displayNameOr(request.DisplayName, request.NodeID)), nil
 	}
-	return s.store.RevokeNode(ctx, request.NodeID)
+	return "", s.store.RevokeNode(ctx, request.NodeID)
 }
+
+// trustLeftByFailedRevoke is the other way trust outlives the refusal that
+// should have taken it back: the store would not do it. Named beside the
+// different-key clause because the two are what Request.TrustLeftInPlace can
+// say, and the sentence the owner reads is built from whichever it holds.
+const trustLeftByFailedRevoke = "this node could not remove it — its log says why"
 
 // sourceHost is the host half of where a request actually came from.
 //
