@@ -230,8 +230,17 @@ func run() error {
 			// should learn that before opening a window that announces nothing.
 			// The reason comes from the endpoint so it names the actual cause —
 			// loopback and IPv6 are different problems with different fixes.
-			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s",
-				settings.PeerListen, reason)
+			// The remedy is appended here and nowhere else. It travels apart
+			// from the reason because every other place that prints the reason
+			// — the announce status, and the pairing window's answer — already
+			// carries a next step of its own, and two next steps for one
+			// situation is how an owner ends up changing the wrong setting.
+			remedy := endpoint.Remedy
+			if remedy != "" {
+				remedy = "; " + remedy
+			}
+			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s%s",
+				settings.PeerListen, reason, remedy)
 		}
 	}
 	// A typed nil put into the interface would not compare equal to nil there,

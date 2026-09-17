@@ -3,7 +3,9 @@ package pairing
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -141,7 +143,21 @@ type Request struct {
 	// other route must not be revoked because a pairing request naming it was
 	// refused, and without this flag a refusal would have no way to tell the
 	// two apart.
-	TrustedByRequest bool      `json:"trustedByRequest,omitempty"`
+	TrustedByRequest bool `json:"trustedByRequest,omitempty"`
+	// TrustLeftInPlace says, in the words the owner is shown, why a refusal
+	// that should have taken that trust back did not. Empty when there was
+	// nothing to take back or it was taken back.
+	//
+	// Two situations reach it and they are not the same fact: the key stored
+	// under that node id was not the key this request carried — the trust came
+	// from somewhere else, and this refusal is not the thing that may remove
+	// it — or the store refused the revoke. A sentence that named only the
+	// first would misdescribe the second, so the clause travels rather than
+	// being reconstructed from a flag.
+	//
+	// Recorded rather than recomputed, because what the owner is told has to be
+	// what the node did, and only the handler that ran the revoke knows that.
+	TrustLeftInPlace string    `json:"trustLeftInPlace,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	ExpiresAt        time.Time `json:"expiresAt"`
 }
@@ -273,19 +289,51 @@ func (q *Requests) List() []Request {
 // A transition that has already happened is refused rather than repeated: an
 // owner who approves twice must not write the trust store twice.
 func (q *Requests) Settle(id string, from, to RequestState, reason string) (Request, error) {
+	row, _, err := q.SettleFrom(id, []RequestState{from}, to, reason, nil)
+	return row, err
+}
+
+// SettleFrom is Settle from any one of several expected states: it reports
+// which one the request was actually in, and applies apply to the row — all
+// under one hold of the lock.
+//
+// One call rather than a Get, a Settle and an Update, because the two callers
+// that need it are the two that must not interleave with each other.
+//
+// The approval has to become "approved, and this request is what wrote the
+// trust" in a single step. Written as two, a refusal landing between them read
+// a row that said approved by nobody, skipped the revoke on that ground, and
+// left in the trust store exactly the key its owner had just refused.
+//
+// The refusal has to learn what the row was in the same breath as changing it.
+// "Was it approved?" answered before the transition is a question about a row
+// the node has already left, and the answer decides whether a trust row is
+// revoked — the one decision here that destroys something.
+func (q *Requests) SettleFrom(
+	id string, from []RequestState, to RequestState, reason string, apply func(*Request),
+) (Request, RequestState, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.sweep()
 	row, ok := q.rows[id]
 	if !ok {
-		return Request{}, ErrNoSuchRequest
+		return Request{}, "", ErrNoSuchRequest
 	}
-	if row.State != from {
-		return Request{}, fmt.Errorf("%w: it is %s, not %s", ErrWrongState, row.State, from)
+	previous := row.State
+	if !slices.Contains(from, previous) {
+		wanted := make([]string, 0, len(from))
+		for _, state := range from {
+			wanted = append(wanted, string(state))
+		}
+		return Request{}, previous, fmt.Errorf("%w: it is %s, not %s",
+			ErrWrongState, previous, strings.Join(wanted, " or "))
 	}
 	row.State = to
 	row.Reason = reason
-	return *row, nil
+	if apply != nil {
+		apply(row)
+	}
+	return *row, previous, nil
 }
 
 // Update replaces the peer details of a pending outgoing request.
