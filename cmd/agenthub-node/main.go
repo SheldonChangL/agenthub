@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -176,15 +177,18 @@ func run() error {
 	}
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
-	// Pairing mode and the candidate list exist only when this node is
-	// listening on the local network. Without -discover the endpoints say that
-	// rather than answering with an empty list: "nobody is advertising" and
-	// "this node is not looking" are different facts.
+	// The pairing window is a node-level state and exists whatever the flags
+	// say: it is this owner declaring they are willing to be asked, and the
+	// exchange in internal/api/pair.go needs that and nothing else. The
+	// candidate list and the announce loop exist only when this node is
+	// listening on the local network — without -discover those endpoints say so
+	// rather than answering with an empty list, because "nobody is advertising"
+	// and "this node is not looking" are different facts.
 	options := []api.Option{api.WithDeliveryPolicy(deliveryPolicy)}
+	pairingMode := pairing.NewMode()
 	var candidates *discovery.Candidates
 	var announcer *pairing.Announcer
 	if settings.Discover {
-		pairingMode := pairing.NewMode()
 		candidates = discovery.NewCandidates(node.ID, store.IsPaired, deliveryPolicy)
 		// Built before the API rather than beside the listen loop, because the
 		// API answers with what this announcer is actually managing to do: an
@@ -229,8 +233,25 @@ func run() error {
 			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s",
 				settings.PeerListen, reason)
 		}
+	}
+	// A typed nil put into the interface would not compare equal to nil there,
+	// and the API asks exactly that question to decide whether this node can
+	// announce. Passed as an untyped nil instead.
+	if announcer == nil {
+		options = append(options, api.WithPairing(pairingMode, candidates, nil))
+	} else {
 		options = append(options, api.WithPairing(pairingMode, candidates, announcer))
 	}
+	// The pairing exchange is wired whether or not discovery is: the case it
+	// exists for is two machines that cannot hear each other's announcements,
+	// where the owner types one address instead of copying a public key.
+	// Accepting a request still needs an open pairing window, which is the
+	// consent; asking for one is always this owner's own deliberate act.
+	options = append(options, api.WithPairExchange(
+		pairing.NewRequests(),
+		transport.NewPairDialer(deliveryPolicy),
+		announceablePeerAddress(deliveryPolicy, settings.PeerListen),
+	))
 	// Waking is off at the node as well as at the session, and both have to be
 	// open. A per-session switch alone would mean an owner who set one months
 	// ago, before this existed, finds turns starting after an upgrade; a node
@@ -831,4 +852,23 @@ func shutDown(ctx context.Context, apiServer drainable, owner, peers *http.Serve
 		return fmt.Errorf("shutdown peer listener: %w", peerErr)
 	}
 	return nil
+}
+
+// announceablePeerAddress is where a peer could reach this node, as host:port,
+// or empty when there is no address worth claiming.
+//
+// A pairing request carries it so the approving machine has somewhere to
+// deliver to without its owner typing an address in a second step. Empty is a
+// perfectly good answer: the far side then records no address, which means
+// "nothing to deliver to" rather than a destination somebody invented.
+func announceablePeerAddress(policy func(string) error, peerListen string) string {
+	endpoint, err := pairing.PeerEndpoint(policy, peerListen)
+	if err != nil || endpoint.Unannounceable != "" {
+		return ""
+	}
+	addresses := endpoint.Addresses()
+	if len(addresses) == 0 {
+		return ""
+	}
+	return net.JoinHostPort(addresses[0].String(), strconv.Itoa(endpoint.Port))
 }
