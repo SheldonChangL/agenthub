@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -151,6 +152,89 @@ type PairingState struct {
 	// NameIsChosen says whether a person picked that name or the node read it
 	// off the machine. The warning names a remedy, and the remedy differs.
 	NameIsChosen bool `json:"nameIsChosen"`
+	// Notice is the node's own sentence about a window that is open but not
+	// announced — a node started without -discover, or one with no
+	// announceable address. The window is still a window: the other machine
+	// can be told this one's address and type it. Empty when the node is
+	// announcing, because a notice that is always there is one nobody reads.
+	Notice string `json:"notice,omitempty"`
+	// PairAddress is the host:port the other machine has to type, pulled out of
+	// Notice so the panel can show it large and copy it in one click.
+	//
+	// Pulled out rather than read from a field of its own because the node has
+	// no such field: /v1/pairing answers the address only inside that sentence.
+	// Extracting here keeps the guess in one place — a UI that asked a person
+	// to select the right substring out of a paragraph is how a truncated
+	// address gets typed on the other machine. Empty whenever the sentence does
+	// not carry one, and the notice is still shown in full either way.
+	PairAddress string `json:"pairAddress,omitempty"`
+}
+
+// pairAddressFromNotice reads the address out of the node's own sentence.
+//
+// The node writes it as "`ah pair request 192.168.1.20:7463`". Anything else —
+// a node with no peer address, an older node, a reworded notice — yields "",
+// which the panel renders as "no address to show" rather than as a wrong one.
+func pairAddressFromNotice(notice string) string {
+	const marker = "ah pair request "
+	start := strings.Index(notice, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := notice[start+len(marker):]
+	if end := strings.IndexAny(rest, "`\n "); end >= 0 {
+		rest = rest[:end]
+	}
+	// The placeholder form, which is an instruction and not an address.
+	if strings.HasPrefix(rest, "<") {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(rest); err != nil {
+		return ""
+	}
+	return rest
+}
+
+// PairFingerprint is one machine's fingerprint, labelled as the node labelled
+// it.
+//
+// Never rebuilt here. The node derives each value from the key that machine
+// actually received and orders the pair the same way on both machines — the
+// requester first — which is the whole reason two owners can read their screens
+// line by line. A UI that sorted or relabelled them would break the one check
+// the exchange has.
+type PairFingerprint struct {
+	// Role is "requester" or "receiver": the canonical order.
+	Role string `json:"role"`
+	// Machine is that machine's own display name, as it calls itself.
+	Machine string `json:"machine"`
+	// Whose is "this machine" or "the other machine", from here.
+	Whose       string `json:"whose"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// PairRequest is one exchange as the owner sees it.
+type PairRequest struct {
+	ID          string `json:"id"`
+	Direction   string `json:"direction"`
+	NodeID      string `json:"nodeId"`
+	DisplayName string `json:"displayName"`
+	Platform    string `json:"platform"`
+	// Fingerprint and LocalFingerprint are the other machine's and this one's,
+	// kept because the node sends them; Fingerprints is the ordered pair the
+	// panel actually renders.
+	Fingerprint      string            `json:"fingerprint"`
+	LocalFingerprint string            `json:"localFingerprint"`
+	Fingerprints     []PairFingerprint `json:"fingerprints"`
+	Address          string            `json:"address"`
+	State            string            `json:"state"`
+	Reason           string            `json:"reason,omitempty"`
+	ExpiresAt        time.Time         `json:"expiresAt,omitzero"`
+	// NextStep and Notice are the node's own words about this row. Carried
+	// rather than written here so the window and `ah pair pending` cannot drift
+	// apart about what the owner is being asked to do.
+	NextStep string `json:"nextStep,omitempty"`
+	Notice   string `json:"notice,omitempty"`
 }
 
 // responseCap bounds what this app will read from its own node. Large enough
@@ -323,7 +407,64 @@ func (c *client) decodePairingState(ctx context.Context, method string, input an
 	if err := json.Unmarshal(body, &state); err != nil {
 		return PairingState{}, fmt.Errorf("decode pairing state: %w", err)
 	}
+	state.PairAddress = pairAddressFromNotice(state.Notice)
 	return state, nil
+}
+
+// pairRequests is what each side is waiting for, with the fingerprints to
+// compare.
+//
+// Reading also refreshes at the node: it polls every pending outgoing request
+// at the far side before answering, which is why this is the panel's only way
+// of learning that the other owner approved.
+func (c *client) pairRequests(ctx context.Context, all bool) ([]PairRequest, error) {
+	path := "/v1/pair/requests"
+	if all {
+		path += "?all=true"
+	}
+	body, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Requests []PairRequest `json:"requests"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode pairing requests: %w", err)
+	}
+	if decoded.Requests == nil {
+		decoded.Requests = []PairRequest{}
+	}
+	return decoded.Requests, nil
+}
+
+// startPairRequest asks another machine to trust this one.
+//
+// An address and nothing else. No key, no fingerprint, no node id: the owner
+// says where the other machine is, not what it is, and everything identifying
+// arrives over the connection that address opens.
+func (c *client) startPairRequest(ctx context.Context, address string) (PairRequest, error) {
+	return c.decodePairRequest(ctx, http.MethodPost, "/v1/pair/requests",
+		map[string]string{"address": strings.TrimSpace(address)})
+}
+
+// decidePairRequest is approve, confirm or reject. The verb is this process's
+// own word, never anything a peer chose.
+func (c *client) decidePairRequest(ctx context.Context, id, verb string) (PairRequest, error) {
+	path := "/v1/pair/requests/" + url.PathEscape(id) + "/" + verb
+	return c.decodePairRequest(ctx, http.MethodPost, path, map[string]string{})
+}
+
+func (c *client) decodePairRequest(ctx context.Context, method, path string, input any) (PairRequest, error) {
+	body, err := c.request(ctx, method, path, input)
+	if err != nil {
+		return PairRequest{}, err
+	}
+	var request PairRequest
+	if err := json.Unmarshal(body, &request); err != nil {
+		return PairRequest{}, fmt.Errorf("decode pairing request: %w", err)
+	}
+	return request, nil
 }
 
 // candidates lists the machines advertising right now, with the node's own

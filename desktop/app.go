@@ -206,6 +206,16 @@ type Pairing struct {
 	// network would be a claim with nothing behind it. A boolean would have to
 	// render one of those as another.
 	Availability string `json:"availability"`
+	// WindowAvailable says the pairing window itself can be opened and closed
+	// from here, which is a different question from Availability.
+	//
+	// They used to be one answer, and that was right while being found on the
+	// network was the only way to pair. It is not any more: the window is a
+	// node-level state, a node started without -discover opens one all the
+	// same, and the other machine pairs by typing this one's address. Left as
+	// one answer, the panel greys out the button on exactly the node whose
+	// owner has no other way in.
+	WindowAvailable bool `json:"windowAvailable"`
 	// Error and CandidatesError are separate, and separate from Availability,
 	// because a failure to read must never be rendered as a fact about the
 	// network. An unreachable node looks exactly like an empty segment
@@ -247,6 +257,9 @@ func (a *App) Pairing() Pairing {
 	}
 	result.Availability = pairingOn
 	result.State = state
+	// The window endpoints answered, so the window is this owner's to open —
+	// whatever the candidate list says below.
+	result.WindowAvailable = true
 
 	candidates, full, notice, err := activeClient.candidates(a.ctx)
 	if err != nil {
@@ -290,6 +303,57 @@ func (a *App) OpenPairing(seconds int) (PairingState, error) {
 func (a *App) ClosePairing() (PairingState, error) {
 	activeClient, _ := a.current()
 	return activeClient.closePairing(a.ctx)
+}
+
+// PairRequests is what each side of an exchange is waiting for.
+//
+// `all` adds the rows that finished in the last ten minutes. The default is
+// only what still needs somebody to do something, for the same reason `ah pair
+// pending` defaults that way: a list where the one row needing a decision sits
+// under four decided ones is how an owner misses their own pairing.
+//
+// Reading is not free at the node — it polls every pending outgoing request at
+// the far side first — which is why the window asks only while the pairing
+// drawer is open.
+func (a *App) PairRequests(all bool) ([]PairRequest, error) {
+	activeClient, _ := a.current()
+	return activeClient.pairRequests(a.ctx, all)
+}
+
+// StartPairRequest asks the machine at that address to trust this one.
+//
+// The address is not validated here. The node holds the ranges this build will
+// talk to and refuses one outside them, in its own words; a second rule in this
+// process could only disagree with the one that actually decides.
+func (a *App) StartPairRequest(address string) (PairRequest, error) {
+	activeClient, _ := a.current()
+	return activeClient.startPairRequest(a.ctx, address)
+}
+
+// ApprovePairRequest is this owner saying the two fingerprints match, on the
+// machine that was asked. It writes the trust row for that machine and nothing
+// else: what a peer may see stays a separate decision, per session.
+func (a *App) ApprovePairRequest(id string) (PairRequest, error) {
+	activeClient, _ := a.current()
+	return activeClient.decidePairRequest(a.ctx, id, "approve")
+}
+
+// ConfirmPairRequest is the same sentence on the machine that asked.
+//
+// Both owners say it, and neither says it for the other: an approval over there
+// writes that machine's trust store, and the person here has compared nothing
+// until they do this.
+func (a *App) ConfirmPairRequest(id string) (PairRequest, error) {
+	activeClient, _ := a.current()
+	return activeClient.decidePairRequest(a.ctx, id, "confirm")
+}
+
+// RejectPairRequest refuses one, in either direction. On the requesting side
+// the node pushes the refusal to the other machine, so an approval it may
+// already have written is taken back.
+func (a *App) RejectPairRequest(id string) (PairRequest, error) {
+	activeClient, _ := a.current()
+	return activeClient.decidePairRequest(a.ctx, id, "reject")
 }
 
 // isDiscoveryDisabled distinguishes "this node is not looking" from "this node
