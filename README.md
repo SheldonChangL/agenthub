@@ -18,7 +18,7 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
 - Local HTTP API and `ah` CLI
 - Message inbox, bounded and deduplicated, reachable from paired nodes
 - Per-session audience, working-directory export, and inbound-message policy
-- Fingerprint-confirmed pairing: an exchange that carries the keys so nobody copies one by hand, plus the manual form, trust storage, revocation, and desktop management
+- Fingerprint-confirmed pairing, from the CLI or the desktop window: an exchange that carries the keys so nobody copies one by hand, plus the manual form, trust storage, revocation, and desktop management
 - Broker envelope schema and MCP tool schemas, both in use
 - Architecture and issue plan for authenticated multi-node operation
 - Wake-up: a message can start a turn on its own, behind two switches that are
@@ -26,7 +26,6 @@ Privacy is the default: discovered sessions start with audience `none`, and the 
   starting a turn; the Claude Code channel push has not — see
   [channel-push-not-observed.md](docs/channel-push-not-observed.md)
 - Nothing writes into a provider's session files or process, by design
-- Desktop pairing is still the manual dialog: the exchange below is on the CLI and the API, and the GUI for it is a follow-up (Step 9, issue #63)
 - No installer: installing means downloading the archive for your platform from
   [Releases](https://github.com/SheldonChangL/agenthub/releases) and putting the
   binaries somewhere on your PATH, or building from source. The archives are
@@ -39,9 +38,8 @@ implemented and have been exercised between two machines
 tools over those pipes — also exercised between two machines, each running its
 own Claude Code. Waking is implemented on top of them: see
 [Waking an agent](#waking-an-agent) for what is verified and what is not. What
-is missing is everything needed for someone else to install this, and a desktop
-UI for the pairing exchange. Those are Steps 9 and 10, tracked from
-[issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
+is missing is everything needed for someone else to install this — Step 10,
+tracked from [issue #1](https://github.com/SheldonChangL/agenthub/issues/1).
 
 ## Roadmap and release gates
 
@@ -52,7 +50,7 @@ UI for the pairing exchange. Those are Steps 9 and 10, tracked from
 | Per-node privacy and network exchange | Implemented and exercised between two hosts | [issue #1](https://github.com/SheldonChangL/agenthub/issues/1), [verification](docs/verification.md) |
 | MCP server: four tools an agent calls | Implemented and exercised between two hosts | [issue #56](https://github.com/SheldonChangL/agenthub/issues/56), [verification](docs/verification.md) |
 | Wake-up: a message starts a turn | Implemented; Codex path observed end to end, Claude Code channel push unverified | [issue #60](https://github.com/SheldonChangL/agenthub/issues/60), [ADR-003](docs/decisions/003-waking-with-nobody-present.md), [verification](docs/verification.md) |
-| Automated pairing exchange | Implemented on the CLI and the API: `pair.request` / `pair.approve` / `pair.reject` are sent and received, with both owners confirming a fingerprint. Desktop UI is a follow-up | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [ADR-004](docs/decisions/004-pairing-exchange.md) |
+| Automated pairing exchange | Implemented on the CLI, the API and the desktop app: `pair.request` / `pair.approve` / `pair.reject` are sent and received, with both owners confirming a fingerprint | issues [#62](https://github.com/SheldonChangL/agenthub/issues/62), [#63](https://github.com/SheldonChangL/agenthub/issues/63), [ADR-004](docs/decisions/004-pairing-exchange.md) |
 | Distribution | Tag-triggered release workflow: desktop app for macOS, Windows and Linux plus six command line archives, all unsigned | issues [#64](https://github.com/SheldonChangL/agenthub/issues/64), [#67](https://github.com/SheldonChangL/agenthub/issues/67), [Install a release](#install-a-release) |
 | Desktop metadata rendering hardening | Implemented and regression-tested | [issue #19](https://github.com/SheldonChangL/agenthub/issues/19) |
 | Writing into a provider's files or process | Never, by design | [ADR-002](docs/decisions/002-mcp-surface-trust-boundary.md), [architecture](docs/architecture.md) |
@@ -439,10 +437,12 @@ If the two machines are on a direct cable in a range that is not private —
 Without it each node refuses to list the other, because it will not deliver to
 an address outside the ranges it trusts.
 
-**2. Find each other.** Open the desktop app on both, go to the 區網 tab, and
-press 開啟配對模式 on one. It appears on the other's candidate list within a
-few seconds. From a terminal that is `bin/ah pairing on` and `bin/ah
-candidates`.
+**2. Find each other.** Open the desktop app on both, go to the 區網 tab, open
+the 配對模式 drawer and press 與另一台機器配對 on one. It appears on the other's
+candidate list within a few seconds. From a terminal that is `bin/ah pairing on`
+and `bin/ah candidates`. A node started without `--discover` announces nothing
+and still opens a window; the drawer then shows the address the other machine
+has to be given instead.
 
 Nothing in that list is verified. Every field was chosen by whoever sent the
 packet, and the fingerprint shown is the one announced — a hint for finding the
@@ -492,11 +492,24 @@ over there too, that machine will neither accept this one's messages nor send it
 a heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
 half-done looks like.
 
-**In the desktop app**, pairing is still the manual dialog: click the candidate,
-compare the fingerprints on both apps, and carry the peer's public key across
-with the copy button beside the 本機公鑰 line. The GUI for the exchange above is
-issue #63. The five-argument form is also what still works when the two machines
-cannot open a connection to each other at all:
+**In the desktop app**, the same exchange runs from the 區網 tab's 配對模式
+drawer: press 與另一台機器配對 on the machine that decides, then on the other one
+either press 送出配對請求 on its row in the candidate list or type the address it
+shows into 對方畫面顯示的位址. Both windows then list the request with the same two
+fingerprints in the same order, and each owner presses 指紋一致，核准 or
+指紋一致，確認 once they have read both screens group for group — or 拒絕, which
+travels to the other machine like the CLI's does. No key is carried by hand, and
+a node started without `-discover` still opens a window: it cannot be found on the
+network, and the drawer shows the address the other machine has to be given
+instead. That address is shown whether or not this node is announcing, because
+mDNS that does not carry between two segments is exactly as silent as mDNS that
+is off. A node with no `-allow-lan` has nothing to show there — its peer
+listener is on loopback, which no other machine can reach — so the drawer says
+so and offers the settings page rather than handing over an address that cannot
+work.
+
+The manual five-argument form stays at the bottom of that drawer, and is what
+still works when the two machines cannot open a connection to each other at all:
 
 ```sh
 bin/ah node                                            # on each machine, to read and compare
