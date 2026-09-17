@@ -267,6 +267,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev
 
+      # windows-latest does not ship NSIS, and wails does not treat its absence
+      # as an error: it prints "Cannot create installer: makensis not found"
+      # and exits 0, so without this the job would build a .exe, skip the
+      # installer and look successful. The PATH line is separate because the
+      # chocolatey package does not add it, and wails looks makensis up on PATH.
+      - name: install NSIS (windows)
+        if: matrix.runner == 'windows-latest'
+        run: |
+          choco install nsis --no-progress -y
+          echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
+
       # Pinned to whatever desktop/go.mod requires, read from the module rather
       # than typed here: a CLI newer than the library it drives generates
       # bindings and templates the library does not expect, and @latest would
@@ -305,6 +316,11 @@ jobs:
             wails build -clean -platform "$PLATFORM" -ldflags "$ldflags"
             ;;
           windows/*)
+            # Checked here rather than inferred from a missing file three steps
+            # later: wails only warns when makensis is absent.
+            command -v makensis
+            makensis /VERSION || true
+            echo
             # -o names the executable agenthub-desktop.exe, which is what
             # project.nsi installs as ${PRODUCT_EXECUTABLE} and what its
             # taskkill lines name; the wails.json outputfilename is "desktop".
