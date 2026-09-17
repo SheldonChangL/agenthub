@@ -56,17 +56,22 @@ the runtime tests:
   and survive rediscovery.
 - Each node has an Ed25519 keypair, fingerprint, signed-envelope implementation,
   trust store, manual fingerprint pairing, and transactional revocation.
-- Schemas exist for `node.hello` and all four `pair.*` messages. They have no
-  transport producer or consumer yet.
+- Schemas exist for `node.hello` and all four `pair.*` messages. `pair.request`,
+  `pair.approve` and `pair.reject` now have a producer and a consumer: the
+  fingerprint-confirmed exchange of #62. `node.hello` and `pair.revoke` do not —
+  revocation is a local decision that needs no envelope today.
 
 ## Remaining protocol gaps
 
 1. Done. `Envelope.VerifyDirected` is called by `receiveHeartbeat` and
    `receiveMessage`; presence is stored with expiry and replaced as a full
-   snapshot. Remaining here: the `pair.*` envelopes still have no producer or
-   consumer, so pairing is manual (issue #63).
-2. Manual trust is not the automated `pair.request` / `pair.approve` exchange.
-   The wire types are reserved and tested, but not sent.
+   snapshot. The `pair.*` envelopes have a producer and a consumer as of #62.
+2. Done in #62. `pair.request` / `pair.approve` / `pair.reject` are sent and
+   received: the requester posts to the receiver's peer listener and polls for
+   the answer, and both owners compare the same two fingerprints and confirm on
+   their own machine before anything is written. Manual `ah pair` stays as the
+   route that needs no connection between the two machines. See
+   [ADR-004](decisions/004-pairing-exchange.md).
 3. Done in #16. `agent.message` and `agent.ack` are defined in
    `protocol/message.go` with delivery, ack, and duplicate semantics.
 4. Done. The desktop Network view shows remote sessions and online/offline
@@ -108,14 +113,17 @@ address.
 3. **Node keypair and fingerprint** (#10) — done. Extend `internal/identity` with a
    keypair and derive a stable fingerprint. Verifiable: fingerprint is stable
    across restarts and differs per node.
-4. **Pairing exchange** (#11, #12, #13) — pairing is done by hand. The trust
-   store, the fingerprint check and revocation are implemented, and the owner
-   pairs by entering the peer's details. The `pair.request` / `approve` /
-   `reject` / `revoke` envelope types are defined and schema-tested but still
-   have no producer or consumer, so two nodes cannot complete an automated
-   exchange. That is the remaining gap, tracked in #62 under Step 9 (#63); the transport it would
-   ride on landed in step 5. Verifiable today: a fingerprint mismatch is refused
-   and revocation removes all grants.
+4. **Pairing exchange** (#11, #12, #13) — done in #62. `ah pair request
+   <host:port>` posts a signed `pair.request` to the other machine's peer
+   listener and polls it for the answer, so no public key is carried by hand and
+   nothing has to dial back. Both owners are shown the same two fingerprints,
+   each derived locally from the key that side received, and each confirms on
+   their own machine (`ah pair approve` there, `ah pair confirm` here); there is
+   no auto-accept, and a refusal or a timeout writes nothing on either side. The
+   manual form stays for machines that cannot connect to each other at all.
+   Verifiable: a fingerprint mismatch is refused, a relayed connection whose TLS
+   key is not the described key is abandoned, and revocation removes all grants.
+   See [ADR-004](decisions/004-pairing-exchange.md).
 5. **Presence** (#14, #15, #17) — done. Authenticated heartbeat exchange between
    paired nodes, export view enforced per peer. Verified between two hosts on
    2026-09-02: with nothing published each node saw zero of the other's
