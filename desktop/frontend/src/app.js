@@ -6,6 +6,7 @@
 // handlers, starts the intervals and does the first load.
 import { api } from "./api.js";
 import * as F from "./sessions/filter.js";
+import { t, plural, paintStatic, pickLanguage, setLanguage, language, LANGUAGES } from "./i18n/index.js";
 export { configure } from "./api.js";
 
 export function boot({ start = true, backdropUrl = "" } = {}) {
@@ -43,6 +44,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // come from the node, so they are subtracted from the moment they were read
     // rather than compared against this machine's own idea of the expiry.
     pairingReadAt: 0,
+    // mcpSession is whose config the MCP dialog is showing. Only the title
+    // needs it, and only so a language switch can write that title again.
+    mcpSession: null,
+    // And what that dialog's status line says, as a state rather than as a
+    // sentence — "did the clipboard take it" has to survive a language switch.
+    mcpStatus: null,
     // inboxSession is whose inbox the modal is showing, so Clear knows what it
     // would empty and a refresh knows what to re-read.
     inboxSession: null,
@@ -68,6 +75,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Whether a read ever reached the node. It decides what an unreachable read
     // says: "this is the last data we had" only means something if there is any.
     loadedOnce: false,
+    // What the title bar's node line last said, kept as its parts rather than
+    // as the finished sentence: half of that line is a translated string, so a
+    // language switch has to build it again and there is nothing else to build
+    // it from once load() has returned.
+    nodeLine: null,
+    // The addresses the settings form's address list was built from. Same
+    // reason: the option labels are part translation, and rebuilding them
+    // after a switch must not mean another round trip to the node.
+    nodeAddresses: { list: [], failure: "" },
     // ---- redesign state ----
     // Grouped filters: a Set of chosen values per group (docs/ui-contract.md
     // §5.1). Empty means "no restriction". Search, filters and sort are kept in
@@ -84,7 +100,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // 101.7% with it running, 2.4% with it off, #156), which is not something
     // to spend on a machine whose owner has not asked for it. The photo is
     // free by comparison and stays on.
-    ui: { backdrop: true, motion: false },
+    // lang is "" until the owner picks one: empty means "follow the OS",
+    // which is what pickLanguage does with navigator.language.
+    ui: { backdrop: true, motion: false, lang: "" },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -100,6 +118,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // The session the inbox drawer was opened for, set before the read; the
     // clear button's target (inboxSession) is armed only once an answer lands.
     inboxSessionAsked: null,
+    // The view renderInbox was last handed, so a language switch can draw the
+    // same list again instead of leaving the previous language on screen.
+    inboxView: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -138,7 +159,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Opt-in, so a stored file written before the rain had a switch — or one
       // with the key missing — leaves it off rather than on.
       state.ui.motion = ui.motion === true;
+      // Only a language this build has. A stored value from a newer build, or a
+      // hand-edited one, falls back to the locale rather than to the key names.
+      state.ui.lang = typeof ui.lang === "string" ? ui.lang : "";
     }
+    // Applied here rather than at the call site so every path that reads the
+    // preferences — boot, and the node checks that call loadPrefs directly —
+    // ends up with the same language the stored override asks for.
+    setLanguage(pickLanguage(globalThis.navigator?.language, state.ui.lang));
   }
 
   // Typing in the search box would otherwise write localStorage on every
@@ -232,7 +260,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         const on = state.filters[group].has(chip.value);
         const n = counts[`${group}:${chip.value}`] ?? 0;
         button.className = `chip${on ? " on" : ""}${n === 0 && !on ? " zero" : ""}`;
-        button.append(chip.label, element("span", "n", String(n)));
+        button.append(chip.labelKey ? t(chip.labelKey) : chip.label, element("span", "n", String(n)));
         button.onclick = () => {
           state.filters = F.toggleChip(state.filters, group, chip.value);
           savePrefs();
@@ -248,12 +276,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // describeAudience answers "published to whom" in one cell.
   function describeAudience(audience) {
     const mode = audience?.mode ?? "none";
-    if (mode === "all_paired") return { text: "所有已配對", published: true };
+    if (mode === "all_paired") return { text: t("audience.cell.allPaired"), published: true };
     if (mode === "selected") {
       const count = audience?.nodes?.length ?? 0;
-      return { text: count === 0 ? "指定節點（無）" : `${count} 個節點`, published: count > 0 };
+      return {
+        text: count === 0 ? t("audience.cell.selectedNone") : plural(count, "audience.cell.nodeCount"),
+        published: count > 0,
+      };
     }
-    return { text: "不公開", published: false };
+    return { text: t("audience.cell.none"), published: false };
   }
 
   function shortId(id) {
@@ -265,10 +296,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const then = new Date(iso).getTime();
     if (!Number.isFinite(then)) return "—";
     const seconds = Math.max(0, (Date.now() - then) / 1000);
-    if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} 分鐘前`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小時前`;
-    return `${Math.floor(seconds / 86400)} 天前`;
+    if (seconds < 60) return plural(Math.floor(seconds), "time.secondsAgo");
+    if (seconds < 3600) return plural(Math.floor(seconds / 60), "time.minutesAgo");
+    if (seconds < 86400) return plural(Math.floor(seconds / 3600), "time.hoursAgo");
+    return plural(Math.floor(seconds / 86400), "time.daysAgo");
   }
 
   // Icons for the row actions are text, not glyphs: the buttons are small but
@@ -305,12 +336,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await write;
     } catch (error) {
       if (sequence !== resumeRequest) return;
-      banner(`無法寫入剪貼簿（${error}），請手動輸入：${command}`);
+      banner(t("row.resumeCopyFailed", { error, command }));
       return;
     }
     if (sequence !== resumeRequest) return;
-    const where = session.cwd ? `，在 ${session.cwd} 執行` : "";
-    banner(`已複製 ${command}${where}。`, true);
+    banner(session.cwd
+      ? t("row.resumeCopiedIn", { command, cwd: session.cwd })
+      : t("row.resumeCopied", { command }), true);
   }
 
   function flagChip(label, on, warn = false) {
@@ -371,9 +403,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const chips = element("span", "flagchips");
       chips.append(
         flagChip("CWD", Boolean(a.exportCwd)),
-        flagChip("收", Boolean(a.acceptMessages)),
-        flagChip("送", Boolean(a.allowOutbound)),
-        flagChip("醒", Boolean(a.autoWake), true),
+        flagChip(t("row.flagIn"), Boolean(a.acceptMessages)),
+        flagChip(t("row.flagOut"), Boolean(a.allowOutbound)),
+        flagChip(t("row.flagWake"), Boolean(a.autoWake), true),
       );
       flags.append(chips);
 
@@ -393,10 +425,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const actions = element("td", "col-actions");
       const group = element("span", "rowactions");
       group.append(
-        rowActionButton("inbox", "收件匣", "這個 session 收到的訊息、送出紀錄與喚醒紀錄", () => {
-          openInbox(session.id).catch((error) => banner(`讀取收件匣失敗：${error}`));
+        rowActionButton("inbox", t("inbox.title"), t("row.inboxTitle"), () => {
+          openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
         }),
-        rowActionButton("resume", "resume", `複製 ${resumeCommand(session)}`, () =>
+        rowActionButton("resume", "resume", t("row.resumeTitle", { command: resumeCommand(session) }), () =>
           copyResumeCommand(session)),
       );
       actions.append(group);
@@ -405,7 +437,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         checkCell,
         idCell,
         cell(element("td"), pill(session.status, statusPillClass(session.status))),
-        element("td", "muted mgmt", session.management),
+        element("td", "muted mgmt", managementLabel(session.management)),
         cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
         flags,
         cwdCell,
@@ -442,6 +474,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
+
+  // managementLabel turns the node's enum into a word in the language on
+  // screen. The node sends model.Management ("managed"/"unmanaged"), which is
+  // an identifier, and this column used to render it raw — so the table read
+  // "managed" under a Chinese header.
+  //
+  // Anything the table does not know is shown exactly as it arrived: a value
+  // this build has never heard of is the node saying something new, and
+  // blanking it or guessing at it would hide that.
+  function managementLabel(management) {
+    const value = String(management ?? "");
+    const label = t("session.managed." + value);
+    return label === "session.managed." + value ? value : label;
+  }
 
   const VIEWS = ["local", "network", "settings"];
 
@@ -480,14 +526,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("tab-local-n").textContent = String(state.counts.total ?? state.sessions.length);
     el("tab-network-n").textContent = String(state.nodes.length);
     el("match-count").textContent = rows.length === state.sessions.length
-      ? `${rows.length} 個 session`
-      : `符合 ${rows.length} / ${state.sessions.length}`;
+      ? plural(rows.length, "table.sessionCount")
+      : t("table.matchCount", { shown: rows.length, total: state.sessions.length });
 
     // The selection bar floats over the table only while something is picked;
     // #select-all in the header is the way in, the bar is the way to act.
     const count = state.selected.size;
     el("selectionbar").classList.toggle("hidden", count === 0);
-    el("selection-count").textContent = count ? `已選取 ${count} 個 session` : "未選取";
+    el("selection-count").textContent = count ? plural(count, "table.selectedCount") : t("local.noneSelected");
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
     // The settings panel's own read and write are held off while ANY write is
@@ -515,13 +561,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       box.checked = allPicked;
       box.indeterminate = some;
     }
-    el("select-label").textContent = `全選目前篩選結果（${rows.length}）`;
+    el("select-label").textContent = t("local.selectAllFilteredCount", { n: rows.length });
 
-    el("footer-left").textContent =
-      `顯示 ${rows.length} / ${state.counts.total ?? 0} 個 session` +
-      ` · 所有已配對 ${state.counts.all_paired ?? 0}` +
-      ` · 指定節點 ${state.counts.selected ?? 0}` +
-      ` · 不公開 ${state.counts.none ?? 0}`;
+    el("footer-left").textContent = t("footer.counts", {
+      shown: rows.length,
+      total: state.counts.total ?? 0,
+      allPaired: state.counts.all_paired ?? 0,
+      selected: state.counts.selected ?? 0,
+      none: state.counts.none ?? 0,
+    });
   }
 
   /* ---------------- settings view ---------------- */
@@ -535,6 +583,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
     el("appearance-state").textContent = describeBackdropState();
+    // The control shows the language in use, not the stored override: with no
+    // override stored the window is following the OS, and a blank box over a
+    // window that is plainly in one language reads as a bug.
+    el("settings-lang").value = language();
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -569,9 +621,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // being drawn, and what the moving one costs, so the switch is a decision
   // and not a surprise.
   function describeBackdropState() {
-    if (!state.ui.backdrop) return "已關閉：純深色底。";
-    if (!state.ui.motion) return "照片顯示中。數字雨預設關閉：它在較舊的內顯上會吃掉整顆 CPU 核心。";
-    return "照片與數字雨都在顯示。數字雨在較舊的內顯上會吃掉整顆 CPU 核心；覺得風扇吵就關掉它。";
+    if (!state.ui.backdrop) return t("appearance.stateOff");
+    if (!state.ui.motion) return t("appearance.statePhotoOnly");
+    return t("appearance.stateBoth");
   }
 
   // buildRain makes the falling 0/1 columns once. Pure CSS animation after
@@ -624,7 +676,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const pairing = state.pairing;
     if (!pairing) {
       pill_.className = "pill";
-      pill_.textContent = "讀取中…";
+      pill_.textContent = t("network.pairingLoading");
       line.textContent = "";
       return;
     }
@@ -633,37 +685,39 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // this one is an address read off this screen and typed on the other.
     if (pairing.availability === "openNotAnnouncing") {
       pill_.className = "pill idle";
-      pill_.textContent = `配對中 · 剩 ${clock(pairingRemaining())}`;
+      pill_.textContent = t("network.summaryPairing", { left: clock(pairingRemaining()) });
       // Same sentence the drawer had to stop telling: "hand them the address
       // shown there" is advice about an address this node may not have. A
       // default node has none, and the summary line was sending its owner to
       // read out something that was never on the screen.
       line.textContent = pairHereState(pairing.state ?? {}).reachable
-        ? "視窗開著，但這台沒有在廣播，不會出現在對方的候選清單裡。打開配對面板，把裡面顯示的本機位址給對方輸入。"
-        : "視窗開著，但這台沒有在廣播，也還沒有人連得進來。打開配對面板看原因和補救。";
+        ? t("network.summaryOpenNotAnnouncing")
+        : t("network.summaryOpenUnreachable");
       return;
     }
     if (pairing.availability === "off") {
       pill_.className = "pill";
-      pill_.textContent = "未啟用";
-      line.textContent = "節點啟動時沒有 -discover，這台機器不廣播也不看；" +
-        "仍可按「與另一台機器配對」開視窗，用位址配對。";
+      pill_.textContent = t("network.summaryOff");
+      line.textContent = t("network.summaryOffLine");
       return;
     }
     if (pairing.availability !== "on") {
       pill_.className = "pill bad";
-      pill_.textContent = "讀不到";
-      line.textContent = "配對狀態讀不到；這是本機的讀取問題。";
+      pill_.textContent = t("network.summaryUnreadable");
+      line.textContent = t("network.summaryUnreadableLine");
       return;
     }
     const open = Boolean(pairing.state?.open);
     const candidates = pairing.candidates?.length ?? 0;
     const flagged = (pairing.candidates ?? []).filter((c) => c.contested || c.duplicate).length;
     pill_.className = open ? "pill idle" : "pill";
-    pill_.textContent = open ? `廣播中 · 剩 ${clock(pairingRemaining())}` : "未開啟";
+    pill_.textContent = open
+      ? t("network.summaryAnnouncing", { left: clock(pairingRemaining()) })
+      : t("network.summaryClosed");
     line.textContent = candidates === 0
-      ? "目前沒有看到還沒配對的機器在廣播。"
-      : `正在廣播的機器 ${candidates} 台` + (flagged ? `，其中 ${flagged} 台身分有爭用或重複。` : "。");
+      ? t("network.summaryNoCandidates")
+      : plural(candidates, "network.summaryCandidates") +
+        (flagged ? t("network.summaryFlagged", { flagged }) : t("network.summaryStop"));
   }
 
 
@@ -814,21 +868,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     el("conn-dot").className = reachable ? "dot ok" : "dot bad";
-    // The app's own version rides on this line in both states: the half of the
-    // bug reports worth having are the ones where the node is not reachable.
-    const version = state.appVersion ? ` · ${state.appVersion}` : "";
-    el("node-line").textContent = reachable
-      ? `${overview.node.displayName} · ${overview.node.platform} · ${overview.nodeUrl}${version}`
-      : `無法連線到 ${overview.nodeUrl}${version}`;
+    state.nodeLine = {
+      reachable,
+      displayName: overview.node?.displayName ?? "",
+      platform: overview.node?.platform ?? "",
+      nodeUrl: overview.nodeUrl ?? "",
+    };
+    renderNodeLine();
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
     if (!reachable) {
       // The banner has to say which of the two situations this is, or a stale
       // list reads as the current truth.
-      const shown = state.loadedOnce
-        ? "下面顯示的是上次成功載入的資料，可能已經過期。"
-        : "還沒有載入過任何資料。";
-      banner(`節點未連線：${overview.error || "unknown error"}。${shown}啟動 agenthub-node，或到「設定」分頁把它安裝成背景服務（若這裡支援）。`);
+      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
+      banner(t("app.notConnected", { error: overview.error || "unknown error", shown }));
     } else {
       hideBanner();
     }
@@ -841,6 +894,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     render();
     return true;
+  }
+
+  // renderNodeLine writes the title bar's one line about the node from
+  // state.nodeLine, never from a closure over one load(). The unreachable half
+  // of it is a translated sentence, so this has to be re-runnable: after a
+  // language switch paintStatic has just put the placeholder key back on the
+  // element, and there is no second load() coming.
+  function renderNodeLine() {
+    const line = state.nodeLine;
+    if (!line) return;
+    // The app's own version rides on this line in both states: the half of the
+    // bug reports worth having are the ones where the node is not reachable.
+    const version = state.appVersion ? ` · ${state.appVersion}` : "";
+    el("node-line").textContent = line.reachable
+      ? `${line.displayName} · ${line.platform} · ${line.nodeUrl}${version}`
+      : t("app.unreachable", { url: line.nodeUrl, version });
   }
 
   async function withBusy(label, fn) {
@@ -856,24 +925,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     try {
       await fn();
     } catch (error) {
-      banner(`${label}失敗：${error}`);
+      banner(t("busy.failed", { action: label, error }));
     } finally {
       state.busy = false;
       render();
     }
   }
 
-  async function applyAudience(audience, noun) {
+  // mode is the audience's own mode, not a sentence: the two languages put the
+  // verb and the count in different places, so each one gets its own key rather
+  // than a noun glued to a template.
+  async function applyAudience(audience, mode) {
     const ids = [...state.selected];
-    await withBusy(noun, async () => {
+    await withBusy(t("audience.verb." + mode), async () => {
       const result = await api.SetAudience(ids, audience);
       await load();
       if (result.failed > 0) {
-        banner(`${noun}：${result.changed} 個成功、${result.failed} 個失敗 — ${(result.errors || [])[0] || ""}`);
+        banner(t("audience.partlyApplied", {
+          action: t("audience.verb." + mode),
+          changed: result.changed,
+          failed: result.failed,
+          error: (result.errors || [])[0] || "",
+        }));
       } else {
         state.selected.clear();
         closeAudienceModal();
-        banner(`已${noun} ${result.changed} 個 session。`, true);
+        banner(plural(result.changed, "audience.applied." + mode), true);
       }
     });
   }
@@ -884,179 +961,68 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // Every user-facing string of the pairing exchange, in one object.
   //
-  // One object rather than literals at the call sites so that translating this
-  // panel later is a swap of this object and nothing else — the English pass is
-  // its own change, and a pass that has to find forty literals scattered
-  // through the renderers is a pass that misses some.
+  // The object is now a window onto the `pair.*` slice of the active language
+  // table (src/i18n/). It is kept because the renderers and the node checks
+  // both reach for it by name, and because every property is a live getter the
+  // whole panel changes language without anything re-reading this object.
   //
   // The state wording mirrors `ah pair pending` deliberately: two owners on two
   // machines, one in a terminal and one in this window, have to be able to say
   // the same thing to each other about the same row.
-  const PAIR_TEXT = {
-    open: "與另一台機器配對",
-    close: "關閉配對視窗",
-    // The window, said as what it is for rather than as what it broadcasts:
-    // the window is now what the exchange needs, and announcing is a separate
-    // half that a node without -discover simply does not have.
-    windowOpen: "配對視窗開啟中",
-    windowClosed: "配對視窗未開啟。",
-    windowExpiring: "配對視窗已到期，正在向節點確認…",
-    windowUnavailable: "配對狀態讀不到。",
-    // The address half, for a node that is not announcing.
-    hereHeading: "對方要輸入的本機位址",
-    hereNote: "這台機器沒有在廣播，所以不會出現在對方的候選清單裡。把上面這個位址念給對方，" +
-      "讓他們填進自己視窗的「對方畫面顯示的位址」欄位。",
-    // Shown on a node that IS announcing. mDNS not carrying between two
-    // segments is exactly as silent as mDNS being off, so the address is worth
-    // having on screen either way — stated as the remedy rather than as a
-    // problem, because here there may not be one.
-    hereNoteAnnouncing: "這台機器有在廣播，正常情況下會出現在對方的候選清單裡。" +
-      "如果對方等不到，就把上面這個位址念給他們，填進他們視窗的「對方畫面顯示的位址」欄位。",
-    hereNoAddress: "節點沒有給出可以讓對方連進來的位址。",
-    // The default node has no -allow-lan, its peer listener is on loopback, and
-    // it therefore answers the pairing endpoint with no peerAddress at all
-    // rather than with 127.0.0.1. So "no address" is not a rare shape: it is
-    // what a fresh install looks like, and hiding the block there left the
-    // owner with an open window, no address, no reason and nothing to press.
-    // Same remedy as the loopback case, because it is the same setting.
-    hereNoAddressWhy: "節點沒有給出任何可以讓對方連進來的位址——預設啟動的節點只在本機回路（loopback）上聽，" +
-      "那種位址對方連不上，所以節點不會拿它當對外位址。" +
-      "到「設定 → 節點設定」打開「允許區網連線」，選一個這台機器實際有的區網位址，再重新啟動節點；" +
-      "之後這裡就會顯示對方可以輸入的位址。",
-    // The default node listens on 127.0.0.1:7463. That address is what the API
-    // answers with, and it is an address no other machine can reach — so
-    // printing it under 「對方要輸入的本機位址」 would hand someone a string that
-    // cannot work, and the failure lands on the other machine as a timeout with
-    // nothing to explain it.
-    // The headline over the remedy block. It used to state the negative a third
-    // time — the window panel's headline says nobody can get in, the announce
-    // line said nothing is being sent, and then this said it again — and a
-    // screen that says the same bad news three times before naming the fix is a
-    // screen people stop reading before the fix. So the negative is said once,
-    // above, and this line is the instruction; the explanation is under it.
-    hereFixHeadline: "先讓對方連得進來",
-    hereUnreachable: "節點目前只在本機回路（loopback）上聽，所以這個位址只有這台機器自己連得到，" +
-      "對方輸入它會連不上。到「設定 → 節點設定」打開「允許區網連線」，" +
-      "選一個這台機器實際有的區網位址，再重新啟動節點；之後這裡就會顯示對方可以輸入的位址。",
-    hereFix: "去設定節點位址…",
-    // The drawer's subtitle. It used to be one fixed sentence in index.html
-    // promising that opening the window tells the segment this machine is here.
-    // That is only true where something is actually broadcast; on a node that
-    // announces nothing it was a flat falsehood at the top of the one panel
-    // whose whole point is that nobody out there will see this machine.
-    drawerSubAnnouncing: "開啟後同網段的人都會知道這台機器在跑 AgentHub。",
-    drawerSubNotAnnouncing: "這台機器不會廣播，開啟後也不會出現在對方的候選清單裡；對方要用下面這個位址連進來。",
-    // The third case, and the commonest one: a default node announces nothing
-    // AND has no address anyone can reach. The "not announcing" sentence ends
-    // 「對方要用下面這個位址連進來」 while the block directly beneath it says
-    // 「還沒有人連得進這台機器。」 and shows no address at all — the subtitle
-    // promising exactly what the panel then withholds.
-    drawerSubUnreachable: "這台機器不會廣播，目前也還沒有人連得進來；先照下面的說明設定位址。",
-    drawerSubUnknown: "配對視窗開著的時候，對方才連得進來。",
-    // Said on the window panel too, because "配對視窗開啟中" on its own reads as
-    // done, and it is not: the window is open and unreachable.
-    windowOpenUnreachable: "配對視窗開著，但還沒有人連得進來。",
-    hereCopied: "已複製位址到剪貼簿",
-    hereCopyFailed: "無法寫入剪貼簿，請手動複製上面那一串。",
-    // Sending a request.
-    send: "送出配對請求",
-    sendFromCandidate: "送出配對請求",
-    sendManual: "改用手動填入…",
-    addressEmpty: "請先填入對方畫面上顯示的位址，格式是 host:port，例如 192.168.1.20:7463。",
-    addressNote: "對方要先在自己的視窗按「與另一台機器配對」，這台才連得進去。" +
-      "送出後兩台螢幕會各自顯示同樣的兩組指紋，逐組比對過才按核准。",
-    sent: "配對請求已送出，等對方核准。兩邊的指紋要逐組比對過才按確認。",
-    // The requests panel.
-    requestsHeading: "配對請求",
-    showDecided: "顯示已結束",
-    requestsEmpty: "目前沒有等待處理的配對請求。",
-    requestsEmptyAll: "沒有任何配對請求。已結束的請求只留十分鐘。",
-    requestsUnread: "還沒有向節點讀過配對請求。",
-    requestsFailed: "無法向本機節點取得配對請求，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方沒有送出。",
-    // The one instruction attached to a decision. The node writes the same
-    // sentence in English beside every undecided row; this is that sentence in
-    // the window's own language, kept next to the buttons it governs rather
-    // than in a banner somewhere else.
-    // Three lines rather than one hundred-character paragraph. This is the one
-    // instruction in the window that a person carries out step by step, and a
-    // wall of text is the thing people skim before pressing a button.
-    compare: [
-      "下面兩組指紋，上面是發起方（發出請求的那台），下面是被詢問方（被問的那台）——跟旁邊的標籤同一個詞。",
-      "對方螢幕上是同樣的兩個值、同樣的順序。逐組比對，只要有一組不同就按拒絕——那表示中間有東西。",
-      "兩邊各自說好之前，什麼都還沒有被信任。",
-    ],
-    approve: "指紋一致，核准",
-    confirm: "指紋一致，確認",
-    reject: "拒絕",
-    // What each state means, in one phrase, and what happens next in one line.
-    state: {
-      "pending-incoming": "等你核准",
-      "pending-outgoing": "等待對方核准",
-      "awaiting-confirm": "對方已核准，等你確認",
-      approved: "已完成",
-      rejected: "已拒絕",
-      expired: "已結束",
-    },
-    step: {
-      // 上面, not 下面: this sentence is rendered under the fingerprint block,
-      // and one that points the wrong way sends the owner looking for a second
-      // pair that does not exist.
-      "pending-incoming": "比對上面兩組指紋，一致就按「指紋一致，核准」；不一致按「拒絕」。",
-      // Both halves. A requester told only the first half stalls: the approval
-      // over there does not finish the pairing, and without this sentence
-      // nothing on this screen says a confirm is still coming back here.
-      "pending-outgoing": "請對方在他們的視窗按「指紋一致，核准」。他們按了之後，這一列會換成等你確認——" +
-        "到時候比對指紋，再按「指紋一致，確認」，配對才算完成。",
-      "awaiting-confirm": "對方已經核准了。比對上面兩組指紋，一致就按「指紋一致，確認」。",
-      "approved-incoming": "這台已經信任對方了。剩下的在對方那台，等他們按確認；他們一直沒按的話，就撤銷這個節點。",
-      "approved-outgoing": "兩邊都完成了。",
-      rejected: "已拒絕，兩邊都沒有留下任何信任。",
-      // The node carries this reason on its own (`fingerprint_mismatch`), and
-      // rendering it as a plain 已拒絕 threw away the only refusal that says
-      // something about the network rather than about somebody's decision.
-      "rejected-fingerprint-mismatch": "因為指紋不一致被拒絕：兩邊螢幕上的指紋對不起來，中間可能有東西。" +
-        "什麼都沒有被信任。不要直接重送，先確認你連的是哪一台。",
-      expired: "這次配對沒有在時限內完成，兩邊都沒有留下任何信任。要配對就重新送一次。",
-      displaced: "這一列被後來的請求擠掉了，不是你逾時。要配對就重新送一次。",
-    },
-    // What a decision did, in this window's own language. The node answers with
-    // an English nextStep that names `ah` subcommands — right for the terminal
-    // it was written for — and a Chinese window that answers a button press in
-    // English is one whose messages people stop reading. The node's words are
-    // kept behind these rather than dropped: after a refusal they say whether
-    // the other machine could be told.
-    decided: {
-      approve: "已核准。剩下的在對方那台，等他們按確認。",
-      confirm: "已確認，這次配對完成。",
-      reject: "已拒絕，兩邊都沒有留下任何信任。",
-    },
-    nodeSaid: "節點回報",
-    // The node's own labels, mapped one-for-one. A fixed table, so a string
-    // from the wire can never choose the words around it — and the fingerprint
-    // values themselves are rendered exactly as the node ordered them.
-    whose: { "this machine": "這一台", "the other machine": "對方那台" },
-    role: { requester: "發起方", receiver: "被詢問方" },
-    // What the node's refusals mean, and what to do about each. The node's own
-    // sentences are English and name `ah` subcommands, which is the wrong
-    // advice in a window with buttons.
-    errors: {
-      PEER_TOO_OLD: "對方那台跑的是還沒有配對交換功能的舊版 AgentHub。請先在那台更新 AgentHub，" +
-        "或用最底下的手動配對。",
-      PEER_PAIRING_CLOSED: "對方那台沒有在配對模式。請他們在自己的視窗按「與另一台機器配對」，再送一次。",
-      PEER_PAIRING_DUPLICATE: "對方那台已經有一個來自這台機器的請求在等他們決定了。請他們先處理那一列。",
-      PAIRING_BUSY: "這台機器等待中的配對請求已經滿了。先處理或拒絕掉現有的，再送一次。",
-      PAIRING_DUPLICATE: "那台機器已經有一個請求在這裡等著了，先處理下面那一列。",
-      PAIRING_STATE: "這個請求已經不在等這個動作了——可能已經被拒絕、逾時，或是已經完成。" +
-        "清單重新整理後再看一次，需要的話重新送出請求。",
-      PAIRING_EXCHANGE_DISABLED: "這個節點啟動時沒有帶配對交換，只能用最底下的手動配對。",
-      PEER_UNREACHABLE: "連不到那個位址。確認位址沒打錯、兩台在同一個網段，而且對方的節點正在跑。",
-      PEER_KEY_MISMATCH: "那台機器用一把金鑰完成連線，卻自稱是另一把——中間有東西在轉送這條連線。" +
-        "什麼都沒有被配對，不要重試，先確認你連的是哪一台。",
-      ADDRESS_NOT_ALLOWED: "這個節點不會送資料到那個位址。要嘛位址打錯了，要嘛它不在這個節點視為私有的網段裡" +
-        "（設定頁的「視為私有網段」）。",
-      NOT_FOUND: "找不到這個配對請求，它可能已經逾時被清掉了。重新送一次。",
-    },
+  const pairGroup = (prefix, keys) => {
+    const group = {};
+    for (const key of keys) {
+      Object.defineProperty(group, key, {
+        get: () => t(prefix + "." + (key.startsWith("_") ? key.slice(1) : key)),
+        enumerable: true,
+      });
+    }
+    return group;
   };
+  const PAIR_TEXT = pairGroup("pair", [
+    "open", "close", "windowOpen", "windowClosed", "windowExpiring", "windowUnavailable",
+    "hereHeading", "hereNote", "hereNoteAnnouncing", "hereNoAddress", "hereNoAddressWhy",
+    "hereFixHeadline", "hereUnreachable", "hereFix",
+    "drawerSubAnnouncing", "drawerSubNotAnnouncing", "drawerSubUnreachable", "drawerSubUnknown",
+    "windowOpenUnreachable", "hereCopied", "hereCopyFailed",
+    "send", "sendFromCandidate", "sendManual", "addressEmpty", "addressNote", "sent",
+    "requestsHeading", "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
+    "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
+  ]);
+  // The three sentences a person carries out step by step, as an array because
+  // that is what reads them.
+  Object.defineProperty(PAIR_TEXT, "compare", {
+    get: () => [t("pair.compare.1"), t("pair.compare.2"), t("pair.compare.3")],
+    enumerable: true,
+  });
+  PAIR_TEXT.state = pairGroup("pair.state", [
+    "pending-incoming", "pending-outgoing", "awaiting-confirm", "approved", "rejected", "expired",
+  ]);
+  PAIR_TEXT.step = pairGroup("pair.step", [
+    "pending-incoming", "pending-outgoing", "awaiting-confirm", "approved-incoming",
+    "approved-outgoing", "rejected", "rejected-fingerprint-mismatch", "expired", "displaced",
+  ]);
+  PAIR_TEXT.decided = pairGroup("pair.decided", ["approve", "confirm", "reject"]);
+  // The node's own labels, mapped one-for-one. A fixed table, so a string from
+  // the wire can never choose the words around it — and the fingerprint values
+  // themselves are rendered exactly as the node ordered them.
+  PAIR_TEXT.whose = {};
+  Object.defineProperty(PAIR_TEXT.whose, "this machine", {
+    get: () => t("pair.whose.this-machine"), enumerable: true,
+  });
+  Object.defineProperty(PAIR_TEXT.whose, "the other machine", {
+    get: () => t("pair.whose.the-other-machine"), enumerable: true,
+  });
+  PAIR_TEXT.role = pairGroup("pair.role", ["requester", "receiver"]);
+  // What the node's refusals mean, and what to do about each. The node's own
+  // sentences are English and name `ah` subcommands, which is the wrong advice
+  // in a window with buttons. Keyed by the node's code, which is a contract
+  // (docs/ui-contract.md §4.3).
+  PAIR_TEXT.errors = pairGroup("pair.errors", [
+    "PEER_TOO_OLD", "PEER_PAIRING_CLOSED", "PEER_PAIRING_DUPLICATE", "PAIRING_BUSY",
+    "PAIRING_DUPLICATE", "PAIRING_STATE", "PAIRING_EXCHANGE_DISABLED", "PEER_UNREACHABLE",
+    "PEER_KEY_MISMATCH", "ADDRESS_NOT_ALLOWED", "NOT_FOUND",
+  ]);
 
   // Every field of a candidate was chosen by whoever sent the packet, on a
   // multicast group anyone on the segment can write to. So this whole panel is
@@ -1064,7 +1030,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // ever allowed to decide a class name.
   function candidateName(candidate) {
     const name = (candidate.displayName || "").trim();
-    return name === "" ? "（未提供名稱）" : name;
+    return name === "" ? t("pair.noName") : name;
   }
 
   // remainingSeconds arrives from the node and is then counted down locally from
@@ -1144,7 +1110,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(PAIR_TEXT.addressEmpty);
       return;
     }
-    await withBusy("送出配對請求", async () => {
+    await withBusy(t("pair.send"), async () => {
       try {
         await api.StartPairRequest(wanted);
       } catch (error) {
@@ -1165,7 +1131,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function decidePairRequest(id, verb) {
     const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
     if (!call) return;
-    const label = { approve: "核准配對", confirm: "確認配對", reject: "拒絕配對" }[verb];
+    const label = t("pair.busy." + verb);
     await withBusy(label, async () => {
       let answer;
       try {
@@ -1222,20 +1188,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return PAIR_TEXT.step[key] ?? "";
   }
 
-  // fingerprintBlock renders the two values the exchange rests on.
-  //
-  // Exactly as the node ordered and labelled them. The order is the same on
-  // both machines by construction — the machine that asked first — which is
-  // what lets two people read down two screens line by line, and sorting or
-  // re-deriving them here would break the only check there is. The labels are
-  // mapped through a fixed table, so a display name a stranger chose can decide
-  // nothing but its own text.
-  function fingerprintBlock(request) {
-    const box = element("div", "fingerprints");
-    writeFingerprintBlock(box, request);
-    return box;
-  }
-
   // fingerprintSignature is what "the same two values, in the same order, with
   // the same labels" means. Anything else and the block is rewritten; the box
   // itself never is, because it is the thing two people are reading off two
@@ -1252,8 +1204,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // A node that answered without the ordered pair. Nothing is invented
       // here: two values in an order this window guessed at are exactly the
       // thing the comparison cannot survive.
-      kids.push(element("div", "muted",
-        "這個節點沒有給出可以比對的指紋組。請改用終端機的 ah pair pending 來比對。"));
+      kids.push(element("div", "muted", t("pair.noFingerprintPair")));
       box.replaceChildren(...kids);
       return;
     }
@@ -1261,7 +1212,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const who = element("div", "who");
       const role = PAIR_TEXT.role[row.role] ?? row.role ?? "";
       if (role) who.append(element("span", "", `${role}　`));
-      who.append(element("span", "", row.machine || "（未提供名稱）"));
+      who.append(element("span", "", row.machine || t("pair.noName")));
       const whose = PAIR_TEXT.whose[row.whose];
       // Only the two labels the node documents get the highlight; anything else
       // is shown as the plain text it is.
@@ -1347,10 +1298,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const parts = row.pairParts;
     const undecided = request.state === "pending" || request.state === "awaiting-confirm";
     row.className = undecided ? "pairrow waiting" : "pairrow";
-    parts.name.textContent = request.displayName || request.nodeId || "（未提供名稱）";
+    parts.name.textContent = request.displayName || request.nodeId || t("pair.noName");
     parts.statePill.className = undecided ? "pill idle" : "pill";
     parts.statePill.textContent = PAIR_TEXT.state[pairStateKey(request)] ?? request.state;
-    parts.meta.textContent = `${request.platform || "平台未提供"} · ${request.address || "位址未提供"}`;
+    parts.meta.textContent =
+      `${request.platform || t("pair.noPlatform")} · ${request.address || t("pair.noAddress")}`;
     parts.nodeId.textContent = request.nodeId || "";
     parts.id.textContent = request.id || "";
     if (row.pairCompare !== undecided) {
@@ -1405,7 +1357,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
     if (waiting.length === 0) return;
     line.append(element("div", "stale",
-      `有 ${waiting.length} 個配對請求在等你比對指紋並決定，在這個面板最下面的「${PAIR_TEXT.requestsHeading}」。`));
+      plural(waiting.length, "pair.waiting", { panel: PAIR_TEXT.requestsHeading })));
   }
 
   // The exchange's rows, keyed by request id and kept across renders.
@@ -1466,6 +1418,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const keyed = key !== "" && !seen.has(key);
       seen.add(key);
       let row = keyed ? pairRequestRows.get(key) : undefined;
+      // And a kept row whose fingerprints changed is not the row the owner has
+      // been reading. Rewriting the block inside it swaps the two values under
+      // a pointer that is already there, and keeps the press that was aimed at
+      // the old ones; a fresh row cannot be pressed by a mousedown aimed at its
+      // predecessor.
+      if (row && row.pairFingerprints !== null &&
+          row.pairFingerprints !== fingerprintSignature(request)) {
+        pairRequestRows.delete(key);
+        row = undefined;
+      }
       if (row) {
         updateRequestRow(row, request);
       } else {
@@ -1628,7 +1590,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // a stranger's screen.
   function broadcastWarning(lead, tail = "") {
     const known = Boolean(state.localName);
-    const name = known ? state.localName : "（未知）";
+    const name = known ? state.localName : t("pair.unknownName");
     // Not "來自 hostname": on macOS it is ComputerName, and the hostname being
     // the wrong source is the reason this reads the way it does. And not "read
     // from this machine" unconditionally — follow the instruction below and that
@@ -1640,19 +1602,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // from is a confident claim about something not in hand.
     let origin = "";
     if (known) {
-      origin = state.localNameIsChosen
-        ? "這個名稱是你指定的；"
-        : "這個名稱是節點從這台機器讀來的；";
+      origin = state.localNameIsChosen ? t("pair.nameChosen") : t("pair.nameRead");
     }
     // The space before the name is right for a Latin one and wrong before a
     // fullwidth paren, which carries its own. Dropped in the one case that has
     // one.
-    const before = known ? "並看到它自稱 " : "並看到它自稱";
+    const before = known ? t("pair.announceBefore") : t("pair.announceBeforeUnknown");
     return [
-      element("span", "", lead + "同網段的人都會知道這台機器在跑 AgentHub，" + before),
+      element("span", "", lead + before),
       element("span", "claimed", name),
-      element("span", "",
-        `，以及平台與指紋（不含公鑰）。${tail}${origin}要換掉就用 -display-name 重新啟動節點。`),
+      element("span", "", t("pair.announceAfter", { tail, origin })),
     ];
   }
 
@@ -1695,7 +1654,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const off = el("btn-pairing-off");
 
     if (!pairing) {
-      headline.textContent = "正在讀取配對狀態…";
+      headline.textContent = t("pair.readingState");
       on.disabled = true;
       off.disabled = true;
       note.textContent = "";
@@ -1718,21 +1677,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // window open that nobody can find: rendering it as "off" said the window
     // was shut while it was open and collecting requests.
     if (!windowAvailable && pairing.availability === "off") {
-      headline.textContent = "這台機器沒有在看，也不會廣播。";
-      detail.append(element("div", "stale",
-        "這個節點啟動時沒有 -discover，所以它既不廣播，也看不到別人廣播。" +
-        "這不代表同網段沒有人在廣播——這台機器只是沒有在看。"));
-      note.textContent = "要使用配對模式，請以 -discover 重新啟動節點；還需要 -allow-lan 與一個本機網段位址的 " +
-        "-peer-listen，因為廣播帶的就是 peer listener 綁定的那個位址，而對端只接受「位址與來源相符」的廣播。";
+      headline.textContent = t("pair.notLookingHeadline");
+      detail.append(element("div", "stale", t("pair.notLookingDetail")));
+      note.textContent = t("pair.notLookingNote");
       on.disabled = true;
       off.disabled = true;
       return;
     }
     if (!windowAvailable) {
       headline.textContent = PAIR_TEXT.windowUnavailable;
-      detail.append(element("div", "stale",
-        "無法向本機節點取得配對狀態，所以這裡不顯示任何內容。" +
-        "這是本機的讀取問題，不代表沒有人在廣播。"));
+      detail.append(element("div", "stale", t("pair.stateUnreadable")));
       note.textContent = pairing.error || "";
       on.disabled = true;
       off.disabled = true;
@@ -1779,7 +1733,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // broadcast. On a node that announces nothing, the note that matters is
       // the address above, not a warning about a name nobody will hear.
       if (canAnnounce) {
-        note.replaceChildren(...broadcastWarning("時間到會自動停止。在這段時間內，"));
+        note.replaceChildren(...broadcastWarning(t("pair.leadWhileOpen")));
       } else {
         note.textContent = "";
       }
@@ -1788,9 +1742,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // that opening it will put this machine in nobody's candidate list, and
       // that the typed address is what is left.
       headline.textContent = PAIR_TEXT.windowClosed;
-      detail.append(element("div", "stale",
-        "這台機器沒有任何可以廣播的位址，所以就算開啟配對視窗，也不會出現在對方的候選清單裡。" +
-        "視窗本身還是開得起來：把這台的位址給對方輸入就能連進來。"));
+      detail.append(element("div", "stale", t("pair.nothingToAnnounceClosed")));
       // Only when the node said something. 「節點沒有說明原因。」 on its own line
       // is a sentence about the absence of a sentence, and it is under the one
       // explanation that does say something.
@@ -1798,7 +1750,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = "";
     } else {
       headline.textContent = PAIR_TEXT.windowClosed;
-      note.replaceChildren(...broadcastWarning("開啟後，", "這是為了配對而明確接受的取捨，時間到會自動停止。"));
+      note.replaceChildren(...broadcastWarning(t("pair.leadOnOpen"), t("pair.tailTradeoff")));
     }
   }
 
@@ -1816,19 +1768,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // cannot be discovered on the IPv4 group, and an address this build will
       // not deliver to is a third thing. Writing one sentence here for all of
       // them would tell most owners something untrue.
-      const box = element("div", "stale", "這台機器沒有任何可以廣播的位址，所以實際上什麼都沒有送出。");
+      const box = element("div", "stale", t("pair.announceNoAddress"));
       if (announcing.lastError) box.append(element("div", "muted", announcing.lastError));
       return box;
     }
     if (announcing.lastError) {
-      const box = element("div", "stale", "最後一次廣播失敗了，所以現在可能沒有任何人看到這台機器。");
+      const box = element("div", "stale", t("pair.announceFailed"));
       box.append(element("div", "muted", announcing.lastError));
       return box;
     }
     if (announcing.lastAnnouncedAt) {
-      return element("div", "muted", `最後一次廣播：${relative(announcing.lastAnnouncedAt)}`);
+      return element("div", "muted", t("pair.announceLast", { when: relative(announcing.lastAnnouncedAt) }));
     }
-    return element("div", "muted", "還沒有送出第一次廣播。");
+    return element("div", "muted", t("pair.announceNeverYet"));
   }
 
   // tickCountdown updates only the countdown's own text, leaving the rows alone.
@@ -1839,7 +1791,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       line.textContent = "";
       return;
     }
-    line.textContent = left === 0 ? "" : `剩 ${clock(left)}`;
+    line.textContent = left === 0 ? "" : t("pair.timeLeft", { left: clock(left) });
   }
 
   // The candidate rows, keyed by node id and kept across renders.
@@ -1878,19 +1830,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // window: neither is looking, so neither has a list. The difference is
     // what the window panel above says, not what this region contains.
     if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
-      message(keptMessage(rows, 0, "empty",
-        "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。"));
+      message(keptMessage(rows, 0, "empty", t("candidate.notLooking")));
       return;
     }
     if (pairing.availability !== "on") {
-      message(keptMessage(rows, 0, "empty",
-        "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。"));
+      message(keptMessage(rows, 0, "empty", t("candidate.stateUnreadable")));
       return;
     }
     if (pairing.candidatesError) {
       message(
-        keptMessage(rows, 0, "stale",
-          "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。"),
+        keptMessage(rows, 0, "stale", t("candidate.listUnreadable")),
         keptMessage(rows, 1, "muted", pairing.candidatesError));
       return;
     }
@@ -1899,9 +1848,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // warning inside them is scrolled away by the reader who most needs it.
     // Measured: with 64 rows it left the view after 600px of scrolling.
     if (pairing.full) {
-      full.append(element("div", "stale",
-        "候選清單已滿。同網段有人可以持續送出封包把清單佔滿，" +
-        "所以你要找的機器有可能因此沒有出現，而不是因為它沒在廣播。"));
+      full.append(element("div", "stale", t("candidate.listFull")));
     }
     const candidates = pairing.candidates ?? [];
     const wanted = [];
@@ -1917,10 +1864,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // for as long as nobody is broadcasting, and rebuilding this div twice a
       // second is the same pointless write the rows were fixed for.
       wanted.push(keptMessage(rows, 0, "empty", state.nodes.length > 0
-        ? "沒有看到任何還沒配對的機器在廣播。已經配對過的節點不會出現在這份清單裡——" +
-          "它們在上方的「已配對節點」。"
-        : "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，" +
-          "所以這份清單空白就是真的什麼都沒收到。"));
+        ? t("candidate.emptyWithPairs")
+        : t("candidate.emptyNoPairs")));
     }
     const seen = new Set();
     for (const candidate of candidates) {
@@ -2010,15 +1955,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.candidateFlags !== flags) {
       row.candidateFlags = flags;
       const pills = [];
-      if (candidate.contested) pills.push(pill("身分有爭用", "bad"));
-      if (candidate.duplicate) pills.push(pill("名稱或指紋重複", "bad"));
+      if (candidate.contested) pills.push(pill(t("candidate.contested"), "bad"));
+      if (candidate.duplicate) pills.push(pill(t("candidate.duplicate"), "bad"));
       parts.line.replaceChildren(parts.name, ...pills);
     }
-    parts.meta.textContent = `${candidate.platform || "平台未提供"} · ${candidate.address}`;
+    parts.meta.textContent = `${candidate.platform || t("pair.noPlatform")} · ${candidate.address}`;
     parts.nodeId.textContent = candidate.nodeId;
     parts.fingerprint.textContent = candidate.fingerprint;
-    parts.seen.textContent =
-      `首次看到 ${relative(candidate.firstSeen)} · 最後 ${relative(candidate.lastSeen)}`;
+    parts.seen.textContent = t("candidate.seen", {
+      first: relative(candidate.firstSeen),
+      last: relative(candidate.lastSeen),
+    });
     parts.send.disabled = state.busy || !candidate.address;
     parts.send.onclick = () => sendPairRequest(candidate.address);
     parts.use.onclick = () => prefillPairFrom(candidate);
@@ -2049,25 +1996,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is visible, and leaving that behind at the moment of deciding to trust is
     // leaving it behind at the only moment it matters.
     const flags = [];
-    if (candidate.contested) flags.push("身分有爭用");
-    if (candidate.duplicate) flags.push("名稱或指紋重複");
+    if (candidate.contested) flags.push(t("candidate.contested"));
+    if (candidate.duplicate) flags.push(t("candidate.duplicate"));
     if (flags.length > 0) {
       // Both, when both. A ternary picked one, so a row the list flags twice
       // arrived in the dialog — where trust is granted — flagged once.
       note.append(element("div", "stale",
-        "這一列被標記為" + flags.join("、") +
-        "：同網段有另一份廣播與它衝突，其中至少一份是假的。除非你能在對方機器上直接核對，否則不要信任它。"));
+        t("candidate.flagged", { flags: flags.join(t("candidate.flagJoin")) })));
     }
-    note.append(element("div", "",
-      "節點 ID、名稱與平台是從廣播帶進來的，全都是對方自己宣稱的，沒有經過任何驗證。"));
-    note.append(element("div", "",
-      "公鑰不在廣播內容裡，必須在對方機器上執行 ah node 取得。指紋也請看對方螢幕上顯示的那一組，" +
-      "逐組核對後再填進來——這個欄位的意思就是「我核對過了」。"));
+    note.append(element("div", "", t("candidate.prefillClaimed")));
+    note.append(element("div", "", t("candidate.prefillKey")));
     // The node id is what trust is keyed on, and the node only checks that the
     // key matches the fingerprint, never that either belongs to this id.
-    note.append(element("div", "",
-      "同時請確認對方 ah node 顯示的節點 ID 與上面這一組完全相同：信任是記在節點 ID 上的，" +
-      "而本機只會檢查公鑰與指紋相符，不會檢查它們屬於這個 ID。"));
+    note.append(element("div", "", t("candidate.prefillNodeId")));
     note.classList.remove("hidden");
     openPairModal();
   }
@@ -2077,9 +2018,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     container.replaceChildren();
 
     if (state.nodes.length === 0) {
-      container.append(element("div", "empty", "尚未配對任何節點。"));
+      container.append(element("div", "empty", t("network.noNodesYet")));
       el("node-detail-body").replaceChildren(
-        element("div", "empty", "配對一個節點後，這裡會顯示它的身分與最後聯繫時間。")
+        element("div", "empty", t("network.noNodesYetDetail"))
       );
       return;
     }
@@ -2091,11 +2032,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const line = element("div", "line");
       line.append(element("span", `dot ${label.className}`), element("span", "name", node.displayName));
       line.append(element("span", `presence ${label.className}`, label.text));
-      const meta = element("div", "meta", `${node.platform} · ${lastSeen(node)} · 公開給它 ${grantedCount(node.nodeId)} 個`);
+      const meta = element("div", "meta",
+        `${node.platform} · ${lastSeen(node)} · ${plural(grantedCount(node.nodeId), "network.publishedToIt")}`);
       row.append(line, meta);
       // A peer with no address is skipped in silence at delivery time; the
       // list is where that is visible before it happens.
-      if (!node.address) row.append(element("div", "noaddr", "沒有位址：送給它的訊息會被靜默跳過"));
+      if (!node.address) row.append(element("div", "noaddr", t("network.noAddressRow")));
       row.onclick = () => {
         state.selectedNode = node.nodeId;
         render();
@@ -2105,7 +2047,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const selected = state.nodes.find((node) => node.nodeId === state.selectedNode);
     el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
-      element("div", "empty", "選擇左側的節點以檢視詳細資料。"),
+      element("div", "empty", t("network.pickANode")),
     ]));
     el("node-sessions").replaceChildren(...(selected ? nodeSessions(selected) : []));
   }
@@ -2119,48 +2061,40 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // view pass for a current one, which is what issue #15 asks not to happen.
   function nodeSessions(node) {
     const presence = presenceFor(node.nodeId);
-    const heading = element("h3", "", "這個節點公開給我的 session");
+    const heading = element("h3", "", t("network.sessionsHeading"));
 
     // A failure to read presence is a fact about this node, not about the peer.
     // Saying "we have not heard from it" here would turn a transport error into a
     // confident claim that happens to be unfounded.
     if (state.presenceError) {
-      return [heading, element(
-        "div",
-        "stale",
-        "無法向本機節點取得對端狀態，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方離線或沒有公開 session。"
-      )];
+      return [heading, element("div", "stale", t("network.presenceUnreadable"))];
     }
     if (!heardFrom(presence)) {
       return [heading, element(
         "div",
         "empty",
-        heartbeatSilenceReasons +
-        "（配對本身也只確認身分：對方仍須把 session 公開給這個節點才會出現在這裡。）"
+        t(heartbeatSilenceReasonsKey) + t("network.silenceAlsoAudience")
       )];
     }
     if (!presence.online) {
       return [heading, element(
         "div",
         "stale",
-        `這個節點目前離線，最後一次心跳在${relative(presence.receivedAt)}。` +
-        "先前的內容已不再顯示，因為那是過去的狀態，不是現在的。"
+        t("network.peerOffline", { when: relative(presence.receivedAt) })
       )];
     }
     const sessions = presence.sessions ?? [];
     if (presence.sessionsWithheld) {
-      return [heading, element("div", "empty",
-        "本機拒絕了這個節點送來的 session 清單——不符合本機接受的規則，" +
-        "或其中有不屬於它的 session——因此整份都不顯示。" +
-        "這是本機的判斷，不是對方離線；下一次有效的心跳會取代它。")];
+      return [heading, element("div", "empty", t("network.sessionsWithheld"))];
     }
     if (sessions.length === 0) {
-      return [heading, element("div", "empty", "這個節點線上，但沒有公開任何 session 給我。")];
+      return [heading, element("div", "empty", t("network.peerPublishesNothing"))];
     }
 
     const table = element("table", "peer-sessions");
     const head = element("tr");
-    for (const title of ["SESSION", "節點", "PROVIDER", "狀態", "最後活動"]) {
+    for (const title of ["SESSION", t("network.colNode"), "PROVIDER", t("local.colStatus"),
+      t("local.colLastSeen")]) {
       head.append(element("th", "", title));
     }
     const header = element("thead");
@@ -2183,7 +2117,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   function lastSeen(node) {
-    return node.lastSeenAt ? `最後聯繫 ${relative(node.lastSeenAt)}` : "尚未聯繫過";
+    return node.lastSeenAt
+      ? t("network.lastContact", { when: relative(node.lastSeenAt) })
+      : t("network.neverInContact");
   }
 
   /* ---------------- presence ---------------- */
@@ -2212,15 +2148,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // An offline peer must not have its last snapshot rendered as the current
   // state, so the label always says when the information is from.
   function presenceLabel(presence) {
-    if (state.presenceError) return { text: "節點狀態無法取得", className: "unknown" };
+    if (state.presenceError) return { text: t("network.presenceUnknown"), className: "unknown" };
     // Silence has two causes and this side cannot tell them apart. /v1/peers
     // reports what arrived, and nothing arrives either when the peer has not
     // paired back — trust is recorded per machine — or when it has and is simply
     // not sending. Naming one would be a guess; the row names both, and the
     // detail below says where the answer is.
-    if (!heardFrom(presence)) return { text: "尚未收到心跳 · 對方可能還沒配對這台", className: "never" };
-    if (presence.online) return { text: "線上", className: "online" };
-    return { text: `離線 · 資料截至 ${relative(presence.receivedAt)}`, className: "offline" };
+    if (!heardFrom(presence)) return { text: t("network.presenceNever"), className: "never" };
+    if (presence.online) return { text: t("network.presenceOnline"), className: "online" };
+    return {
+      text: t("network.presenceOffline", { when: relative(presence.receivedAt) }),
+      className: "offline",
+    };
   }
 
   // heartbeatSilenceReasons spells out both causes of silence, because this node
@@ -2229,52 +2168,38 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The node lists a peer it trusts whether or not that peer trusts it back, and
   // a heartbeat that never arrives looks identical in both cases. The only place
   // the difference is visible is the other machine's own `ah nodes`.
-  const heartbeatSilenceReasons =
-    "尚未收到這個節點的心跳。有兩種可能，這台分不出來是哪一種：" +
-    "（一）對方還沒對這台做配對——配對是每台各自記的，這台信任它不代表它信任這台；" +
-    "（二）對方已經配對了，但還沒送出心跳（節點沒在跑，或沒有這台的位址）。" +
-    "要分辨，在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。";
+  // A getter, not a constant: it is read while rendering, and a constant
+  // evaluated at module load would freeze the language the window started in.
+  const heartbeatSilenceReasonsKey = "network.heartbeatSilence";
 
   function nodeDetail(node) {
     const heading = element("h2", "", node.displayName);
     const fingerprint = element("div", "fingerprint", node.fingerprint);
-    const note = element(
-      "p",
-      "muted",
-      "在對方機器上執行 ah node，確認顯示的指紋與上方逐組相符。不符代表區網上有人冒用這個節點名稱。"
-    );
+    const note = element("p", "muted", t("network.fingerprintNote"));
 
     // Trust is recorded per machine, and this page shows only this machine's
     // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
     // on 2026-09-10, and nothing here said that was half-done — the row simply
     // sat there having never been heard from, which reads as the peer being off.
-    const mutualNote = element(
-      "p",
-      "stale",
-      "配對是每台各自記的：這一列只代表這台已信任對方。對方那台也要對這台做一次配對，" +
-      "否則它送不到這裡，也不會送心跳過來——在對方機器上跑 ah nodes，看這台的節點 ID 在不在裡面。"
-    );
+    const mutualNote = element("p", "stale", t("network.mutualNote"));
 
     const rows = [
-      ["節點 ID", node.nodeId],
-      ["平台", node.platform],
-      ["配對時間", node.pairedAt ? relative(node.pairedAt) : "—"],
-      ["最後聯繫", node.lastSeenAt ? relative(node.lastSeenAt) : "尚未聯繫過"],
-      ["可見的 session", `${grantedCount(node.nodeId)} 個`],
-      ["記錄的位址", node.address ? node.address : "（沒有）"],
+      [t("identity.nodeId"), node.nodeId],
+      [t("pairManual.platform"), node.platform],
+      [t("network.detailPairedAt"), node.pairedAt ? relative(node.pairedAt) : "—"],
+      [t("network.detailLastContact"),
+        node.lastSeenAt ? relative(node.lastSeenAt) : t("network.neverInContact")],
+      [t("network.detailVisibleSessions"), plural(grantedCount(node.nodeId), "network.sessionCount")],
+      [t("network.detailAddress"), node.address ? node.address : t("network.detailNoAddress")],
     ].map(([label, value]) => {
       const row = element("div", "detailrow");
       row.append(element("span", "muted", label), element("span", "mono", value));
       return row;
     });
 
-    const revoke = element("button", "btn danger", "撤銷信任");
+    const revoke = element("button", "btn danger", t("network.revoke"));
     revoke.onclick = () => revokeSelected(node);
-    const revokeNote = element(
-      "p",
-      "muted",
-      "撤銷會同時移除這個節點持有的所有 session 授權，再次配對不會恢復。"
-    );
+    const revokeNote = element("p", "muted", t("network.revokeNote"));
 
     const grid = element("div", "detailgrid");
     grid.append(...rows);
@@ -2300,14 +2225,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function addressSection(node) {
     const parts = [];
     if (node.address) {
-      parts.push(element("p", "muted", `目前記錄的位址是 ${node.address}，訊息會送到這裡。`));
+      parts.push(element("p", "muted", t("network.addressRecorded", { address: node.address })));
     } else {
-      parts.push(element(
-        "p",
-        "noaddress",
-        "沒有位址：送到這個節點的訊息會被靜默跳過，ah send 仍會回 queued。" +
-        "有 --discover 時會自動學到；沒有就在下面填。"
-      ));
+      parts.push(element("p", "noaddress", t("network.addressMissing")));
     }
 
     const input = element("input", "addressinput");
@@ -2326,34 +2246,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.addressDraft = { nodeId: node.nodeId, value: event.target.value };
     };
 
-    const submit = element("button", "btn setaddress", "記錄位址");
+    const submit = element("button", "btn setaddress", t("network.recordAddress"));
     submit.onclick = () => recordAddress(node, input.value);
 
     const form = element("div", "addressform");
     form.append(input, submit);
     parts.push(form);
-    parts.push(element(
-      "p",
-      "muted",
-      "格式是 host:port，由節點驗證——它拒絕自己不會投遞的位址，理由會原文顯示在上方橫幅。"
-    ));
+    parts.push(element("p", "muted", t("network.addressFormat")));
     return parts;
   }
 
   async function recordAddress(node, raw) {
     const address = String(raw ?? "").trim();
     if (address === "") {
-      banner("位址是空的。要記錄一個位址，請填 host:port，例如 192.168.1.20:7463。");
+      banner(t("network.addressEmpty"));
       return;
     }
-    await withBusy("記錄位址", async () => {
+    await withBusy(t("network.recordAddress"), async () => {
       await api.SetNodeAddress(node.nodeId, address);
       // Only once the node has it. A draft cleared before the call would leave a
       // refused address nowhere, with the field back to the value the owner was
       // replacing and nothing to correct.
       state.addressDraft = null;
       await load();
-      banner(`已記錄 ${node.displayName} 的位址 ${address}。`, true);
+      banner(t("network.addressSaved", { name: node.displayName, address }), true);
     });
   }
 
@@ -2369,11 +2285,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function revokeSelected(node) {
-    await withBusy("撤銷", async () => {
+    await withBusy(t("network.revoke"), async () => {
       await api.RevokeNode(node.nodeId);
       state.selectedNode = null;
       await load();
-      banner(`已撤銷 ${node.displayName}，並移除它持有的所有授權。`, true);
+      banner(t("network.revoked", { name: node.displayName }), true);
     });
   }
 
@@ -2396,14 +2312,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function copyLocalPublicKey(statusId = "copy-public-key-status") {
     const status = el(statusId);
     if (!state.localPublicKey) {
-      status.textContent = "還沒有從節點讀到本機公鑰，沒有東西可以複製。";
+      status.textContent = t("identity.noKeyYet");
       return;
     }
     try {
       await api.CopyText(state.localPublicKey);
-      status.textContent = "已複製本機公鑰到剪貼簿";
+      status.textContent = t("identity.keyCopied");
     } catch (error) {
-      status.textContent = `無法寫入剪貼簿（${error}），請手動複製上面那一串，注意結尾的 = 也要一起。`;
+      status.textContent = t("identity.keyCopyFailed", { error });
     }
   }
 
@@ -2446,12 +2362,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       label.append(box, element("span", `dot ${presence.className}`), element("span", "", node.displayName), element("span", "mono", node.nodeId));
       list.append(label);
     }
-    if (state.nodes.length === 0) list.append(element("p", "muted", "還沒有配對任何節點。"));
+    if (state.nodes.length === 0) list.append(element("p", "muted", t("audience.noNodesYet")));
     el("audience-node-input").value = "";
   }
 
+  // renderAudienceCount says how many sessions the dialog is about.
+  //
+  // One sentence through plural() rather than two fragments around a bold
+  // number: English wanted "session(s)" for the singular, which is the one
+  // place a table of finished sentences gives up, and (s) in a dialog that
+  // publishes things reads as a draft.
+  function renderAudienceCount() {
+    el("audience-count").textContent = plural(state.selected.size, "audience.count");
+  }
+
   function openAudienceModal() {
-    el("audience-count").textContent = String(state.selected.size);
+    renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
     renderAudienceNodeList();
@@ -2495,9 +2421,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const note = el("audience-autowake-note");
     note.replaceChildren();
     if (!state.nodeAutoWake) {
-      note.append(element("div", "muted",
-        "這台節點沒有開自動喚醒（agenthub-node 沒帶 -auto-wake），勾了也不會有任何 session 被叫醒。" +
-        "用 ah service install … --auto-wake 重裝或重啟節點才會生效。"));
+      note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
       return;
     }
     // Which providers are selected decides which of the remaining obstacles
@@ -2507,13 +2431,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
     );
     if (providers.has("codex")) {
-      note.append(element("div", "muted", "Codex session 會由節點透過 app-server 叫醒（真機驗過）。"));
+      note.append(element("div", "muted", t("audience.autoWakeCodex")));
     }
     if (providers.has("claude")) {
-      note.append(element("div", "muted",
-        "Claude Code 還需要該 session 的 agenthub-mcp 帶 -channel，" +
-        "而且目前量測到 Claude Code 不會注入這類推送（見 docs/channel-push-not-observed.md）" +
-        "——勾了訊息仍只會躺在收件匣。"));
+      note.append(element("div", "muted", t("audience.autoWakeClaude")));
     }
   }
 
@@ -2550,13 +2471,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function renderInbox(view) {
     const meta = el("inbox-meta");
     const body = el("inbox-body");
+    // Kept so a language switch can paint this list again. Every sentence below
+    // comes out of t(), and none of them is re-derived by render() — the drawer
+    // is filled by one call per read, so without the argument nothing could
+    // rebuild it and the meta line stayed in the language before the switch.
+    state.inboxView = view;
     body.replaceChildren();
 
     if (view.loading) {
       // Not an empty list: those render identically, and the read can take
       // fifteen seconds.
       meta.textContent = view.sessionId;
-      body.append(element("div", "muted", "正在讀取…"));
+      body.append(element("div", "muted", t("common.loading")));
       return;
     }
     if (view.cleared) {
@@ -2566,8 +2492,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // branch: a clear that succeeded and a re-read that then failed are two
       // facts, and the irreversible one must not be the one that goes unsaid.
       body.append(view.cleared.error
-        ? element("div", "stale", `清空失敗，收件匣沒有變動：${view.cleared.error}`)
-        : element("div", "muted", `已清空，移除 ${view.cleared.removed} 則。`));
+        ? element("div", "stale", t("inbox.clearFailed", { error: view.cleared.error }))
+        : element("div", "muted", plural(view.cleared.removed, "inbox.cleared")));
     }
 
     if (view.error) {
@@ -2575,29 +2501,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // nothing to come back for. Shown here rather than in a banner: the dialog
       // covers the banner, so an error there is an error nobody sees.
       meta.textContent = view.sessionId ?? "";
-      body.append(element("div", "stale", "讀不到這個 session 的收件匣，所以這裡不顯示任何內容。"));
+      body.append(element("div", "stale", t("inbox.unreadable")));
       body.append(element("div", "muted", view.error));
       return;
     }
-    meta.textContent = view.more
-      ? `${view.sessionId} · 顯示最舊的 ${view.showing} 則，共 ${view.held} / ${view.capacity} 則`
-      : `${view.sessionId} · ${view.held} / ${view.capacity} 則`;
+    meta.textContent = `${view.sessionId} · ` + (view.more
+      ? t("inbox.metaMore", { showing: view.showing, held: view.held, capacity: view.capacity })
+      : t("inbox.meta", { held: view.held, capacity: view.capacity }));
     if (view.full) {
       // A full inbox refuses new messages, which is a thing happening now rather
       // than a list that happens to be long.
-      body.append(element("div", "stale",
-        "收件匣已滿，新的訊息會被退回。清空之後才會再收得到。"));
+      body.append(element("div", "stale", t("inbox.full")));
     }
     if (view.messages.length === 0) {
-      body.append(element("div", "empty", "還沒有任何訊息。"));
+      body.append(element("div", "empty", t("inbox.empty")));
       return;
     }
     if (view.more) {
       // The oldest end, because the node returns them in arrival order. An owner
       // looking for what just came in has to empty some of this first.
-      body.append(element("div", "stale",
-        `收件匣裡還有更多訊息，這裡只顯示最舊的 ${view.showing} 則。` +
-        "新到的訊息排在後面，要先清掉一些才看得到。"));
+      body.append(element("div", "stale", t("inbox.moreHeld", { showing: view.showing })));
     }
     for (const message of view.messages) {
       const row = element("div", "inboxrow");
@@ -2636,12 +2559,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         // This machine's own queue. The owner's API qualifies with the local node
         // id, so this is what an ordinary local message looks like — not the
         // bare form below.
-        line.append(element("span", "muted", "本機 "));
+        line.append(element("span", "muted", t("sender.localPrefix")));
         line.append(element("span", "claimed", session));
         return line;
       }
       line.append(element("span", "fingerprint", nodeId));
-      line.append(element("span", "muted", " 自稱 "));
+      line.append(element("span", "muted", t("sender.claimsToBe")));
       // The half they chose, marked as such.
       line.append(element("span", "claimed", session));
       return line;
@@ -2655,28 +2578,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (value === "") {
       // qualifiedSender never yields empty for a peer — it falls back to the
       // proven node id — so empty means the owner's API queued this unnamed.
-      line.append(element("span", "muted", "本機"));
+      line.append(element("span", "muted", t("sender.local")));
       return line;
     }
     if (value === state.localNodeId) {
-      line.append(element("span", "muted", "本機"));
+      line.append(element("span", "muted", t("sender.local")));
       return line;
     }
     if (state.nodes.some((node) => node.nodeId === value)) {
       // A paired node's own id settles a bare value whatever shape it has.
       line.append(element("span", "fingerprint", value));
-      line.append(element("span", "muted", " 未指明 session"));
+      line.append(element("span", "muted", t("sender.noSession")));
       return line;
     }
     if (looksLikeNodeId(value)) {
       line.append(element("span", "fingerprint", value));
-      line.append(element("span", "muted", " 未指明 session"));
+      line.append(element("span", "muted", t("sender.noSession")));
       return line;
     }
     // Session-shaped and not paired: a local message from before senders were
     // self-describing, or a peer paired under an older rule and since revoked.
     // Indistinguishable, so claim no origin rather than the wrong one.
-    line.append(element("span", "muted", "來源不明 "));
+    line.append(element("span", "muted", t("sender.unknownOrigin")));
     line.append(element("span", "claimed", value));
     return line;
   }
@@ -2750,6 +2673,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("outbound-body").replaceChildren();
     el("wakes-body").replaceChildren();
     el("inbox-meta").textContent = "";
+    state.inboxView = null;
     state.inboxSession = null;
   }
 
@@ -2776,9 +2700,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // textContent like everything else a provider had a hand in.
   async function openMCPConfig(sessionId) {
     const sequence = ++mcpRequest;
-    el("mcp-title").textContent = `MCP 設定 · ${sessionId}`;
+    // Kept because half this title is a translated word: after a language
+    // switch the dialog has to be able to write it again, and the id is not
+    // anywhere else by then.
+    state.mcpSession = sessionId;
+    el("mcp-title").textContent = `${t("mcp.title")} · ${sessionId}`;
     el("mcp-text").textContent = "";
-    el("mcp-status").textContent = "正在產生…";
+    renderMCPStatus({ kind: "generating" });
     el("mcp-modal").classList.remove("hidden");
 
     let result;
@@ -2799,15 +2727,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Shown here rather than in a banner: this dialog covers the banner, so an
       // error there is an error nobody reads. The most likely one is that
       // agenthub-mcp was not found, and the message says where it looked.
-      el("mcp-status").replaceChildren(
-        element("div", "stale", "產生不出這個 session 的設定，所以上面是空的。"),
-        element("div", "muted", String(failure))
-      );
+      renderMCPStatus({ kind: "failed", error: String(failure) });
       return;
     }
     // Title and body come from the same answer: this is the reply to the call
     // this line's id was asked for, and no other reply reaches here.
-    el("mcp-title").textContent = `MCP 設定 · ${sessionId}`;
+    el("mcp-title").textContent = `${t("mcp.title")} · ${sessionId}`;
     el("mcp-text").textContent = result.text;
 
     let copied = true;
@@ -2820,18 +2745,45 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     mcpApplied = sequence;
     // Whether the clipboard took it. Saying "已複製" when it did not is the one
     // outcome that sends someone to paste nothing into a file.
-    el("mcp-status").textContent = copied
-      ? "已複製到剪貼簿"
-      : "無法寫入剪貼簿，請手動複製上面的內容";
+    renderMCPStatus({ kind: copied ? "copied" : "copyFailed" });
+  }
+
+  // renderMCPStatus is the only writer of #mcp-status, and it writes from
+  // state.mcpStatus rather than from the moment it was called.
+  //
+  // The line is the answer to "did the clipboard take it", which is the one
+  // thing in this dialog the owner acts on — and it was written once, in the
+  // language of that moment. A switch with the dialog still open left the
+  // Chinese sentence under an English window, or index.html's placeholder key.
+  function renderMCPStatus(status) {
+    state.mcpStatus = status ?? null;
+    const node = el("mcp-status");
+    if (!status) {
+      node.textContent = "";
+      return;
+    }
+    if (status.kind === "failed") {
+      node.replaceChildren(
+        element("div", "stale", t("mcp.failed")),
+        element("div", "muted", String(status.error ?? ""))
+      );
+      return;
+    }
+    node.textContent = t({
+      generating: "mcp.generating",
+      copied: "mcp.copied",
+      copyFailed: "mcp.copyFailed",
+    }[status.kind] ?? "mcp.generating");
   }
 
   function closeMCPConfig() {
     // Retire whatever is in flight, so its answer cannot paint a hidden dialog
     // or take the clipboard from whatever the owner copied next.
     mcpApplied = mcpRequest;
+    state.mcpSession = null;
     el("mcp-modal").classList.add("hidden");
     el("mcp-text").textContent = "";
-    el("mcp-status").textContent = "";
+    renderMCPStatus(null);
   }
 
   /* ---------------- inbox drawer: tabs, outbound, wakes ---------------- */
@@ -2848,10 +2800,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // that tab alone.
     el("inbox-clear").classList.toggle("hidden", state.inboxTab !== "inbox");
     el("inbox-foot-note").textContent = state.inboxTab === "inbox"
-      ? "在這裡讀不會把訊息交給 agent，也不會標示已讀。"
-      : state.inboxTab === "outbound"
-        ? "對應 CLI：ah outbound。沒有位址的節點會被靜默跳過，不會出現在這裡。"
-        : "對應 CLI：ah wakes <session>。被拒絕的喚醒也列出，旁邊是產生它的限制。";
+      ? t("inbox.footNote")
+      : state.inboxTab === "outbound" ? t("inbox.outboundFootNote") : t("inbox.wakesFootNote");
     if (state.inboxTab === "outbound" && state.outbound.session !== state.inboxSessionAsked) {
       loadOutbound({ reset: true }).catch(() => {});
     }
@@ -2904,19 +2854,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const o = state.outbound;
     body.replaceChildren();
     if (o.error) {
-      body.append(element("div", "stale", "讀不到送出紀錄，所以這裡不顯示任何內容。"), element("div", "muted", o.error));
+      body.append(element("div", "stale", t("outbound.unreadable")), element("div", "muted", o.error));
       more.classList.add("hidden");
       return;
     }
     if (o.loading && o.messages.length === 0) {
-      body.append(element("div", "muted", "正在讀取…"));
+      body.append(element("div", "muted", t("common.loading")));
       more.classList.add("hidden");
       return;
     }
     if (o.messages.length === 0) {
       // The node filtered to this session, so empty is an answer, not a page
       // that happened to hold someone else's messages.
-      body.append(element("div", "empty", "這個 session 還沒有送出過訊息。"));
+      body.append(element("div", "empty", t("outbound.empty")));
       more.classList.add("hidden");
       return;
     }
@@ -2927,16 +2877,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       head.append(element("span", "mono", `→ ${nodeName(m.destinationNodeId)} · ${m.to ?? ""}`));
       row.append(head, element("span", "when", relative(m.updatedAt ?? m.createdAt)));
       const meta = element("div", "meta");
-      meta.append(element("span", "", `嘗試 ${m.attempts ?? 0} 次`));
-      if (m.from) meta.append(element("span", "", `來自 ${m.from}`));
+      meta.append(element("span", "", plural(m.attempts ?? 0, "outbound.attempts")));
+      if (m.from) meta.append(element("span", "", t("outbound.from", { from: m.from })));
       if (m.wakeHops) meta.append(element("span", "", `wake hops ${m.wakeHops}`));
-      meta.append(element("span", "", `建立 ${relative(m.createdAt)}`));
+      meta.append(element("span", "", t("outbound.created", { when: relative(m.createdAt) })));
       row.append(meta);
       if (m.lastError) {
         const text = String(m.lastError);
         const err = element("div", "err clipped", text.length > ERROR_CLIP ? text.slice(0, ERROR_CLIP) + "…" : text);
         if (text.length > ERROR_CLIP) {
-          const expand = element("button", "link", "展開");
+          const expand = element("button", "link", t("outbound.expand"));
           expand.onclick = () => {
             err.textContent = text;
             err.className = "err";
@@ -2951,7 +2901,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     more.classList.toggle("hidden", !o.next);
     more.disabled = o.loading;
-    more.textContent = o.loading ? "讀取中…" : "載入更多";
+    more.textContent = o.loading ? t("common.loadingShort") : t("inbox.loadMore");
   }
 
   function outboundStateClass(s) {
@@ -2961,7 +2911,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   function nodeName(nodeId) {
     const node = state.nodes.find((n) => n.nodeId === nodeId);
-    return node ? node.displayName : (nodeId || "（未知節點）");
+    return node ? node.displayName : (nodeId || t("outbound.unknownNode"));
   }
 
   let wakesRequest = 0;
@@ -3001,10 +2951,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function wakeLimitText(outcome, limits) {
     if (!limits) return "";
     switch (outcome) {
-      case "refused_hops": return `上限 ${limits.hops} hops`;
-      case "refused_pair_rate": return `每對節點 ${limits.pair} 次 / ${limits.pairWindow}`;
-      case "refused_session_rate": return `每個 session ${limits.session} 次 / ${limits.sessionWindow}`;
-      case "refused_node_rate": return `每個節點 ${limits.node} 次 / ${limits.nodeWindow}`;
+      case "refused_hops": return t("wakes.limitHops", { hops: limits.hops });
+      case "refused_pair_rate":
+        return t("wakes.limitPair", { n: limits.pair, window: limits.pairWindow });
+      case "refused_session_rate":
+        return t("wakes.limitSession", { n: limits.session, window: limits.sessionWindow });
+      case "refused_node_rate":
+        return t("wakes.limitNode", { n: limits.node, window: limits.nodeWindow });
       default: return "";
     }
   }
@@ -3016,21 +2969,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     body.replaceChildren();
     limitsBox.textContent = "";
     if (w.error) {
-      body.append(element("div", "stale", "讀不到喚醒紀錄，所以這裡不顯示任何內容。"), element("div", "muted", w.error));
+      body.append(element("div", "stale", t("wakes.unreadable")), element("div", "muted", w.error));
       return;
     }
     if (w.loading) {
-      body.append(element("div", "muted", "正在讀取…"));
+      body.append(element("div", "muted", t("common.loading")));
       return;
     }
     if (w.limits) {
-      limitsBox.textContent =
-        `限制：${w.limits.hops} hops · 每對節點 ${w.limits.pair} 次 / ${w.limits.pairWindow}` +
-        ` · 每個 session ${w.limits.session} 次 / ${w.limits.sessionWindow}` +
-        ` · 每個節點 ${w.limits.node} 次 / ${w.limits.nodeWindow}`;
+      limitsBox.textContent = t("wakes.limits", {
+        hops: w.limits.hops,
+        pair: w.limits.pair, pairWindow: w.limits.pairWindow,
+        session: w.limits.session, sessionWindow: w.limits.sessionWindow,
+        node: w.limits.node, nodeWindow: w.limits.nodeWindow,
+      });
     }
     if (w.wakes.length === 0) {
-      body.append(element("div", "empty", "沒有任何喚醒紀錄——沒人叫過這個 agent，或喚醒沒有開。"));
+      body.append(element("div", "empty", t("wakes.empty")));
       return;
     }
     for (const e of w.wakes) {
@@ -3039,9 +2994,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       head.append(pill(e.outcome ?? "unknown", wakeOutcomeClass(e.outcome)));
       // sourceSession is the sender's own label; sourceNodeId was proven.
       const who = element("span", "");
-      if (e.sourceNodeId) who.append(element("span", "fingerprint", nodeName(e.sourceNodeId)), element("span", "muted", " 自稱 "));
-      else who.append(element("span", "muted", "本機 "));
-      who.append(element("span", "claimed", e.sourceSession || "（未指明 session）"));
+      if (e.sourceNodeId) {
+        who.append(element("span", "fingerprint", nodeName(e.sourceNodeId)),
+          element("span", "muted", t("sender.claimsToBe")));
+      } else {
+        who.append(element("span", "muted", t("sender.localPrefix")));
+      }
+      who.append(element("span", "claimed", e.sourceSession || t("wakes.noSourceSession")));
       head.append(who);
       row.append(head, element("span", "when", relative(e.at)));
       const meta = element("div", "meta");
@@ -3091,12 +3050,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function renderServicePill(status) {
     const pill_ = el("service-pill");
     const text = el("service-pill-text");
-    if (status.toolError) { pill_.className = "servicepill warn"; text.textContent = "找不到 ah"; return; }
-    if (!status.supported) { pill_.className = "servicepill"; text.textContent = "此平台無背景服務"; return; }
-    if (status.installed && status.running) { pill_.className = "servicepill ok"; text.textContent = "背景服務執行中"; return; }
-    if (status.installed) { pill_.className = "servicepill warn"; text.textContent = "服務已裝但沒在跑"; return; }
+    if (status.toolError) { pill_.className = "servicepill warn"; text.textContent = t("service.pillNoAh"); return; }
+    if (!status.supported) { pill_.className = "servicepill"; text.textContent = t("service.pillUnsupported"); return; }
+    if (status.installed && status.running) { pill_.className = "servicepill ok"; text.textContent = t("service.pillRunning"); return; }
+    if (status.installed) { pill_.className = "servicepill warn"; text.textContent = t("service.pillStopped"); return; }
     pill_.className = "servicepill warn";
-    text.textContent = state.nodeReachable ? "節點非背景服務" : "節點未執行";
+    text.textContent = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
   }
 
   function renderService() {
@@ -3113,7 +3072,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Shown only where this panel says it is; every branch below decides.
     restart.classList.add("hidden");
     if (status.toolError) {
-      line.textContent = `找不到 ah，無法管理背景服務：${status.toolError}`;
+      line.textContent = t("service.lineNoAh", { error: status.toolError });
       line.classList.add("warn");
       open.classList.add("hidden");
       uninstall.classList.add("hidden");
@@ -3129,37 +3088,37 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // from this panel, applying a setting the node only reads at start-up,
       // is done by this app itself (desktop/nodeprocess.go).
       line.textContent = state.nodeReachable
-        ? "這個作業系統還沒有背景服務（目前支援 macOS 與 Linux）。節點在執行中，改了節點設定可以用下面的「重新啟動節點」套用。"
-        : "這個作業系統還沒有背景服務（目前支援 macOS 與 Linux），而且節點沒有在執行。按下面的「重新啟動節點」把它啟動起來。";
+        ? t("service.lineUnsupportedRunning")
+        : t("service.lineUnsupportedStopped");
       line.classList.add(state.nodeReachable ? "ok" : "warn");
       open.classList.add("hidden");
       uninstall.classList.add("hidden");
       restart.classList.remove("hidden");
-      restart.textContent = state.nodeReachable ? "重新啟動節點" : "啟動節點";
+      restart.textContent = state.nodeReachable ? t("service.restart") : t("service.start");
       return;
     }
     if (status.installed && status.running) {
-      line.textContent = `背景服務：已安裝、正在執行（pid ${status.pid}）· ${status.unitPath}`;
+      line.textContent = t("service.lineRunning", { pid: status.pid, unit: status.unitPath });
       line.classList.add("ok");
-      open.textContent = "重新安裝（改旗標）…";
+      open.textContent = t("service.reinstallFlags");
       restart.classList.remove("hidden");
-      restart.textContent = "重新啟動節點";
+      restart.textContent = t("service.restart");
     } else if (status.installed) {
-      line.textContent = `背景服務：已安裝但沒有在執行 · 看 log：${status.logHint}`;
+      line.textContent = t("service.lineInstalledStopped", { log: status.logHint });
       line.classList.add("warn");
-      open.textContent = "重新安裝…";
+      open.textContent = t("service.reinstall");
       restart.classList.remove("hidden");
-      restart.textContent = "啟動節點";
+      restart.textContent = t("service.start");
     } else if (state.nodeReachable) {
-      line.textContent = "節點在執行，但不是背景服務：關掉啟動它的視窗或終端機，它就停了，送到這台的訊息會等在對方那邊。";
+      line.textContent = t("service.lineNotAService");
       line.classList.add("warn");
-      open.textContent = "安裝為背景服務…";
+      open.textContent = t("service.install");
       restart.classList.remove("hidden");
-      restart.textContent = "重新啟動節點";
+      restart.textContent = t("service.restart");
     } else {
-      line.textContent = "節點沒有在執行，也沒有安裝成背景服務。";
+      line.textContent = t("service.lineNothing");
       line.classList.add("warn");
-      open.textContent = "安裝為背景服務…";
+      open.textContent = t("service.install");
     }
     open.classList.remove("hidden");
     uninstall.classList.toggle("hidden", !status.installed);
@@ -3185,17 +3144,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!status.installed || pinned.length === 0) return;
     repair.append(
       element("div", "stale",
-        `這個服務被裝成每次啟動都固定使用 ${pinned.join("、")}，` +
-        "會蓋掉下面「節點設定」存的值——在那裡改了也不會生效。"),
+        t("service.pinnedSettings", { pinned: pinned.join(t("candidate.flagJoin")) })),
       element("div", "muted",
         status.dbPathKnown && status.dbPath
-          ? `改成由節點自己管理之後，服務只會指定資料庫（${status.dbPath}），其餘設定都讀節點記住的值。`
-          : "改成由節點自己管理之後，服務只會指定資料庫，其餘設定都讀節點記住的值。"),
+          ? t("service.unpinExplainsDb", { path: status.dbPath })
+          : t("service.unpinExplains")),
     );
     const button = document.createElement("button");
     button.id = "service-unpin";
     button.className = "primary";
-    button.textContent = "改成由節點自己管理";
+    button.textContent = t("service.unpin");
     button.onclick = () => reinstallWithoutPinnedSettings(status);
     repair.append(button);
   }
@@ -3208,23 +3166,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // on a different database, which is a different identity and no pairings.
   async function reinstallWithoutPinnedSettings(status) {
     if (status.installed && !status.dbPathKnown) {
-      banner("讀不到目前服務使用的資料庫路徑，所以沒有自動重裝：請用「重新安裝…」自己確認路徑。");
+      banner(t("service.unpinNeedsDbPath"));
       return;
     }
-    const ok = confirm(
-      "改成由節點自己管理？\n\n" +
-      `服務會重新登記，只指定資料庫（${status.dbPath || "節點預設位置"}），` +
-      "其他設定改由節點記住的值決定——也就是「節點設定」那一頁存的東西。\n\n" +
-      "節點身分與配對不受影響。"
-    );
+    const ok = confirm(t("service.unpinConfirm", {
+      path: status.dbPath || t("service.nodeDefaultLocation"),
+    }));
     if (!ok) return;
     const previousPid = state.service?.pid ?? 0;
-    await withBusy("重新登記背景服務", async () => {
+    await withBusy(t("service.busyReregister"), async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
       showServiceOutput(result);
       const up = await waitForNode({ previousPid });
       await load();
-      banner(up.answering ? "服務已重新登記，節點設定現在說了算。" : "服務已重新登記，但節點還沒有回應，請看上面的狀態。", up.answering);
+      banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
   }
 
@@ -3258,13 +3213,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("service-db").value = state.serviceDB.path;
     if (state.serviceDB.known) {
       note.textContent = state.serviceDB.path
-        ? "這是目前服務正在使用的資料庫，已經填好。改掉它等於換一個節點身分。"
-        : "目前的服務沒有指定資料庫，所以節點用的是預設位置。填上路徑會換成那一個，也就是換一個節點身分。";
+        ? t("service.dbNoteKnown")
+        : t("service.dbNoteDefault");
       return;
     }
-    note.textContent = status.installed
-      ? "讀不到目前服務使用的資料庫路徑，所以無法先告訴你這次會不會換掉節點身分——按下安裝前會再問一次。"
-      : "第一次安裝：留空就用節點的預設位置。";
+    note.textContent = status.installed ? t("service.dbNoteUnknown") : t("service.dbNoteFirstInstall");
   }
 
   function readServiceForm() {
@@ -3299,26 +3252,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Asked without being able to say what the current value is, because the
       // alternative is installing over a running node's database on a guess.
       // The question names that uncertainty rather than hiding it.
-      const ok = confirm(
-        "重新安裝背景服務？\n\n" +
-        "這台機器已經有一個登記過的服務，但這個視窗讀不到它目前使用的資料庫路徑，" +
-        `所以無法判斷這次會不會換掉。\n\n這次會用：${wanted || "節點預設位置"}\n\n` +
-        "如果那不是它原本用的那一個，這台機器就會換一個節點身分：在對方眼中變成陌生人，" +
-        "已經配對過的節點要重新配對一次。"
-      );
+      const ok = confirm(t("service.reinstallUnknownDbConfirm", {
+        wanted: wanted || t("service.nodeDefaultLocation"),
+      }));
       if (!ok) return;
     } else if (baseline.installed && wanted !== baseline.path) {
-      const ok = confirm(
-        "換掉資料庫路徑？\n\n" +
-        `目前：${baseline.path || "節點預設位置"}\n` +
-        `要改成：${wanted || "節點預設位置"}\n\n` +
-        "換資料庫等於換一個節點身分：這台機器在對方眼中會變成陌生人，" +
-        "已經配對過的節點要重新配對一次。\n\n" +
-        "只是想重裝服務、不想換節點的話，請按取消，把路徑改回原本的值。"
-      );
+      const ok = confirm(t("service.changeDbConfirm", {
+        current: baseline.path || t("service.nodeDefaultLocation"),
+        wanted: wanted || t("service.nodeDefaultLocation"),
+      }));
       if (!ok) return;
     }
-    await withBusy("安裝背景服務", async () => {
+    await withBusy(t("service.busyInstall"), async () => {
       let result;
       try {
         result = await api.InstallService(readServiceForm());
@@ -3332,7 +3277,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
       showServiceOutput(result);
       el("service-form").classList.add("hidden");
-      banner("背景服務已安裝。", true);
+      banner(t("service.installed"), true);
       await load();
     });
   }
@@ -3346,7 +3291,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Read before anything is asked of the service manager: it is what says
     // whether the node answering afterwards is a new one.
     const previousPid = state.service?.pid ?? 0;
-    await withBusy("重新啟動節點", async () => {
+    await withBusy(t("service.restart"), async () => {
       let result;
       try {
         result = await api.RestartNode();
@@ -3369,13 +3314,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const up = await waitForNode({ previousPid });
       await load();
       if (up.answering) {
-        banner(up.degraded ? "節點已啟動，但對外位址沒有綁起來：看下面的「節點設定」。" : "節點已重新啟動。", !up.degraded);
+        banner(up.degraded ? t("service.restartedDegraded") : t("service.restarted"), !up.degraded);
         return;
       }
-      banner(
-        `節點啟動了，但${up.seconds} 秒後仍然沒有回應，可能是啟動後又結束了。` +
-        `看 log：${state.service?.logHint ?? "背景服務區有路徑"}`,
-      );
+      banner(t("service.restartedNoAnswer", {
+        seconds: up.seconds,
+        log: state.service?.logHint ?? t("service.logHintFallback"),
+      }));
     });
   }
 
@@ -3414,15 +3359,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function uninstallService() {
-    const ok = confirm(
-      "移除背景服務？\n\n節點會停止，登入時不再自動啟動。這台機器的節點身分（node.key）與資料庫都會留著，" +
-        "再安裝就是同一個節點、配對不用重做。"
-    );
+    const ok = confirm(t("service.uninstallConfirm"));
     if (!ok) return;
-    await withBusy("移除背景服務", async () => {
+    await withBusy(t("service.busyUninstall"), async () => {
       const result = await api.UninstallService();
       showServiceOutput(result);
-      banner("背景服務已移除；節點已停止。", true);
+      banner(t("service.uninstalled"), true);
       await load();
     });
   }
@@ -3445,7 +3387,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (event.target === el("pair-modal")) closePairModal();
   };
   el("pair-submit").onclick = () =>
-    withBusy("配對", async () => {
+    withBusy(t("pairManual.busy"), async () => {
       const node = await api.TrustNode(
         el("pair-node-id").value.trim(),
         el("pair-display-name").value.trim(),
@@ -3460,10 +3402,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // banner is how "you are half done" gets missed, and half-done pairing is
       // exactly what happened on 2026-09-10: the mac was paired, the Ubuntu box
       // still answered `No paired nodes`, and nothing said so.
-      banner(
-        `已信任 ${node.displayName}：這台已信任對方，配對本身不會公開任何 session。` +
-        "對方那台也要對這台做一次配對，否則它送不到這裡也收不到心跳。"
-      );
+      banner(t("pairManual.trusted", { name: node.displayName }));
     });
 
   el("btn-audience").onclick = openAudienceModal;
@@ -3477,33 +3416,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
     if (audience.mode === "selected" && audience.nodes.length === 0) {
-      banner("指定節點需要至少一個節點 ID；要不公開請選「不公開」。");
+      banner(t("audience.needsANode"));
       return;
     }
-    const noun =
-      audience.mode === "none" ? "收回" : audience.mode === "all_paired" ? "公開給所有已配對節點" : "公開給指定節點";
-    applyAudience(audience, noun);
+    applyAudience(audience, audience.mode);
   };
 
   el("btn-unpublish").onclick = () =>
     applyAudience(
       { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
-      "收回",
+      "none",
     );
 
-  el("btn-reload").onclick = () => withBusy("重新整理", load);
+  el("btn-reload").onclick = () => withBusy(t("app.reload"), load);
 
   el("btn-discover").onclick = () =>
-    withBusy("掃描", async () => {
+    withBusy(t("app.rescan"), async () => {
       const counts = await api.Discover();
       await load();
       const skipped = counts.skipped ?? 0;
-      const detail = skipped > 0 ? `，另有 ${skipped} 筆無法解析已略過` : "";
-      banner(`掃描完成：Claude ${counts.claude}、Codex ${counts.codex}，共 ${counts.total} 個${detail}。`, skipped === 0);
+      banner(t("app.rescanned", {
+        claude: counts.claude, codex: counts.codex, total: counts.total,
+      }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : ""), skipped === 0);
     });
 
   el("btn-heartbeat").onclick = () =>
-    withBusy("讀取 heartbeat", async () => {
+    withBusy(t("heartbeat.busy"), async () => {
       el("modal-body").textContent = await api.Heartbeat();
       el("modal").classList.remove("hidden");
     });
@@ -3610,8 +3548,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Not undoable, so it is asked rather than assumed. The node has no
     // "unclear", and messages that arrive between this dialog and the confirm go
     // with the rest.
-    if (!confirm(`清空 ${session} 的收件匣？這個動作無法復原。`)) return;
-    withBusy("清空收件匣", async () => {
+    if (!confirm(t("inbox.clearConfirm", { session }))) return;
+    withBusy(t("inbox.busyClear"), async () => {
       const cleared = await api.ClearInbox(session);
       // Re-read through openInbox, so the answer is sequence-guarded like every
       // other read and lands on the session it was asked about. The outcome is
@@ -3623,7 +3561,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   };
 
   el("btn-pairing-on").onclick = () =>
-    withBusy("開啟配對模式", async () => {
+    withBusy(t("pair.busyOpen"), async () => {
       // No duration: the node's own default is the one the node documents, and
       // sending a number from here would make this window disagree with `ah`.
       await api.OpenPairing(0);
@@ -3631,7 +3569,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
 
   el("btn-pairing-off").onclick = () =>
-    withBusy("關閉配對視窗", async () => {
+    withBusy(t("pair.busyClose"), async () => {
       await api.ClosePairing();
       await loadPairing();
     });
@@ -3649,7 +3587,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.pairRequestsAll = Boolean(el("pair-requests-all").checked);
     loadPairRequests().catch(() => {});
   };
-  el("pair-address-note").textContent = PAIR_TEXT.addressNote;
 
 
   /* ---------------- node settings ---------------- */
@@ -3726,7 +3663,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   async function loadNodeSettings() {
     const sequence = ++nodeSettingsRequest;
-    el("node-settings-state").textContent = "讀取中…";
+    el("node-settings-state").textContent = t("common.loadingShort");
     let view;
     try {
       view = await api.NodeSettings();
@@ -3739,6 +3676,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // wrote fields the owner never touched.
     const addresses = view.error ? { list: [], failure: "" } : await fetchLocalAddresses();
     if (sequence <= nodeSettingsApplied) return;
+
     nodeSettingsApplied = sequence;
     applyNodeSettings(view, addresses);
   }
@@ -3771,17 +3709,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // an empty answer here would make every field look changed, so a later
       // save would write fields the owner never touched and drop the ones they
       // did.
-      el("node-settings-state").textContent = "讀不到";
+      el("node-settings-state").textContent = t("nodeSettings.unreadable");
       notice.append(
         element("div", "stale", state.nodeSettings
-          ? "讀不到節點設定，下面仍是上次成功讀到的值，可能已經過期；先「重新讀取」成功再存檔。"
-          : "讀不到節點設定，所以下面的欄位不是節點目前的值。"),
+          ? t("nodeSettings.unreadableStale")
+          : t("nodeSettings.unreadableEmpty")),
         element("div", "muted", view.error),
       );
       return;
     }
 
     state.nodeSettings = view;
+    state.nodeAddresses = addresses;
     // The form edits what the NEXT start will use, which is `saved`, not what
     // is running. The node merges a write onto the saved configuration and
     // judges it there — its own comment in internal/api/settings.go says so —
@@ -3819,9 +3758,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Only while a withdrawal stands. Absent is not false-with-a-reason, it is
     // "no withdrawal" — so nothing is said unless the node says it.
     if (view.peerListenWithdrawn) {
-      notice.append(element("div", "stale",
-        "這台機器啟動時把記住的區網位址收回了本機，那個位址救不回來。" +
-        "要再對外服務，請在上面重新選一個位址並把「允許區網連線」打開。"));
+      notice.append(element("div", "stale", t("nodeSettings.peerListenWithdrawn")));
     }
     renderPeerListenProblem(notice, view, addresses);
     // Said out loud rather than swallowed: without the list the owner sees only
@@ -3829,13 +3766,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // reads as the app having decided for them.
     if (addresses.failure) {
       notice.append(
-        element("div", "stale", "讀不到這台機器的網路位址，所以上面只有本機選項可以選。"),
+        element("div", "stale", t("nodeSettings.addressesUnreadable")),
         element("div", "muted", addresses.failure),
       );
     }
     el("node-settings-hint").textContent = view.restartRequired
-      ? "節點只在啟動時讀這些值，存檔後要重新啟動才生效。"
-      : "節點只在啟動時讀這些值。";
+      ? t("nodeSettings.hintRestart")
+      : t("nodeSettings.hint");
     // A suggestion belongs to a change the owner makes, never to a repaint:
     // the node's own ranges are on screen and must not be edited behind them.
     syncNodeSettingsForm();
@@ -3860,12 +3797,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     notice.append(
       element("div", "stale",
         problem.reason === "address_gone"
-          ? `這台機器現在沒有 ${problem.address} 這個位址（網路線拔掉了，或換了網路）。` +
-            `節點還在跑，但只在本機（${problem.runningOn}），其他機器連不進來。`
+          ? t("nodeSettings.problemAddressGone",
+            { address: problem.address, runningOn: problem.runningOn })
           : problem.reason === "port_in_use"
-            ? `${problem.address} 這個位址上的 port 已經被別的東西占用了。` +
-              `節點還在跑，但只在本機（${problem.runningOn}），其他機器連不進來。`
-            : `${problem.address} 綁不起來。節點還在跑，但只在本機（${problem.runningOn}）。`),
+            ? t("nodeSettings.problemPortInUse",
+              { address: problem.address, runningOn: problem.runningOn })
+            : t("nodeSettings.problemBind",
+              { address: problem.address, runningOn: problem.runningOn })),
       element("div", "muted", problem.detail || problem.message),
     );
     const actions = document.createElement("div");
@@ -3901,7 +3839,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // identical failure.
       if (Number.isFinite(next) && next < 65536 && Number(port) >= 1024) {
         repairs.push({
-          label: `改用 ${host}:${next}`,
+          label: t("nodeSettings.repairPort", { address: `${host}:${next}` }),
           peerListen: `${host}:${next}`,
           // Carried, not set. A port number is not a decision about whether
           // anything may leave this machine, and turning that switch on here
@@ -3927,8 +3865,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
           // to turn on something already on is its own kind of wrong, and it is
           // the one an owner notices, because nothing happens.
           label: allowLanAlreadyOn
-            ? `改用 ${item.interface}（${item.address}）`
-            : `改用 ${item.interface}（${item.address}）並允許區網連線`,
+            ? t("nodeSettings.repairAddress",
+              { interface: item.interface, address: item.address })
+            : t("nodeSettings.repairAddressAndLan",
+              { interface: item.interface, address: item.address }),
           peerListen: address,
           allowLan: true,
           primary: repairs.length === 0,
@@ -3938,7 +3878,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Always last, and always there. An owner who has decided to be off the
     // network for now needs a way to say so, or this banner returns on every
     // start and becomes the thing they learn to ignore.
-    repairs.push({ label: "就先只在本機", peerListen: "", allowLan: false, primary: false });
+    repairs.push({ label: t("nodeSettings.repairLoopback"), peerListen: "", allowLan: false, primary: false });
     return repairs;
   }
 
@@ -3966,7 +3906,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (option.peerListen && ![...select.options].some((existing) => existing.value === option.peerListen)) {
       const added = document.createElement("option");
       added.value = option.peerListen;
-      added.textContent = `${option.peerListen} · 這次修復選的位址`;
+      added.textContent = `${option.peerListen} · ${t("nodeSettings.optionRepairChosen")}`;
       added.dataset.private = "1";
       select.append(added);
     }
@@ -3987,17 +3927,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (source === "flag") {
       const differs = running !== undefined && describeStored(running) !== describeStored(savedValue);
       return differs
-        ? `· 目前執行中的是 ${describeStored(running)}（這次啟動的命令列指定）；上面是下次啟動會用的值`
-        : "· 這次啟動的命令列也指定了同樣的值";
+        ? t("nodeSettings.sourceFlagDiffers", { running: describeStored(running) })
+        : t("nodeSettings.sourceFlagSame");
     }
-    if (source === "remembered") return "· 記住的值";
-    if (source === "default") return "· 預設值";
+    if (source === "remembered") return t("nodeSettings.sourceRemembered");
+    if (source === "default") return t("nodeSettings.sourceDefault");
     return "";
   }
 
   function describeStored(value) {
-    if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "（空）";
-    if (typeof value === "boolean") return value ? "開" : "關";
+    if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : t("nodeSettings.valueEmpty");
+    if (typeof value === "boolean") return value ? t("nodeSettings.valueOn") : t("nodeSettings.valueOff");
     return String(value === "" || value === undefined ? LOOPBACK_LISTEN : value);
   }
 
@@ -4016,7 +3956,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     select.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = `只在本機（${LOOPBACK_LISTEN}）`;
+    placeholder.textContent = t("nodeSettings.optionLoopback", { address: LOOPBACK_LISTEN });
     placeholder.dataset.private = "1";
     select.append(placeholder);
 
@@ -4027,7 +3967,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!isDefault && isLoopbackListen(value)) {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = `${value} · 只在本機（非預設埠）`;
+      option.textContent = `${value} · ${t("nodeSettings.optionLoopbackOtherPort")}`;
       option.dataset.private = "1";
       select.append(option);
     }
@@ -4038,7 +3978,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       offered.add(address);
       const option = document.createElement("option");
       option.value = address;
-      option.textContent = `${address} · ${item.interface} · ${item.subnet}${item.private ? "" : " · 非私有網段，需要「視為私有網段」"}`;
+      option.textContent = `${address} · ${item.interface} · ${item.subnet}` +
+        (item.private ? "" : ` · ${t("nodeSettings.optionNotPrivate")}`);
       option.dataset.private = item.private ? "1" : "";
       option.dataset.subnet = item.subnet;
       select.append(option);
@@ -4046,11 +3987,54 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!isLoopbackListen(value) && !offered.has(value)) {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = `${value} · 目前設定，這台機器現在沒有這個位址`;
+      option.textContent = `${value} · ${t("nodeSettings.optionGone")}`;
       option.dataset.private = "1";
       select.append(option);
     }
     select.value = isDefault ? "" : value;
+  }
+
+  // relabelNodeSettings puts this form back into the language in use without
+  // reading the node again and without touching a single thing the owner
+  // typed.
+  //
+  // Not applyNodeSettings: that repaints every field from `saved`, so calling
+  // it here would throw away a half-edited form because somebody changed the
+  // language. What is rebuilt is only what is translated — the address list's
+  // labels (the option VALUES are addresses and survive, and the current
+  // selection is passed back in as `current`), the source tags beside each
+  // field, the restart hint, and the warnings syncNodeSettingsForm derives.
+  function relabelNodeSettings() {
+    const view = state.nodeSettings;
+    if (!view) return;
+    const select = el("node-peerlisten");
+    // The selection as it stands on screen, and nothing else. Falling back to
+    // `saved.peerListen` here undid the owner's own choice: the loopback option
+    // carries the value "" (fillPeerListenOptions writes `select.value = ""` for
+    // it), so an owner who had moved a saved LAN address BACK to "this machine
+    // only" and then switched language had the LAN address re-selected under
+    // them — readNodeSettingsPatch would then find nothing changed and Save
+    // would leave the node listening on the LAN. relabelNodeSettings only ever
+    // runs once applyNodeSettings has populated the form, so "" is always the
+    // loopback option and never "the form has not been filled in yet".
+    const chosen = select.value;
+    fillPeerListenOptions(chosen, state.nodeAddresses?.list);
+    const running = view.settings ?? {};
+    const sources = view.sources ?? {};
+    const saved = view.saved ?? {};
+    for (const [id, key] of [
+      ["node-peerlisten-source", "peerListen"],
+      ["node-allowlan-source", "allowLan"],
+      ["node-discover-source", "discover"],
+      ["node-private-source", "treatAsPrivate"],
+      ["node-autowake-source", "autoWake"],
+    ]) {
+      el(id).textContent = describeSource(sources[key], running[key], saved[key]);
+    }
+    el("node-settings-hint").textContent = view.restartRequired
+      ? t("nodeSettings.hintRestart")
+      : t("nodeSettings.hint");
+    syncNodeSettingsForm();
   }
 
   // syncNodeSettingsForm explains the combination on screen. It writes no field
@@ -4088,12 +4072,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     warning.replaceChildren();
     if (!allowLan && lanAddress && naming) {
       warning.append(element("div", "stale",
-        `「${address}」不是本機位址，而「允許區網連線」是關的：節點會拒絕這次儲存，` +
-        "訊息會指名這個位址。要服務它就把「允許區網連線」一起打開。"));
+        t("nodeSettings.warnLanOff", { address })));
     } else if (!allowLan && !isLoopbackListen(stored)) {
       warning.append(element("div", "stale",
-        `關掉「允許區網連線」會讓節點在這次儲存時把對外位址從「${stored}」收回本機，` +
-        "而且收回的位址救不回來。"));
+        t("nodeSettings.warnWithdraw", { stored })));
     }
 
     // A non-private address needs its range declared or the node refuses it.
@@ -4109,8 +4091,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         !declared.some((range) => coversAddress(range, address))) {
       const subnet = option?.dataset?.subnet ?? "";
       warning.append(element("div", "stale",
-        `「${address}」不在私有網段，節點會拒絕它，除非「視為私有網段」裡有涵蓋它的範圍。` +
-        (subnet ? `這個介面自己的網段是 ${subnet}。` : "")));
+        t("nodeSettings.warnNotPrivate", { address }) +
+        (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
     }
 
     // The note explains the field's current contents, so it is shown whenever
@@ -4120,7 +4102,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const showing = state.nodePrivateSuggested !== "" &&
       el("node-private").value.trim() === state.nodePrivateSuggested;
     note.textContent = showing
-      ? `已帶入這個介面自己的網段 ${state.nodePrivateSuggested}。這個範圍決定節點願意把資料送到哪裡，不要放大它。`
+      ? t("nodeSettings.privateSuggested", { subnet: state.nodePrivateSuggested })
       : "";
     note.classList.toggle("hidden", !showing);
   }
@@ -4212,15 +4194,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   async function saveNodeSettings() {
     if (!state.nodeSettings || state.nodeSettings.error) {
-      banner("還沒有成功讀到節點設定，沒有可靠的基準可以比對改了什麼。請先「重新讀取」。");
+      banner(t("nodeSettings.noBaseline"));
       return;
     }
     const patch = readNodeSettingsPatch();
     if (Object.keys(patch).length === 0) {
-      banner("沒有改動任何設定。");
+      banner(t("nodeSettings.noChange"));
       return;
     }
-    await withBusy("儲存節點設定", async () => {
+    await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
       let view;
       try {
@@ -4237,7 +4219,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         // nothing changed at the node.
         if (sequence > nodeSettingsApplied) nodeSettingsApplied = sequence;
         el("node-settings-notice").replaceChildren(
-          element("div", "stale", "節點拒絕了這次儲存，設定沒有變動。"),
+          element("div", "stale", t("nodeSettings.refused")),
           element("div", "muted", view.error),
         );
         return;
@@ -4258,8 +4240,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         // told to restart something they were told is not a service.
         await paintAfterSave(sequence, view);
         banner(
-          `設定已儲存，但讀不到背景服務狀態（${status.reason}），所以沒有自動重啟。` +
-          "節點還在用舊設定跑：請自己重啟它，或到上面的背景服務區看狀態。",
+          t("nodeSettings.savedNoServiceStatus", { reason: status.reason }),
         );
         return;
       }
@@ -4274,8 +4255,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       } catch (error) {
         await paintAfterSave(sequence, view);
         banner(
-          `設定已儲存，但重新啟動節點失敗：${error}。` +
-          "節點還在用舊設定跑，請到上面的背景服務區看狀態。",
+          t("nodeSettings.savedRestartFailed", { error }),
         );
         return;
       }
@@ -4305,14 +4285,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
           "node-private-source", "node-autowake-source"]) {
           el(id).textContent = "";
         }
-        el("node-settings-hint").textContent = "節點只在啟動時讀這些值。";
+        el("node-settings-hint").textContent = t("nodeSettings.hint");
         // Without the re-read there is no way to tell whether what was asked
         // for is what the node now holds, and the most common reason it would
         // not be — a flag in the service unit — looks exactly like success.
         // Say the check did not happen rather than implying it passed.
         banner(
-          `設定已儲存，服務也重新啟動了，但重啟後讀不回節點設定（${after.view.error}），` +
-          "所以無法確認這次的改動真的生效。請按上面的「重新讀取」再看一次。",
+          t("nodeSettings.savedRereadFailed", { error: after.view.error }),
         );
         return;
       }
@@ -4327,9 +4306,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const lost = after.view.error ? [] : didNotStick(patch, after.view.saved);
       if (lost.length > 0) {
         banner(
-          `設定已儲存，服務也重新啟動了，但重啟後 ${lost.join("、")} 又變回原來的值。` +
-          "最可能的原因是背景服務的單元檔帶著這些啟動旗標：它每次啟動都會給，節點也會把它記下來，" +
-          "所以從這裡存的值會被蓋掉。請在上面「安裝為背景服務」重裝一次（重裝只會帶資料庫路徑），再改一次。",
+          t("nodeSettings.savedDidNotStick", { lost: lost.join(t("candidate.flagJoin")) }),
         );
         return;
       }
@@ -4343,8 +4320,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // claim about the one thing this window can actually check and did not.
       if (live.unknown) {
         banner(
-          `設定已儲存，節點也重新啟動了，但重啟後讀不到狀態（${live.reason}），` +
-          "所以無法確認節點是否正常回來。請看上面的背景服務區。",
+          t("nodeSettings.savedStatusUnknown", { reason: live.reason }),
         );
         return;
       }
@@ -4355,27 +4331,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // would report every successful restart on Windows as a failure.
       if (!live.installed) {
         if (back.nodeAnswering) {
-          banner("設定已儲存，節點已重新啟動並回應中。", true);
+          banner(t("nodeSettings.savedNodeAnswering"), true);
           return;
         }
         banner(
-          "設定已儲存，節點也重新啟動了，但它沒有回應。剛改的設定是第一個要懷疑的地方；" +
-          "節點的 log 路徑在上面那行重啟輸出裡。",
+          t("nodeSettings.savedNodeSilent"),
         );
         return;
       }
       if (back.running && back.nodeAnswering) {
-        banner("設定已儲存，背景服務已重新啟動並回應中。", true);
+        banner(t("nodeSettings.savedServiceAnswering"), true);
         return;
       }
       // Not marked successful, so it stays on screen: the settings just saved
       // are the first thing to suspect, and they are still on the form above.
       banner(
         back.running
-          ? "設定已儲存，服務在跑但節點還沒有回應。剛改的設定是第一個要懷疑的地方；" +
-            `看 log：${back.logHint || "（節點沒有給路徑）"}`
-          : "設定已儲存，但重啟後服務沒有在執行。剛改的設定可能讓節點拒絕啟動；" +
-            `看 log：${back.logHint || "（節點沒有給路徑）"}`,
+          ? t("nodeSettings.savedServiceUpNodeSilent",
+            { log: back.logHint || t("nodeSettings.noLogPath") })
+          : t("nodeSettings.savedServiceDown",
+            { log: back.logHint || t("nodeSettings.noLogPath") }),
       );
     });
   }
@@ -4414,7 +4389,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return { unknown: true, reason: String(error) };
     }
     const status = state.service;
-    if (!status) return { unknown: true, reason: "沒有讀到狀態" };
+    if (!status) return { unknown: true, reason: t("nodeSettings.noStatusRead") };
     if (status.toolError) return { unknown: true, reason: status.toolError };
     if (!status.supported) return { unknown: false, installed: false };
     return { unknown: false, installed: Boolean(status.installed) };
@@ -4433,11 +4408,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // for against what is there needs no theory about why.
   function didNotStick(patch, savedAfter) {
     const labels = {
-      peerListen: "對外位址",
-      allowLan: "允許區網連線",
-      discover: "在區網上尋找位址",
-      treatAsPrivate: "視為私有網段",
-      autoWake: "自動喚醒",
+      peerListen: t("nodeSettings.peerListenLabel"),
+      allowLan: t("nodeSettings.allowLan"),
+      discover: t("nodeSettings.discoverShort"),
+      treatAsPrivate: t("nodeSettings.privateLabel"),
+      autoWake: t("nodeSettings.autoWakeShort"),
     };
     return Object.keys(patch)
       .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
@@ -4463,6 +4438,54 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const output = el("node-settings-output");
     output.textContent = `$ ${result.command}\n${result.output}`;
     output.classList.remove("hidden");
+  }
+
+  // setUILanguage repaints in place rather than reloading. A reload would drop
+  // the pairing drawer's state, the filter selection and anything half-typed,
+  // which is a high price for a string swap.
+  function setUILanguage(next) {
+    state.ui.lang = setLanguage(next);
+    savePrefs();
+    paintStatic();
+    render();
+    repaintFromState();
+  }
+
+  // repaintFromState is the other half of a language switch, and the half that
+  // was missing.
+  //
+  // paintStatic writes t(key) onto every [data-t] element in index.html —
+  // including the ones JS later overwrites with something derived from state.
+  // For those, the key in the markup is a placeholder ("reading the service
+  // status…"), so a switch that stopped at paintStatic() + render() left the
+  // Settings panel — the panel the language control itself sits in — claiming
+  // to be loading, and left a button reading "Install as a background service"
+  // on a machine where the service is installed and running.
+  //
+  // render() re-derives what it owns (the rows, the counts, the selection bar,
+  // the node list and the pairing drawer while their view is on screen). This
+  // covers everything else that is written from state: the title bar's node
+  // line, the service panel and its pill, the settings form, and the two
+  // dialogs that can be open across a switch. The rule for anything added
+  // later: if JS writes a [data-t] element, it is re-derived here.
+  function repaintFromState() {
+    renderNodeLine();
+    if (state.service) renderService();
+    if (state.nodeSettings) relabelNodeSettings();
+    if (state.inboxSessionAsked) {
+      el("inbox-title").textContent = state.inboxSessionAsked;
+      showInboxTab(state.inboxTab);
+      // The list itself, from the view renderInbox was last handed. Every line
+      // in it — the meta line's counts, "full", "empty", a failed read — is a
+      // translated sentence that only this call writes.
+      if (state.inboxView) renderInbox(state.inboxView);
+      renderOutbound();
+    }
+    if (!el("audience-modal").classList.contains("hidden")) renderAudienceCount();
+    if (state.mcpSession) {
+      el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
+      renderMCPStatus(state.mcpStatus);
+    }
   }
 
   /* ---------------- redesign wiring ---------------- */
@@ -4502,8 +4525,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
     };
   }
-  el("node-settings-reload").onclick = () => (state.nodeSettingsTried = true, loadNodeSettings()).catch((error) => banner(`讀取節點設定失敗：${error}`));
-  el("node-settings-save").onclick = () => saveNodeSettings().catch((error) => banner(`儲存節點設定失敗：${error}`));
+  el("node-settings-reload").onclick = () => (state.nodeSettingsTried = true, loadNodeSettings())
+    .catch((error) => banner(t("busy.failed", { action: t("nodeSettings.busyRead"), error })));
+  el("node-settings-save").onclick = () => saveNodeSettings()
+    .catch((error) => banner(t("busy.failed", { action: t("nodeSettings.busySave"), error })));
   // Changing the address is the one moment this form offers a value; every
   // other handler only re-explains what is already on screen.
   el("node-peerlisten").onchange = () => {
@@ -4530,8 +4555,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     savePrefs();
     applyBackdrop();
   };
+  // Each language names itself in itself, so these two labels are the one pair
+  // of strings in the window that is never translated: whoever needs the other
+  // one has to be able to read the entry that leads there.
+  for (const choice of LANGUAGES) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    el("settings-lang").append(option);
+  }
+  el("settings-lang").onchange = (event) => setUILanguage(event.target.value);
 
   loadPrefs();
+  // The markup's own words, before the first render: index.html carries keys,
+  // not sentences.
+  paintStatic();
   el("search").value = state.search;
   applyBackdrop();
   if (backdropUrl) el("backdrop-photo").src = backdropUrl;
@@ -4554,7 +4592,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.appVersion = release === "unreleased" ? "unreleased" : `v${release}`;
       const line = el("node-line");
       const painted = line?.textContent || "";
-      if (painted.includes("·") || painted.includes("無法連線")) {
+      if (painted !== "" && painted !== t("app.connecting")) {
         if (!painted.endsWith(state.appVersion)) line.textContent = `${painted} · ${state.appVersion}`;
       }
     })
@@ -4571,18 +4609,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
-    openAudienceModal, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
+    openAudienceModal, renderAudienceCount, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
-    pairingRemaining, tickCountdown, visible, showInboxTab, loadOutbound, loadWakes, resumeCommand,
+    pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeCommand,
     copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
+    renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs,
+    t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
   };
   if (!start) return internals;
@@ -4613,8 +4653,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // renderPairRequests and so does the overview's render() right behind it.
     // The rows are drawn here only when that read was abandoned — a dialog
     // opened, a caret in a field — and never reached the screen.
+    // The overview's own failure must not take the rows with it. Without the
+    // inner catch a rejected load() skips the step below, so a read that did
+    // reach the node never reaches the screen and the request rows freeze at
+    // whatever they last showed — on the one panel where a row going stale is
+    // somebody at another keyboard waiting.
     loadPairRequests({ render: false })
-      .then(() => load({ background: true, exceptPairingDrawer: true }))
+      .then(() => load({ background: true, exceptPairingDrawer: true }).catch(() => false))
       .then((rendered) => {
         if (!rendered) renderPairRequests();
       })
@@ -4653,15 +4698,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // air.
   setInterval(() => {
     if (interactionInProgress()) return;
-    load({ background: true }).catch((error) => banner(`載入失敗：${error}`));
+    load({ background: true }).catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
   }, 15000);
 
   load()
     .then(loadPairing)
-    .catch((error) => banner(`載入失敗：${error}`));
+    .catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
 
-  el("service-refresh").onclick = () => loadService().catch((error) => banner(`讀取背景服務狀態失敗：${error}`));
-  el("service-open").onclick = () => openServiceForm().catch((error) => banner(`開啟表單失敗：${error}`));
+  el("service-refresh").onclick = () => loadService()
+    .catch((error) => banner(t("busy.failed", { action: t("service.busyRead"), error })));
+  el("service-open").onclick = () => openServiceForm()
+    .catch((error) => banner(t("busy.failed", { action: t("service.busyOpenForm"), error })));
   el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
   el("service-install").onclick = installService;
   el("service-uninstall").onclick = uninstallService;

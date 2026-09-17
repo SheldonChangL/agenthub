@@ -307,7 +307,7 @@ col.c-session { width: 264px; }
 col.c-status { width: 84px; }
 col.c-mgmt { width: 128px; }
 col.c-audience { width: 112px; }
-col.c-flags { width: 138px; }
+col.c-flags { width: 164px; }
 col.c-last { width: 92px; }
 /* Wide enough for all three buttons plus the cell's padding: measured at 241px
    (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font
@@ -591,6 +591,11 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 #pair-here { margin: 0 14px 10px; }
 #pair-local-address { font-size: 17px; letter-spacing: 0.06em; }
 #copy-pair-address-status:empty { display: none; }
+/* The paragraph under the address, at the size the rest of the drawer's notes
+   are: it was rendering at body size, which made a secondary explanation the
+   loudest thing under the one string a person is supposed to read out. */
+#pair-here-note { font-size: 12px; line-height: 1.6; margin-top: 6px; }
+#pair-here-note:empty { display: none; }
 .showdecided { display: flex; align-items: center; gap: 6px; font-weight: 400; letter-spacing: 0; }
 
 /* The rows scroll, like the candidate list: an attacker on the segment can
@@ -810,6 +815,10 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
 .toggle input { margin-top: 3px; }
 .toggle .why { font-size: 11.5px; color: var(--muted); }
+/* The language control is a row in the same column as the switches above it,
+   but it is a <select> rather than a checkbox, so it lines up on the centre. */
+.langrow { align-items: center; gap: 12px; }
+.langrow select { min-width: 160px; }
 
 /* ---------- modals ---------- */
 
