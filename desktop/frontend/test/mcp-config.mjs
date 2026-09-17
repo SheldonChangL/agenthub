@@ -22,6 +22,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
+import { TEXT as EN } from "../src/i18n/en.js";
+import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -214,12 +216,26 @@ if (copied.length !== 1) {
 //    Code started in the same directory launches a second agenthub-mcp under
 //    this same id (issue #104), and reading is all the config buys until the
 //    owner opens the session's outbound gate.
+//    The markup carries keys now, so the sentences are checked where they
+//    live: both tables, because a warning that exists in one language only is
+//    a warning half the owners never see.
 const markup = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
 const card = markup.slice(markup.indexOf('id="mcp-modal"'));
 const dialog = card.slice(0, card.indexOf("</div>\n\n"));
-for (const phrase of ["per-project", "同一個目錄", "--strict-mcp-config", "--outbound"]) {
-  if (!dialog.includes(phrase)) {
-    failures.push(`the dialog never mentions ${phrase}`);
+for (const flag of ["--strict-mcp-config", "--outbound"]) {
+  if (!dialog.includes(flag)) {
+    failures.push(`the dialog never mentions ${flag}`);
+  }
+}
+const said = (table) => Object.entries(table)
+  .filter(([key]) => key.startsWith("mcp."))
+  .map(([, value]) => value).join(" ");
+for (const [name, phrase, table] of [
+  ["en.js", "per project", EN],
+  ["zh-Hant.js", "同一個目錄", ZH],
+]) {
+  if (!said(table).includes(phrase)) {
+    failures.push(`${name} never says ${phrase}, so the dialog does not warn in that language`);
   }
 }
 if (!/<p class="warning">/.test(dialog)) {

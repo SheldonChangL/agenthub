@@ -78,6 +78,9 @@ const STATIC_ATTRIBUTES = Object.freeze([
 
 export function paintStatic(root = globalThis.document) {
   if (!root?.querySelectorAll) return 0;
+  // So a screen reader and the browser's own hyphenation know which language
+  // this is. The markup ships with lang="en", which is the default.
+  if (root.documentElement) root.documentElement.lang = current;
   let painted = 0;
   for (const [selector, property, target] of STATIC_ATTRIBUTES) {
     for (const node of root.querySelectorAll(selector)) {

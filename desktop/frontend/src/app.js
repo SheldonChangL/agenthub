@@ -490,14 +490,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("tab-local-n").textContent = String(state.counts.total ?? state.sessions.length);
     el("tab-network-n").textContent = String(state.nodes.length);
     el("match-count").textContent = rows.length === state.sessions.length
-      ? `${rows.length} 個 session`
-      : `符合 ${rows.length} / ${state.sessions.length}`;
+      ? plural(rows.length, "table.sessionCount")
+      : t("table.matchCount", { shown: rows.length, total: state.sessions.length });
 
     // The selection bar floats over the table only while something is picked;
     // #select-all in the header is the way in, the bar is the way to act.
     const count = state.selected.size;
     el("selectionbar").classList.toggle("hidden", count === 0);
-    el("selection-count").textContent = count ? `已選取 ${count} 個 session` : "未選取";
+    el("selection-count").textContent = count ? plural(count, "table.selectedCount") : t("local.noneSelected");
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
     // The settings panel's own read and write are held off while ANY write is
@@ -525,13 +525,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       box.checked = allPicked;
       box.indeterminate = some;
     }
-    el("select-label").textContent = `全選目前篩選結果（${rows.length}）`;
+    el("select-label").textContent = t("local.selectAllFilteredCount", { n: rows.length });
 
-    el("footer-left").textContent =
-      `顯示 ${rows.length} / ${state.counts.total ?? 0} 個 session` +
-      ` · 所有已配對 ${state.counts.all_paired ?? 0}` +
-      ` · 指定節點 ${state.counts.selected ?? 0}` +
-      ` · 不公開 ${state.counts.none ?? 0}`;
+    el("footer-left").textContent = t("footer.counts", {
+      shown: rows.length,
+      total: state.counts.total ?? 0,
+      allPaired: state.counts.all_paired ?? 0,
+      selected: state.counts.selected ?? 0,
+      none: state.counts.none ?? 0,
+    });
   }
 
   /* ---------------- settings view ---------------- */
@@ -545,6 +547,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
     el("appearance-state").textContent = describeBackdropState();
+    // The control shows the language in use, not the stored override: with no
+    // override stored the window is following the OS, and a blank box over a
+    // window that is plainly in one language reads as a bug.
+    el("settings-lang").value = language();
     for (const link of document.querySelectorAll("#settings-nav a")) {
       link.className = link.dataset.target === state.settingsSection ? "on" : "";
     }
@@ -4439,6 +4445,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     savePrefs();
     applyBackdrop();
   };
+  // Each language names itself in itself, so these two labels are the one pair
+  // of strings in the window that is never translated: whoever needs the other
+  // one has to be able to read the entry that leads there.
+  for (const choice of LANGUAGES) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    el("settings-lang").append(option);
+  }
+  el("settings-lang").onchange = (event) => setUILanguage(event.target.value);
 
   loadPrefs();
   // The markup's own words, before the first render: index.html carries keys,
