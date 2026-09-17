@@ -313,8 +313,8 @@ export const TEXT = {
   "busy.failed": "{action} failed: {error}",
 
   "network.summaryPairing": "Pairing · {left} left",
-  "network.summaryOpenNotAnnouncing": "The window is open, but this machine is not broadcasting, so it will not appear in the other machine's candidate list. Open the pairing panel and give them the address it shows.",
-  "network.summaryOpenUnreachable": "The window is open, but this machine is not broadcasting and nobody can reach it yet. Open the pairing panel for the reason and the fix.",
+  "network.summaryOpenNotAnnouncing": "The window is open, but this machine is not broadcasting, so it will not appear in the other machine's candidate list. Press “Pair another machine…” above and give them the address it shows.",
+  "network.summaryOpenUnreachable": "The window is open, but this machine is not broadcasting and nobody can reach it yet. Press “Pair another machine…” above for the reason and the fix.",
   "network.summaryOff": "Off",
   "network.summaryOffLine": "The node was started without -discover, so this machine neither broadcasts nor looks. “Pair with another machine” still opens the window, and pairing by address still works.",
   "network.summaryUnreadable": "Unreadable",
@@ -603,6 +603,7 @@ export const TEXT = {
   "onboarding.service.actionStart": "Start the node",
   "onboarding.service.actionRestart": "Restart the node",
   "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot find out what is holding the node: {error}",
+  "onboarding.service.bodyNoAhNodeDown": "The node is not answering, and the ah command is not on this machine, so this window cannot find out what was holding it ({error}). It can still start the node that ships with this app; if a service manager was holding the node here, start it that way instead.",
 
   "onboarding.sessions.title": "Find your local sessions",
   "onboarding.sessions.body": "AgentHub reads the files Claude Code and Codex leave on disk. Scan once to fill the table below; after that it keeps itself up to date.",
@@ -617,7 +618,8 @@ export const TEXT = {
   "onboarding.reachable.bodyNodeDown": "The node is not answering, so it cannot say what it is listening on. Start it in step 1 first.",
   "onboarding.reachable.bodyUnreadable": "The node settings could not be read, so there is nothing to offer here yet.",
   "onboarding.reachable.retry": "Try reading again",
-  "onboarding.reachable.formDirty": "Settings has unsaved changes; save or discard them first.",
+  "onboarding.reachable.formDirty": "Node settings has unsaved changes. Press Save or Read again on that page first, then come back to this button.",
+  "onboarding.reachable.formDirtyFields": "Unsaved: {fields}.",
   "onboarding.reachable.openSettings": "Open node settings",
 
   "onboarding.pair.title": "Pair with another machine",
