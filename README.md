@@ -500,7 +500,10 @@ fingerprints in the same order, and each owner presses 指紋一致，核准 or
 指紋一致，確認 once they have read both screens group for group — or 拒絕, which
 travels to the other machine like the CLI's does. No key is carried by hand, and
 a node started without `-discover` still opens a window: it cannot be found on the
-network, so the drawer shows the address the other machine has to be given.
+network, and the drawer shows the address the other machine has to be given
+instead. That address is shown whether or not this node is announcing, because
+mDNS that does not carry between two segments is exactly as silent as mDNS that
+is off.
 
 The manual five-argument form stays at the bottom of that drawer, and is what
 still works when the two machines cannot open a connection to each other at all:

@@ -43,6 +43,7 @@ const pairing = () => ({
   availability: "on",
   windowAvailable: true,
   state: { open: pairingOpen, remainingSeconds: 252, displayName: "sheldon-mbp", nameIsChosen: false,
+    peerAddress: "192.168.50.10:7463",
     announcing: { announceableAddresses: 1, lastAnnouncedAt: ago(3) } },
   candidates: pairingOpen ? [
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
@@ -63,10 +64,11 @@ const log = (...a) => console.log("[mock]", ...a);
 const LOCAL_NAME = "sheldon-mbp";
 const LOCAL_FP = "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30";
 const fp = (role, machine, whose, fingerprint) => ({ role, machine, whose, fingerprint });
-const pairNotice = "Two fingerprints are shown, the machine that asked first and the machine it asked " +
-  "second. The other machine shows the same two values in the same order. Read both screens: if any " +
-  "group differs, reject — something is between the two machines. Nothing is trusted until the owner " +
-  "of each machine says so.";
+const pairNotice = "Two fingerprints are shown: the requester (the machine that asked) first, " +
+  "the receiver (the machine it asked) second — the same words that label the lines. The other " +
+  "machine shows the same two values in the same order; run `ah pair pending` there to see them. " +
+  "Read both screens: if any group differs, reject — something is between the two machines. " +
+  "Nothing is trusted until the owner of each machine says so.";
 let pairRequests = [
   {
     id: "pair_3f9c1a7d52b8e046", direction: "incoming", nodeId: "node_04f7b2c9d1e8a3560b7d",
@@ -77,7 +79,7 @@ let pairRequests = [
       fp("receiver", LOCAL_NAME, "this machine", LOCAL_FP),
     ],
     address: "192.168.50.87:7463", state: "pending", expiresAt: ago(-240),
-    nextStep: "Compare the two fingerprints, then on this machine run: ah pair approve pair_3f9c1a7d52b8e046",
+    nextStep: "Compare the two fingerprints, then on this machine run: ah pair approve pair_3f9c1a7d52b8e046 (or ah pair reject pair_3f9c1a7d52b8e046)",
     notice: pairNotice,
   },
   {
@@ -162,7 +164,7 @@ configure({
         fp("receiver", "new-machine", "the other machine", "55AA 11BB 22CC 33DD 44EE 55FF 6600 7711"),
       ],
       address: String(address).trim(), state: "pending", expiresAt: ago(-300),
-      nextStep: `On new-machine, run: ah pair approve ${id}`, notice: pairNotice,
+      nextStep: `On new-machine, run: ah pair approve ${id} — then, after they approve, compare the fingerprints and run here: ah pair confirm ${id}`, notice: pairNotice,
     };
     pairRequests = [row, ...pairRequests];
     return row;
