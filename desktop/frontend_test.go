@@ -595,6 +595,22 @@ func TestFrontendSpeaksBothLanguages(t *testing.T) {
 	runNodeCheck(t, "i18n.mjs")
 }
 
+// TestFrontendWalksAFirstLaunchToAPairedNode covers the checklist a stranger
+// meets after the installer finishes.
+//
+// Everything it offers existed already; what did not exist was an order to do
+// them in. The joins are what this asserts: a step is shown only when the
+// window knows the thing it claims (an empty table on a read that never reached
+// the node is not a fact about this machine — issue #114), each button reaches
+// the same binding the panel's own button reaches and reaches it once, the
+// reachability button names "allow LAN connections" in its own label whenever
+// clicking it would turn that on (docs/ui-contract.md §7.8 rule 4), and the
+// fifteen-second refresh updates the rows in place rather than replacing the
+// button an owner is halfway through clicking.
+func TestFrontendWalksAFirstLaunchToAPairedNode(t *testing.T) {
+	runNodeCheck(t, "onboarding.mjs")
+}
+
 // runNodeCheck runs one check under frontend/test.
 func runNodeCheck(t *testing.T, name string) {
 	t.Helper()

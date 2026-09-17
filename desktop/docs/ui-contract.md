@@ -92,11 +92,28 @@
   （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
   重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
 - Banner：一則，錯誤或成功（ok），成功會自動消失。
+- **首次啟動清單**（`#onboarding`，見 §3.2）：只出現在本機視圖，但它的觸發條件橫跨三個視圖的狀態。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。
 
 ### 3.2 本機視圖
 
+- **首次啟動清單 `#onboarding`**（在 `.filters` 上方，可關閉）。裝好 .dmg／.exe 第一次打開的人看到的
+  就是這張卡片，所以英文文案的品質跟功能一樣重要。
+  - **出現條件**（任一成立）：節點連不到；服務支援但沒安裝／沒在跑；`sessions` 是空的；`nodes` 是空的。
+    除了「節點連不到」以外，每一條都要 `state.loadedOnce` 才算數——讀不到節點時的空表格不是這台機器的事實
+    （#114）。關掉之後寫進 `UI_PREFS_KEY` 的 `onboardingDismissed`，**不會自己再打開**；
+    要找回來只有設定 → 外觀的「Show the setup checklist」。
+  - **五個步驟**，每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
+    所以在終端機把服務移除掉，那一步會自己回來：①把節點跑成背景服務（`goToService()`；不支援服務管理員的
+    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②找出本機 session（跟 `btn-discover` 同一個
+    `discoverSessions()`；掃出 0 筆時 body 換成「AgentHub 是讀那些工具寫在硬碟上的檔案」的解釋）
+    ③讓這台機器連得到（見下）④和另一台機器配對（`goToPairing()`：先切到區網視圖再 `openPairingDrawer()`，
+    因為交換清單只在那個視圖被輪詢）⑤公開一個 session（純文字 + 把焦點放到 `#select-all`）。
+  - **元素識別**：本機視圖會被 15 秒的 `load()` tick 重畫，所以 `renderOnboarding()` 以 step id 為 key
+    原地更新，只有「步驟集合改變」時才寫容器；按鈕依位置保留。理由與 `updateCandidateRow` 一樣：
+    重建會把使用者正要按下去的那顆按鈕換掉。`state.busy` 時每顆按鈕 disabled。
+  - 全部做完時多顯示一次（帶勾），下一次 render 才收起來：在點下去的當下消失會被讀成閃退。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
 - **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
@@ -113,9 +130,17 @@
 
 左欄（`nodelist`）：
 - 已配對節點列表：每列 presence 點 + 名稱 + presence 文字 + 平台 · 最後聯繫。空：「尚未配對任何節點。」
-- 配對模式面板：headline、倒數（獨立元素，每秒只改這一個）、detail、開啟／停止按鈕、note（含 `broadcastWarning`，把本機名稱和它的來源說出來）。
+- 配對模式面板：headline、倒數（獨立元素，每秒只改這一個）、detail、note（含 `broadcastWarning`，把本機名稱和它的來源說出來）。
+  **這裡沒有自己的按鈕**（2026-09-17）：原本的 `#btn-open-pairing`「開啟配對面板」在 `#btn-pair` 改成開抽屜之後，
+  和它變成同一個 handler（`openPairingDrawer`）、同一個視圖上的兩顆一模一樣的按鈕，只是文字不同。
+  重複的入口只會讓人以為兩顆做的事不一樣，所以留下節點列表上那顆 primary 的 `#btn-pair`，把這顆刪掉。
 - 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字）。
-- 「配對新節點…」按鈕與說明。
+- **`#btn-pair`「配對另一台機器…」（節點列表的 primary 按鈕）開的是配對抽屜，不是手動表單**（2026-09-17）。
+  它本來開 `pair-modal`——那是兩台機器互相連不到時的退路，要手動填五個欄位、還要自己把 base64 公鑰帶過去。
+  結果這個視圖上最顯眼的按鈕把新手丟進退路，而真正會幫他找到對方機器的交換流程躲在次要連結後面。
+  手動表單仍然只差一步：抽屜頁尾的 `#btn-pair-manual`「手動輸入配對資料…」，那裡本來就有一句話說明什麼時候該用它。
+  （候選列的「改用手動填入…」＝ `prefillPairFrom()` 不變，它本來就是帶著資料進那個表單。）
+  `pair-modal` 的標題因此改成「手動配對」。`frontend/test/pairing-completeness.mjs` 逐項斷言這件事。
 
 **配對抽屜（`pairing-modal`）的順序，由上而下（#63）**：
 
@@ -198,7 +223,7 @@
 - `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
 
 對話框（`.modal`）：
-- `pair-modal` 配對新節點：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
+- `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
@@ -437,6 +462,21 @@
 4. **表單不替使用者做選擇。** 早期版本會因為選了區網位址就自動打開允許區網，而且綁在那個開關
    自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
    不改使用者控制的欄位。
+
+**規則 4 與首次啟動清單的第三步（2026-09-17）。** 那一步要做的事正是「一鍵讓這台機器連得到」，
+而那一鍵在允許區網是關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；
+它不禁止一顆使用者親手按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，
+連理由都寫在 `peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。
+這個視窗不會背著任何人勾那個框。」
+
+所以清單第三步的按鈕**就是用 `peerListenRepairs()` 產生的**，餵給它一個合成的
+`{reason: "loopback", address: <目前的 peerListen>}` 加上 `fetchLocalAddresses()` 的結果，
+按下去走 `applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的
+旗標；存檔走表單那條路，所以驗證、重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；
+`peerListenRepairs()` 最後那個「就先只在本機」同時是這一步的 skip；以及**光是 render 這張卡片不會去寫
+`#node-allow-lan`**（`frontend/test/onboarding.mjs` 逐項斷言這四件事）。
+前提是節點設定已經讀進來過——`applyPeerListenRepair` 填的是真正的表單——所以 `renderOnboarding()`
+在卡片可見且 `state.nodeSettings` 還是 null 時，每個視窗生命週期呼叫一次 `loadNodeSettings()`。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
