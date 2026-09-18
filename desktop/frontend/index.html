@@ -33,7 +33,11 @@
           </div>
         </div>
         <nav class="tabs" id="view-switch">
-          <span data-view="local" class="tab on"><span data-t="app.tab.local"></span> <span class="n" id="tab-local-n">–</span></span>
+          <!-- Two numbers, and they count different things: `n` is how many
+               sessions this machine has, `tab-local-inbox` is how many messages
+               are still waiting across all of them (#146). The second is hidden
+               at zero and whenever the count could not be read. -->
+          <span data-view="local" class="tab on"><span data-t="app.tab.local"></span> <span class="n" id="tab-local-n">–</span><span class="inboxbadge hidden" id="tab-local-inbox"></span></span>
           <span data-view="network" class="tab"><span data-t="app.tab.network"></span> <span class="n" id="tab-network-n">–</span></span>
           <span data-view="settings" class="tab" data-t="app.tab.settings"></span>
         </nav>

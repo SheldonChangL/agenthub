@@ -329,6 +329,16 @@ export const TEXT = {
 
   "inbox.readFailed": "Could not read the inbox: {error}",
 
+  /* The row badges (#146). "Held", never "unread": nothing marks a message
+     read, and reading one in this window deliberately does not either. */
+  "inbox.badge.titleEmpty": "Nothing is waiting in this inbox",
+  "inbox.badge.title.one": "{held} message is waiting in this inbox — still held, not read",
+  "inbox.badge.title.other": "{held} messages are waiting in this inbox — still held, not read",
+  "inbox.badge.titleFull.one": "This inbox is full: {held} message is held and new ones are being turned away",
+  "inbox.badge.titleFull.other": "This inbox is full: {held} messages are held and new ones are being turned away",
+  "inbox.badge.tabTitle.one": "{held} message is waiting across this machine's sessions",
+  "inbox.badge.tabTitle.other": "{held} messages are waiting across this machine's sessions",
+
   /* ---------------- the pairing drawer's own panels ---------------- */
   "pair.busy.approve": "Approving the pairing",
   "pair.busy.confirm": "Confirming the pairing",
