@@ -50,7 +50,8 @@ than half an install that exits 0.
 
 ### Directories it refuses
 
-An upgrade replaces its install directory, and replacing means `rm -rf`. So
+An upgrade replaces what it installed (`agenthub-desktop.app` and the
+`share/agenthub` tree, never the prefix itself), and replacing means `rm -rf`. So
 both `--prefix` and `AGENTHUB_HOME` are refused, before anything is downloaded
 or deleted, when the directory is:
 

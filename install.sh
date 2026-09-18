@@ -235,7 +235,7 @@ check_install_directory() { # check_install_directory <what it is> <directory>
 	fi
 	case "$check_home" in
 	"$check_dir"/*)
-		die "$1 is $check_dir, which contains your home directory; pick a directory of its own, for example \$HOME/.local"
+		die "$1 is $check_dir, which contains your home directory; pick a directory of its own, for example \$HOME/.local/agenthub"
 		;;
 	esac
 	if [ -d "$check_dir" ] && ! holds_agenthub "$check_dir"; then
@@ -584,8 +584,10 @@ closing_lines() {
 	say "  node: $SERVICE_STATE"
 	say ""
 	if [ "$CLI_ONLY" -eq 0 ]; then
-		if [ "$OS_SLUG" = "darwin" ] && [ "$INSTALLED_APP" -eq 1 ]; then
+		if [ "$OS_SLUG" = "darwin" ] && [ "$INSTALLED_APP" -eq 1 ] && [ -z "$PREFIX" ]; then
 			say "Open agenthub-desktop from Applications; it starts on a setup checklist."
+		elif [ "$OS_SLUG" = "darwin" ] && [ "$INSTALLED_APP" -eq 1 ]; then
+			say "Open $APP_PATH; it starts on a setup checklist."
 		else
 			say "Open agenthub-desktop ($BIN_DIR/agenthub-desktop); it starts on a setup checklist."
 		fi
