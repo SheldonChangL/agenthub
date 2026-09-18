@@ -86,7 +86,7 @@ var runTool = func(ctx context.Context, tool string, args ...string) (string, er
 	// in the environment, or one at a fixed offset from this executable. PATH is
 	// deliberately not among them, so "whatever came first on PATH" — the case
 	// this rule is about — cannot be what lands here.
-	command := exec.CommandContext(ctx, tool, args...)
+	command := quietly(exec.CommandContext(ctx, tool, args...))
 	command.Stdout = &output
 	command.Stderr = &output
 	err := command.Run()

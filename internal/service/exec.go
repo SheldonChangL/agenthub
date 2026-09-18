@@ -2,7 +2,8 @@ package service
 
 import (
 	"context"
-	"os/exec"
+
+	"agenthub.local/agenthub/internal/quiet"
 )
 
 // ExecRunner drives the real service manager.
@@ -14,6 +15,8 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
 	// #nosec G204 -- name is launchctl or systemctl, chosen by this package;
 	// args are the unit path and label it built.
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	// quiet.Command: on Windows these are schtasks and tasklist, run from a
+	// window that has no console; a plain exec would open one for each call.
+	output, err := quiet.Command(ctx, name, args...).CombinedOutput()
 	return string(output), err
 }
