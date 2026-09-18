@@ -91,6 +91,44 @@
 - 標題列：連線點（ok/bad）、`node-line`（節點名稱 · 平台 · URL）；三個分頁 `本機 session` / `區網` / `設定`
   （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
   重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
+- **收件匣徽章（#146，2026-09-18）**：數字，不是「新」。
+  - 定義是 **held，不是未讀**：節點沒有「已讀」這個概念，桌面端在抽屜裡讀也刻意不標示
+    （抽屜那句「在這裡讀不會把訊息交給 agent，也不會標示已讀」仍然成立，也仍然是真的）。
+    徽章數的是「還在收件匣裡、agent 還沒取走」的則數；只有 agent 取走或有人刪除才會減少。
+  - 來源是一個批次端點 `GET /v1/inbox/counts`，在**每次成功的 `Overview()` 之後**跟著讀一次，
+    用同一個 `overviewRequest` / `overviewApplied` 序號守衛（#114）。**不是每列打一次 API**——
+    那正是改版時拿掉徽章的原因。
+  - **0 與「不知道」是兩件事**：節點只回有訊息的 session，所以缺鍵＝0；讀取失敗則是「不知道」。
+    兩者**都不顯示徽章**（一千列各掛一個「0」會把真正有東西的列蓋掉），但讀取失敗
+    **不得被寫成 0**：`state.inboxCounts.ok` 轉為 false，上一輪的數字留在 `counts` 裡不清空，
+    節點連不到時同樣是「不知道」。兩者在畫面上唯一分得出來的地方是收件匣按鈕的 title
+    （已知為 0 → 「這個收件匣現在沒有訊息在等」；不知道 → 原本的按鈕說明），
+    這條由 `frontend/test/inbox-badge.mjs` 以變異測試釘住。
+  - `full` 另外標色（amber，`.inboxbadge.full`），因為滿了會把新訊息退回，是現在正在發生的事。
+  - 三個位置：每列收件匣按鈕上的數字、`本機 session` 分頁上的全機總和（`#tab-local-inbox`，
+    與既有的 session 計數 `#tab-local-n` 並列，數的是不同的東西）、以及 `document.title` 的
+    `(N) ` 前綴。抽屜自己的 `held / capacity` 文案不變，不重複。
+  - **分頁上那兩個數字必須看得出是兩個**：兩個裸數字並排會被讀成一個
+    （「本機 session 1119 555」看起來是千分位，或是「1119 之 555」）。所以訊息總數自成一顆
+    pill（`.tabinbox`）：`margin-left: 8px` 的間距 + 一個信封字符 `✉`（`aria-hidden`，
+    語意由 pill 的 title `inbox.badge.tabTitle` 承擔），數字獨立放在 `#tab-local-inbox-n`。
+    只要機器上有任何一個收件匣是滿的，這顆 pill 轉 amber——理由與列上的徽章相同，
+    而且從別的視圖看過來，分頁是唯一看得到這件事的地方。
+  - **元素識別**：表格改成以 session id 為 key 的原地更新（`sessionRow` / `updateSessionRow`，
+    與 `updateCandidateRow` 同一套），15 秒的 tick 不再重建任何一列——徽章會自己變動，
+    重建會把使用者正要按下去的收件匣按鈕換掉。`col.c-actions` 因為徽章從 176px 放寬到 200px。
+  - **留存的列上，每一個會被翻譯的字串都必須寫在 update pass 裡，不能只寫在建立的時候。**
+    這是上一條的直接代價，也是它引進的第一個 bug：列會被保留，所以在 `sessionRow` 裡寫死的字
+    是用「這個 session 第一次出現時的語言」寫的，之後切語言不會重建列，那個字就永遠留在舊語言
+    （收件匣按鈕的「收件匣」曾經整桌留在英文介面裡）。規則適用於 label、title/tooltip、
+    `aria-label`、以及任何 `t()` / `plural()` 的產物；`sessionRow` 只負責建立空的骨架，
+    按鈕的文字放在自己的 `<span class="label">` 裡（因為徽章是同一顆按鈕的子節點，
+    直接寫 `textContent` 會把它刪掉）。切語言時 `setUILanguage()` → `render()` 重畫可見的列，
+    `repaintFromState()` → `relabelSessionRows()` 再掃一次 `sessionRows` 裡的每一列——
+    也就是別的分頁在畫面上、沒有 `render()` 跟在後面時仍被留住的那些（被篩選條件擋掉的列
+    每次 `renderRows` 都會從 map 移除，重新出現時是用當下語言重建的）。由 `frontend/test/i18n.mjs` 釘住：
+    zh 開兩列 → 切 en → 每列的 Inbox / resume 標籤與 tooltip 都是英文、`#rows` 整段
+    textContent 不得出現任何漢字 → 再切回 zh。
 - Banner：一則，錯誤或成功（ok），成功會自動消失。
 - **首次啟動清單**（`#onboarding`，見 §3.2）：只出現在本機視圖，但它的觸發條件橫跨三個視圖的狀態。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
