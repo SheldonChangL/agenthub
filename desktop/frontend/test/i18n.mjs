@@ -526,6 +526,31 @@ for (const [index, button] of buttonsOf("inbox").entries()) {
 if (!han.test(el("rows").textContent)) {
   failures.push("switching back to Chinese left the table in English");
 }
+
+// And the second half of the fix, on its own.
+//
+// setUILanguage() does two things to the table: render() redraws the rows the
+// table is currently drawing, and repaintFromState() -> relabelSessionRows()
+// walks every row that is KEPT. Today those are the same set, so a check that
+// goes through setUILanguage cannot tell which one did the work — and the pass
+// over the kept rows would pass mutation testing while doing nothing. So it is
+// driven directly: the language is changed underneath with the raw setter,
+// which repaints nothing, and repaintFromState() alone has to catch the rows up.
+app.setLanguage("en");
+for (const [index, button] of buttonsOf("inbox").entries()) {
+  if (labelOf(button) !== ZH["inbox.title"]) {
+    failures.push(`row ${index} was already repainted before repaintFromState ran: ${JSON.stringify(labelOf(button))}`);
+  }
+}
+app.repaintFromState();
+for (const [index, button] of buttonsOf("inbox").entries()) {
+  if (labelOf(button) !== EN["inbox.title"]) {
+    failures.push(`repaintFromState did not reach row ${index}'s Inbox button: ${JSON.stringify(labelOf(button))}`);
+  }
+}
+if (han.test(el("rows").textContent)) {
+  failures.push(`repaintFromState left Han in the table: ${JSON.stringify(el("rows").textContent)}`);
+}
 app.setUILanguage("en");
 
 /* ---------------- both tables say the same things ---------------- */
