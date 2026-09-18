@@ -244,9 +244,12 @@ where it was.
   `MaxRetained` (4 × `MaxPending` = 64 rows in total) and
   `MaxRetainedPerSource` (2 × `MaxPendingPerSource` = 6 decided rows per source
   address) now bound the table. Only decided rows are ever dropped, oldest
-  first, and the per-source bound is applied before the total one, so a flooder
-  crowds out its own history rather than anybody else's and a row still waiting
-  for the owner is never evicted. What is given up is the guarantee that both
+  first. The per-source bound is applied first, so a flooder mostly crowds out
+  its own history; when enough sources hold history at once for the total bound
+  to bite, it falls on the oldest decided row whoever owns it — including the
+  owner's own outgoing rows, which carry no source address and are bounded by
+  the total alone. A row still waiting for the owner is never evicted. What is
+  given up is the guarantee that both
   sides can poll for an answer during the whole `retainDecided` window: under a
   flood from one address, that address's older answers are forgotten early. The
   alternative was holding every answer a stranger can generate.
