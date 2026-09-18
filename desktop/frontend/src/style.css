@@ -376,7 +376,11 @@ col.c-last { width: 92px; }
    (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font
    that renders the labels wider. At 214px the third button was cut off by the
    cell's own `overflow: hidden` at EVERY window width, not only narrow ones. */
-col.c-actions { width: 176px; }
+   The inbox button gained a count badge (#146), which is inline rather than
+   floated so it can never be cut off by that same overflow — it widens the
+   button by about 22px when a session is holding something, so the column
+   went from 176px to 200px rather than staying exactly at the old fit. */
+col.c-actions { width: 200px; }
 
 thead th {
   position: sticky; top: 0; z-index: 1;
@@ -476,6 +480,26 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .flag.warn.on { background: rgba(224, 163, 62, 0.16); color: var(--amber); }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
+
+/* How many messages a session is still holding (#146). It rides inside the
+   Inbox button and on the 本機 session tab, and it is absent — not zero —
+   whenever there is nothing waiting or the count could not be read. `full`
+   is amber because a full inbox is turning new messages away right now,
+   which is a different thing from a large number. */
+.inboxbadge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 15px; padding: 0 4px; margin-left: 5px;
+  border-radius: 999px;
+  background: var(--accent-dim); color: var(--accent);
+  font-size: 10px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.inboxbadge.full { background: rgba(224, 163, 62, 0.22); color: var(--amber); }
+/* On the tab the badge sits beside the session count, and 2px of air between
+   two numbers made them one number. 8px, plus an envelope, is what separates
+   「本機 session 1119」 from 「✉ 555」. */
+.tabinbox { gap: 3px; margin-left: 8px; padding: 0 5px; }
+.tabinbox .glyph { font-size: 11px; line-height: 1; }
 .badge {
   position: absolute; top: -5px; right: -4px;
   min-width: 15px; height: 15px; padding: 0 4px;
