@@ -365,3 +365,22 @@ jobs:
         run: ./.github/scripts/secret-scan.sh --self-test
       - name: secret-pattern scan
         run: ./.github/scripts/secret-scan.sh
+      # install.sh is piped into `sh` by strangers, so it has to be POSIX sh and
+      # not the bash that happens to be /bin/sh on some machines. -s sh is what
+      # makes shellcheck refuse the bashisms that would work here and fail under
+      # dash on Debian; `sh -n` is the second opinion from the shell itself.
+      # shellcheck ships on the ubuntu runner image.
+      - name: shellcheck install.sh
+        run: |
+          shellcheck --version
+          shellcheck -s sh install.sh
+          shellcheck scripts/test-install.sh
+      - name: install.sh parses as POSIX sh
+        run: sh -n install.sh
+      # The harness fakes uname so both platforms' transcripts are read on this
+      # one runner, and it installs twice from a locally built archive — once
+      # with a SHA256SUMS that matches and once with one that does not. The
+      # second is the check that matters: verification that can be skipped is
+      # not verification.
+      - name: install.sh behaves
+        run: bash scripts/test-install.sh
