@@ -224,6 +224,106 @@ func TestAFloodRotatingSourcesCannotEvictTheOwnersRequest(t *testing.T) {
 	}
 }
 
+// The retained table is bounded too, and a flooder can only crowd out its own
+// history.
+//
+// MaxPending and MaxPendingPerSource count undecided rows only. Displacement is
+// the leak: once the pending list is full, a source that still holds a row
+// there gives up its own oldest to make room for its next one, and the
+// displaced row was then kept for retainDecided with nothing counting it. That
+// loop has no end — the source's pending count comes straight back to where it
+// was — so one address at the boundary left a decided row behind on every
+// request it sent, at the 120/min the peer limiter allows.
+//
+// Both shapes are asserted, because the per-source bound alone does not bound
+// the total and the total bound alone would let one address push out everybody
+// else's answers. setUp fills the pending list and returns the source addresses
+// that hold a row in it and can therefore displace.
+func TestRetainedRequestsAreBounded(t *testing.T) {
+	cases := map[string]struct {
+		floodSources int // how many of the boundary sources go on sending
+		each         int // requests each of them sends after the list is full
+	}{
+		"one source at the boundary":   {floodSources: 1, each: 500},
+		"every source at the boundary": {floodSources: pairing.MaxPending, each: 40},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := &clock{at: time.Now()}
+			requests := pairing.NewRequestsWithClock(c.now)
+			add := func(id, node, source string) error {
+				row := pending(id, node, c.at, pairing.Incoming)
+				row.SourceHost = source
+				err := requests.Add(row)
+				// Well inside RequestTTL, so nothing below is bounded by the
+				// clock — only by the caps under test.
+				c.at = c.at.Add(time.Millisecond)
+				return err
+			}
+
+			// The owner's own machine asks first, from an address the flood
+			// never uses. It stays undecided, so no bound may touch it.
+			if err := add("pair_owner", "node_owner", "192.168.1.9"); err != nil {
+				t.Fatalf("the owner's own request: %v", err)
+			}
+
+			// Fill the rest of the pending list, one row per source, so every
+			// flooder below is a source that can displace.
+			for i := range pairing.MaxPending - 1 {
+				if err := add(fmt.Sprintf("pair_seed%d", i), fmt.Sprintf("node_seed%d", i),
+					fmt.Sprintf("10.0.0.%d", i)); err != nil {
+					t.Fatalf("seeding row %d: %v", i, err)
+				}
+			}
+
+			// Now the loop that used to grow the table without end.
+			displaced := 0
+			for j := range tc.each {
+				for i := range tc.floodSources {
+					if err := add(fmt.Sprintf("pair_f%d_%d", i, j), fmt.Sprintf("node_f%d_%d", i, j),
+						fmt.Sprintf("10.0.0.%d", i)); err == nil {
+						displaced++
+					}
+				}
+			}
+			if displaced < pairing.MaxRetained {
+				t.Fatalf("only %d requests got in, which never reaches the bound of %d — the "+
+					"test stopped exercising what it is for", displaced, pairing.MaxRetained)
+			}
+
+			rows := requests.List()
+			if len(rows) > pairing.MaxRetained {
+				t.Errorf("%d rows retained after %d accepted requests, want at most MaxRetained=%d",
+					len(rows), displaced, pairing.MaxRetained)
+			}
+
+			perSource := map[string]int{}
+			for _, row := range rows {
+				if row.Decided() && row.SourceHost != "" {
+					perSource[row.SourceHost]++
+				}
+			}
+			for source, kept := range perSource {
+				if kept > pairing.MaxRetainedPerSource {
+					t.Errorf("%s kept %d decided rows, want at most MaxRetainedPerSource=%d",
+						source, kept, pairing.MaxRetainedPerSource)
+				}
+			}
+
+			// The bound must never be paid for by something still waiting for
+			// the owner: that is the eviction MaxPendingPerSource exists to
+			// deny, and a cap that reintroduced it would be worse than no cap.
+			row, ok := requests.Get("pair_owner")
+			if !ok {
+				t.Fatal("the owner's pending request was dropped to make room for a flood's history")
+			}
+			if row.State != pairing.StatePending {
+				t.Fatalf("the owner's request is %q/%q, want it still pending", row.State, row.Reason)
+			}
+		})
+	}
+}
+
 // One machine, one row to compare. A second request from the same node would
 // put two identical fingerprints in front of the owner, only one of which is
 // the one the other machine is waiting on.

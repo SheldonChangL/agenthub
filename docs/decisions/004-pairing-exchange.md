@@ -233,6 +233,24 @@ where it was.
   machine, and keeping a job that dials it would be the wrong thing to hold on
   to.
 
+- **A crowded-out answer can no longer be polled.** `MaxPending` and
+  `MaxPendingPerSource` count only rows still waiting, so until now nothing
+  bounded the decided ones. Displacement is where that leaked: once the pending
+  list is full, a source that still holds a row in it gives up its own oldest to
+  make room for its next one, which puts its pending count back where it was and
+  leaves a decided row behind for ten minutes. The loop has no end, up to
+  `MaxPending` source addresses can be in it at once, and the peer limiter allows
+  each of them 120 requests a minute.
+  `MaxRetained` (4 × `MaxPending` = 64 rows in total) and
+  `MaxRetainedPerSource` (2 × `MaxPendingPerSource` = 6 decided rows per source
+  address) now bound the table. Only decided rows are ever dropped, oldest
+  first, and the per-source bound is applied before the total one, so a flooder
+  crowds out its own history rather than anybody else's and a row still waiting
+  for the owner is never evicted. What is given up is the guarantee that both
+  sides can poll for an answer during the whole `retainDecided` window: under a
+  flood from one address, that address's older answers are forgotten early. The
+  alternative was holding every answer a stranger can generate.
+
 - **The per-source bound is a bound on a host, not on a machine.** `MaxPendingPerSource`
   keys the flood limit on the address a request arrived from, which is the one
   thing its sender cannot choose — but two machines can share that address:
