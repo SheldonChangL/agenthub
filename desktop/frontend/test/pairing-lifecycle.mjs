@@ -401,7 +401,7 @@ const announcing = (displayName, nameIsChosen = false) => ({
   candidates: [],
   state: { open: false, displayName, nameIsChosen, announcing: { announceableAddresses: 1 } },
 });
-let answer = announcing("sheldon.chang mac");
+let answer = announcing("studio-mac");
 globalThis.setInterval = () => 0;
 configure({
   Overview, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
@@ -411,7 +411,7 @@ const named = boot();
 named.state.view = "network";
 
 await named.loadPairing();
-if (named.state.localName !== "sheldon.chang mac") {
+if (named.state.localName !== "studio-mac") {
   failures.push(`a poll left the broadcast name as ${JSON.stringify(named.state.localName)}`);
 }
 
@@ -419,7 +419,7 @@ if (named.state.localName !== "sheldon.chang mac") {
 // the warning to （未知） because one read failed drops the one string it is for.
 answer = { availability: "unknown", candidates: [], error: "node down" };
 await named.loadPairing();
-if (named.state.localName !== "sheldon.chang mac") {
+if (named.state.localName !== "studio-mac") {
   failures.push(
     `an unreachable node dropped the last known broadcast name: ${JSON.stringify(named.state.localName)}`);
 }
@@ -431,16 +431,16 @@ if (named.state.localName !== "sheldon.chang mac") {
 // carries nameIsChosen left every test green, and the panel then told an owner
 // who had just run -display-name that their name came from the machine — the
 // exact sentence the previous round removed.
-answer = announcing("Sheldon 的 MacBook", true);
+answer = announcing("工作室的 MacBook", true);
 await named.loadPairing();
-if (named.state.localName !== "Sheldon 的 MacBook") {
+if (named.state.localName !== "工作室的 MacBook") {
   failures.push(
     `a restart under a new name still shows ${JSON.stringify(named.state.localName)}`);
 }
 if (named.state.localNameIsChosen !== true) {
   failures.push("a chosen name arrived without its provenance, so the warning names the wrong remedy");
 }
-answer = announcing("sheldon.chang mac", false);
+answer = announcing("studio-mac", false);
 await named.loadPairing();
 if (named.state.localNameIsChosen !== false) {
   failures.push("a name read off the machine still reads as chosen");

@@ -52,7 +52,7 @@ const incoming = {
   // machine asked.
   fingerprints: [
     fp("requester", "ubuntu-lab", "the other machine", THEIR_FP),
-    fp("receiver", "sheldon-mbp", "this machine", LOCAL_FP),
+    fp("receiver", "studio-mac", "this machine", LOCAL_FP),
   ],
   nextStep: "Compare the two fingerprints, then on this machine run: ah pair approve pair_incoming000001",
 };
@@ -61,7 +61,7 @@ const outgoing = {
   displayName: "win-bench", platform: "windows/amd64", address: "192.168.50.31:7463",
   state: "awaiting-confirm", fingerprint: "1A5B 77C0 E93D 4826", localFingerprint: LOCAL_FP,
   fingerprints: [
-    fp("requester", "sheldon-mbp", "this machine", LOCAL_FP),
+    fp("requester", "studio-mac", "this machine", LOCAL_FP),
     fp("receiver", "win-bench", "the other machine", "1A5B 77C0 E93D 4826"),
   ],
   nextStep: "win-bench approved it. On this machine, run: ah pair confirm pair_outgoing00001",
@@ -72,7 +72,7 @@ const expired = {
   displayName: "node_remote0003", platform: "", address: "192.168.50.44:7463",
   state: "expired", reason: "expired", fingerprint: "40FE 1C39", localFingerprint: LOCAL_FP,
   fingerprints: [
-    fp("requester", "sheldon-mbp", "this machine", LOCAL_FP),
+    fp("requester", "studio-mac", "this machine", LOCAL_FP),
     fp("receiver", "node_remote0003", "the other machine", "40FE 1C39"),
   ],
   nextStep: "It ran out (expired). Nothing was trusted; start again if you still want to pair.",
@@ -115,7 +115,7 @@ let pairingAnswer = {
   availability: "on",
   windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp", nameIsChosen: false,
+    open: true, remainingSeconds: 200, displayName: "studio-mac", nameIsChosen: false,
     announcing: { announceableAddresses: 1, lastAnnouncedAt: new Date().toISOString() },
   },
   candidates: [],
@@ -126,7 +126,7 @@ let overviewCalls = 0;
 const Overview = async () => {
   overviewCalls += 1;
   return {
-    node: { id: "node_local00000", displayName: "sheldon-mbp", platform: "darwin/arm64", fingerprint: LOCAL_FP },
+    node: { id: "node_local00000", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: LOCAL_FP },
     sessions: [], nodes: [], peers: [], counts: { total: 0 },
     nodeUrl: "http://127.0.0.1:7462", reachable: true,
   };
@@ -188,7 +188,7 @@ if (html.indexOf(THEIR_FP) > html.indexOf(LOCAL_FP)) {
   failures.push("the incoming row printed this machine's fingerprint before the requester's, against the node's order");
 }
 // The node's labels, so the two screens name the same machine the same way.
-for (const required of ["ubuntu-lab", "sheldon-mbp", PAIR_TEXT.whose["this machine"], PAIR_TEXT.whose["the other machine"]]) {
+for (const required of ["ubuntu-lab", "studio-mac", PAIR_TEXT.whose["this machine"], PAIR_TEXT.whose["the other machine"]]) {
   if (!html.includes(required)) failures.push(`the fingerprint block omits ${required}`);
 }
 for (const sentence of PAIR_TEXT.compare) {
@@ -501,7 +501,7 @@ pairingAnswer = {
   availability: "openNotAnnouncing",
   windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp", nameIsChosen: false,
+    open: true, remainingSeconds: 200, displayName: "studio-mac", nameIsChosen: false,
     announcing: { announceableAddresses: 0 },
     notice: "this node is not announcing itself over mDNS, so a window opened here will not put it in " +
       "anyone's candidate list: discovery is off (this node was started without -discover). The other " +
@@ -549,7 +549,7 @@ if (el("candidate-rows").serialize().includes("讀不到")) {
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 1 }, peerAddress: "192.168.50.10:7463",
   },
   candidates: [],
@@ -572,7 +572,7 @@ if (el("pair-here-note").textContent !== PAIR_TEXT.hereNoteAnnouncing) {
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0 },
   },
   candidates: [],
@@ -604,7 +604,7 @@ if (el("pairing-headline").textContent !== PAIR_TEXT.windowOpenUnreachable) {
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0 },
     peerAddress: "192.168.50.10:7463",
     peerAddressReachable: false,
@@ -629,7 +629,7 @@ if (!el("copy-pair-address").disabled) {
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 1 },
     peerAddress: "192.168.50.10:7463", peerAddressReachable: true,
   },
@@ -657,7 +657,7 @@ if (scope.pairHereState({ peerAddress: "", peerAddressReachable: true }).reachab
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0 },
     peerAddress: "", peerAddressReachable: true,
   },
@@ -693,7 +693,7 @@ for (const reachable of ["192.168.50.10:7463", "10.0.0.7:7463", "[fd00::1]:7463"
 pairingAnswer = {
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0, lastError: "the peer listener is on loopback" },
     peerAddress: "127.0.0.1:7463",
   },
@@ -777,7 +777,7 @@ const subtitleFor = async (announceableAddresses, peerAddress) => {
   pairingAnswer = {
     availability: "on", windowAvailable: true,
     state: {
-      open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+      open: true, remainingSeconds: 200, displayName: "studio-mac",
       announcing: { announceableAddresses }, peerAddress,
     },
     candidates: [],
@@ -851,7 +851,7 @@ const neighbour = {
 const listing = (candidates) => ({
   availability: "on", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 1 },
     peerAddress: "192.168.50.10:7463", peerAddressReachable: true,
   },
@@ -1073,7 +1073,7 @@ if (!keptRequest || !keptApprove || !keptFingerprints) {
 pairingAnswer = {
   availability: "openNotAnnouncing", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0 },
     peerAddress: "192.168.50.10:7463",
   },
@@ -1087,7 +1087,7 @@ if (!withAddress.includes("本機位址")) {
 pairingAnswer = {
   availability: "openNotAnnouncing", windowAvailable: true,
   state: {
-    open: true, remainingSeconds: 200, displayName: "sheldon-mbp",
+    open: true, remainingSeconds: 200, displayName: "studio-mac",
     announcing: { announceableAddresses: 0 },
   },
   candidates: [],
@@ -1116,7 +1116,7 @@ const hostile = {
   state: "pending", reason: '<b>r</b>',
   fingerprints: [
     fp("requester", '<script>alert("machine")</script>', "the other machine", '<img src=x onerror=1>'),
-    fp('<svg onload=1>', "sheldon-mbp", '<b>whose</b>', LOCAL_FP),
+    fp('<svg onload=1>', "studio-mac", '<b>whose</b>', LOCAL_FP),
   ],
   nextStep: '<script>alert("next")</script>',
 };
