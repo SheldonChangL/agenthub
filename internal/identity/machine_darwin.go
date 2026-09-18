@@ -4,9 +4,10 @@ package identity
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 	"time"
+
+	"agenthub.local/agenthub/internal/quiet"
 )
 
 // localMachineName asks macOS what this machine is called, rather than what the
@@ -24,7 +25,7 @@ func localMachineName() string {
 		// #nosec G204 -- key ranges over the two literals above and nothing
 		// else reaches this call: the binary is an absolute path, the argv is
 		// fixed, and no shell is involved.
-		out, err := exec.CommandContext(ctx, "/usr/sbin/scutil", "--get", key).Output()
+		out, err := quiet.Command(ctx, "/usr/sbin/scutil", "--get", key).Output()
 		cancel()
 		if err != nil {
 			continue
