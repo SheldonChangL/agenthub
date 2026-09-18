@@ -271,11 +271,43 @@ jobs:
       # as an error: it prints "Cannot create installer: makensis not found"
       # and exits 0, so without this the job would build a .exe, skip the
       # installer and look successful. The PATH line is separate because the
-      # chocolatey package does not add it, and wails looks makensis up on PATH.
+      # installer does not add it, and wails looks makensis up on PATH.
+      #
+      # Fetched and checksummed rather than `choco install nsis`: every other
+      # dependency of this workflow is pinned, and the Chocolatey community feed
+      # was the one floating source on the job that builds the published
+      # installer. The digest below was taken from four independent sources that
+      # agree byte for byte:
+      #
+      #   https://netix.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12-setup.exe
+      #   https://netactuate.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12-setup.exe
+      #   https://deac-riga.dl.sourceforge.net/project/nsis/NSIS%203/3.12/nsis-3.12-setup.exe
+      #   tools/nsis-3.12-setup.exe inside the chocolatey nsis.install 3.12.0 package
+      #
+      # The last of those is what `choco install nsis` was handing this job, so
+      # the pin changes where the bytes come from and not which bytes they are.
+      # Bumping the version means replacing both the version and the digest, and
+      # the digest has to be re-derived the same way.
       - name: install NSIS (windows)
         if: matrix.runner == 'windows-latest'
+        env:
+          NSIS_VERSION: "3.12"
+          NSIS_SHA256: 3bc2b06253a7e4957111be152ac6a536e0c7478a706e19da814038db5d706495
         run: |
-          choco install nsis --no-progress -y
+          set -euo pipefail
+          url="https://downloads.sourceforge.net/project/nsis/NSIS%203/${NSIS_VERSION}/nsis-${NSIS_VERSION}-setup.exe"
+          curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
+            --output nsis-setup.exe "$url"
+          # Verified before the file is ever executed: a digest checked after
+          # the fact is a record of what ran, not a gate on it.
+          echo "${NSIS_SHA256}  nsis-setup.exe" | sha256sum --check --strict -
+          # MSYS_NO_PATHCONV/MSYS2_ARG_CONV_EXCL because this shell is Git
+          # Bash: it rewrites an argument shaped like a POSIX path before the
+          # Windows program sees it, and NSIS's silent flag /S is exactly that
+          # shape. Rewritten, the installer runs interactively and the job hangs
+          # until the six-hour limit.
+          MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' ./nsis-setup.exe /S
+          rm -f nsis-setup.exe || true
           echo "C:\\Program Files (x86)\\NSIS" >> "$GITHUB_PATH"
 
       # Pinned to whatever desktop/go.mod requires, read from the module rather
