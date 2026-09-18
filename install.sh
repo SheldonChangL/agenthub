@@ -442,9 +442,14 @@ install_tarball_tree() {
 # are not interchangeable: 4.1 is the libsoup3 build, 4.0 the libsoup2 one. A
 # binary linked against either exits immediately on a machine that has only the
 # other — "libwebkit2gtk-4.1.so.0: cannot open shared object file", no window,
-# nothing in any log — and no package fixes it, because a distribution carries
-# one ABI or the other and not both. Ubuntu 22.04 LTS and Debian 12 have 4.0;
-# Ubuntu 24.04, Debian 13 and Fedora 39+ have 4.1.
+# nothing in any log. Ubuntu 22.04 and its derivatives normally have 4.0
+# installed; Ubuntu 24.04, Debian 13 and Fedora 39+ have 4.1.
+#
+# Some distributions can install the other ABI as well (22.04 has
+# libwebkit2gtk-4.1-0 in jammy-updates/universe), so this is not about which
+# runtime is obtainable — it is about which one is already there. Installing a
+# package needs root, and this script never asks for it, so the only build that
+# can start without a password is the one matching what is installed now.
 #
 # So the release builds Linux twice and this chooses the download. Reading
 # ldconfig rather than /etc/os-release on purpose: what matters is the library

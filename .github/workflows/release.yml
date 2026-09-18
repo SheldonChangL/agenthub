@@ -231,10 +231,15 @@ jobs:
           # releases downstream of them), 4.1 the libsoup3 one (Ubuntu 24.04 and
           # later, Debian 13, Fedora 39+). A binary linked against either dies
           # at startup on the other -- "libwebkit2gtk-4.1.so.0: cannot open
-          # shared object file", no window, exit before anything is drawn -- and
-          # neither package can be installed on the other's distribution, so
-          # there is no runtime a downloader could add to make one build serve
-          # both. install.sh reads ldconfig and picks the matching asset.
+          # shared object file", no window, exit before anything is drawn.
+          #
+          # Some machines can install the other ABI from their own archive
+          # (22.04 carries libwebkit2gtk-4.1-0 in jammy-updates/universe), so
+          # this is not about what is available -- it is about what is already
+          # there. Installing a runtime needs root, and the one-line installer
+          # deliberately never asks for it, so the only build that can start
+          # without a password is the one matching what ldconfig already
+          # reports. install.sh reads it and picks the matching asset.
           #
           # ubuntu-22.04 is pinned because it is the only runner image carrying
           # libwebkit2gtk-4.0-dev. GitHub keeps two GA images at a time, so this
@@ -649,10 +654,13 @@ jobs:
 
           There are two Linux downloads on the release page and they are not
           interchangeable. This one is for ${distros}. The other one, with
-          webkit40 or plain amd64 in its name, is for ${other}. Neither ABI can
-          be installed on the other's distribution, so downloading the wrong one
-          cannot be fixed by installing a package — swap the download instead,
-          or let install.sh choose by reading ldconfig.
+          webkit40 or plain amd64 in its name, is for ${other}.
+
+          If this build will not start, the other one probably will, and
+          swapping the download needs no root. Installing the runtime named
+          above works too, where your distribution offers it — 22.04, for one,
+          carries both. install.sh picks by reading ldconfig, which is why it is
+          the easier way in.
 
           These files are not signed. Check them against SHA256SUMS on the
           release page before you run them.
@@ -782,7 +790,7 @@ jobs:
             echo "| Linux (x64), WebKit2GTK 4.1 | \`agenthub-desktop_${TAG}_linux_amd64.tar.gz\` | Ubuntu 24.04+, Debian 13, Fedora 39+. Unpack it and run \`./agenthub-desktop\`. |"
             echo "| Linux (x64), WebKit2GTK 4.0 | \`agenthub-desktop_${TAG}_linux_amd64_webkit40.tar.gz\` | Ubuntu 22.04 LTS, Debian 12, Mint, Pop!_OS. Same contents, linked against the older WebKit. |"
             echo
-            echo "The two Linux downloads are not interchangeable and no package can bridge them — a distribution ships one ABI or the other. \`install.sh\` reads \`ldconfig\` and downloads the right one, which is the reason to prefer it over picking by hand."
+            echo "The two Linux downloads are not interchangeable: each links one WebKit ABI and will not start where only the other is installed. Some distributions can install either, but that needs root — the matching download needs nothing. \`install.sh\` reads \`ldconfig\` and fetches the one your machine can already run."
             echo
             echo "## Command line only"
             echo
