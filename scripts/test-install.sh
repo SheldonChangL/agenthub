@@ -442,7 +442,7 @@ checks=$((checks + 1))
 # ---- what the last lines tell a stranger -----------------------------------
 
 echo "== the closing lines say what to do next =="
-contains closing "$work/svc-none.txt" "Open agenthub-desktop from Applications; it starts on a setup checklist."
+contains closing "$work/svc-none.txt" "Open $work/pfx/agenthub-desktop.app; it starts on a setup checklist."
 contains closing "$work/svc-none.txt" "| sh -s -- --no-service"
 contains closing "$work/svc-none.txt" "$work/pfx/bin/ah"
 contains closing "$work/svc-none.txt" "node: running as a background service"
