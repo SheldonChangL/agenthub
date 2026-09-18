@@ -1149,7 +1149,7 @@ acceptance, is the one in English.
 ## Support
 
 AgentHub is free and always will be. If it saves you time and you want to say
-so, there is a [PayPal link](https://paypal.me/CHANGWENLUNG). Nothing in the
+so, there is a [Ko-fi page](https://ko-fi.com/sheldonchang). Nothing in the
 software changes either way — there is no paid tier and no telemetry that would
 notice.
 
