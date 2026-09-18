@@ -4,14 +4,14 @@ package process
 
 import (
 	"context"
-	"os/exec"
 	"strings"
 
 	"agenthub.local/agenthub/internal/model"
+	"agenthub.local/agenthub/internal/quiet"
 )
 
 func Snapshot(ctx context.Context) map[model.Provider]State {
-	output, err := exec.CommandContext(ctx, "ps", "-axo", "comm=").Output()
+	output, err := quiet.Command(ctx, "ps", "-axo", "comm=").Output()
 	if err != nil {
 		return unknownStates()
 	}

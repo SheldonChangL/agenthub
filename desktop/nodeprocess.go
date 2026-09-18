@@ -215,6 +215,6 @@ var (
 var runCommand = func(ctx context.Context, name string, args ...string) (string, error) {
 	// #nosec G204 -- name and args are this file's own constants; nothing the
 	// window or the network supplies reaches here.
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	output, err := quietly(exec.CommandContext(ctx, name, args...)).CombinedOutput()
 	return string(output), err
 }
