@@ -545,6 +545,11 @@ small and, more importantly, so a reader keeps "nothing is waiting" (a missing
 key) separate from "this could not be read" (no map at all) — only one of those
 means a badge should disappear.
 
+The bound is carried on each entry and nowhere else. It was briefly emitted at
+the top level as well, from the same constant, so the two copies could not
+disagree — but a payload that states one fact twice leaves a reader deciding
+which copy is authoritative, and the answer to that is to have one.
+
 What it counts is what the inbox still holds, never what is unread. Nothing on
 this node records reading, the desktop deliberately marks nothing read, and a
 count leaves only when an agent takes the message or somebody deletes it. Like

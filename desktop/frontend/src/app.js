@@ -404,6 +404,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("empty").classList.toggle("hidden", rows.length > 0);
   }
 
+  // relabelSessionRows re-runs the update pass over the rows that are already
+  // on screen, from the session each was last drawn from.
+  //
+  // render() -> renderRows() does this too, but only for the rows `visible()`
+  // still returns, and only while the local view is the one being drawn. A
+  // language switch has to reach every kept row regardless: a row this switch
+  // does not touch keeps the language it was built in until something else
+  // evicts it, which is what keeping rows across renders introduced.
+  function relabelSessionRows() {
+    for (const tr of sessionRows.values()) {
+      if (tr.session) updateSessionRow(tr, tr.session);
+    }
+  }
+
   // sessionRow builds the nine cells once. Everything that changes between
   // ticks is written by updateSessionRow into these same elements.
   function sessionRow(session) {
@@ -470,13 +484,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // tested, so restoring the entry point is one rowActionButton call.
     const actionsCell = element("td", "col-actions");
     const group = element("span", "rowactions");
-    const inboxButton = rowActionButton("inbox", t("inbox.title"), t("row.inboxTitle"), null);
+    //
+    // Both buttons are built empty and worded by updateSessionRow. A row is
+    // kept across renders now, so a string written here is written once, in
+    // whatever language was on screen when the session first appeared — and a
+    // language switch repaints everything except it. The labels live in a
+    // <span> of their own because the badge is a child of the same button, and
+    // writing textContent on the button itself would delete it.
+    // (docs/ui-contract.md §3.1: every translated string in a kept row is
+    // written in the update pass, never only at creation.)
+    const inboxButton = rowActionButton("inbox", "", "", null);
+    const inboxLabel = element("span", "label");
     // The badge rides inside the button rather than beside it, so the number
     // and the way to act on it are one target and the sticky column's width
     // does not have to grow.
     const badge = element("span", "inboxbadge hidden");
-    inboxButton.append(badge);
-    const resumeButton = rowActionButton("resume", "resume", "", null);
+    inboxButton.append(inboxLabel, badge);
+    const resumeButton = rowActionButton("resume", "", "", null);
+    const resumeLabel = element("span", "label");
+    resumeButton.append(resumeLabel);
     group.append(inboxButton, resumeButton);
     actionsCell.append(group);
 
@@ -485,7 +511,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     tr.sessionParts = {
       checkbox, idCell, providerTag, label, statusPill, managementCell,
       audiencePill, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
-      seenCell, inboxButton, badge, resumeButton,
+      seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
     };
     updateSessionRow(tr, session);
     return tr;
@@ -498,6 +524,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // changes on every single one of them.
   function updateSessionRow(tr, session) {
     const parts = tr.sessionParts;
+    // Kept so a language switch can re-run this pass over the rows that are
+    // already on screen without waiting for the next load (repaintFromState).
+    tr.session = session;
     const picked = state.selected.has(session.id);
     tr.className = picked ? "sel" : "";
     parts.checkbox.checked = picked;
@@ -532,6 +561,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.cwdCell.title = session.cwd ? session.cwd : "";
     parts.seenCell.textContent = relative(session.lastSeenAt);
 
+    // The two button labels. Written here and not at creation: see sessionRow.
+    parts.inboxLabel.textContent = t("inbox.title");
+    parts.resumeLabel.textContent = t("row.resume");
     parts.inboxButton.onclick = () => {
       openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
     };
@@ -612,15 +644,27 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function renderInboxTotals() {
     const counts = state.inboxCounts;
     let total = 0;
+    let anyFull = false;
     if (counts?.ok) {
       for (const entry of Object.values(counts.counts ?? {})) {
         const held = Number(entry?.held);
         if (Number.isFinite(held) && held > 0) total += held;
+        if (entry?.full) anyFull = true;
       }
     }
+    // Two numbers sat side by side on this tab and read as one: 「本機 session
+    // 1119 555」 is a thousands separator, or "1119 of 555", long before it is
+    // a session count beside a message count. They are separated now by a gap
+    // and by an envelope, which says what the second number counts without a
+    // word in either language — and the glyph lives in its own element so the
+    // number stays the only thing #tab-local-inbox-n holds.
+    //
+    // Amber when any single inbox is full, for the reason a row badge is: a
+    // machine that is turning messages away right now is not just a larger
+    // number, and the tab is the only place it shows from another view.
     const pillNode = el("tab-local-inbox");
-    pillNode.classList.toggle("hidden", total === 0);
-    pillNode.textContent = total > 0 ? String(total) : "";
+    pillNode.className = `inboxbadge tabinbox${anyFull ? " full" : ""}${total > 0 ? "" : " hidden"}`;
+    el("tab-local-inbox-n").textContent = total > 0 ? String(total) : "";
     pillNode.title = total > 0 ? plural(total, "inbox.badge.tabTitle", { held: total }) : "";
     setDocumentTitle(total);
   }
@@ -1520,6 +1564,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (reachable) {
       const counts = await readInboxCounts();
       if (sequence < overviewApplied) return false;
+      // The interaction guard above ran before this round-trip, not after it.
+      // An owner who started selecting rows, opened a dialog or put a caret in
+      // a field while the counts were in flight would otherwise be redrawn
+      // under by a read they never asked for — the same abandonment as above,
+      // asked again on the way back rather than only on the way out.
+      if (background && interactionInProgress({ exceptPairingDrawer })) return false;
       applyInboxCounts(counts);
     } else {
       // The node is not answering, so nothing can be said about any inbox.
@@ -5197,6 +5247,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // later: if JS writes a [data-t] element, it is re-derived here.
   function repaintFromState() {
     renderNodeLine();
+    // The table's kept rows. render() has already redrawn the ones on screen,
+    // but a row held out of `visible()` by a filter is still in the map and
+    // still carries the previous language.
+    relabelSessionRows();
     if (state.service) renderService();
     if (state.nodeSettings) relabelNodeSettings();
     if (state.inboxSessionAsked) {

@@ -296,6 +296,10 @@ export const TEXT = {
   "row.flagOut": "OUT",
   "row.flagWake": "WAKE",
   "row.inboxTitle": "Messages this session received, what it sent, and what woke it",
+  // The word on the row's second button. In the table rather than written into
+  // the markup because every string in a kept row has to be re-derivable on a
+  // language switch, and a literal cannot be.
+  "row.resume": "resume",
   "row.resumeTitle": "Copy {command}",
   "row.resumeCopied": "Copied {command}.",
   "row.resumeCopiedIn": "Copied {command}, to run in {cwd}.",

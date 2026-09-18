@@ -17,7 +17,16 @@
 //
 //   node frontend/test/inbox-badge.mjs
 
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
+
+// The two static halves of the tab pill — the envelope and the gap — live in
+// index.html and style.css, and the shim has neither.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const markup = fs.readFileSync(path.join(here, "..", "index.html"), "utf8");
+const styles = fs.readFileSync(path.join(here, "..", "src", "style.css"), "utf8");
 
 globalThis.document = document;
 
@@ -100,6 +109,9 @@ const find = (node, predicate, found = []) => {
 };
 const hasClass = (name) => (node) => String(node.className ?? "").split(" ").includes(name);
 const badgeIn = (row) => find(row, hasClass("inboxbadge"))[0];
+// The tab's pill holds an envelope as well as the number, so the number is read
+// from the element that holds only the number.
+const tabTotal = el("tab-local-inbox-n");
 const rowFor = (id) => {
   const row = [...rowNodes()].find((node) => find(node, (n) => n.title === id).length > 0);
   if (!row) throw new Error(`no row for ${id}; the table drew ${rowNodes().length}`);
@@ -169,8 +181,35 @@ if (countsCalls === 0) {
   if (pill.classList.contains("hidden")) {
     failures.push("the 本機 session tab shows no total while three sessions are holding messages");
   }
-  if (pill.textContent !== String(total)) {
-    failures.push(`the tab total reads ${JSON.stringify(pill.textContent)}, want ${total}`);
+  if (tabTotal.textContent !== String(total)) {
+    failures.push(`the tab total reads ${JSON.stringify(tabTotal.textContent)}, want ${total}`);
+  }
+  // The number sits beside the session count, and bare the two read as one
+  // (「本機 session 1119 555」). The envelope is what says the second one counts
+  // messages, in either language, and the gap is what keeps them apart. Both
+  // are static, so they are asserted against index.html itself — the shim
+  // fabricates an element per id and has no children to look at.
+  const tabMarkup = /<span[^>]*id="tab-local-inbox"[\s\S]*?<\/span><\/span>/.exec(markup)?.[0] ?? "";
+  if (!tabMarkup.includes("✉")) {
+    failures.push(`the tab total carries no envelope, so it reads as one number with the session count: ${tabMarkup}`);
+  }
+  if (!tabMarkup.includes('id="tab-local-inbox-n"')) {
+    failures.push(`the tab total's number is not in an element of its own: ${tabMarkup}`);
+  }
+  if (!/\.tabinbox\s*\{[^}]*margin-left:\s*8px/.test(styles)) {
+    failures.push("the tab total is not set off from the session count by 8px");
+  }
+  if (!pill.classList.contains("tabinbox")) {
+    failures.push(`the tab total is not the separated pill: ${pill.className}`);
+  }
+  // Amber on the tab for the same reason as on a row: one machine is refusing
+  // new messages right now, and from another view the tab is the only place
+  // that shows.
+  if (!pill.classList.contains("full")) {
+    failures.push(`a machine with a full inbox draws the tab total in the ordinary colour: ${pill.className}`);
+  }
+  if (!pill.title.includes(String(total))) {
+    failures.push(`the tab total has no tooltip saying what it counts: ${JSON.stringify(pill.title)}`);
   }
   if (document.title !== `(${total}) AgentHub`) {
     failures.push(`the window title is ${JSON.stringify(document.title)}, want "(${total}) AgentHub"`);
@@ -274,7 +313,7 @@ if (refresh) {
     }
   }
   if (!el("tab-local-inbox").classList.contains("hidden")) {
-    failures.push(`a failed counts read left the tab total showing ${JSON.stringify(el("tab-local-inbox").textContent)}`);
+    failures.push(`a failed counts read left the tab total showing ${JSON.stringify(tabTotal.textContent)}`);
   }
   if (document.title !== "AgentHub") {
     failures.push(`a failed counts read left the window title as ${JSON.stringify(document.title)}`);
@@ -334,6 +373,171 @@ if (refresh) {
   }
   if (JSON.stringify(scope.state.inboxCounts.counts) !== JSON.stringify(beforeCounts)) {
     failures.push("an unreachable node zeroed the numbers the window had");
+  }
+}
+
+// 9. THE OTHER HALF OF THE RULE, and the one the production path actually
+//    takes. Section 7 fails by THROWING, which is a binding that rejected. The
+//    node being up while the HTTP read fails is a binding that ANSWERS, with
+//    {ok:false} (desktop/app.go InboxCountsView) — a different branch in
+//    readInboxCounts, and until this it was the untested one. An answered read
+//    that says it failed must be treated exactly like a rejected one: badges
+//    off, tab and title off, and the numbers it had left alone.
+if (refresh) {
+  // Section 8 left the node unreachable, which is a different fact; put a
+  // reachable node back, or nothing below asks for counts at all.
+  configure({
+    Overview: async () => overview(),
+    InboxCounts, Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop,
+    Heartbeat: noop, Pairing: async () => ({ availability: "unknown", candidates: [] }),
+    OpenPairing: noop, ClosePairing: noop, Inbox: noop, ClearInbox: noop,
+  });
+  countsAnswer = () => goodCounts;
+  refresh.fn();
+  await settle();
+  const knownBefore = { ...scope.state.inboxCounts.counts };
+  const beforeRows = [...rowNodes()];
+
+  countsAnswer = () => ({ ok: false, counts: {} });
+  refresh.fn();
+  await settle();
+
+  if (scope.state.inboxCounts.ok !== false) {
+    failures.push("an answered read that says it failed is still reported as good");
+  }
+  for (const id of ["claude:three", "codex:full", HOSTILE]) {
+    const badge = badgeIn(rowFor(id));
+    if (!badge.classList.contains("hidden")) {
+      failures.push(`an ok:false answer left ${id} wearing a badge of ${JSON.stringify(badge.textContent)}`);
+    }
+    const button = find(rowFor(id), hasClass("inbox"))[0];
+    if (button.title.includes("沒有訊息在等")) {
+      failures.push(`an ok:false answer made ${id} say its inbox is empty: ${JSON.stringify(button.title)}`);
+    }
+  }
+  if (!el("tab-local-inbox").classList.contains("hidden")) {
+    failures.push(`an ok:false answer left the tab total showing ${JSON.stringify(tabTotal.textContent)}`);
+  }
+  if (document.title !== "AgentHub") {
+    failures.push(`an ok:false answer left the window title as ${JSON.stringify(document.title)}`);
+  }
+  // The empty map it carried is not the answer. Taking it would zero every
+  // inbox on the machine on the strength of a read that said it failed.
+  if (JSON.stringify(scope.state.inboxCounts.counts) !== JSON.stringify(knownBefore)) {
+    failures.push("an ok:false answer overwrote the numbers the window had: "
+      + JSON.stringify(scope.state.inboxCounts.counts));
+  }
+  if ([...rowNodes()].some((row, i) => row !== beforeRows[i])) {
+    failures.push("an ok:false answer rebuilt the rows");
+  }
+
+  countsAnswer = () => goodCounts;
+  refresh.fn();
+  await settle();
+  if (badgeIn(rowFor("claude:three")).classList.contains("hidden")) {
+    failures.push("the badges never came back after an ok:false answer");
+  }
+}
+
+// 10. A counts answer that describes an older moment is dropped.
+//
+//     The counts are read after the overview, under the same sequence number,
+//     so a slow one can land behind a newer load that has already redrawn the
+//     rows it would be painted onto. Two loads are started back to back; the
+//     first one's counts are held until the second has finished, and the
+//     number it was carrying must never reach the screen.
+if (refresh) {
+  countsAnswer = () => goodCounts;
+  refresh.fn();
+  await settle();
+
+  let releaseStale;
+  const staleRead = new Promise((resolve) => { releaseStale = resolve; });
+  const stale = { ok: true, counts: { "claude:three": { held: 111, capacity: 500, full: false } } };
+  const fresh = {
+    ok: true,
+    counts: { ...goodCounts.counts, "claude:three": { held: 4, capacity: 500, full: false } },
+  };
+  let reads = 0;
+  countsAnswer = () => (++reads === 1 ? staleRead : fresh);
+
+  refresh.fn();   // the load whose counts will be slow
+  refresh.fn();   // and the one that overtakes it
+  await settle();
+  if (badgeIn(rowFor("claude:three")).textContent !== "4") {
+    failures.push(`the newer load's counts did not land; the badge reads ${JSON.stringify(badgeIn(rowFor("claude:three")).textContent)}`);
+  }
+
+  releaseStale(stale);
+  await settle();
+  const badge = badgeIn(rowFor("claude:three"));
+  if (badge.textContent === "111") {
+    failures.push("a counts answer from an older load overwrote a newer one");
+  }
+  if (badge.textContent !== "4") {
+    failures.push(`the stale answer left the badge reading ${JSON.stringify(badge.textContent)}, want "4"`);
+  }
+  // And it did not take the other rows with it: `stale` names one session, so
+  // applying it would also have dropped the badges the newer read drew.
+  if (badgeIn(rowFor("codex:full")).textContent !== "500") {
+    failures.push(`the stale answer was applied: codex:full now reads ${JSON.stringify(badgeIn(rowFor("codex:full")).textContent)}`);
+  }
+  countsAnswer = () => goodCounts;
+  refresh.fn();
+  await settle();
+}
+
+// 11. An owner who starts selecting while the counts are in flight is not
+//     redrawn under.
+//
+//     The interaction guard runs before the overview is applied, which used to
+//     be before everything; the counts added an await behind it, so a tick that
+//     passed the guard on the way out can come back into a window where rows
+//     are selected. The answer is abandoned whole, exactly as it would have
+//     been a moment earlier.
+if (refresh) {
+  countsAnswer = () => goodCounts;
+  refresh.fn();
+  await settle();
+  const row = rowFor("claude:three");
+  const badge = badgeIn(row);
+
+  let releasePending;
+  const pending = new Promise((resolve) => { releasePending = resolve; });
+  countsAnswer = () => pending;
+  refresh.fn();
+  await settle();   // the overview has landed; the counts are still in flight
+
+  // What a click on the row's checkbox does.
+  scope.state.selected.add("claude:three");
+  scope.render();
+
+  releasePending({
+    ok: true,
+    counts: { ...goodCounts.counts, "claude:three": { held: 42, capacity: 500, full: false } },
+  });
+  await settle();
+
+  if (!scope.state.selected.has("claude:three")) {
+    failures.push("a selection started while the counts were in flight was dropped when they landed");
+  }
+  if (rowFor("claude:three") !== row) {
+    failures.push("the counts landing under a selection rebuilt the row");
+  }
+  if (row.className !== "sel" || row.sessionParts.checkbox.checked !== true) {
+    failures.push(`the selected row lost its mark: class ${JSON.stringify(row.className)}`);
+  }
+  if (badge.textContent === "42") {
+    failures.push("a background counts read redrew the table while the owner was selecting rows");
+  }
+
+  scope.state.selected.clear();
+  countsAnswer = () => goodCounts;
+  scope.render();
+  refresh.fn();
+  await settle();
+  if (badgeIn(rowFor("claude:three")).textContent !== "3") {
+    failures.push(`once the selection was cleared the counts never caught up: ${JSON.stringify(badgeIn(rowFor("claude:three")).textContent)}`);
   }
 }
 
