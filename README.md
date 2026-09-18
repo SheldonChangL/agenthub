@@ -1063,6 +1063,7 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
+| `GET` | `/v1/inbox/counts` | How much every local inbox is still holding, in one read: `{"counts": {"<session id>": {"held": N, "capacity": M, "full": bool}}, "capacity": M, "generatedAt": …}`. **A session holding nothing is absent, not zero** — a missing key is 0, and no answer at all is "unknown", which is a different fact. Held is what the inbox still has, not what is unread: nothing marks a message read. Owner surface only. `ah inbox counts` renders it |
 | `DELETE` | `/v1/inbox/{id}` | Empty one session's inbox |
 | `DELETE` | `/v1/inbox/{id}/{messageId}` | Drop one message; `ah inbox delete <session-id> <message-id>` is this route |
 | `GET` | `/v1/outbound?limit=50` | What this node has queued for peers, newest first: `limit` (1–200), `after` (the `next` value a full page carries) and `session` (a local session id, narrowing the list to what that session sent — a present but blank `session` is refused (400); giving it twice is too). No bodies — state, attempts and the last error |

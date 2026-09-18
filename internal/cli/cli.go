@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -276,8 +277,19 @@ func (r runner) command(ctx context.Context, args []string) error {
 			return r.simple(ctx, http.MethodDelete,
 				"/v1/inbox/"+url.PathEscape(args[2])+"/"+url.PathEscape(args[3]), nil)
 		}
+		// `ah inbox counts` is the batch read: one line per local session that
+		// is still holding something. Separable from an id for the same reason
+		// `delete` is, and it answers the question `ah inbox <session>` cannot
+		// be asked a thousand times to answer.
+		if len(args) >= 2 && args[1] == "counts" {
+			if len(args) != 2 {
+				return errors.New("usage: ah inbox counts")
+			}
+			return r.inboxCounts(ctx)
+		}
 		if len(args) != 2 {
 			return errors.New("usage: ah inbox <session-id>\n" +
+				"       ah inbox counts\n" +
 				"       ah inbox delete <session-id> <message-id>")
 		}
 		return r.inbox(ctx, args[1])
@@ -1106,6 +1118,69 @@ func (r runner) inbox(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// inboxCounts prints how much every local inbox is still holding.
+//
+// "Held", not "unread": nothing on the node marks a message read, and reading
+// one here or in the desktop window does not either. A message leaves this
+// count when an agent takes it or somebody deletes it.
+//
+// Sorted by depth, fullest first, because the answer this command is asked for
+// is which session needs attention — and a full one is refusing mail right now,
+// so it carries a marker rather than only a number.
+func (r runner) inboxCounts(ctx context.Context) error {
+	body, err := r.request(ctx, http.MethodGet, "/v1/inbox/counts", nil)
+	if err != nil {
+		return err
+	}
+	if r.json {
+		return writePrettyJSON(r.stdout, body)
+	}
+	var decoded struct {
+		Counts map[string]struct {
+			Held     int  `json:"held"`
+			Capacity int  `json:"capacity"`
+			Full     bool `json:"full"`
+		} `json:"counts"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return fmt.Errorf("decode inbox counts: %w", err)
+	}
+	if len(decoded.Counts) == 0 {
+		// Said as the fact it is. The node answers with only the sessions that
+		// are holding something, so an empty map means every inbox is empty —
+		// not that there are no sessions.
+		_, _ = fmt.Fprintln(r.stdout, "Every local inbox is empty.")
+		return nil
+	}
+	ids := make([]string, 0, len(decoded.Counts))
+	for id := range decoded.Counts {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if decoded.Counts[ids[i]].Held != decoded.Counts[ids[j]].Held {
+			return decoded.Counts[ids[i]].Held > decoded.Counts[ids[j]].Held
+		}
+		return ids[i] < ids[j]
+	})
+	w := tabwriter.NewWriter(r.stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "SESSION\tHELD\tSTATE")
+	for _, id := range ids {
+		count := decoded.Counts[id]
+		state := ""
+		if count.Full {
+			state = "FULL — new messages are being refused"
+		}
+		_, _ = fmt.Fprintf(w, "%s\t%d/%d\t%s\n", id, count.Held, count.Capacity, state)
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	// The one sentence that keeps the column from being read as "unread".
+	_, _ = fmt.Fprintln(r.stdout,
+		"\nHeld is what the inbox still has, not what is unread: reading never marks anything.")
+	return nil
+}
+
 // responseCap bounds what this CLI reads from the node in one answer.
 const responseCap = 4 * 1024 * 1024
 
@@ -1194,6 +1269,7 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah outbound [message-id]                     what became of a queued message; without one, the last 50")
 	_, _ = fmt.Fprintln(output, "  ah outbound [--session <session-id>]         the listing, narrowed to what one local session sent")
 	_, _ = fmt.Fprintln(output, "  ah inbox <session-id>                        read a session's inbox")
+	_, _ = fmt.Fprintln(output, "  ah inbox counts                              how much every local inbox is still holding, in one read")
 	_, _ = fmt.Fprintln(output, "  ah inbox delete <session-id> <message-id>    drop one message, once it has been handled")
 	_, _ = fmt.Fprintln(output, "  ah inbox-clear <session-id> [message-id]     empty an inbox, or drop one message")
 	_, _ = fmt.Fprintln(output, "  ah wakes [session-id]                        what started a turn with nobody watching")

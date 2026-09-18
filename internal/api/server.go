@@ -245,6 +245,10 @@ func (s *Server) Handler() http.Handler {
 	// Owner surface, like everything else here — it is reached over loopback
 	// by a process the owner started.
 	mux.HandleFunc("GET /v1/sessions/{id}/wake-stream", s.wakeStream)
+	// Every local inbox's depth in one read, so a window drawing a badge per row
+	// does not make one request per row. Owner surface only — see inboxCounts.
+	// The literal segment wins over {id}, and no session id can be "counts".
+	mux.HandleFunc("GET /v1/inbox/counts", s.inboxCounts)
 	mux.HandleFunc("GET /v1/inbox/{id}", s.inbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}", s.clearInbox)
 	mux.HandleFunc("DELETE /v1/inbox/{id}/{messageId}", s.deleteMessage)
@@ -899,6 +903,46 @@ func (s *Server) inbox(w http.ResponseWriter, r *http.Request) {
 		page["next"] = registry.CursorAfter(messages[len(messages)-1]).String()
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// inboxCounts answers how much every local session is holding, in one read.
+//
+// The desktop draws a badge on each row of a list that can hold a thousand
+// sessions, and GET /v1/inbox/{id} answers for one session at a time — so the
+// badge was left out of the redesign rather than built on a read per row
+// (issue #146). This is that read, as one GROUP BY.
+//
+// What it counts is what the inbox is still holding, not what is unread:
+// nothing on this node tracks reading, the desktop deliberately does not mark
+// anything read, and the drawer says so out loud. A message leaves this count
+// when an agent takes it or the owner deletes it, and at no other moment.
+//
+// Sessions holding nothing are absent rather than zero. A caller that wants a
+// number for a session it knows about reads a missing key as 0; a caller that
+// could not make this request at all has no map, which is a different fact and
+// has to stay different.
+//
+// Owner surface only, like GET /v1/inbox/{id}: this is one answer naming every
+// local session and how much each is carrying, which is exactly the shape of
+// the inventory a peer must not be handed. It is registered on Handler and
+// nowhere else, so PeerHandler has no route to it rather than a guarded one.
+//
+// The path is a literal segment beside GET /v1/inbox/{id}. It cannot shadow a
+// session: a session id always carries its provider and a colon, so "counts" is
+// not an id this node can hold.
+func (s *Server) inboxCounts(w http.ResponseWriter, r *http.Request) {
+	counts, err := s.store.CountInboxes(r.Context())
+	if err != nil {
+		writeInternalError(w, "REGISTRY_ERROR", "registry unavailable", err)
+		return
+	}
+	// generatedAt is when this node counted, so a reader holding a badge can
+	// say how old it is rather than presenting every answer as now.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"counts":      counts,
+		"capacity":    registry.MaxInboxMessages,
+		"generatedAt": time.Now().UTC(),
+	})
 }
 
 // deleteMessage removes one message the owner has finished with.
