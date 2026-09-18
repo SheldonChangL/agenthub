@@ -1,0 +1,4 @@
+# Shown as a "Sponsor" button on the repository page. `custom` is the only
+# field here because GitHub Sponsors does not cover this author's region, and
+# the PayPal.Me link is the one that works from abroad.
+custom: ["https://paypal.me/CHANGWENLUNG"]
