@@ -457,18 +457,46 @@ install_tarball_tree() {
 # machine that has been upgraded, has a backport, or is a derivative nobody
 # listed answers correctly here and would not from a name.
 #
-# Sets WEBKIT_ABI to 4.1, 4.0, or empty when neither could be found.
+# ldconfig itself is the trap. It lives in /sbin, and /sbin is not on a
+# non-root PATH on Debian and its derivatives, which is exactly the population
+# running `curl ... | sh` as themselves on a 4.0 machine. `command -v ldconfig`
+# misses there, so the absolute paths are tried too; a probe that gives up
+# because of where a binary lives would silently take the 4.1 archive on the
+# distribution this whole mechanism exists for.
+#
+# Sets WEBKIT_ABI to 4.1, 4.0, or empty when neither was found, and
+# WEBKIT_PROBED to 1 when some ldconfig answered at all and 0 when none could
+# be run (musl, NixOS, a stripped PATH). Empty with WEBKIT_PROBED=0 means "not
+# known", which is a different thing from "not installed" and is reported as
+# such rather than passed off as a diagnosis.
 detect_webkit_abi() {
 	WEBKIT_ABI=""
-	if ! command -v ldconfig >/dev/null 2>&1; then
-		return 0
-	fi
-	webkit_libs="$(ldconfig -p 2>/dev/null || true)"
+	WEBKIT_PROBED=0
+	webkit_libs=""
+	# AGENTHUB_LDCONFIG_PATHS exists so the "no ldconfig reachable" and "only at
+	# an absolute path" branches can be tested on a machine that has a real
+	# ldconfig in /sbin, which no PATH the tests control can hide. Same reason as
+	# AGENTHUB_OS_RELEASE above it: the branch that matters is the one the test
+	# machine is least likely to be in.
+	for webkit_ldconfig in ${AGENTHUB_LDCONFIG_PATHS:-ldconfig /sbin/ldconfig /usr/sbin/ldconfig}; do
+		case "$webkit_ldconfig" in
+		/*) [ -x "$webkit_ldconfig" ] || continue ;;
+		*) command -v "$webkit_ldconfig" >/dev/null 2>&1 || continue ;;
+		esac
+		webkit_libs="$("$webkit_ldconfig" -p 2>/dev/null || true)"
+		[ -n "$webkit_libs" ] || continue
+		WEBKIT_PROBED=1
+		break
+	done
+	[ "$WEBKIT_PROBED" -eq 1 ] || return 0
 	# 4.1 first. On the rare machine carrying both, it is the one still getting
 	# security updates everywhere it ships.
 	case "$webkit_libs" in
 	*libwebkit2gtk-4.1.so.0*)
-		WEBKIT_ABI="4.1"
+		case "$webkit_libs" in
+		*libwebkit2gtk-4.0.so.37*) WEBKIT_ABI="both" ;;
+		*) WEBKIT_ABI="4.1" ;;
+		esac
 		return 0
 		;;
 	esac
@@ -486,11 +514,6 @@ detect_webkit_abi() {
 # app starts.
 webkit_hint() {
 	[ -z "$WEBKIT_ABI" ] || return 0
-	if ! command -v ldconfig >/dev/null 2>&1; then
-		# Nothing was probed, so nothing is known; saying a library is missing
-		# here would be a guess dressed as a diagnosis.
-		return 0
-	fi
 	# AGENTHUB_OS_RELEASE exists so the branches below can be tested. Which
 	# package name this prints is the whole value of the hint — it is read by
 	# someone whose app will not start — and the names do not follow a pattern
@@ -505,8 +528,16 @@ webkit_hint() {
 			webkit_id="$(sed -n 's/^ID=//p' "$webkit_os_release" | tr -d '"' | head -n 1)"
 		fi
 	fi
-	say "warning: no WebKit2GTK runtime was found, so the window will not open yet."
-	say "         The 4.1 build was installed; install its runtime:"
+	if [ "${WEBKIT_PROBED:-0}" -eq 1 ]; then
+		say "warning: no WebKit2GTK runtime was found, so the window will not open yet."
+	else
+		# Nothing was probed, so nothing is known — but staying quiet is worse
+		# than saying so. The runtime may well be there; what is certain is
+		# which archive was taken, and that is what gets said.
+		say "warning: this machine's WebKit2GTK could not be read (no usable ldconfig on PATH),"
+		say "         so the window may not open."
+	fi
+	say "         The 4.1 build was installed; install its runtime if it is missing:"
 	case "$webkit_id" in
 	*debian* | *ubuntu*) say "  sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0" ;;
 	*fedora* | *rhel*) say "  sudo dnf install gtk3 webkit2gtk4.1" ;;
@@ -544,22 +575,24 @@ install_desktop_entry() {
 		# pointing Icon= at a missing file shows a broken-image placeholder in
 		# some launchers, which looks worse than the generic icon they use when
 		# the key is absent. Archives from before the icon shipped land here.
-		if [ -f "$desktop_icon" ]; then
-			desktop_icon_line="Icon=$desktop_icon"
-		else
-			desktop_icon_line=""
-		fi
+		# Exec= is quoted. The desktop-entry spec parses the value as a command
+		# line, so an unquoted path under a $HOME with a space in it ("/home/Ann
+		# Lee/.local/...") is read as a program plus an argument and the entry
+		# launches nothing. Quoting is spec-conformant for any path, so it is
+		# unconditional rather than a check nobody's machine would exercise.
 		cat >"$desktop_file" <<DESKTOP_ENTRY
 [Desktop Entry]
 Type=Application
 Name=AgentHub
 Comment=Local control plane for coding-agent sessions
-Exec=$desktop_exec
-$desktop_icon_line
+Exec="$desktop_exec"
 Terminal=false
 Categories=Development;
 StartupWMClass=agenthub-desktop
 DESKTOP_ENTRY
+		if [ -f "$desktop_icon" ]; then
+			echo "Icon=$desktop_icon" >>"$desktop_file"
+		fi
 		say "wrote $desktop_file"
 	fi
 
@@ -741,27 +774,44 @@ main() {
 	# just what is printed afterwards. DESKTOP_SUFFIX is what distinguishes the
 	# two file names on the release page.
 	WEBKIT_ABI=""
+	WEBKIT_PROBED=0
 	DESKTOP_SUFFIX=""
 	if [ "$OS_SLUG" = "linux" ] && [ "$CLI_ONLY" -eq 0 ]; then
 		detect_webkit_abi
 		case "$WEBKIT_ABI" in
-		4.0)
-			DESKTOP_SUFFIX="_webkit40"
-			# Only worth saying when it is choosing a download. With --from the
-			# file was named on the command line, nothing here selected it, and
-			# claiming otherwise would tell someone who took the wrong archive
-			# by hand that the right one had been picked for them.
-			if [ -z "$FROM" ]; then
-				say "this machine has WebKit2GTK 4.0; taking the build linked against it"
-			fi
-			;;
-		4.1) ;;
-		# Neither found. The 4.1 build is the one to install: it is what every
-		# distribution still adding WebKit2GTK ships, so it is the ABI whose
-		# runtime the owner can actually install after the fact. webkit_hint
-		# says so once the files are in place.
-		*) ;;
+		4.0) DESKTOP_SUFFIX="_webkit40" ;;
+		# Everything else takes the 4.1 build: it is what every distribution
+		# still adding WebKit2GTK ships, so where nothing is installed it is
+		# also the ABI whose runtime the owner can obtain afterwards.
+		*) DESKTOP_SUFFIX="" ;;
 		esac
+		# Every branch says which build it took and why, not only the 4.0 one.
+		# The reason is the half that is worth reading: someone whose window
+		# does not open needs to know whether the choice was made from what is
+		# installed or made blind.
+		#
+		# Only when it is choosing a download. With --from the file was named on
+		# the command line, nothing here selected it, and claiming otherwise
+		# would tell someone who took the wrong archive by hand that the right
+		# one had been picked for them.
+		if [ -z "$FROM" ]; then
+			case "$WEBKIT_ABI" in
+			4.0) say "this machine has WebKit2GTK 4.0; taking the build linked against it" ;;
+			4.1) say "this machine has WebKit2GTK 4.1; taking the build linked against it" ;;
+			both) say "this machine has both WebKit2GTK ABIs; taking the 4.1 build" ;;
+			*)
+				if [ "$WEBKIT_PROBED" -eq 1 ]; then
+					say "this machine has no WebKit2GTK runtime installed; taking the 4.1 build"
+				else
+					# Silence here was the original defect in another form: on a
+					# Debian machine whose PATH has no ldconfig the 4.1 archive
+					# was taken with nothing printed at all, which is the exact
+					# failure this probe exists to prevent.
+					say "could not read this machine's WebKit2GTK ABI (no usable ldconfig); taking the 4.1 build"
+				fi
+				;;
+			esac
+		fi
 	fi
 
 	# --- where things go -------------------------------------------------------
@@ -838,8 +888,23 @@ main() {
 		ARCHIVE="$TEMP_DIR/$ARCHIVE_NAME"
 		SUMS="$TEMP_DIR/SHA256SUMS"
 		say "downloading $ARCHIVE_NAME"
+		download_failed="release $VERSION has no $ARCHIVE_NAME.
+Releases before the desktop builds carry the command line archives only — re-run with --cli-only, or pick a newer tag at https://github.com/${REPO}/releases"
 		if ! fetch "$DOWNLOAD_BASE/$VERSION/$ARCHIVE_NAME" "$ARCHIVE"; then
-			die "release $VERSION has no $ARCHIVE_NAME.
+			# The _webkit40 asset only exists from the release that introduced the
+			# second Linux build. Asked for an older tag, a 4.0 machine would
+			# otherwise be told its only option was --cli-only, when the plain
+			# archive is right there — it is the 4.1 build, so it may not start,
+			# and that is said rather than left to be discovered.
+			[ -n "$DESKTOP_SUFFIX" ] || die "$download_failed"
+			warn "release $VERSION has no $ARCHIVE_NAME; that tag predates the WebKit 4.0 build.
+Falling back to agenthub-desktop_${VERSION}_linux_amd64.tar.gz, which is linked against WebKit2GTK 4.1 and may not start on this machine. For a build that matches it, pick a newer tag at https://github.com/${REPO}/releases"
+			DESKTOP_SUFFIX=""
+			ARCHIVE_NAME="agenthub-desktop_${VERSION}_linux_amd64.tar.gz"
+			ARCHIVE="$TEMP_DIR/$ARCHIVE_NAME"
+			say "downloading $ARCHIVE_NAME"
+			fetch "$DOWNLOAD_BASE/$VERSION/$ARCHIVE_NAME" "$ARCHIVE" ||
+				die "release $VERSION has no $ARCHIVE_NAME.
 Releases before the desktop builds carry the command line archives only — re-run with --cli-only, or pick a newer tag at https://github.com/${REPO}/releases"
 		fi
 		fetch "$DOWNLOAD_BASE/$VERSION/SHA256SUMS" "$SUMS" ||
