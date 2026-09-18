@@ -178,8 +178,14 @@ dry_run() { # dry_run <system> <machine> <output file> [args...]
 	# does not care which distribution it is on gets the same generic advice
 	# everywhere. Without it these tests would read the os-release of whatever
 	# machine runs them and assert different text on a laptop than in CI.
+	#
+	# LDCONFIG_PATHS overrides the candidate list install.sh walks. A PATH shim
+	# cannot express "no ldconfig anywhere", because the probe also tries
+	# /sbin/ldconfig and /usr/sbin/ldconfig by absolute path and a Linux runner
+	# has one there; the cases that pin those two branches set this instead.
 	PATH="${LDCONFIG_SHIM:+$LDCONFIG_SHIM:}${AH_SHIM:-$no_service_ah}:$shim:$PATH" \
 		AGENTHUB_OS_RELEASE="${OS_RELEASE_FILE:-$work/no-such-os-release}" \
+		AGENTHUB_LDCONFIG_PATHS="${LDCONFIG_PATHS:-}" \
 		sh "$installer" --dry-run "$@" >"$out" 2>&1
 }
 
@@ -285,6 +291,7 @@ unset LDCONFIG_SHIM
 contains webkit41 "$work/wk41.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
 lacks webkit41 "$work/wk41.txt" "_webkit40.tar.gz"
 lacks webkit41 "$work/wk41.txt" "this machine has WebKit2GTK 4.0"
+contains webkit41 "$work/wk41.txt" "this machine has WebKit2GTK 4.1; taking the build linked against it"
 lacks webkit41 "$work/wk41.txt" "will not open"
 
 echo "== both installed takes 4.1 =="
@@ -293,6 +300,7 @@ dry_run Linux x86_64 "$work/wkboth.txt" --version v0.1.0 --prefix "$work/pfx"
 unset LDCONFIG_SHIM
 contains webkit-both "$work/wkboth.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
 lacks webkit-both "$work/wkboth.txt" "_webkit40.tar.gz"
+contains webkit-both "$work/wkboth.txt" "this machine has both WebKit2GTK ABIs; taking the 4.1 build"
 
 echo "== neither installed takes 4.1 and says what to install =="
 LDCONFIG_SHIM=$(fake_ldconfig none)
@@ -300,6 +308,7 @@ dry_run Linux x86_64 "$work/wknone.txt" --version v0.1.0 --prefix "$work/pfx"
 unset LDCONFIG_SHIM
 contains webkit-none "$work/wknone.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
 lacks webkit-none "$work/wknone.txt" "_webkit40.tar.gz"
+contains webkit-none "$work/wknone.txt" "this machine has no WebKit2GTK runtime installed; taking the 4.1 build"
 contains webkit-none "$work/wknone.txt" "no WebKit2GTK runtime was found"
 contains webkit-none "$work/wknone.txt" "it will pick the 4.0 build"
 # The install still happens; the missing runtime is a hint, not a refusal.
@@ -328,6 +337,36 @@ for distro_case in "ubuntu:debian:apt install libgtk-3-0 libwebkit2gtk-4.1-0" \
 	contains "hint-$distro_id" "$work/hint-$distro_id.txt" "$distro_want"
 done
 unset LDCONFIG_SHIM
+
+# The probe reads `ldconfig`, and on Debian and its derivatives /sbin is not on
+# a non-root PATH — which is the machine this whole mechanism exists for. These
+# two cases are the ones a developer laptop and a root CI runner both fail to
+# be, so they pin the candidate list rather than the PATH.
+echo "== ldconfig only at an absolute path is still read =="
+sbin_only=$(fake_ldconfig 4.0)
+LDCONFIG_PATHS="$work/absent/ldconfig $sbin_only/ldconfig"
+dry_run Linux x86_64 "$work/wksbin.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_PATHS
+contains webkit-sbin "$work/wksbin.txt" "agenthub-desktop_v0.1.0_linux_amd64_webkit40.tar.gz"
+contains webkit-sbin "$work/wksbin.txt" "this machine has WebKit2GTK 4.0; taking the build linked against it"
+lacks webkit-sbin "$work/wksbin.txt" "could not read this machine's WebKit2GTK ABI"
+lacks webkit-sbin "$work/wksbin.txt" "will not open"
+
+echo "== no ldconfig anywhere says so instead of going quiet =="
+# The silent version of this is the original bug in another costume: the 4.1
+# archive taken on a 4.0 machine with nothing printed at all.
+LDCONFIG_PATHS="$work/absent/ldconfig"
+OS_RELEASE_FILE=$(fake_os_release ubuntu debian)
+dry_run Linux x86_64 "$work/wknold.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_PATHS OS_RELEASE_FILE
+contains webkit-noldconfig "$work/wknold.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
+lacks webkit-noldconfig "$work/wknold.txt" "_webkit40.tar.gz"
+contains webkit-noldconfig "$work/wknold.txt" "could not read this machine's WebKit2GTK ABI (no usable ldconfig); taking the 4.1 build"
+# Not silent afterwards either: the package hint is what the reader needs, and
+# it must not claim the runtime is missing, only that it could not be read.
+contains webkit-noldconfig "$work/wknold.txt" "could not be read (no usable ldconfig on PATH)"
+contains webkit-noldconfig "$work/wknold.txt" "apt install libgtk-3-0 libwebkit2gtk-4.1-0"
+lacks webkit-noldconfig "$work/wknold.txt" "no WebKit2GTK runtime was found"
 
 echo "== --cli-only never probes for a window it is not installing =="
 LDCONFIG_SHIM=$(fake_ldconfig 4.0)
@@ -402,7 +441,15 @@ tar -C "$work/stage" -czf "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
 
 shim=$(fake_uname Linux x86_64)
 target="$work/real"
-PATH="$shim:$PATH" sh "$installer" \
+# XDG_DATA_HOME is redirected into the work directory for every real install
+# below. Without it these runs — faked into being Linux — write a real
+# ~/.local/share/applications/agenthub.desktop on the machine running the
+# tests, pointing Exec= into a temp directory that is deleted on the next line
+# of this script: a dead launcher entry left behind by a test suite. It also
+# makes the entry readable here, which is the only way its body gets asserted
+# at all.
+xdg="$work/xdg"
+PATH="$shim:$PATH" XDG_DATA_HOME="$xdg" sh "$installer" \
 	--from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
 	--prefix "$target" --no-service --no-open >"$work/real.txt" 2>&1
 contains real "$work/real.txt" "verified agenthub-desktop_v0.1.0_linux_amd64.tar.gz against SHA256SUMS"
@@ -415,8 +462,66 @@ checks=$((checks + 1))
 checks=$((checks + 1))
 [ "$("$target/bin/ah")" = "ah v0.1.0 (fake)" ] || fail "real: the linked ah is not the installed one"
 
+# ---- the menu entry that was actually written ------------------------------
+
+# The dry run proves the entry is written; only a real install can say what is
+# in it. A launcher reads exactly these keys, and every one of them is silently
+# wrong in its own way: a broken Exec= gives a menu item that does nothing, a
+# missing StartupWMClass= gives a window that docks under a second icon.
+entry="$xdg/applications/agenthub.desktop"
+contains menu-body "$work/real.txt" "wrote $entry"
+checks=$((checks + 1))
+[ -f "$entry" ] || fail "real: no menu entry at $entry"
+# It goes where XDG_DATA_HOME says and nowhere else. This assertion is the one
+# that keeps the suite from littering the machine that runs it.
+home_entry="${HOME:-/nonexistent}/.local/share/applications/agenthub.desktop"
+checks=$((checks + 1))
+if [ -f "$home_entry" ] && grep -qF -- "$work" "$home_entry"; then
+	fail "real: the install wrote $home_entry pointing into this suite's work directory"
+fi
+contains menu-body "$entry" "[Desktop Entry]"
+contains menu-body "$entry" "Type=Application"
+contains menu-body "$entry" "Name=AgentHub"
+contains menu-body "$entry" "Exec=\"$target/share/agenthub/agenthub-desktop\""
+contains menu-body "$entry" "Terminal=false"
+contains menu-body "$entry" "Categories=Development;"
+contains menu-body "$entry" "StartupWMClass=agenthub-desktop"
+# This archive ships no appicon.png, so Icon= must be absent rather than
+# present and dangling: a launcher shows a broken-image placeholder for the
+# second and its own generic icon for the first.
+lacks menu-body "$entry" "Icon="
+
+# An archive that does carry the icon names it, by absolute path inside the
+# install tree. And the prefix here has a space in it, which is what makes the
+# quoting of Exec= load-bearing: unquoted, a launcher reads the path as a
+# command plus an argument and starts nothing.
+spaced_stage="$work/stage-icon/agenthub-desktop_v0.1.0_linux_amd64"
+mkdir -p "$spaced_stage"
+for binary in ah agenthub-node agenthub-mcp agenthub-desktop; do
+	printf '#!/bin/sh\necho "%s v0.1.0 (fake)"\n' "$binary" >"$spaced_stage/$binary"
+	chmod +x "$spaced_stage/$binary"
+done
+printf 'not really a png\n' >"$spaced_stage/appicon.png"
+iconed="$work/iconed"
+mkdir -p "$iconed"
+tar -C "$work/stage-icon" -czf "$iconed/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+	agenthub-desktop_v0.1.0_linux_amd64
+spaced_target="$work/a prefix with spaces"
+spaced_xdg="$work/xdg spaced"
+PATH="$shim:$PATH" XDG_DATA_HOME="$spaced_xdg" sh "$installer" \
+	--from "$iconed/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+	--prefix "$spaced_target" --no-service --no-open >"$work/real-icon.txt" 2>&1
+spaced_entry="$spaced_xdg/applications/agenthub.desktop"
+checks=$((checks + 1))
+[ -f "$spaced_entry" ] || fail "icon: no menu entry at $spaced_entry"
+contains menu-icon "$spaced_entry" "Exec=\"$spaced_target/share/agenthub/agenthub-desktop\""
+contains menu-icon "$spaced_entry" "Icon=$spaced_target/share/agenthub/appicon.png"
+checks=$((checks + 1))
+[ -x "$spaced_target/share/agenthub/agenthub-desktop" ] ||
+	fail "icon: the install under a path with spaces left no desktop binary"
+
 # Re-running upgrades in place rather than failing on what is already there.
-PATH="$shim:$PATH" sh "$installer" \
+PATH="$shim:$PATH" XDG_DATA_HOME="$xdg" sh "$installer" \
 	--from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
 	--prefix "$target" --no-service --no-open >"$work/real2.txt" 2>&1
 contains rerun "$work/real2.txt" "verified agenthub-desktop_v0.1.0_linux_amd64.tar.gz against SHA256SUMS"
@@ -433,7 +538,7 @@ printf '%s  %s\n' \
 	"agenthub-desktop_v0.1.0_linux_amd64.tar.gz" >"$bad/SHA256SUMS"
 refused="$work/refused"
 checks=$((checks + 1))
-if PATH="$shim:$PATH" sh "$installer" \
+if PATH="$shim:$PATH" XDG_DATA_HOME="$xdg" sh "$installer" \
 	--from "$bad/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
 	--prefix "$refused" --no-service --no-open >"$work/bad-sums.txt" 2>&1; then
 	fail "a corrupted SHA256SUMS was accepted"
@@ -452,7 +557,7 @@ printf '%s  %s\n' \
 	"0000000000000000000000000000000000000000000000000000000000000000" \
 	"something-else.tar.gz" >"$missing/SHA256SUMS"
 checks=$((checks + 1))
-if PATH="$shim:$PATH" sh "$installer" \
+if PATH="$shim:$PATH" XDG_DATA_HOME="$xdg" sh "$installer" \
 	--from "$missing/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
 	--prefix "$work/nope" --no-service --no-open >"$work/missing-sums.txt" 2>&1; then
 	fail "a SHA256SUMS with no line for the file was accepted"
