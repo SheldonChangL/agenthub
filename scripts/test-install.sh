@@ -361,11 +361,17 @@ dry_run Linux x86_64 "$work/wknold.txt" --version v0.1.0 --prefix "$work/pfx"
 unset LDCONFIG_PATHS OS_RELEASE_FILE
 contains webkit-noldconfig "$work/wknold.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
 lacks webkit-noldconfig "$work/wknold.txt" "_webkit40.tar.gz"
-contains webkit-noldconfig "$work/wknold.txt" "could not read this machine's WebKit2GTK ABI (no usable ldconfig); taking the 4.1 build"
+contains webkit-noldconfig "$work/wknold.txt" "could not read this machine's WebKit2GTK ABI (no readable ldconfig); taking the 4.1 build"
 # Not silent afterwards either: the package hint is what the reader needs, and
 # it must not claim the runtime is missing, only that it could not be read.
-contains webkit-noldconfig "$work/wknold.txt" "could not be read (no usable ldconfig on PATH)"
+contains webkit-noldconfig "$work/wknold.txt" "could not be read (no readable ldconfig)"
 contains webkit-noldconfig "$work/wknold.txt" "apt install libgtk-3-0 libwebkit2gtk-4.1-0"
+
+# Every case above either shims ldconfig onto PATH or pins the candidate list,
+# so none of them would notice the list shrinking back to PATH alone — which is
+# the whole defect: a Debian 12 shell has no /sbin on PATH. Assert the literal.
+# shellcheck disable=SC2016 # the literal default, not an expansion
+contains webkit-paths "$installer" '${AGENTHUB_LDCONFIG_PATHS:-ldconfig /sbin/ldconfig /usr/sbin/ldconfig}'
 lacks webkit-noldconfig "$work/wknold.txt" "no WebKit2GTK runtime was found"
 
 echo "== --cli-only never probes for a window it is not installing =="

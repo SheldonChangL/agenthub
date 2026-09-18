@@ -534,7 +534,7 @@ webkit_hint() {
 		# Nothing was probed, so nothing is known — but staying quiet is worse
 		# than saying so. The runtime may well be there; what is certain is
 		# which archive was taken, and that is what gets said.
-		say "warning: this machine's WebKit2GTK could not be read (no usable ldconfig on PATH),"
+		say "warning: this machine's WebKit2GTK could not be read (no readable ldconfig),"
 		say "         so the window may not open."
 	fi
 	say "         The 4.1 build was installed; install its runtime if it is missing:"
@@ -807,7 +807,7 @@ main() {
 					# Debian machine whose PATH has no ldconfig the 4.1 archive
 					# was taken with nothing printed at all, which is the exact
 					# failure this probe exists to prevent.
-					say "could not read this machine's WebKit2GTK ABI (no usable ldconfig); taking the 4.1 build"
+					say "could not read this machine's WebKit2GTK ABI (no readable ldconfig); taking the 4.1 build"
 				fi
 				;;
 			esac
