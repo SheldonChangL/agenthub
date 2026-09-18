@@ -192,7 +192,7 @@ if (el("settings-lang").value !== "zh-Hant") {
 configure({
   ServiceStatus: async () => ({
     tool: "/usr/local/bin/ah", supported: true, installed: true, running: true,
-    pid: 41872, unitPath: "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist",
+    pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist",
     logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true,
     dbPath: "~/agenthub.db", dbPathKnown: true,
   }),
@@ -224,7 +224,7 @@ for (const [lang, table, other] of [["en", EN, ZH], ["zh-Hant", ZH, EN], ["en", 
 
   const line = el("service-line").textContent;
   if (line !== table["service.lineRunning"].replace("{pid}", "41872")
-      .replace("{unit}", "~/Library/LaunchAgents/tw.jet-opto.agenthub-node.plist")) {
+      .replace("{unit}", "~/Library/LaunchAgents/local.agenthub.node.plist")) {
     failures.push(`${where} the service line is not the running one: ${line}`);
   }
   if (line === table["service.lineLoading"] || rawKey(line)) {

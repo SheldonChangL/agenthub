@@ -54,13 +54,14 @@ func TestLoadOrCreatePersistsStableIdentity(t *testing.T) {
 // happens to call it.
 //
 // On macOS with no HostName set — the default — gethostname() answers from DHCP
-// and DNS. Measured on one machine: ComputerName was "sheldon.chang mac" while
-// os.Hostname() returned "J-FrankieChang.jet-opto.com.tw", a previous occupant
-// of that DNS record, and the node broadcast that name to the whole segment.
+// and DNS. Measured on one machine (the names here stand in for the real
+// ones): ComputerName was "studio-mac" while os.Hostname() returned
+// "workstation.example.internal", a previous occupant of that DNS record, and
+// the node broadcast that name to the whole segment.
 func TestTheMachineNameIsNotWhateverTheNetworkCallsIt(t *testing.T) {
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 	hostname, _ := os.Hostname()
-	if got := MachineName(); got != "sheldon.chang mac" {
+	if got := MachineName(); got != "studio-mac" {
 		t.Errorf("MachineName() = %q, want the machine's own name rather than the network's %q",
 			got, hostname)
 	}
@@ -187,12 +188,12 @@ func TestAnExistingNodeThatNobodyNamedIsCorrected(t *testing.T) {
 	}
 
 	// The machine now reports its own name, as it would after this change ships.
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 	corrected, err := LoadOrCreate(ctx, store, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if corrected.DisplayName != "sheldon.chang mac" {
+	if corrected.DisplayName != "studio-mac" {
 		t.Errorf("display name = %q; an upgraded node still announces the name it was created with",
 			corrected.DisplayName)
 	}
@@ -211,7 +212,7 @@ func TestAChosenNameIsNotRevised(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
 
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 	if _, err := LoadOrCreate(ctx, store, "", false); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +251,7 @@ func TestAChosenNameIsNotRevised(t *testing.T) {
 // form of "☕️" is one the macOS picker cannot produce.
 func TestAChosenNameIsStoredAsItWillBeAnnounced(t *testing.T) {
 	ctx := context.Background()
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 
 	for typed, announced := range map[string]string{
 		"cafe\u0301 mac":    "caf\u00e9 mac", // NFD, which is what macOS hands out
@@ -289,7 +290,7 @@ func TestAChosenNameIsStoredAsItWillBeAnnounced(t *testing.T) {
 func TestAChosenNameThatCouldNotBeAnnouncedIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 
 	// 22 CJK characters is 66 bytes: under the trust store's 128, over the 64
 	// an announcement carries, and an unremarkable name in this product's own
@@ -343,7 +344,7 @@ func TestPassingAnEmptyNameReleasesAPinnedOne(t *testing.T) {
 	ctx := context.Background()
 	store := openTestRegistry(t)
 
-	withMachineName(t, "sheldon.chang mac")
+	withMachineName(t, "studio-mac")
 	if _, err := LoadOrCreate(ctx, store, "the machine on my desk", true); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +363,7 @@ func TestPassingAnEmptyNameReleasesAPinnedOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if released.DisplayName != "sheldon.chang mac" {
+	if released.DisplayName != "studio-mac" {
 		t.Errorf("display name = %q; the name was not handed back to the machine",
 			released.DisplayName)
 	}
@@ -386,7 +387,7 @@ func TestPassingAnEmptyNameReleasesAPinnedOne(t *testing.T) {
 			t.Errorf("LoadOrCreate(%q) error = %v", blank, err)
 			continue
 		}
-		if got.NameIsChosen || got.DisplayName != "sheldon.chang mac" {
+		if got.NameIsChosen || got.DisplayName != "studio-mac" {
 			t.Errorf("LoadOrCreate(%q) left %q (chosen=%v); a blank value has to release",
 				blank, got.DisplayName, got.NameIsChosen)
 		}

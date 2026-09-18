@@ -112,10 +112,11 @@ var machineNameLookup = localMachineName
 // Not os.Hostname() alone. On macOS with no HostName set — the default —
 // gethostname() answers with whatever DHCP and DNS say this address is called,
 // so a machine can end up announcing a name that belongs to whoever held the
-// address before it. Measured on one: ComputerName was "sheldon.chang mac"
-// while os.Hostname() returned "J-FrankieChang.jet-opto.com.tw", a previous
-// occupant of that DNS record. The node then broadcast that name to everyone on
-// the segment, which is both wrong and somebody else's.
+// address before it. Measured on one (the names here stand in for the real
+// ones): ComputerName was "studio-mac" while os.Hostname() returned
+// "workstation.example.internal", a previous occupant of that DNS record. The
+// node then broadcast that name to everyone on the segment, which is both
+// wrong and somebody else's.
 //
 // So the machine's own name is asked for first, and the network-derived one is
 // the fallback rather than the source. Every candidate is put through the

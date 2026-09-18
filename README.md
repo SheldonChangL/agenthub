@@ -494,7 +494,7 @@ While pairing mode is open, the node announces a display name to everyone on
 the segment, and it is printed at startup so you can see what that is:
 
 ```
-node display name "sheldon.chang mac" (read from this machine)
+node display name "studio-mac" (read from this machine)
 ```
 
 By default it is read from the machine — `ComputerName` on macOS, the hostname
