@@ -51,11 +51,23 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 It downloads the one release asset for your machine, checks it against that
 release's own `SHA256SUMS` before unpacking anything, puts the app in
 `/Applications` (or `~/Applications`) or `~/.local/share/agenthub`, links `ah`
-into `~/.local/bin`, and registers the background node. It never uses `sudo` and
-never asks for a password; `docs/install-script.md` lists every path it writes,
-every flag it takes — `--cli-only`, `--no-service`, `--version vX.Y.Z` — and
-`--dry-run`, which prints what it would do and does none of it. Uneasy about
-piping a script into a shell? Read it first:
+into `~/.local/bin`, and registers the background node. When a node is already
+registered it reads the unit first and keeps that node's `--db`, so an upgrade
+is an upgrade and not a new, empty database — it says `keeping the node's
+database at <path>` when it does. It never uses `sudo` and never asks for a
+password; `docs/install-script.md` lists every path it writes, every flag it
+takes — `--cli-only`, `--no-service`, `--version vX.Y.Z` — and `--dry-run`,
+which prints what it would do and does none of it. Flags go after `sh -s --`
+when the script arrives through a pipe:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh -s -- --no-service
+```
+
+When it finishes it prints what it installed and where, whether the node is
+running, and the one thing to do next: open `agenthub-desktop` from
+Applications, which starts on a setup checklist. Uneasy about piping a script
+into a shell? Read it first:
 `curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | less`.
 
 Windows has its own installer; see below. The manual downloads still work
