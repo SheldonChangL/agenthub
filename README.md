@@ -1146,4 +1146,14 @@ acceptance, is the one in English.
 
 </details>
 
+## Support
+
+AgentHub is free and always will be. If it saves you time and you want to say
+so, there is a [PayPal link](https://paypal.me/CHANGWENLUNG). Nothing in the
+software changes either way — there is no paid tier and no telemetry that would
+notice.
+
+Bug reports and a note about what you were trying to do are worth more than
+money; they are the only way the rough edges get found.
+
 License: MIT — see [LICENSE](LICENSE).
