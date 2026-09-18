@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"agenthub.local/agenthub/internal/quiet"
 )
 
 // Supervisor keeps one Codex App Server connection available.
@@ -58,9 +60,11 @@ func NewSupervisor(options SupervisorOptions) *Supervisor {
 	}
 	if supervisor.command == nil {
 		supervisor.command = func(ctx context.Context) *exec.Cmd {
-			// #nosec G204 -- a fixed argv with no interpolation; the binary is
-			// resolved from PATH exactly as the owner's own `codex` would be.
-			return exec.CommandContext(ctx, "codex", "app-server")
+			// The binary is resolved from PATH exactly as the owner's own
+			// `codex` would be, with a fixed argv. quiet.Command because this
+			// child lives as long as the node does: on Windows a console it
+			// was given would not flash, it would stay on the desktop.
+			return quiet.Command(ctx, "codex", "app-server")
 		}
 	}
 	if supervisor.handler == nil {
