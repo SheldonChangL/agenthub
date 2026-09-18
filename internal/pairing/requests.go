@@ -46,6 +46,31 @@ const MaxPendingPerSource = 3
 // both sides can poll and see what became of it.
 const retainDecided = 10 * time.Minute
 
+// MaxRetained bounds every row this node holds at once, decided ones included.
+//
+// MaxPending and MaxPendingPerSource count only rows still waiting, so they
+// were never a bound on the table. Displacement is where it leaked: once the
+// pending list is full, a source that still holds a row there gives up its own
+// oldest to make room for its next one, which leaves the source's pending count
+// exactly where it was and a decided row behind, kept for retainDecided with
+// nothing counting it. The loop has no end, and up to MaxPending source
+// addresses can be in it at once, each sending at the 120/min the peer limiter
+// allows — so the table grew for ten minutes at a time with no ceiling.
+//
+// Four times the pending bound: enough that the ordinary history of a busy
+// window survives to be polled, small enough that the worst case is a few dozen
+// rows rather than a few hundred thousand.
+const MaxRetained = 4 * MaxPending
+
+// MaxRetainedPerSource bounds the decided rows kept for any one source address.
+//
+// The total bound alone would let one flooder's history push out everybody
+// else's, which is the eviction MaxPendingPerSource exists to deny — so the
+// per-source bound is applied first and a flooder can only crowd itself out.
+// Twice MaxPendingPerSource: a sender may have three rows waiting, and their
+// answers plus one previous round is the history worth keeping.
+const MaxRetainedPerSource = 2 * MaxPendingPerSource
+
 // Direction says which side of the exchange a request is.
 type Direction string
 
@@ -253,6 +278,10 @@ func (q *Requests) Add(request Request) error {
 	stored := request
 	q.rows[request.ID] = &stored
 	q.order = append(q.order, request.ID)
+	// Again after the append, so the table is inside its bound on the way out
+	// of every Add rather than at the next read. Only decided rows go, so the
+	// newcomer is never what pays for itself.
+	q.capRetained()
 	return nil
 }
 
@@ -386,6 +415,65 @@ func (q *Requests) sweep() {
 			row.Reason = ReasonExpired
 		}
 		if row.Decided() && now.After(row.ExpiresAt.Add(retainDecided)) {
+			delete(q.rows, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	q.order = kept
+	q.capRetained()
+}
+
+// capRetained drops decided rows until the table is inside MaxRetainedPerSource
+// and MaxRetained.
+//
+// Never an undecided row. A bound that could evict something still waiting for
+// the owner would hand back exactly the eviction MaxPendingPerSource was added
+// to deny: the owner's real machine dropped off the list of fingerprints to
+// compare while a stranger filled it. Undecided rows are already bounded by
+// MaxPending in each direction, which is below MaxRetained, so dropping decided
+// rows can always reach the total bound.
+//
+// Oldest first, in insertion order — which is CreatedAt order, since a row is
+// appended when it is made. What is lost is the ability to poll for the answer
+// to a request that has since been crowded out; the alternative was holding
+// every answer a flooder can generate.
+func (q *Requests) capRetained() {
+	drop := make(map[string]bool)
+
+	// Per source first, newest kept: a flooder is one address, and its own
+	// history is what must go before anybody else's.
+	perSource := make(map[string]int)
+	for i := len(q.order) - 1; i >= 0; i-- {
+		id := q.order[i]
+		row := q.rows[id]
+		if !row.Decided() || row.SourceHost == "" {
+			continue
+		}
+		perSource[row.SourceHost]++
+		if perSource[row.SourceHost] > MaxRetainedPerSource {
+			drop[id] = true
+		}
+	}
+
+	remaining := len(q.order) - len(drop)
+	for _, id := range q.order {
+		if remaining <= MaxRetained {
+			break
+		}
+		if drop[id] || !q.rows[id].Decided() {
+			continue
+		}
+		drop[id] = true
+		remaining--
+	}
+
+	if len(drop) == 0 {
+		return
+	}
+	kept := q.order[:0]
+	for _, id := range q.order {
+		if drop[id] {
 			delete(q.rows, id)
 			continue
 		}
