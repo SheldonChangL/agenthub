@@ -535,6 +535,28 @@ read, and guessing would throw away things the owner had not finished with. How
 full an inbox is travels with its contents, so a session that is filling up is
 visible before senders start backing up.
 
+`GET /v1/inbox/counts` answers the same three numbers — `held`, `capacity`,
+`full` — for every local session at once, as a single `GROUP BY`. It exists
+because a window that draws a badge per row cannot read one inbox per row: the
+desktop list has held a thousand sessions, and a read each was the reason the
+redesign shipped without the badge (issue #146). A session holding nothing is
+**absent from the map rather than present with a zero**, so the payload stays
+small and, more importantly, so a reader keeps "nothing is waiting" (a missing
+key) separate from "this could not be read" (no map at all) — only one of those
+means a badge should disappear.
+
+The bound is carried on each entry and nowhere else. It was briefly emitted at
+the top level as well, from the same constant, so the two copies could not
+disagree — but a payload that states one fact twice leaves a reader deciding
+which copy is authoritative, and the answer to that is to have one.
+
+What it counts is what the inbox still holds, never what is unread. Nothing on
+this node records reading, the desktop deliberately marks nothing read, and a
+count leaves only when an agent takes the message or somebody deletes it. Like
+`GET /v1/inbox/{id}` it is on the owner surface and nowhere else: one answer
+naming every local session and its depth is an inventory of the machine, and
+`PeerHandler` has no route to it rather than a guarded one.
+
 Settled outbound rows are pruned after a retention period rather than on
 settlement, because `ah outbound <id>` is the only place an owner finds out what
 happened to a message and deleting the answer as it becomes true would make the

@@ -423,6 +423,42 @@ func (a *App) Inbox(sessionID string) InboxView {
 	return view
 }
 
+// InboxCountsView is every local inbox's depth, for the badges on the list.
+//
+// Ok is the field the badges are drawn from, and it is why this is a struct
+// rather than a bare map. A read that did not reach the node leaves Counts
+// empty, and an empty map is indistinguishable from "every inbox is empty" —
+// which would paint zero where the truth is "nobody knows". Zero and unknown
+// are different facts and the window shows only one of them (issue #146).
+type InboxCountsView struct {
+	Counts map[string]InboxCount `json:"counts"`
+	Ok     bool                  `json:"ok"`
+	Error  string                `json:"error,omitempty"`
+}
+
+// InboxCounts reads how much every local session is still holding.
+//
+// A thin wrapper over one node endpoint, called after each Overview() so the
+// badges are as current as the rows they sit on. Like Inbox it changes nothing:
+// the node has no notion of read, and this is a count of what is still queued —
+// what an agent has not taken yet — not of what nobody has looked at.
+//
+// Never returns an error to the frontend: a rejected binding call and an
+// answered one that says "could not reach the node" are handled at the same
+// place, and there is only one sensible reaction either way.
+func (a *App) InboxCounts() InboxCountsView {
+	view := InboxCountsView{Counts: map[string]InboxCount{}}
+	activeClient, _ := a.current()
+	counts, err := activeClient.inboxCounts(a.ctx)
+	if err != nil {
+		view.Error = err.Error()
+		return view
+	}
+	view.Counts = counts
+	view.Ok = true
+	return view
+}
+
 // inboxPageSize is how many messages one read asks for. See Inbox for why it is
 // not larger.
 const inboxPageSize = 10

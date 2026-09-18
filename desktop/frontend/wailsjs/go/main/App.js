@@ -38,6 +38,10 @@ export function Inbox(arg1) {
   return window['go']['main']['App']['Inbox'](arg1);
 }
 
+export function InboxCounts() {
+  return window['go']['main']['App']['InboxCounts']();
+}
+
 export function InstallService(arg1) {
   return window['go']['main']['App']['InstallService'](arg1);
 }

@@ -493,6 +493,17 @@ func TestFrontendInboxDrawerAsksTheNodeForOneSession(t *testing.T) {
 	runNodeCheck(t, "inbox-drawer.mjs")
 }
 
+// TestFrontendInboxBadgesCountWhatIsHeld covers the per-row count (issue #146).
+//
+// Three rules the badge is worth nothing without: a count of zero is no badge
+// rather than a "0" on every row; an unknown count — a read that failed — is
+// also no badge, and must never be turned into a zero this window invented; and
+// the fifteen-second tick writes the number into the row that is already there,
+// because a rebuilt row takes the button out from under a press in flight.
+func TestFrontendInboxBadgesCountWhatIsHeld(t *testing.T) {
+	runNodeCheck(t, "inbox-badge.mjs")
+}
+
 // TestFrontendNodeSettingsFormSpeaksTheNodesRules covers the settings page.
 //
 // Three of its rules cost real damage when they are wrong: the node's answer
