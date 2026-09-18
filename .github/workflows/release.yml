@@ -387,7 +387,10 @@ jobs:
             # Checked here rather than inferred from a missing file three steps
             # later: wails only warns when makensis is absent.
             command -v makensis
-            makensis /VERSION || true
+            # Same guard as the install step: Git Bash rewrites /VERSION into
+            # C:/Program Files/Git/VERSION, so without it this printed
+            # `Can't open script` and `|| true` hid that.
+            MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' makensis /VERSION || true
             echo
             # -o names the executable agenthub-desktop.exe, which is what
             # project.nsi installs as ${PRODUCT_EXECUTABLE} and what its
