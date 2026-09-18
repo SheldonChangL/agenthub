@@ -562,8 +562,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.seenCell.textContent = relative(session.lastSeenAt);
 
     // The two button labels. Written here and not at creation: see sessionRow.
+    //
+    // "resume" is the same word in both languages on purpose — it names the
+    // command this button copies into a terminal, so it is not in the tables.
+    // It is still written here rather than at creation, because the rule is
+    // about where a kept row's text is written, and an exception to it is how
+    // the next translated string quietly goes back to being written once.
     parts.inboxLabel.textContent = t("inbox.title");
-    parts.resumeLabel.textContent = t("row.resume");
+    parts.resumeLabel.textContent = "resume";
     parts.inboxButton.onclick = () => {
       openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
     };

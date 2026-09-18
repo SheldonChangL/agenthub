@@ -496,7 +496,9 @@ for (const [index, button] of buttonsOf("inbox").entries()) {
   }
 }
 for (const [index, button] of buttonsOf("resume").entries()) {
-  if (labelOf(button) !== EN["row.resume"]) {
+  // Not a translated word: it names the command the button copies. It is
+  // asserted anyway, because it is written by the same pass.
+  if (labelOf(button) !== "resume") {
     failures.push(`row ${index}'s resume button reads ${JSON.stringify(labelOf(button))}`);
   }
   // Part sentence, part command: the sentence has to be English and the
