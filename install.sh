@@ -742,7 +742,13 @@ main() {
 		case "$WEBKIT_ABI" in
 		4.0)
 			DESKTOP_SUFFIX="_webkit40"
-			say "this machine has WebKit2GTK 4.0; taking the build linked against it"
+			# Only worth saying when it is choosing a download. With --from the
+			# file was named on the command line, nothing here selected it, and
+			# claiming otherwise would tell someone who took the wrong archive
+			# by hand that the right one had been picked for them.
+			if [ -z "$FROM" ]; then
+				say "this machine has WebKit2GTK 4.0; taking the build linked against it"
+			fi
 			;;
 		4.1) ;;
 		# Neither found. The 4.1 build is the one to install: it is what every

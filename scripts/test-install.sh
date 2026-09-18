@@ -337,6 +337,14 @@ contains webkit-cli "$work/wkcli.txt" "agenthub_v0.1.0_linux_amd64.tar.gz"
 lacks webkit-cli "$work/wkcli.txt" "_webkit40.tar.gz"
 lacks webkit-cli "$work/wkcli.txt" "this machine has WebKit2GTK 4.0"
 
+echo "== --from does not claim to have chosen the archive =="
+# The 4.0 probe still runs (the hint depends on it), but an archive named on the
+# command line was not picked by it.
+LDCONFIG_SHIM=$(fake_ldconfig 4.0)
+dry_run_fails "from-nonexistent" Linux x86_64 "$work/from.txt" --from "$work/no-such.tar.gz"
+unset LDCONFIG_SHIM
+lacks from-claim "$work/from.txt" "taking the build linked against it"
+
 echo "== the applications menu gets an entry =="
 LDCONFIG_SHIM=$(fake_ldconfig 4.1)
 dry_run Linux x86_64 "$work/entry.txt" --version v0.1.0 --prefix "$work/pfx"
