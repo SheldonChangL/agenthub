@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="112" align="right" alt="">
+
 # AgentHub
 
 **One window for every Claude Code and Codex session you have running, on all of
