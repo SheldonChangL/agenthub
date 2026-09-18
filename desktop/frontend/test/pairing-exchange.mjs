@@ -24,6 +24,7 @@
 //   node frontend/test/pairing-exchange.mjs
 
 import { document } from "./dom-shim.mjs";
+import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 globalThis.document = document;
 
@@ -1099,7 +1100,10 @@ if (withoutAddress === withAddress) {
 if (withoutAddress.includes("本機位址")) {
   failures.push(`a node with no address is still sent to read one out: ${withoutAddress}`);
 }
-if (!withoutAddress.includes("打開配對面板")) {
+// The control it names has to be one the window actually has. This used to send
+// the owner to a 開啟配對面板 button that was removed with the pairing exchange,
+// so the sentence named nowhere at all.
+if (!withoutAddress.includes(ZH["network.pairNew"])) {
   failures.push(`the no-address summary names nowhere to go next: ${withoutAddress}`);
 }
 
