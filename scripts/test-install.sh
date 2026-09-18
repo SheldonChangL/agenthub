@@ -149,6 +149,8 @@ commands_only() { # commands_only <transcript> <destination>
 
 echo "== darwin/arm64, desktop =="
 dry_run Darwin arm64 "$work/darwin.txt" --version v0.1.0 --prefix "$work/pfx"
+contains "prefix install names its own app path" "$work/darwin.txt" "Open $work/pfx/agenthub-desktop.app; it starts on a setup checklist."
+lacks "prefix install does not say Applications" "$work/darwin.txt" "from Applications"
 commands_only "$work/darwin.txt" "$work/darwin.cmds"
 contains darwin "$work/darwin.txt" "agenthub-desktop_v0.1.0_darwin_universal.dmg"
 contains darwin "$work/darwin.txt" "releases/download/v0.1.0/SHA256SUMS"
