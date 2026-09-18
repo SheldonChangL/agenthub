@@ -578,15 +578,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     // 1. The node itself. Without ah this window cannot find out what holds the
     //    node, and restarting the process behind a launchd job or a systemd
-    //    unit is how one node becomes two — so that case explains and offers
-    //    nothing, exactly as the service panel does.
+    //    unit is how one node becomes two — so while the node is answering that
+    //    case explains and offers nothing, exactly as the service panel does.
+    //    A node that is NOT answering is the exception; the branch says why.
     if (status.toolError) {
+      // Without ah this window cannot say what holds the node, so when the node
+      // IS answering there is nothing here worth pressing. When it is not, there
+      // is: RestartNode falls through to restartNodeProcess whenever the status
+      // is not "supported and installed" (desktop/nodeprocess.go), and that path
+      // stops whatever agenthub-node is running and starts the binary shipped
+      // beside this app — it never runs ah. A missing ah used to cost the owner
+      // the one button the card exists for, on a machine with a dead node.
+      const down = !state.nodeReachable;
       steps.push({
         id: "service",
-        title: t("onboarding.service.title"),
-        body: t("onboarding.service.bodyNoAh", { error: status.toolError }),
+        title: down ? t("onboarding.service.titleStart") : t("onboarding.service.title"),
+        body: down
+          ? t("onboarding.service.bodyNoAhNodeDown", { error: status.toolError })
+          : t("onboarding.service.bodyNoAh", { error: status.toolError }),
         done: false,
-        actions: [],
+        actions: down ? [{
+          label: t("onboarding.service.actionStart"),
+          primary: true,
+          run: () => restartNode().catch(() => {}),
+        }] : [],
       });
     } else if (!state.nodeReachable) {
       // A node that is not answering is not a finished step, whatever the
@@ -787,7 +802,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // steps itself changes.
   const onboardingNodes = new Map();
   let onboardingAllDoneShown = false;
+  // The farewell is spent by a TICK, not by a render.
+  //
+  // load() fires loadService() and renders; the status lands about fifty
+  // milliseconds later and loadService re-renders this card. Hiding on the
+  // second render therefore took the farewell off screen in that fifty
+  // milliseconds, every time — nobody ever read it. So the flag the hide reads
+  // is set by the next load() instead, which is fifteen seconds away.
+  let onboardingFarewellSpent = false;
   let onboardingSettingsAsked = false;
+
+  // Called by load(), once per tick, before it renders. A farewell put up during
+  // the previous tick has been on screen for that whole tick by now, so this
+  // render is the one that puts the card away.
+  function spendOnboardingFarewell() {
+    if (onboardingAllDoneShown) onboardingFarewellSpent = true;
+  }
 
   function onboardingStepNode(step, index) {
     let node = onboardingNodes.get(step.id);
@@ -836,13 +866,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const section = el("onboarding");
     const steps = onboardingSteps();
     let show = !state.ui.onboardingDismissed && onboardingTriggered();
-    if (show) onboardingAllDoneShown = false;
-    // Finished, and shown once more with every step ticked before it goes. A
-    // card that vanishes under the click that completed it reads as a glitch;
-    // one that stays forever is the thing people learn to ignore. Never
-    // reopened afterwards — the settings panel's own warnings and the pairing
-    // drawer's notices are where a regression is said out loud.
-    if (!show && !state.ui.onboardingDismissed && !onboardingAllDoneShown
+    if (show) { onboardingAllDoneShown = false; onboardingFarewellSpent = false; }
+    // Finished, and kept up for one full tick with every step ticked before it
+    // goes. A card that vanishes under the click that completed it reads as a
+    // glitch; one that stays forever is the thing people learn to ignore. The
+    // guard is the spent flag, not the shown one, so every render inside that
+    // tick — the status landing, a settings read answering — keeps it on screen
+    // rather than being the one that takes it away. Never reopened afterwards:
+    // once the card is hidden the class test below is false, and the settings
+    // panel's own warnings and the pairing drawer's notices are where a
+    // regression is said out loud.
+    if (!show && !state.ui.onboardingDismissed && !onboardingFarewellSpent
       && !section.classList.contains("hidden") && steps.every((step) => step.done)) {
       show = true;
       onboardingAllDoneShown = true;
@@ -1277,6 +1311,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const alive = new Set(state.sessions.map((s) => s.id));
     for (const id of [...state.selected]) if (!alive.has(id)) state.selected.delete(id);
 
+    // One tick, one chance to spend the farewell: whatever this render decides,
+    // a card that said goodbye during the previous tick has been read by now.
+    spendOnboardingFarewell();
     render();
     return true;
   }
@@ -4335,16 +4372,56 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // thinking about, as a side effect of a button about a listening address.
   // So a dirty form is refused and named, rather than silently carried along.
   async function applyPeerListenRepairFromCard(option) {
+    // One of those fields may not be the owner's at all — see below.
+    withdrawUntouchedPrivateSuggestion();
     // Every field the save would send, minus the two this button is here to
     // set. Anything left is an edit that belongs to the owner, not to us.
     const carried = Object.keys(readNodeSettingsPatch())
       .filter((field) => field !== "peerListen" && field !== "allowLan");
     if (carried.length > 0) {
-      banner(t("onboarding.reachable.formDirty"));
+      // Named, not just counted. "There are unsaved changes" over a form the
+      // owner does not remember editing is a dead end; the field's own label is
+      // what takes them to the thing to save or read again.
+      banner(t("onboarding.reachable.formDirty") + " "
+        + t("onboarding.reachable.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
       goToNodeSettings();
       return;
     }
     await applyPeerListenRepair(option);
+  }
+
+  const NODE_SETTINGS_FIELD_LABELS = {
+    peerListen: "nodeSettings.peerListenLabel",
+    allowLan: "nodeSettings.allowLan",
+    discover: "nodeSettings.discover",
+    autoWake: "nodeSettings.autoWake",
+    treatAsPrivate: "nodeSettings.privateLabel",
+  };
+
+  function nodeSettingsFieldLabel(field) {
+    const key = NODE_SETTINGS_FIELD_LABELS[field];
+    return key ? t(key) : field;
+  }
+
+  // The private-range field is the one thing in that form this window may have
+  // filled in by itself: suggestPrivateRange writes the chosen interface's own
+  // subnet into it the moment the owner picks an address, without them typing
+  // anything. That counted as an unsaved change, so an owner who had merely
+  // looked at the address list was refused by step 3 over a value they never
+  // entered — and the refusal named no field, so there was nothing to go and
+  // undo.
+  //
+  // A suggestion still standing untouched is ours to withdraw, and withdrawing
+  // it is the right half of the fix on its own: carrying it into this save
+  // would declare a private range nobody asked for, and that range decides
+  // where the node is willing to send data. Anything the owner typed over it
+  // does not match the suggestion and is left exactly where it is.
+  function withdrawUntouchedPrivateSuggestion() {
+    const field = el("node-private");
+    if (state.nodePrivateSuggested === "" || field.value.trim() !== state.nodePrivateSuggested) return;
+    field.value = (state.nodeSettings?.saved?.treatAsPrivate ?? []).join(", ");
+    state.nodePrivateSuggested = "";
+    syncNodeSettingsForm();
   }
 
   // describeSource relates what is running to what the form is editing.
@@ -5068,7 +5145,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
-    onboardingSteps, onboardingTriggered, renderOnboarding, goToService, goToPairing, discoverSessions,
+    onboardingSteps, onboardingTriggered, renderOnboarding, spendOnboardingFarewell, goToService, goToPairing, discoverSessions,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs, savePrefs,
     t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,

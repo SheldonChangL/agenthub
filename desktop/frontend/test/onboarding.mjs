@@ -95,6 +95,10 @@ function allGood() {
 function settle() {
   allGood();
   app.renderOnboarding();
+  // The farewell is spent by the next fifteen-second tick, not by the next
+  // render — test 12 drives that through load() itself. Here the tick is only
+  // scenery, so it is stepped by hand to get the card back to hidden.
+  app.spendOnboardingFarewell();
   app.renderOnboarding();
   if (shown()) failures.push("the card never went away on a window with nothing left to do");
 }
@@ -567,35 +571,204 @@ if (recovered.body === ZH["onboarding.reachable.bodyUnreadable"]) {
   failures.push("the step stayed on the failure after a read that succeeded");
 }
 
-/* ---------------- 12. the card says it is going ---------------- */
+/* ---------------- 12. the card says it is going, and stays up to be read ---------------- */
 
-// The auto-hide shows every tick once and then puts the card away. That last
-// render used to show ticks and nothing else; onboarding.allDone was written in
-// both tables and rendered nowhere.
+// The auto-hide shows every tick once and then puts the card away. Two defects
+// lived here. onboarding.allDone was written in both tables and rendered
+// nowhere, so the last render showed ticks and no reason. And then the farewell
+// was spent by the next RENDER rather than the next tick: load() fires
+// loadService() and renders, the status lands about fifty milliseconds later
+// and loadService re-renders this card, so the goodbye was on screen for those
+// fifty milliseconds and nobody ever read it.
+//
+// So this drives the real sequence rather than calling renderOnboarding() by
+// hand: load(), the status landing after it, and the next fifteen-second tick.
 store.clear();
+let farewellPaired = [];
+let releaseFarewell = () => {};
+let heldFarewell = Promise.resolve();
+const holdStatus = () => {
+  heldFarewell = new Promise((resolve) => { releaseFarewell = resolve; });
+};
+// Held on every read, so the status always lands AFTER the render load() does,
+// which is the order the app really runs in.
+bindings.ServiceStatus = async () => { await heldFarewell; return RUNNING; };
+bindings.Overview = async () => ({
+  reachable: true, nodeUrl: "http://127.0.0.1:7462",
+  node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
+  sessions: [{ id: "claude:one" }],
+  nodes: farewellPaired,
+  peers: [],
+  counts: { total: 1, all_paired: 1, selected: 0 },
+});
+configure(bindings);
 const finishing = boot({ start: false });
-// Open first, so the finish is something that happens to the card rather than
-// a state it booted into.
-finishing.state.nodeReachable = true;
-finishing.state.loadedOnce = true;
-finishing.state.service = { supported: true, installed: true, running: true, pid: 9 };
-finishing.state.sessions = [{ id: "claude:one" }];
-finishing.state.counts = { total: 1, all_paired: 1, selected: 0 };
 finishing.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
-finishing.state.nodes = [];
-finishing.renderOnboarding();
+
+const settleStatus = async () => {
+  releaseFarewell();
+  for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+};
+
+// Tick one: nothing is paired yet, so the card is open on a real step. The
+// finish has to be something that happens to the card, not a state it booted
+// into.
+holdStatus();
+await finishing.load();
+await settleStatus();
 if (!shown()) failures.push("the card was not on screen before the step that finishes it");
 if (!el("onboarding-alldone").classList.contains("hidden")) {
   failures.push("the card said goodbye while a step was still open");
 }
-finishing.state.nodes = [{ nodeId: "node_other" }];
-finishing.renderOnboarding();
+
+// Tick two: the last step completes. load() renders the farewell, and then the
+// status lands and re-renders. The card has to survive that.
+farewellPaired = [{ nodeId: "node_other" }];
+holdStatus();
+await finishing.load();
 if (!shown()) failures.push("the card vanished under the click that completed it");
 if (el("onboarding-alldone").classList.contains("hidden")) {
   failures.push("the last render showed five ticks and never said the card was going");
 }
-finishing.renderOnboarding();
-if (shown()) failures.push("the card stayed after its farewell render");
+await settleStatus();
+if (!shown()) {
+  failures.push("the service status landing fifty milliseconds later took the farewell off screen");
+}
+if (el("onboarding-alldone").classList.contains("hidden")) {
+  failures.push("the farewell was rendered away by a read that answered inside the same tick");
+}
+
+// Tick three, fifteen seconds later: read by now, so it goes.
+holdStatus();
+await finishing.load();
+if (shown()) failures.push("the card went before the tick its farewell was put up for was over");
+await settleStatus();
+if (shown()) failures.push("the card stayed after the tick that spent its farewell");
+
+bindings.ServiceStatus = async () => RUNNING;
+configure(bindings);
+
+/* ---------------- 14. a suggestion this window filled in is not an edit ---------------- */
+
+// suggestPrivateRange writes the chosen interface's own subnet into the
+// private-range box the moment the owner picks a non-private address in the
+// settings form, with nobody typing anything. That counted as an unsaved
+// change, so step 3 refused to do anything for an owner who had merely looked
+// at the address list, and the refusal named no field, so there was nothing to
+// go and undo.
+store.clear();
+const MIXED = [
+  { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+  { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false },
+];
+bindings.Overview = async () => ({
+  reachable: true, nodeUrl: "http://127.0.0.1:7462",
+  node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
+  sessions: [], nodes: [], peers: [], counts: {},
+});
+bindings.LocalAddresses = async () => MIXED;
+configure(bindings);
+const suggesting = boot({ start: false });
+suggesting.state.nodeReachable = true;
+suggesting.state.loadedOnce = true;
+suggesting.state.service = { supported: true, installed: true, running: true, pid: 9 };
+suggesting.state.pairing = { windowAvailable: true, state: { peerAddress: "", peerAddressReachable: false } };
+SETTINGS.saved = { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false };
+SETTINGS.settings = { ...SETTINGS.saved };
+await suggesting.loadNodeSettings();
+
+// The owner picks the non-private address in the form. Nothing else.
+el("node-peerlisten").value = "122.122.0.7:7463";
+suggesting.suggestPrivateRange();
+suggesting.syncNodeSettingsForm();
+if (el("node-private").value.trim() !== "122.122.0.0/16") {
+  failures.push(`the form did not offer the subnet, so this test proves nothing: ${el("node-private").value}`);
+}
+if (suggesting.state.nodePrivateSuggested !== "122.122.0.0/16") {
+  failures.push("the form filled the range in without recording that it was its own suggestion");
+}
+
+// Back on the local view, the checklist button now has to work.
+suggesting.state.view = "local";
+calls.SaveNodeSettings = 0;
+const repair = suggesting.onboardingSteps().find((step) => step.id === "reachable");
+await repair.actions[0]?.run();
+if (calls.SaveNodeSettings !== 1) {
+  failures.push("step 3 refused over a private range the window itself had filled in");
+}
+if ((SETTINGS.saved.treatAsPrivate ?? []).length !== 0) {
+  failures.push(`the repair declared a private range nobody asked for: ${JSON.stringify(SETTINGS.saved.treatAsPrivate)}`);
+}
+if (el("node-private").value.trim() !== "") {
+  failures.push(`the withdrawn suggestion was left in the form: ${el("node-private").value}`);
+}
+
+// And an edit that really is the owner's is still refused, by name now.
+SETTINGS.saved = { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false };
+SETTINGS.settings = { ...SETTINGS.saved };
+suggesting.state.nodeSettings = null;
+await suggesting.loadNodeSettings();
+el("node-autowake").checked = true;
+suggesting.state.view = "local";
+calls.SaveNodeSettings = 0;
+const refused = suggesting.onboardingSteps().find((step) => step.id === "reachable");
+await refused.actions[0]?.run();
+if (calls.SaveNodeSettings !== 0) {
+  failures.push("the card carried an unsaved auto-wake tick into a save about a listening address");
+}
+if (!el("banner").textContent.includes(ZH["nodeSettings.autoWake"])) {
+  failures.push(`the refusal did not name the dirty field: ${el("banner").textContent}`);
+}
+if (!el("banner").textContent.includes(ZH["onboarding.reachable.formDirty"])) {
+  failures.push(`the refusal did not say which two buttons undo it: ${el("banner").textContent}`);
+}
+el("node-autowake").checked = false;
+bindings.LocalAddresses = async () => ADDRESSES;
+configure(bindings);
+
+/* ---------------- 15. no ah AND no node is still a start button ---------------- */
+
+// status.toolError is tested before the unreachable branch, so a down node on a
+// machine without ah got a step 1 that explained and offered nothing, on the
+// one situation this card exists for. RestartNode does not need ah there:
+// desktop/nodeprocess.go sends anything that is not "supported and installed"
+// to restartNodeProcess, which stops whatever agenthub-node is running and
+// starts the binary beside this app.
+store.clear();
+const noAh = boot({ start: false });
+const AH_ERROR = "AGENTHUB_AH points at /nope: no such file";
+noAh.state.loadedOnce = true;
+noAh.state.nodeReachable = false;
+noAh.state.service = { toolError: AH_ERROR };
+const noAhStep = noAh.onboardingSteps().find((step) => step.id === "service");
+if (noAhStep.actions.length === 0) {
+  failures.push("a dead node on a machine without ah was offered nothing to press");
+}
+if (noAhStep.actions[0]?.label !== ZH["onboarding.service.actionStart"]) {
+  failures.push(`the step offers ${noAhStep.actions[0]?.label}, not the start`);
+}
+if (noAhStep.body !== ZH["onboarding.service.bodyNoAhNodeDown"].replace("{error}", AH_ERROR)) {
+  failures.push(`a dead node on a machine without ah read: ${noAhStep.body}`);
+}
+calls.RestartNode = 0;
+await noAhStep.actions[0]?.run();
+if (calls.RestartNode !== 1) {
+  failures.push(`the start button called RestartNode ${calls.RestartNode} times, want 1`);
+}
+// A node that IS answering keeps the explanation and no button: without ah
+// there is nothing here worth pressing while the node is up.
+noAh.state.nodeReachable = true;
+// restartNode() ran a load() of its own, which read the status again — and the
+// fake answers a healthy one. The situation under test is the machine without
+// ah, so it is put back.
+noAh.state.service = { toolError: AH_ERROR };
+const noAhUp = noAh.onboardingSteps().find((step) => step.id === "service");
+if (noAhUp.actions.length !== 0) {
+  failures.push(`a live node without ah was offered ${noAhUp.actions.length} buttons about a process it cannot see`);
+}
+if (noAhUp.body !== ZH["onboarding.service.bodyNoAh"].replace("{error}", AH_ERROR)) {
+  failures.push(`a live node without ah read: ${noAhUp.body}`);
+}
 
 /* ---------------- 13. the English half ---------------- */
 
