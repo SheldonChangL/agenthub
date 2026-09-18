@@ -124,8 +124,9 @@
     `aria-label`、以及任何 `t()` / `plural()` 的產物；`sessionRow` 只負責建立空的骨架，
     按鈕的文字放在自己的 `<span class="label">` 裡（因為徽章是同一顆按鈕的子節點，
     直接寫 `textContent` 會把它刪掉）。切語言時 `setUILanguage()` → `render()` 重畫可見的列，
-    `repaintFromState()` → `relabelSessionRows()` 再掃一次 `sessionRows` 裡的每一列，
-    包含被篩選條件擋在畫面外、但還留在 map 裡的那些。由 `frontend/test/i18n.mjs` 釘住：
+    `repaintFromState()` → `relabelSessionRows()` 再掃一次 `sessionRows` 裡的每一列——
+    也就是別的分頁在畫面上、沒有 `render()` 跟在後面時仍被留住的那些（被篩選條件擋掉的列
+    每次 `renderRows` 都會從 map 移除，重新出現時是用當下語言重建的）。由 `frontend/test/i18n.mjs` 釘住：
     zh 開兩列 → 切 en → 每列的 Inbox / resume 標籤與 tooltip 都是英文、`#rows` 整段
     textContent 不得出現任何漢字 → 再切回 zh。
 - Banner：一則，錯誤或成功（ok），成功會自動消失。
