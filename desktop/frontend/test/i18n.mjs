@@ -398,6 +398,136 @@ if (nodeLine === EN["app.connecting"] || nodeLine === ZH["app.connecting"] || ra
 }
 if (han.test(nodeLine)) failures.push(`the node line is still Chinese: ${nodeLine}`);
 
+/* ---------------- the table's own rows ---------------- */
+
+// The rows are kept across renders now (#146: the badge changes on its own and
+// a rebuilt row swaps the button out from under a press). A kept row is a row
+// nothing rebuilds, so anything written into it once — at creation, in whatever
+// language happened to be on screen when the session first appeared — is
+// written in that language for as long as the row lives. The Inbox button's
+// label was: an English window kept 「收件匣」 on every row of the primary
+// table until a filter or a vanished session evicted it.
+//
+// The rule this pins (docs/ui-contract.md §3.1): every translated string in a
+// kept row is written in the update pass, never only at creation.
+
+const rowSession = (id, index) => ({
+  id,
+  provider: id.split(":")[0],
+  status: "idle",
+  management: "unmanaged",
+  cwd: "/tmp/work",
+  audience: { mode: "none" },
+  lastSeenAt: new Date(Date.UTC(2026, 8, 18, 10, 0, index)).toISOString(),
+});
+const ROW_IDS = ["claude:i18n-row-a", "codex:i18n-row-b"];
+
+configure({
+  Overview: async () => ({
+    reachable: true, nodeUrl: "http://127.0.0.1:7462",
+    node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
+    sessions: ROW_IDS.map(rowSession), nodes: [], peers: [], counts: { total: ROW_IDS.length },
+  }),
+  // One row holding something and one holding nothing, so both the badge's
+  // sentence and the empty one are on screen.
+  InboxCounts: async () => ({
+    ok: true,
+    counts: { "claude:i18n-row-a": { held: 2, capacity: 500, full: false } },
+  }),
+  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  SetNodeAddress: noop, Pairing: async () => ({ availability: "unknown", candidates: [] }),
+  OpenPairing: noop, ClosePairing: noop, Inbox: noop, ClearInbox: noop, MCPConfig: noop,
+  CopyText: noop, Outbound: noop, Wakes: noop, PairRequests: async () => [],
+  StartPairRequest: noop, ApprovePairRequest: noop, ConfirmPairRequest: noop, RejectPairRequest: noop,
+  ServiceStatus: async () => ({ supported: false }), InstallService: noop, UninstallService: noop,
+  LocalAddresses: async () => [], NodeSettings: async () => ({ error: "not needed" }),
+  SaveNodeSettings: noop, RestartNode: noop, HostPlatform: async () => "darwin",
+  Version: async () => ({ release: "unreleased" }),
+});
+
+app.state.view = "local";
+app.setUILanguage("zh-Hant");
+await app.load();
+
+const rowsOf = () => el("rows").children;
+const descend = (node, predicate, found = []) => {
+  if (!node || typeof node !== "object") return found;
+  if (predicate(node)) found.push(node);
+  for (const child of node.children ?? []) descend(child, predicate, found);
+  return found;
+};
+const carries = (name) => (node) => String(node.className ?? "").split(" ").includes(name);
+const buttonsOf = (name) => [...rowsOf()].map((row) => descend(row, carries(name))[0]);
+// The button's own textContent would also pick up the badge riding inside it,
+// so the word is read from the span that holds only the word.
+const labelOf = (button) => descend(button, carries("label"))[0]?.textContent;
+
+if (rowsOf().length !== ROW_IDS.length) {
+  failures.push(`the table drew ${rowsOf().length} rows, so nothing below measures a row`);
+}
+// The rows have to be Chinese to begin with, or the English assertions could
+// pass over a table that was never in the other language.
+const rowsBefore = [...rowsOf()];
+for (const button of buttonsOf("inbox")) {
+  if (labelOf(button) !== ZH["inbox.title"]) {
+    failures.push(`a row's Inbox button is not the Chinese label to begin with: ${JSON.stringify(labelOf(button))}`);
+  }
+}
+if (!han.test(el("rows").textContent)) {
+  failures.push("the table holds no Chinese before the switch, so the check below proves nothing");
+}
+
+app.setUILanguage("en");
+
+// The rows were kept — a rebuild would re-translate everything and the bug
+// this pins could not happen.
+if ([...rowsOf()].some((row, index) => row !== rowsBefore[index])) {
+  failures.push("switching language rebuilt the rows, so nothing here measures the update pass");
+}
+for (const [index, button] of buttonsOf("inbox").entries()) {
+  if (labelOf(button) !== EN["inbox.title"]) {
+    failures.push(`row ${index}'s Inbox button kept its old label after a switch: ${JSON.stringify(labelOf(button))}`);
+  }
+  if (han.test(button.title)) {
+    failures.push(`row ${index}'s Inbox tooltip is still Chinese: ${JSON.stringify(button.title)}`);
+  }
+  if (button.title === "" || rawKey(button.title)) {
+    failures.push(`row ${index}'s Inbox tooltip is empty or a raw key: ${JSON.stringify(button.title)}`);
+  }
+}
+for (const [index, button] of buttonsOf("resume").entries()) {
+  if (labelOf(button) !== EN["row.resume"]) {
+    failures.push(`row ${index}'s resume button reads ${JSON.stringify(labelOf(button))}`);
+  }
+  // Part sentence, part command: the sentence has to be English and the
+  // command has to still be there.
+  if (han.test(button.title) || !button.title.includes("resume") || rawKey(button.title)) {
+    failures.push(`row ${index}'s resume tooltip did not follow the language: ${JSON.stringify(button.title)}`);
+  }
+}
+// And the whole table, which is the assertion that does not have to be updated
+// when a tenth cell is added: nothing in an English table is written in Han.
+const englishTable = el("rows").textContent;
+if (han.test(englishTable)) {
+  failures.push(`switching to English left Han in the table: ${JSON.stringify(englishTable)}`);
+}
+for (const word of englishTable.split(/\s+/)) {
+  if (word && Object.hasOwn(EN, word)) failures.push(`the table shows the raw key ${word}`);
+}
+
+// And back, because a fix that only ever runs on the way to English is half a
+// fix: the same row has to return to Chinese.
+app.setUILanguage("zh-Hant");
+for (const [index, button] of buttonsOf("inbox").entries()) {
+  if (labelOf(button) !== ZH["inbox.title"]) {
+    failures.push(`row ${index}'s Inbox button did not come back to Chinese: ${JSON.stringify(labelOf(button))}`);
+  }
+}
+if (!han.test(el("rows").textContent)) {
+  failures.push("switching back to Chinese left the table in English");
+}
+app.setUILanguage("en");
+
 /* ---------------- both tables say the same things ---------------- */
 
 for (const key of Object.keys(ZH)) if (!Object.hasOwn(EN, key)) failures.push(`en.js has no ${key}`);

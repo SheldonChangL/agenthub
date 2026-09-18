@@ -495,7 +495,11 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   font-variant-numeric: tabular-nums;
 }
 .inboxbadge.full { background: rgba(224, 163, 62, 0.22); color: var(--amber); }
-.tab .inboxbadge { margin-left: 2px; }
+/* On the tab the badge sits beside the session count, and 2px of air between
+   two numbers made them one number. 8px, plus an envelope, is what separates
+   「本機 session 1119」 from 「✉ 555」. */
+.tabinbox { gap: 3px; margin-left: 8px; padding: 0 5px; }
+.tabinbox .glyph { font-size: 9px; line-height: 1; opacity: 0.85; }
 .badge {
   position: absolute; top: -5px; right: -4px;
   min-width: 15px; height: 15px; padding: 0 4px;

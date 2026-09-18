@@ -35,7 +35,6 @@ func TestInboxCountsPrintsATableInOneRequest(t *testing.T) {
 			"claude:quiet-ish": map[string]any{"held": 2, "capacity": 500, "full": false},
 			"codex:drowning":   map[string]any{"held": 500, "capacity": 500, "full": true},
 		},
-		"capacity":    500,
 		"generatedAt": "2026-09-18T10:00:00Z",
 	})
 
@@ -70,7 +69,7 @@ func TestInboxCountsPrintsATableInOneRequest(t *testing.T) {
 // holding something, so no rows means every inbox is empty — which must not
 // read as "this node has no sessions".
 func TestInboxCountsSaysWhenEveryInboxIsEmpty(t *testing.T) {
-	server, _ := countsServer(t, map[string]any{"counts": map[string]any{}, "capacity": 500})
+	server, _ := countsServer(t, map[string]any{"counts": map[string]any{}})
 
 	var stdout, stderr bytes.Buffer
 	if code := Run(context.Background(), []string{"--url", server.URL, "inbox", "counts"}, &stdout, &stderr); code != 0 {
@@ -84,7 +83,6 @@ func TestInboxCountsSaysWhenEveryInboxIsEmpty(t *testing.T) {
 func TestInboxCountsJSONIsThePayload(t *testing.T) {
 	server, _ := countsServer(t, map[string]any{
 		"counts":      map[string]any{"claude:one": map[string]any{"held": 1, "capacity": 500, "full": false}},
-		"capacity":    500,
 		"generatedAt": "2026-09-18T10:00:00Z",
 	})
 

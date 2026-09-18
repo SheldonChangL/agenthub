@@ -938,9 +938,15 @@ func (s *Server) inboxCounts(w http.ResponseWriter, r *http.Request) {
 	}
 	// generatedAt is when this node counted, so a reader holding a badge can
 	// say how old it is rather than presenting every answer as now.
+	//
+	// The bound is per entry and nowhere else. It was also emitted at the top
+	// level, from the same constant, so the two could never disagree — and a
+	// payload with the same fact in two places is a payload a reader has to be
+	// told which copy to trust. There is one copy: the entry's. A caller that
+	// wants the bound for a session holding nothing reads GET /v1/inbox/{id},
+	// which is the read that knows about that session at all.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"counts":      counts,
-		"capacity":    registry.MaxInboxMessages,
 		"generatedAt": time.Now().UTC(),
 	})
 }

@@ -17,11 +17,19 @@ type countsBody struct {
 		Capacity int  `json:"capacity"`
 		Full     bool `json:"full"`
 	} `json:"counts"`
-	Capacity    int    `json:"capacity"`
 	GeneratedAt string `json:"generatedAt"`
 }
 
 func readCounts(t *testing.T, handler http.Handler) countsBody {
+	t.Helper()
+	decoded, _ := readCountsRaw(t, handler)
+	return decoded
+}
+
+// readCountsRaw also hands back the payload as it arrived, which is the only
+// way to assert that a field is ABSENT: a struct simply leaves an unknown key
+// out, so a decode can never see one come back.
+func readCountsRaw(t *testing.T, handler http.Handler) (countsBody, map[string]any) {
 	t.Helper()
 	response := perform(t, handler, http.MethodGet, "/v1/inbox/counts", nil)
 	if response.Code != http.StatusOK {
@@ -31,7 +39,11 @@ func readCounts(t *testing.T, handler http.Handler) countsBody {
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode counts: %v (%s)", err, response.Body.String())
 	}
-	return decoded
+	var raw map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode counts as an object: %v (%s)", err, response.Body.String())
+	}
+	return decoded, raw
 }
 
 func seedInbox(t *testing.T, store *registry.Registry, sessionID string, n int) {
@@ -63,15 +75,20 @@ func TestInboxCountsAnswersEveryLocalSessionInOneRead(t *testing.T) {
 
 	// Before anything is stored. An answer, not a 404: "every inbox is empty"
 	// is a fact worth being able to read.
-	empty := readCounts(t, owner)
+	empty, raw := readCountsRaw(t, owner)
 	if len(empty.Counts) != 0 {
 		t.Fatalf("a node holding nothing answered with %d entries: %v", len(empty.Counts), empty.Counts)
 	}
 	if empty.GeneratedAt == "" {
 		t.Error("the answer carries no generatedAt, so a reader cannot say how old a badge is")
 	}
-	if empty.Capacity != registry.MaxInboxMessages {
-		t.Errorf("capacity = %d; want %d", empty.Capacity, registry.MaxInboxMessages)
+	// The bound lives on each entry and nowhere else. A second copy at the top
+	// level said the same thing from the same constant, which leaves a reader
+	// with two fields and no rule about which one wins; the answer was to have
+	// one. Pinned, because re-adding it is a one-line change nobody would
+	// notice breaking the rule.
+	if _, present := raw["capacity"]; present {
+		t.Errorf("the payload carries a top-level capacity again: %v", raw["capacity"])
 	}
 
 	one := acceptingLocalSession(t, store, owner, "claude:counts-one")

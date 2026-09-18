@@ -291,6 +291,9 @@ export const TEXT = {
   "row.flagOut": "送",
   "row.flagWake": "醒",
   "row.inboxTitle": "這個 session 收到的訊息、送出紀錄與喚醒紀錄",
+  // 兩邊都是 "resume"：它是使用者要貼進終端機的那個指令的名字，不是一個可以翻的詞。
+  // 放在表裡是因為留存的列上每一個字串都必須能在切語言時重寫一次。
+  "row.resume": "resume",
   "row.resumeTitle": "複製 {command}",
   "row.resumeCopied": "已複製 {command}。",
   "row.resumeCopiedIn": "已複製 {command}，在 {cwd} 執行。",
