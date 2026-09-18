@@ -42,6 +42,25 @@ The window is in English and 繁體中文.
 
 ## Install
 
+**macOS and Linux, one line:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh
+```
+
+It downloads the one release asset for your machine, checks it against that
+release's own `SHA256SUMS` before unpacking anything, puts the app in
+`/Applications` (or `~/Applications`) or `~/.local/share/agenthub`, links `ah`
+into `~/.local/bin`, and registers the background node. It never uses `sudo` and
+never asks for a password; `docs/install-script.md` lists every path it writes,
+every flag it takes — `--cli-only`, `--no-service`, `--version vX.Y.Z` — and
+`--dry-run`, which prints what it would do and does none of it. Uneasy about
+piping a script into a shell? Read it first:
+`curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | less`.
+
+Windows has its own installer; see below. The manual downloads still work
+everywhere, and are what the rest of this section describes.
+
 Downloads are on the
 [Releases page](https://github.com/SheldonChangL/agenthub/releases). Desktop
 downloads ship from the next tagged release onward; a release page that only
@@ -58,6 +77,8 @@ telling you the truth: nothing vouches for the download. Every release ships a
 check the file you got against the page before you run it.
 
 ### macOS
+
+The one-liner above does all of this. By hand instead:
 
 1. Download `agenthub-desktop_<tag>_darwin_universal.dmg` — one file for Apple
    silicon and Intel — and check it with
@@ -112,6 +133,8 @@ made per session.
 
 ### Linux
 
+The one-liner above does all of this. By hand instead:
+
 1. Download `agenthub-desktop_<tag>_linux_amd64.tar.gz` (x64; there is no arm64
    desktop build).
 2. Check it: `sha256sum -c SHA256SUMS --ignore-missing`.
@@ -128,7 +151,8 @@ The same release holds six archives — `linux`, `darwin` and `windows`, each
 `amd64` and `arm64` — with `agenthub-node`, `ah` and `agenthub-mcp` and no app.
 Unpack the one for your platform, put the binaries on your `PATH` (nothing here
 needs administrator rights), then `agenthub-node --db ./data/agenthub.db` in one
-terminal and `ah discover && ah list` in another.
+terminal and `ah discover && ah list` in another. The one-liner does this too:
+`curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh -s -- --cli-only`.
 
 ## Pair two machines
 
