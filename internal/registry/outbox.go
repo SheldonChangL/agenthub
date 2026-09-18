@@ -512,6 +512,54 @@ func (r *Registry) CountInbox(ctx context.Context, sessionID string) (int, error
 	return count, nil
 }
 
+// InboxCount is how full one session's inbox is, as the batch count reports it.
+//
+// The same three numbers GET /v1/inbox/{id} carries with a page, so a badge
+// drawn from the batch and the drawer opened on top of it cannot disagree about
+// what "full" means.
+type InboxCount struct {
+	Held     int  `json:"held"`
+	Capacity int  `json:"capacity"`
+	Full     bool `json:"full"`
+}
+
+// CountInboxes reports how much every local session is holding, in one query.
+//
+// One GROUP BY rather than a count per session: the desktop draws a badge on
+// every row of a list that has held a thousand of them, and a read per row is
+// the reason the badge did not exist at all (issue #146).
+//
+// Only sessions holding at least one message appear. A session with an empty
+// inbox is absent rather than present with a zero, because a thousand zeroes is
+// a payload nobody reads — and because the caller has to keep "nothing is
+// waiting" separate from "this was never asked", which a missing key does not
+// disturb and a fabricated zero would.
+func (r *Registry) CountInboxes(ctx context.Context) (map[string]InboxCount, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT recipient_id, count(*) FROM messages GROUP BY recipient_id`)
+	if err != nil {
+		return nil, fmt.Errorf("count inboxes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	counts := make(map[string]InboxCount)
+	for rows.Next() {
+		var sessionID string
+		var held int
+		if err := rows.Scan(&sessionID, &held); err != nil {
+			return nil, fmt.Errorf("scan inbox count: %w", err)
+		}
+		counts[sessionID] = InboxCount{
+			Held:     held,
+			Capacity: MaxInboxMessages,
+			Full:     held >= MaxInboxMessages,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("count inboxes: %w", err)
+	}
+	return counts, nil
+}
+
 // DeleteMessage removes one message from a session's inbox.
 //
 // This exists because the inbox is bounded, and a bound with no way to clear it
