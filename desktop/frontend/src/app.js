@@ -53,6 +53,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // inboxSession is whose inbox the modal is showing, so Clear knows what it
     // would empty and a refresh knows what to re-read.
     inboxSession: null,
+    // How much each local session is still holding, for the badges (#146).
+    //
+    // `ok` is the whole point of the shape. The node leaves a session holding
+    // nothing out of the map, so a missing key is 0 — and an answer that never
+    // arrived is also an empty map. Those are different facts: the first means
+    // "nothing is waiting", the second means "nobody knows", and a badge drawn
+    // from the second would be a zero this window invented. `counts` keeps the
+    // last numbers that did arrive rather than being cleared, so a read that
+    // fails costs the badges and not the history; nothing is painted from them
+    // while ok is false.
+    inboxCounts: { ok: false, counts: {} },
     localNodeId: "",
     localFingerprint: "",
     // This build's own version, read once from the Go side at boot. It is in
@@ -358,110 +369,301 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       : t("row.resumeCopied", { command }), true);
   }
 
-  function flagChip(label, on, warn = false) {
-    return element("span", `flag${on ? " on" : ""}${warn ? " warn" : ""}`, label);
-  }
+  // sessionRows keeps one <tr> per session id, so the fifteen-second tick
+  // updates the rows it already drew rather than building new ones. The reason
+  // is the one updateCandidateRow exists for and it is sharper here: this table
+  // is the one an owner is always pointing at, the inbox button now carries a
+  // badge that changes on its own, and a rebuilt row swaps the button out from
+  // under a press whose mousedown has already landed.
+  const sessionRows = new Map();
 
   function renderRows(rows) {
     const body = el("rows");
-    const fragment = document.createDocumentFragment();
-
+    const wanted = [];
+    const seen = new Set();
     for (const session of rows) {
-      const tr = document.createElement("tr");
-      const picked = state.selected.has(session.id);
-      if (picked) tr.className = "sel";
-
-      const { rest } = shortId(session.id);
-      const audience = describeAudience(session.audience);
-
-      const checkCell = element("td", "col-check");
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = picked;
-      checkbox.onchange = (event) => {
-        if (event.target.checked) state.selected.add(session.id);
-        else state.selected.delete(session.id);
-        render();
-      };
-      checkCell.append(checkbox);
-
-      // The name the session's own app gives the conversation is what a
-      // person recognises a row by; the UUID is only ever needed to resume or
-      // to quote one, and the copy button and the tooltip both still carry
-      // it. Sessions the provider never named keep showing the ID, because a
-      // row with no handle at all is worse than a row with an ugly one.
-      const idCell = element("td", "sid");
-      const label = session.title
-        ? element("b", "title", session.title)
-        : element("b", "", rest);
-      idCell.append(element("span", "providertag", session.provider), label);
-      idCell.title = session.title ? `${session.title}\n${session.id}` : session.id;
-
-      // The path goes in a <bdi> because the cell is laid out right-to-left so
-      // that a path too long for the column loses its head rather than its
-      // tail — the project name is the part worth keeping. The isolate stops
-      // that direction from reordering the path's own slashes.
-      const cwdCell = element("td", "mono muted cwd");
-      if (session.cwd) {
-        cwdCell.append(element("bdi", "", session.cwd));
-        cwdCell.title = session.cwd;
+      const key = String(session.id ?? "");
+      // A row with no id cannot be matched to a kept one — and must not take
+      // somebody else's. The node does not produce those; a duplicate id would
+      // be the same hazard, so the second one gets a fresh row too.
+      const keyed = key !== "" && !seen.has(key);
+      seen.add(key);
+      let tr = keyed ? sessionRows.get(key) : undefined;
+      if (tr) {
+        updateSessionRow(tr, session);
       } else {
-        cwdCell.append(element("bdi", "", "—"));
+        tr = sessionRow(session);
+        if (keyed) sessionRows.set(key, tr);
       }
-
-      // The four audience flags, readable without opening the dialog. Only
-      // meaningful when something is published; a private row shows them dim.
-      const flags = element("td");
-      const a = session.audience ?? {};
-      const chips = element("span", "flagchips");
-      chips.append(
-        flagChip("CWD", Boolean(a.exportCwd)),
-        flagChip(t("row.flagIn"), Boolean(a.acceptMessages)),
-        flagChip(t("row.flagOut"), Boolean(a.allowOutbound)),
-        flagChip(t("row.flagWake"), Boolean(a.autoWake), true),
-      );
-      flags.append(chips);
-
-      // Row actions. Opening an inbox is a read; resume writes the clipboard
-      // and says so.
-      //
-      // There is no MCP button here on purpose. It used to sit between these
-      // two, and it produced the `.mcp.json` that binds one agent to one
-      // session (#112) — but that is a thing an owner needs once, if ever,
-      // while this button was on all thousand rows. Everything the four MCP
-      // tools do, `ah` does too (list, status, send, inbox), and the
-      // agenthub-watch skill already goes through `ah` rather than MCP, so a
-      // new owner who never sees this loses nothing they were using.
-      //
-      // openMCPConfig and the mcp-modal it fills are still here and still
-      // tested, so restoring the entry point is one rowActionButton call.
-      const actions = element("td", "col-actions");
-      const group = element("span", "rowactions");
-      group.append(
-        rowActionButton("inbox", t("inbox.title"), t("row.inboxTitle"), () => {
-          openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
-        }),
-        rowActionButton("resume", "resume", t("row.resumeTitle", { command: resumeCommand(session) }), () =>
-          copyResumeCommand(session)),
-      );
-      actions.append(group);
-
-      tr.append(
-        checkCell,
-        idCell,
-        cell(element("td"), pill(session.status, statusPillClass(session.status))),
-        element("td", "muted mgmt", managementLabel(session.management)),
-        cell(element("td"), pill(audience.text, audience.published ? "public" : "")),
-        flags,
-        cwdCell,
-        element("td", "muted", relative(session.lastSeenAt)),
-        actions
-      );
-      fragment.append(tr);
+      wanted.push(tr);
     }
-
-    body.replaceChildren(fragment);
+    for (const key of [...sessionRows.keys()]) {
+      if (!seen.has(key)) sessionRows.delete(key);
+    }
+    keepChildren(body, wanted);
     el("empty").classList.toggle("hidden", rows.length > 0);
+  }
+
+  // sessionRow builds the nine cells once. Everything that changes between
+  // ticks is written by updateSessionRow into these same elements.
+  function sessionRow(session) {
+    const tr = document.createElement("tr");
+
+    const checkCell = element("td", "col-check");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkCell.append(checkbox);
+
+    // The name the session's own app gives the conversation is what a person
+    // recognises a row by; the UUID is only ever needed to resume or to quote
+    // one, and the copy button and the tooltip both still carry it. Sessions
+    // the provider never named keep showing the ID, because a row with no
+    // handle at all is worse than a row with an ugly one.
+    const idCell = element("td", "sid");
+    const providerTag = element("span", "providertag");
+    const label = element("b");
+    idCell.append(providerTag, label);
+
+    const statusCell = element("td");
+    const statusPill = element("span", "pill");
+    statusCell.append(statusPill);
+
+    const managementCell = element("td", "muted mgmt");
+
+    const audienceCell = element("td");
+    const audiencePill = element("span", "pill");
+    audienceCell.append(audiencePill);
+
+    // The four audience flags, readable without opening the dialog. Only
+    // meaningful when something is published; a private row shows them dim.
+    const flagsCell = element("td");
+    const chips = element("span", "flagchips");
+    const flagCwd = element("span", "flag", "CWD");
+    const flagIn = element("span", "flag");
+    const flagOut = element("span", "flag");
+    const flagWake = element("span", "flag");
+    chips.append(flagCwd, flagIn, flagOut, flagWake);
+    flagsCell.append(chips);
+
+    // The path goes in a <bdi> because the cell is laid out right-to-left so
+    // that a path too long for the column loses its head rather than its tail —
+    // the project name is the part worth keeping. The isolate stops that
+    // direction from reordering the path's own slashes.
+    const cwdCell = element("td", "mono muted cwd");
+    const cwdText = element("bdi");
+    cwdCell.append(cwdText);
+
+    const seenCell = element("td", "muted");
+
+    // Row actions. Opening an inbox is a read; resume writes the clipboard
+    // and says so.
+    //
+    // There is no MCP button here on purpose. It used to sit between these
+    // two, and it produced the `.mcp.json` that binds one agent to one
+    // session (#112) — but that is a thing an owner needs once, if ever,
+    // while this button was on all thousand rows. Everything the four MCP
+    // tools do, `ah` does too (list, status, send, inbox), and the
+    // agenthub-watch skill already goes through `ah` rather than MCP, so a
+    // new owner who never sees this loses nothing they were using.
+    //
+    // openMCPConfig and the mcp-modal it fills are still here and still
+    // tested, so restoring the entry point is one rowActionButton call.
+    const actionsCell = element("td", "col-actions");
+    const group = element("span", "rowactions");
+    const inboxButton = rowActionButton("inbox", t("inbox.title"), t("row.inboxTitle"), null);
+    // The badge rides inside the button rather than beside it, so the number
+    // and the way to act on it are one target and the sticky column's width
+    // does not have to grow.
+    const badge = element("span", "inboxbadge hidden");
+    inboxButton.append(badge);
+    const resumeButton = rowActionButton("resume", "resume", "", null);
+    group.append(inboxButton, resumeButton);
+    actionsCell.append(group);
+
+    tr.append(checkCell, idCell, statusCell, managementCell, audienceCell,
+      flagsCell, cwdCell, seenCell, actionsCell);
+    tr.sessionParts = {
+      checkbox, idCell, providerTag, label, statusPill, managementCell,
+      audiencePill, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
+      seenCell, inboxButton, badge, resumeButton,
+    };
+    updateSessionRow(tr, session);
+    return tr;
+  }
+
+  // updateSessionRow writes this session into an existing row.
+  //
+  // textContent and className on the elements that are already there, never a
+  // rebuilt subtree: the two buttons have to survive a tick, and 「最後 X 秒前」
+  // changes on every single one of them.
+  function updateSessionRow(tr, session) {
+    const parts = tr.sessionParts;
+    const picked = state.selected.has(session.id);
+    tr.className = picked ? "sel" : "";
+    parts.checkbox.checked = picked;
+    parts.checkbox.onchange = (event) => {
+      if (event.target.checked) state.selected.add(session.id);
+      else state.selected.delete(session.id);
+      render();
+    };
+
+    const { rest } = shortId(session.id);
+    parts.providerTag.textContent = session.provider;
+    parts.label.className = session.title ? "title" : "";
+    parts.label.textContent = session.title ? session.title : rest;
+    parts.idCell.title = session.title ? `${session.title}\n${session.id}` : session.id;
+
+    const statusClass = statusPillClass(session.status);
+    parts.statusPill.className = statusClass ? `pill ${statusClass}` : "pill";
+    parts.statusPill.textContent = session.status;
+    parts.managementCell.textContent = managementLabel(session.management);
+
+    const audience = describeAudience(session.audience);
+    parts.audiencePill.className = audience.published ? "pill public" : "pill";
+    parts.audiencePill.textContent = audience.text;
+
+    const a = session.audience ?? {};
+    setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
+    setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
+    setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
+    setFlagChip(parts.flagWake, t("row.flagWake"), Boolean(a.autoWake), true);
+
+    parts.cwdText.textContent = session.cwd ? session.cwd : "—";
+    parts.cwdCell.title = session.cwd ? session.cwd : "";
+    parts.seenCell.textContent = relative(session.lastSeenAt);
+
+    parts.inboxButton.onclick = () => {
+      openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
+    };
+    parts.resumeButton.title = t("row.resumeTitle", { command: resumeCommand(session) });
+    parts.resumeButton.onclick = () => copyResumeCommand(session);
+    updateInboxBadge(parts.inboxButton, parts.badge, session.id);
+  }
+
+  // setFlagChip writes one of the four audience flags in place.
+  function setFlagChip(node, label, on, warn = false) {
+    node.className = `flag${on ? " on" : ""}${warn ? " warn" : ""}`;
+    node.textContent = label;
+  }
+
+  /* ---------------- inbox badges (#146) ---------------- */
+
+  // heldFor answers how much one session is holding, or null when this window
+  // does not know.
+  //
+  // null is not zero and the difference is the whole feature. The node omits a
+  // session that holds nothing, so a missing key under a good read is 0; a read
+  // that failed leaves no trustworthy map at all, and every session is then
+  // null. Painting a 0 in that case would be this window inventing a fact about
+  // an inbox it could not see.
+  function heldFor(sessionId) {
+    const counts = state.inboxCounts;
+    if (!counts?.ok) return null;
+    const entry = counts.counts?.[sessionId];
+    if (!entry) return 0;
+    const held = Number(entry.held);
+    return Number.isFinite(held) && held >= 0 ? held : null;
+  }
+
+  function isFull(sessionId) {
+    const counts = state.inboxCounts;
+    if (!counts?.ok) return false;
+    return Boolean(counts.counts?.[sessionId]?.full);
+  }
+
+  // updateInboxBadge writes the number onto a row's inbox button, in place.
+  //
+  // Hidden at 0 and hidden when unknown: a badge is a thing that has arrived,
+  // and a row wearing "0" on every session is noise that hides the rows that do
+  // carry something. A full inbox is coloured apart because it is refusing new
+  // messages right now, which is a thing to act on rather than a larger number.
+  //
+  // The count is what the inbox still holds, never "unread". Nothing marks a
+  // message read — not the node, and deliberately not this window.
+  function updateInboxBadge(button, badge, sessionId) {
+    const held = heldFor(sessionId);
+    const full = isFull(sessionId);
+    const show = held !== null && held > 0;
+    badge.className = `inboxbadge${full ? " full" : ""}${show ? "" : " hidden"}`;
+    badge.textContent = show ? String(held) : "";
+    // The number alone does not say what it counts, and the button's own title
+    // is the only place a pointer can ask.
+    //
+    // This is also where zero and unknown stop looking alike. Neither wears a
+    // badge — a "0" on every row would bury the rows that carry something — so
+    // without this the two states are indistinguishable on screen, and the
+    // difference the whole feature turns on would be invisible: "nothing is
+    // waiting" is an answer, "this could not be read" is not.
+    button.title = show
+      ? plural(held, full ? "inbox.badge.titleFull" : "inbox.badge.title", { held })
+      : held === 0 ? t("inbox.badge.titleEmpty") : t("row.inboxTitle");
+  }
+
+  // renderInboxTotals writes the two places the whole machine's backlog shows:
+  // the 本機 session tab, and the window title.
+  //
+  // A newcomer is not looking at any particular row. Something that arrived
+  // while they were in another view, or in another application, has to be
+  // visible without hunting — so the tab carries the sum and the title carries
+  // it out of the window entirely.
+  //
+  // Both disappear at zero and while the counts are unknown, for the same
+  // reason the row badges do.
+  function renderInboxTotals() {
+    const counts = state.inboxCounts;
+    let total = 0;
+    if (counts?.ok) {
+      for (const entry of Object.values(counts.counts ?? {})) {
+        const held = Number(entry?.held);
+        if (Number.isFinite(held) && held > 0) total += held;
+      }
+    }
+    const pillNode = el("tab-local-inbox");
+    pillNode.classList.toggle("hidden", total === 0);
+    pillNode.textContent = total > 0 ? String(total) : "";
+    pillNode.title = total > 0 ? plural(total, "inbox.badge.tabTitle", { held: total }) : "";
+    setDocumentTitle(total);
+  }
+
+  // setDocumentTitle puts the backlog in front of the app's name.
+  //
+  // Wails does not own document.title — the WebView renders the page and the
+  // native window takes its title from it, so writing it here is what a browser
+  // does and the window follows. Guarded anyway: the node checks run this
+  // module against a fake DOM that may not have a document title at all.
+  const BASE_TITLE = "AgentHub";
+  function setDocumentTitle(total) {
+    try {
+      document.title = total > 0 ? `(${total}) ${BASE_TITLE}` : BASE_TITLE;
+    } catch {
+      // A DOM that will not take a title is not a reason to stop rendering.
+    }
+  }
+
+  // readInboxCounts asks the node once and never rejects.
+  //
+  // Every failure — the binding missing, the node unreachable, an answer that
+  // says it could not read — becomes the same thing: counts are unknown. There
+  // is one reaction to all of them, and it is not an empty map.
+  async function readInboxCounts() {
+    try {
+      const view = await api.InboxCounts();
+      if (!view?.ok) return { ok: false, counts: {} };
+      return { ok: true, counts: view.counts ?? {} };
+    } catch {
+      return { ok: false, counts: {} };
+    }
+  }
+
+  // applyInboxCounts keeps the previous numbers on a failed read and only takes
+  // the badges off the screen. Clearing them to zero would say every inbox had
+  // just been emptied.
+  function applyInboxCounts(result) {
+    if (result.ok) {
+      state.inboxCounts = { ok: true, counts: result.counts };
+      return;
+    }
+    state.inboxCounts = { ok: false, counts: state.inboxCounts?.counts ?? {} };
   }
 
   // renderSortHeaders marks the sorted column and wires the click once.
@@ -943,6 +1145,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderSortHeaders();
     renderRows(rows);
     el("tab-local-n").textContent = String(state.counts.total ?? state.sessions.length);
+    renderInboxTotals();
     el("tab-network-n").textContent = String(state.nodes.length);
     el("match-count").textContent = rows.length === state.sessions.length
       ? plural(rows.length, "table.sessionCount")
@@ -1306,6 +1509,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     state.nodeReachable = reachable;
     loadService().catch(() => {});
+
+    // The badges, read once behind the list rather than once per row (#146).
+    //
+    // Under this load's own sequence number, like everything above: a slow
+    // counts read that answers after a newer load has landed describes an older
+    // moment, and the rows it would be painted onto are already gone. The read
+    // never rejects — a failure is "unknown", which hides the badges rather
+    // than zeroing them, and leaves the numbers it had.
+    if (reachable) {
+      const counts = await readInboxCounts();
+      if (sequence < overviewApplied) return false;
+      applyInboxCounts(counts);
+    } else {
+      // The node is not answering, so nothing can be said about any inbox.
+      applyInboxCounts({ ok: false, counts: {} });
+    }
 
     // Drop selections that no longer exist after a rescan.
     const alive = new Set(state.sessions.map((s) => s.id));

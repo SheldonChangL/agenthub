@@ -324,6 +324,16 @@ export const TEXT = {
 
   "inbox.readFailed": "讀取收件匣失敗：{error}",
 
+  /* 列上的徽章（#146）。是「還留著」，不是「未讀」：沒有任何地方標示已讀，
+     在這個視窗裡讀也刻意不標示。 */
+  "inbox.badge.titleEmpty": "這個收件匣現在沒有訊息在等",
+  "inbox.badge.title.one": "這個收件匣還有 {held} 則在等——只是還留著，不是未讀",
+  "inbox.badge.title.other": "這個收件匣還有 {held} 則在等——只是還留著，不是未讀",
+  "inbox.badge.titleFull.one": "這個收件匣已滿：留著 {held} 則，新的訊息正在被退回",
+  "inbox.badge.titleFull.other": "這個收件匣已滿：留著 {held} 則，新的訊息正在被退回",
+  "inbox.badge.tabTitle.one": "這台機器的 session 總共還有 {held} 則在等",
+  "inbox.badge.tabTitle.other": "這台機器的 session 總共還有 {held} 則在等",
+
   /* ---------------- the pairing drawer's own panels ---------------- */
   "pair.busy.approve": "核准配對",
   "pair.busy.confirm": "確認配對",
