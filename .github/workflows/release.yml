@@ -224,6 +224,32 @@ jobs:
           - platform: linux/amd64
             runner: ubuntu-latest
             slug: linux_amd64
+            webkit: "4.1"
+          # Linux is built twice because WebKit2GTK ships as two incompatible
+          # ABIs and every distribution carries exactly one of them: 4.0 is the
+          # libsoup2 build (Ubuntu 22.04 LTS, Debian 12, and the Mint and Pop
+          # releases downstream of them), 4.1 the libsoup3 one (Ubuntu 24.04 and
+          # later, Debian 13, Fedora 39+). A binary linked against either dies
+          # at startup on the other -- "libwebkit2gtk-4.1.so.0: cannot open
+          # shared object file", no window, exit before anything is drawn.
+          #
+          # Some machines can install the other ABI from their own archive
+          # (22.04 carries libwebkit2gtk-4.1-0 in jammy-updates/universe), so
+          # this is not about what is available -- it is about what is already
+          # there. Installing a runtime needs root, and the one-line installer
+          # deliberately never asks for it, so the only build that can start
+          # without a password is the one matching what ldconfig already
+          # reports. install.sh reads it and picks the matching asset.
+          #
+          # ubuntu-22.04 is pinned because it is the only runner image carrying
+          # libwebkit2gtk-4.0-dev. GitHub keeps two GA images at a time, so this
+          # label will be retired before 22.04 leaves standard support (April
+          # 2027); when that happens, build this variant in an ubuntu:22.04
+          # container rather than dropping it.
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+            slug: linux_amd64_webkit40
+            webkit: "4.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -258,14 +284,17 @@ jobs:
           echo "building $tag"
 
       # Wails on Linux binds GTK and WebKit through cgo. wails v2.15 selects
-      # webkit2gtk-4.0 unless the webkit2_41 build tag is set, and ubuntu-latest
-      # only ships the 4.1 development package — so the tag below and this
-      # package list are one decision, not two.
+      # webkit2gtk-4.0 unless the webkit2_41 build tag is set — so the package
+      # installed here and the tag passed to `wails build` below are one
+      # decision, and matrix.webkit is where it is made.
       - name: wails build dependencies (linux)
-        if: matrix.runner == 'ubuntu-latest'
+        if: startsWith(matrix.runner, 'ubuntu')
+        env:
+          WEBKIT: ${{ matrix.webkit }}
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y libgtk-3-dev libwebkit2gtk-4.1-dev
+          sudo apt-get install --no-install-recommends -y \
+            libgtk-3-dev "libwebkit2gtk-${WEBKIT}-dev"
 
       # windows-latest does not ship NSIS, and wails does not treat its absence
       # as an error: it prints "Cannot create installer: makensis not found"
@@ -353,6 +382,7 @@ jobs:
           AGENTHUB_RELEASE: ${{ steps.version.outputs.tag }}
           TAG: ${{ steps.version.outputs.tag }}
           PLATFORM: ${{ matrix.platform }}
+          WEBKIT: ${{ matrix.webkit }}
         run: |
           ldflags="-X agenthub.local/agenthub/internal/buildinfo.release=${TAG}"
           # main.release carries the bare number: the window prefixes "v" itself
@@ -399,11 +429,51 @@ jobs:
               -o agenthub-desktop.exe -nsis
             ;;
           linux/*)
+            # The tag is the whole difference between the two linux variants:
+            # with it wails links webkit2gtk-4.1, without it 4.0. Set from the
+            # matrix so it cannot drift from the -dev package installed above.
+            webkit_tags=""
+            if [ "$WEBKIT" = "4.1" ]; then
+              webkit_tags="-tags webkit2_41"
+            fi
+            # Unquoted on purpose: empty must expand to no argument at all.
+            # shellcheck disable=SC2086
             wails build -clean -platform "$PLATFORM" -ldflags "$ldflags" \
-              -tags webkit2_41 -o agenthub-desktop
+              $webkit_tags -o agenthub-desktop
             ;;
           esac
           ls -l build/bin
+
+      # Which ABI the binary actually links, read back from the binary rather
+      # than assumed from the build tag. A wrong tag is invisible here: the
+      # build succeeds either way, both tarballs are produced, the release
+      # publishes, and the failure surfaces on a stranger's machine as a window
+      # that never opens. The two variants would also be byte-identical-looking
+      # downloads with no way to tell them apart after the fact.
+      - name: the linux binary links the webkit it was built for
+        if: startsWith(matrix.runner, 'ubuntu')
+        working-directory: desktop
+        env:
+          WEBKIT: ${{ matrix.webkit }}
+        run: |
+          linked=$(ldd build/bin/agenthub-desktop)
+          echo "$linked" | grep webkit || true
+          case "$WEBKIT" in
+          4.1) want="libwebkit2gtk-4.1.so.0"; unwanted="libwebkit2gtk-4.0.so.37" ;;
+          4.0) want="libwebkit2gtk-4.0.so.37"; unwanted="libwebkit2gtk-4.1.so.0" ;;
+          *) echo "matrix.webkit is \"$WEBKIT\"; want 4.0 or 4.1"; exit 1 ;;
+          esac
+          if ! echo "$linked" | grep -q "$want"; then
+            echo "built for webkit ${WEBKIT} but ${want} is not among its libraries"
+            echo "$linked"
+            exit 1
+          fi
+          if echo "$linked" | grep -q "$unwanted"; then
+            echo "built for webkit ${WEBKIT} but it also links ${unwanted}"
+            echo "$linked"
+            exit 1
+          fi
+          echo "links ${want}, as built"
 
       # The hook is the only thing standing between a released bundle and "ah
       # was not found" (bundle-binaries.sh says so at length). It runs inside
@@ -520,11 +590,12 @@ jobs:
       # downloader has to know is which package to install when it will not
       # start.
       - name: package the tarball (linux)
-        if: matrix.runner == 'ubuntu-latest'
+        if: startsWith(matrix.runner, 'ubuntu')
         working-directory: desktop
         env:
           TAG: ${{ steps.version.outputs.tag }}
           SLUG: ${{ matrix.slug }}
+          WEBKIT: ${{ matrix.webkit }}
         run: |
           mkdir -p ../dist
           staging="agenthub-desktop_${TAG}_${SLUG}"
@@ -533,22 +604,63 @@ jobs:
             build/bin/agenthub-node build/bin/agenthub-mcp \
             "build/tar/${staging}/"
           cp ../README.md ../LICENSE "build/tar/${staging}/"
+          # The icon travels with the binaries because install.sh writes a
+          # .desktop entry pointing Icon= at this file where it lands. Without
+          # it the app installs and runs but has no entry in the applications
+          # menu, which is where someone who installed a desktop app looks.
+          cp build/appicon.png "build/tar/${staging}/"
+          # Spelled out per ABI rather than substituted into one template:
+          # the runtime package names do not follow the version number. 4.1 is
+          # libwebkit2gtk-4.1-0, but 4.0 is libwebkit2gtk-4.0-37 (the soname
+          # revision is in the package name), and on Fedora the 4.0 runtime is
+          # called webkit2gtk3. A generated "libwebkit2gtk-4.0-0" would be a
+          # package that has never existed, printed to the one person who
+          # already cannot start the app.
+          case "$WEBKIT" in
+          4.1)
+            deb_pkg="libgtk-3-0 libwebkit2gtk-4.1-0"
+            rpm_pkg="gtk3 webkit2gtk4.1"
+            arch_pkg="gtk3 webkit2gtk-4.1"
+            soname="libwebkit2gtk-4.1.so.0"
+            distros="Ubuntu 24.04 and later, Debian 13, Fedora 39 and later"
+            other="Ubuntu 22.04, Debian 12 and their derivatives"
+            ;;
+          4.0)
+            deb_pkg="libgtk-3-0 libwebkit2gtk-4.0-37"
+            rpm_pkg="gtk3 webkit2gtk3"
+            arch_pkg="gtk3 webkit2gtk"
+            soname="libwebkit2gtk-4.0.so.37"
+            distros="Ubuntu 22.04 LTS, Debian 12, and the Mint and Pop releases built on them"
+            other="Ubuntu 24.04 and later, Debian 13, and Fedora 39 and later"
+            ;;
+          *) echo "matrix.webkit is \"$WEBKIT\"; want 4.0 or 4.1"; exit 1 ;;
+          esac
           cat > "build/tar/${staging}/README.txt" <<EOF
-          AgentHub desktop ${TAG} — linux/amd64
+          AgentHub desktop ${TAG} — linux/amd64, WebKit2GTK ${WEBKIT}
 
           Unpack anywhere and run ./agenthub-desktop. Keep ah, agenthub-node and
           agenthub-mcp in the same directory: the app resolves them beside its own
           executable and deliberately does not fall back to PATH.
 
           This build links the system WebKit at run time, so it needs the GTK and
-          WebKit2GTK 4.1 runtime libraries installed:
+          WebKit2GTK ${WEBKIT} runtime libraries installed:
 
-            Debian / Ubuntu:  sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0
-            Fedora:           sudo dnf install gtk3 webkit2gtk4.1
-            Arch:             sudo pacman -S gtk3 webkit2gtk-4.1
+            Debian / Ubuntu:  sudo apt install ${deb_pkg}
+            Fedora:           sudo dnf install ${rpm_pkg}
+            Arch:             sudo pacman -S ${arch_pkg}
 
           A missing one shows up as the app exiting immediately with an error
-          naming libwebkit2gtk-4.1.so.0.
+          naming ${soname}.
+
+          There are two Linux downloads on the release page and they are not
+          interchangeable. This one is for ${distros}. The other one, with
+          webkit40 or plain amd64 in its name, is for ${other}.
+
+          If this build will not start, the other one probably will, and
+          swapping the download needs no root. Installing the runtime named
+          above works too, where your distribution offers it — 22.04, for one,
+          carries both. install.sh picks by reading ldconfig, which is why it is
+          the easier way in.
 
           These files are not signed. Check them against SHA256SUMS on the
           release page before you run them.
@@ -619,11 +731,16 @@ jobs:
             echo "no archives were downloaded; nothing to publish"; exit 1
           fi
           # Every platform of both products, or the release is half a release
-          # and nobody notices until someone looks for their download. Ten
-          # files: four desktop (three platforms, with the Windows installer and
-          # zip both counted) and the six command line archives — each of those
-          # is one job, and a job that failed while the others passed is exactly
-          # the case this catches.
+          # and nobody notices until someone looks for their download. Eleven
+          # files: five desktop (three platforms, with the Windows installer and
+          # zip both counted and Linux built once per WebKit ABI) and the six
+          # command line archives — each of those is one job, and a job that
+          # failed while the others passed is exactly the case this catches.
+          #
+          # The two Linux desktop patterns cannot match each other's file: the
+          # plain one ends in _linux_amd64.tar.gz, which the webkit40 name does
+          # not. A missing 4.0 variant would otherwise publish a release whose
+          # installer 404s on every Ubuntu 22.04 machine.
           # The pattern is expanded inside the function, not by the for-list:
           # nullglob is on, so an unmatched pattern in a word list vanishes
           # instead of arriving as the string that was not matched.
@@ -633,6 +750,7 @@ jobs:
             'agenthub-desktop_*_windows_amd64-installer.exe' \
             'agenthub-desktop_*_windows_amd64.zip' \
             'agenthub-desktop_*_linux_amd64.tar.gz' \
+            'agenthub-desktop_*_linux_amd64_webkit40.tar.gz' \
             'agenthub_*_linux_amd64.tar.gz' \
             'agenthub_*_linux_arm64.tar.gz' \
             'agenthub_*_darwin_amd64.tar.gz' \
@@ -669,7 +787,10 @@ jobs:
             echo "| macOS (Apple silicon and Intel) | \`agenthub-desktop_${TAG}_darwin_universal.dmg\` | Open it, drag \`agenthub-desktop.app\` to Applications. The first launch needs one extra step (see below). |"
             echo "| Windows 10/11 (x64) | \`agenthub-desktop_${TAG}_windows_amd64-installer.exe\` | Run it. It installs the app, registers the background node and adds a Start menu entry. |"
             echo "| Windows, no installer | \`agenthub-desktop_${TAG}_windows_amd64.zip\` | Unpack it and run \`agenthub-desktop.exe\`; keep the other three files beside it. |"
-            echo "| Linux (x64) | \`agenthub-desktop_${TAG}_linux_amd64.tar.gz\` | Unpack it and run \`./agenthub-desktop\`. Needs GTK 3 and WebKit2GTK 4.1 — the README.txt inside names the package. |"
+            echo "| Linux (x64), WebKit2GTK 4.1 | \`agenthub-desktop_${TAG}_linux_amd64.tar.gz\` | Ubuntu 24.04+, Debian 13, Fedora 39+. Unpack it and run \`./agenthub-desktop\`. |"
+            echo "| Linux (x64), WebKit2GTK 4.0 | \`agenthub-desktop_${TAG}_linux_amd64_webkit40.tar.gz\` | Ubuntu 22.04 LTS, Debian 12, Mint, Pop!_OS. Same contents, linked against the older WebKit. |"
+            echo
+            echo "The two Linux downloads are not interchangeable: each links one WebKit ABI and will not start where only the other is installed. Some distributions can install either, but that needs root — the matching download needs nothing. \`install.sh\` reads \`ldconfig\` and fetches the one your machine can already run."
             echo
             echo "## Command line only"
             echo
