@@ -67,6 +67,51 @@ EOF
 	echo "$shim"
 }
 
+# fake_ldconfig builds a PATH shim whose `ldconfig -p` reports one WebKit2GTK
+# ABI, both, or neither. That answer decides which of the two Linux desktop
+# archives install.sh downloads, so every Linux case below pins it rather than
+# inheriting whatever the machine running these tests happens to have — the
+# suite runs on developer laptops with no ldconfig at all and on runners that
+# have one ABI today and the other after an image bump.
+fake_ldconfig() { # fake_ldconfig <4.0|4.1|both|none> -> prints a directory for PATH
+	local abi=$1
+	local shim="$work/ldconfig-$abi"
+	local lines=""
+	case $abi in
+	4.1) lines="\tlibwebkit2gtk-4.1.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0" ;;
+	4.0) lines="\tlibwebkit2gtk-4.0.so.37 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkit2gtk-4.0.so.37" ;;
+	both) lines="\tlibwebkit2gtk-4.1.so.0 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkit2gtk-4.1.so.0\n\tlibwebkit2gtk-4.0.so.37 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkit2gtk-4.0.so.37" ;;
+	none) lines="\tlibc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6" ;;
+	*) echo "fake_ldconfig: unknown abi $abi" >&2; exit 1 ;;
+	esac
+	mkdir -p "$shim"
+	cat >"$shim/ldconfig" <<EOF
+#!/bin/sh
+# Only -p is ever asked for; anything else would be a change in install.sh
+# that this shim should be updated for rather than silently absorbed.
+if [ "\${1:-}" != "-p" ]; then
+	echo "fake ldconfig got \$*" >&2
+	exit 1
+fi
+printf '%b\\n' "$lines"
+EOF
+	chmod +x "$shim/ldconfig"
+	echo "$shim"
+}
+
+# fake_os_release writes the one file install.sh reads to decide which package
+# manager to name in the WebKit hint.
+fake_os_release() { # fake_os_release <id> [id_like] -> prints a file path
+	local id=$1 like=${2:-}
+	local file="$work/os-release-$id${like:+-$like}"
+	{
+		echo "NAME=\"$id\""
+		echo "ID=$id"
+		[ -z "$like" ] || echo "ID_LIKE=$like"
+	} >"$file"
+	echo "$file"
+}
+
 # fake_ah builds a PATH shim whose `ah` answers `--json service status` the way
 # a real one would on a machine in the named state. install.sh asks that
 # question before it re-registers the service, and a dry run has no installed
@@ -127,7 +172,15 @@ dry_run() { # dry_run <system> <machine> <output file> [args...]
 	shift 3
 	local shim
 	shim=$(fake_uname "$system" "$machine")
-	PATH="${AH_SHIM:-$no_service_ah}:$shim:$PATH" sh "$installer" --dry-run "$@" >"$out" 2>&1
+	# LDCONFIG_SHIM goes first so it wins over a real ldconfig in /sbin.
+	#
+	# AGENTHUB_OS_RELEASE defaults to a path that does not exist, so a run that
+	# does not care which distribution it is on gets the same generic advice
+	# everywhere. Without it these tests would read the os-release of whatever
+	# machine runs them and assert different text on a laptop than in CI.
+	PATH="${LDCONFIG_SHIM:+$LDCONFIG_SHIM:}${AH_SHIM:-$no_service_ah}:$shim:$PATH" \
+		AGENTHUB_OS_RELEASE="${OS_RELEASE_FILE:-$work/no-such-os-release}" \
+		sh "$installer" --dry-run "$@" >"$out" 2>&1
 }
 
 # dry_run_fails is dry_run for the cases whose point is the refusal.
@@ -183,7 +236,9 @@ lacks darwin-cli "$work/darwin-cli.cmds" "open "
 lacks darwin-cli "$work/darwin-cli.cmds" "sudo"
 
 echo "== linux/x86_64, desktop =="
+LDCONFIG_SHIM=$(fake_ldconfig 4.1)
 dry_run Linux x86_64 "$work/linux.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
 commands_only "$work/linux.txt" "$work/linux.cmds"
 contains linux "$work/linux.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
 contains linux "$work/linux.txt" "compared with agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
@@ -201,6 +256,103 @@ contains linux-arm "$work/linux-arm.txt" "no desktop build exists for linux arm6
 contains linux-arm "$work/linux-arm.txt" "agenthub_v0.1.0_linux_arm64.tar.gz"
 lacks linux-arm "$work/linux-arm.txt" "agenthub-desktop_v0.1.0"
 lacks linux-arm "$work/linux-arm.cmds" "sudo"
+
+# ---- the two Linux WebKit ABIs ---------------------------------------------
+#
+# WebKit2GTK 4.0 and 4.1 are different ABIs, a distribution ships one or the
+# other, and a binary built for either exits at startup on the other with no
+# window and nothing in a log. The release carries a build for each, and this is
+# the code that decides which one a machine downloads: getting it wrong is the
+# whole failure, and it is invisible until someone double-clicks the app.
+
+echo "== a 4.0 machine downloads the 4.0 build =="
+LDCONFIG_SHIM=$(fake_ldconfig 4.0)
+dry_run Linux x86_64 "$work/wk40.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
+contains webkit40 "$work/wk40.txt" "agenthub-desktop_v0.1.0_linux_amd64_webkit40.tar.gz"
+contains webkit40 "$work/wk40.txt" "this machine has WebKit2GTK 4.0"
+contains webkit40 "$work/wk40.txt" "compared with agenthub-desktop_v0.1.0_linux_amd64_webkit40.tar.gz"
+# The digest has to be checked against the file that was actually fetched.
+lacks webkit40 "$work/wk40.txt" "compared with agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
+# Nothing to install, so nothing to advise: the matching build was downloaded.
+lacks webkit40 "$work/wk40.txt" "will not open"
+lacks webkit40 "$work/wk40.txt" "apt install"
+
+echo "== a 4.1 machine downloads the plain build =="
+LDCONFIG_SHIM=$(fake_ldconfig 4.1)
+dry_run Linux x86_64 "$work/wk41.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
+contains webkit41 "$work/wk41.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
+lacks webkit41 "$work/wk41.txt" "_webkit40.tar.gz"
+lacks webkit41 "$work/wk41.txt" "this machine has WebKit2GTK 4.0"
+lacks webkit41 "$work/wk41.txt" "will not open"
+
+echo "== both installed takes 4.1 =="
+LDCONFIG_SHIM=$(fake_ldconfig both)
+dry_run Linux x86_64 "$work/wkboth.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
+contains webkit-both "$work/wkboth.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
+lacks webkit-both "$work/wkboth.txt" "_webkit40.tar.gz"
+
+echo "== neither installed takes 4.1 and says what to install =="
+LDCONFIG_SHIM=$(fake_ldconfig none)
+dry_run Linux x86_64 "$work/wknone.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
+contains webkit-none "$work/wknone.txt" "agenthub-desktop_v0.1.0_linux_amd64.tar.gz"
+lacks webkit-none "$work/wknone.txt" "_webkit40.tar.gz"
+contains webkit-none "$work/wknone.txt" "no WebKit2GTK runtime was found"
+contains webkit-none "$work/wknone.txt" "it will pick the 4.0 build"
+# The install still happens; the missing runtime is a hint, not a refusal.
+contains webkit-none "$work/wknone.txt" "ah service install"
+# With no os-release to read, the advice cannot name a package manager and must
+# not pretend to.
+contains webkit-none "$work/wknone.txt" "with your package manager"
+
+echo "== the hint names the right package for the distribution =="
+# These names do not follow from the version number — 4.1 is
+# libwebkit2gtk-4.1-0 on Debian and webkit2gtk4.1 on Fedora — so each branch is
+# asserted rather than assumed. This text is the only thing a person whose app
+# will not start has to go on.
+LDCONFIG_SHIM=$(fake_ldconfig none)
+for distro_case in "ubuntu:debian:apt install libgtk-3-0 libwebkit2gtk-4.1-0" \
+	"debian::apt install libgtk-3-0 libwebkit2gtk-4.1-0" \
+	"fedora::dnf install gtk3 webkit2gtk4.1" \
+	"arch::pacman -S gtk3 webkit2gtk-4.1"; do
+	distro_id=${distro_case%%:*}
+	distro_rest=${distro_case#*:}
+	distro_like=${distro_rest%%:*}
+	distro_want=${distro_rest#*:}
+	OS_RELEASE_FILE=$(fake_os_release "$distro_id" "$distro_like")
+	dry_run Linux x86_64 "$work/hint-$distro_id.txt" --version v0.1.0 --prefix "$work/pfx"
+	unset OS_RELEASE_FILE
+	contains "hint-$distro_id" "$work/hint-$distro_id.txt" "$distro_want"
+done
+unset LDCONFIG_SHIM
+
+echo "== --cli-only never probes for a window it is not installing =="
+LDCONFIG_SHIM=$(fake_ldconfig 4.0)
+dry_run Linux x86_64 "$work/wkcli.txt" --version v0.1.0 --prefix "$work/pfx" --cli-only
+unset LDCONFIG_SHIM
+contains webkit-cli "$work/wkcli.txt" "agenthub_v0.1.0_linux_amd64.tar.gz"
+lacks webkit-cli "$work/wkcli.txt" "_webkit40.tar.gz"
+lacks webkit-cli "$work/wkcli.txt" "this machine has WebKit2GTK 4.0"
+
+echo "== the applications menu gets an entry =="
+LDCONFIG_SHIM=$(fake_ldconfig 4.1)
+dry_run Linux x86_64 "$work/entry.txt" --version v0.1.0 --prefix "$work/pfx"
+unset LDCONFIG_SHIM
+commands_only "$work/entry.txt" "$work/entry.cmds"
+contains menu "$work/entry.cmds" "applications"
+contains menu "$work/entry.txt" "agenthub.desktop"
+# A command line install has no window to launch, so it leaves no menu entry
+# behind for someone to click and watch do nothing.
+LDCONFIG_SHIM=$(fake_ldconfig 4.1)
+dry_run Linux x86_64 "$work/entry-cli.txt" --version v0.1.0 --prefix "$work/pfx" --cli-only
+unset LDCONFIG_SHIM
+lacks menu-cli "$work/entry-cli.txt" "agenthub.desktop"
+# Neither does macOS: it has a .app, and a .desktop file there is litter.
+dry_run Darwin arm64 "$work/entry-mac.txt" --version v0.1.0 --prefix "$work/pfx"
+lacks menu-darwin "$work/entry-mac.txt" "agenthub.desktop"
 
 echo "== the latest release is looked up when no version is given =="
 dry_run Linux x86_64 "$work/latest.txt" --prefix "$work/pfx"
