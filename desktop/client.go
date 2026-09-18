@@ -523,6 +523,39 @@ func (c *client) inbox(ctx context.Context, sessionID string, limit int) (Inbox,
 	return inbox, nil
 }
 
+// InboxCount is how much one session's inbox is holding.
+type InboxCount struct {
+	Held     int  `json:"held"`
+	Capacity int  `json:"capacity"`
+	Full     bool `json:"full"`
+}
+
+// inboxCounts reads every local inbox's depth in one request.
+//
+// One call for the whole table. The list has held a thousand rows and a badge
+// per row cannot cost a request per row, which is why the redesign shipped
+// without one (issue #146).
+//
+// Sessions holding nothing are not in the map: the node leaves them out, and a
+// missing key means zero. That is not the same as this call failing, and the
+// window keeps the two apart.
+func (c *client) inboxCounts(ctx context.Context) (map[string]InboxCount, error) {
+	body, err := c.request(ctx, http.MethodGet, "/v1/inbox/counts", nil)
+	if err != nil {
+		return nil, err
+	}
+	var decoded struct {
+		Counts map[string]InboxCount `json:"counts"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode inbox counts: %w", err)
+	}
+	if decoded.Counts == nil {
+		decoded.Counts = map[string]InboxCount{}
+	}
+	return decoded.Counts, nil
+}
+
 // clearInbox empties an inbox and reports how many messages went.
 //
 // The count is the only way an owner learns that something arrived between

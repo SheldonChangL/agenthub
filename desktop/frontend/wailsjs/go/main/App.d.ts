@@ -20,6 +20,8 @@ export function HostPlatform():Promise<string>;
 
 export function Inbox(arg1:string):Promise<main.InboxView>;
 
+export function InboxCounts():Promise<main.InboxCountsView>;
+
 export function InstallService(arg1:main.ServiceForm):Promise<main.ServiceResult>;
 
 export function LocalAddresses():Promise<Array<main.LocalAddress>>;
