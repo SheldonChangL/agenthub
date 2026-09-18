@@ -67,12 +67,77 @@ EOF
 	echo "$shim"
 }
 
+# fake_ah builds a PATH shim whose `ah` answers `--json service status` the way
+# a real one would on a machine in the named state. install.sh asks that
+# question before it re-registers the service, and a dry run has no installed
+# ah of its own to ask, so this is the machine's existing one.
+fake_ah() { # fake_ah <none|db|fail> [database path] -> prints a directory for PATH
+	local mode=$1 db=${2:-}
+	local shim="$work/ah-$mode"
+	mkdir -p "$shim"
+	case $mode in
+	none)
+		cat >"$shim/ah" <<'EOF'
+#!/bin/sh
+case "$*" in
+*"service status"*) printf '{\n  "service": {\n    "Installed": false,\n    "Supported": true\n  }\n}\n' ;;
+*) echo "ah (fake)" ;;
+esac
+EOF
+		;;
+	db)
+		cat >"$shim/ah" <<EOF
+#!/bin/sh
+case "\$*" in
+*"service status"*)
+	printf '%s\n' '{' \\
+		'  "service": {' \\
+		'    "Arguments": [' \\
+		'      "--db",' \\
+		'      "$db"' \\
+		'    ],' \\
+		'    "Installed": true,' \\
+		'    "Supported": true' \\
+		'  }' \\
+		'}'
+	;;
+*) echo "ah (fake)" ;;
+esac
+EOF
+		;;
+	fail)
+		cat >"$shim/ah" <<'EOF'
+#!/bin/sh
+echo "ah: unknown flag --json" >&2
+exit 2
+EOF
+		;;
+	esac
+	chmod +x "$shim/ah"
+	echo "$shim"
+}
+
+# Every dry run gets an `ah` that reports no registered service, so the
+# transcript is the same on a machine that has AgentHub installed and on one
+# that does not. The cases that care put a different one in front of it.
+no_service_ah=$(fake_ah none)
+
 dry_run() { # dry_run <system> <machine> <output file> [args...]
 	local system=$1 machine=$2 out=$3
 	shift 3
 	local shim
 	shim=$(fake_uname "$system" "$machine")
-	PATH="$shim:$PATH" sh "$installer" --dry-run "$@" >"$out" 2>&1
+	PATH="${AH_SHIM:-$no_service_ah}:$shim:$PATH" sh "$installer" --dry-run "$@" >"$out" 2>&1
+}
+
+# dry_run_fails is dry_run for the cases whose point is the refusal.
+dry_run_fails() { # dry_run_fails <label> <system> <machine> <output file> [args...]
+	local label=$1
+	shift
+	checks=$((checks + 1))
+	if dry_run "$@"; then
+		fail "$label: the run was expected to fail and did not"
+	fi
 }
 
 # The commands a dry run would actually execute are the lines it prefixes with
@@ -231,6 +296,156 @@ if PATH="$shim:$PATH" sh "$installer" \
 	fail "a SHA256SUMS with no line for the file was accepted"
 fi
 contains missing-sums "$work/missing-sums.txt" "has no line for"
+
+# ---- the existing service is carried, not overwritten ----------------------
+
+# `ah service install` replaces the registration outright, and the database
+# path lives nowhere else. A reinstall that does not carry --db forward gives
+# the machine a new identity and drops every pairing, silently. These three
+# are the whole contract: carry it, or do not touch the service at all.
+
+echo "== an existing service keeps its database =="
+AH_SHIM=$(fake_ah db /some/where.db)
+dry_run Darwin arm64 "$work/svc-db.txt" --version v0.1.0 --prefix "$work/pfx"
+unset AH_SHIM
+commands_only "$work/svc-db.txt" "$work/svc-db.cmds"
+contains svc-db "$work/svc-db.cmds" "service install --db /some/where.db"
+contains svc-db "$work/svc-db.txt" "keeping the node's database at /some/where.db"
+contains svc-db "$work/svc-db.txt" "the unit's node binary is replaced on purpose"
+
+echo "== an unreadable service status installs no service =="
+AH_SHIM=$(fake_ah fail)
+dry_run Darwin arm64 "$work/svc-fail.txt" --version v0.1.0 --prefix "$work/pfx"
+unset AH_SHIM
+commands_only "$work/svc-fail.txt" "$work/svc-fail.cmds"
+lacks svc-fail "$work/svc-fail.cmds" "service install"
+contains svc-fail "$work/svc-fail.txt" "could not read the current background service"
+contains svc-fail "$work/svc-fail.txt" "service install --db <path to the node's database>"
+# The app is still installed: an unreadable service is a reason not to touch
+# the service, not a reason to leave half an app behind.
+contains svc-fail "$work/svc-fail.cmds" "ditto"
+
+echo "== no registered service installs a plain one =="
+dry_run Darwin arm64 "$work/svc-none.txt" --version v0.1.0 --prefix "$work/pfx"
+commands_only "$work/svc-none.txt" "$work/svc-none.cmds"
+contains svc-none "$work/svc-none.cmds" "service install"
+lacks svc-none "$work/svc-none.cmds" "service install --db"
+
+# ---- a truncated stream must run nothing -----------------------------------
+
+# This is what `curl | sh` fails as: the connection drops and the shell is
+# handed half a file. Everything with an effect is inside main(), and main is
+# called on the last line, so half a file defines functions and calls none.
+echo "== a truncated script runs nothing =="
+installer_bytes=$(wc -c <"$installer")
+installer_lines=$(wc -l <"$installer")
+truncate_at() { # truncate_at <label> <byte count>
+	local label=$1 bytes=$2
+	head -c "$bytes" "$installer" >"$work/trunc-$label.sh"
+}
+truncate_at 60pct $((installer_bytes * 60 / 100))
+truncate_at 90pct $((installer_bytes * 90 / 100))
+sed -n "1,$((installer_lines - 5))p" "$installer" >"$work/trunc-tail.sh"
+
+uname_shim=$(fake_uname Darwin arm64)
+for cut in 60pct 90pct tail; do
+	trunc_prefix="$work/trunc-prefix-$cut"
+	PATH="$no_service_ah:$uname_shim:$PATH" sh "$work/trunc-$cut.sh" \
+		--dry-run --version v0.1.0 --prefix "$trunc_prefix" \
+		>"$work/trunc-$cut.txt" 2>&1 || true
+	commands_only "$work/trunc-$cut.txt" "$work/trunc-$cut.cmds"
+	checks=$((checks + 1))
+	if [ -s "$work/trunc-$cut.cmds" ]; then
+		fail "truncated at $cut: it still ran commands"
+	fi
+	checks=$((checks + 1))
+	[ ! -e "$trunc_prefix" ] || fail "truncated at $cut: it created $trunc_prefix"
+done
+# shellcheck disable=SC2016 # the literal last line of install.sh
+contains truncation "$installer" 'main "$@"'
+
+# ---- a directory this script did not create is not deleted -----------------
+
+# AGENTHUB_HOME and --prefix are documented knobs, and `rm -rf` is downstream
+# of both. Each of these printed a `rm -rf` of the named directory before.
+echo "== a prefix that is not ours is refused =="
+guard() { # guard <label> <message> [installer args...]
+	local label=$1 message=$2
+	shift 2
+	dry_run_fails "$label" Linux x86_64 "$work/guard-$label.txt" "$@"
+	commands_only "$work/guard-$label.txt" "$work/guard-$label.cmds"
+	contains "$label" "$work/guard-$label.txt" "$message"
+	lacks "$label" "$work/guard-$label.cmds" "rm"
+}
+guard root "this script installs into a directory of its own" --prefix /
+guard home "is your home directory" --prefix "$HOME"
+guard above-home "contains your home directory" --prefix "$(dirname "$HOME")"
+
+notours="$work/notours"
+mkdir -p "$notours"
+echo "someone else's file" >"$notours/thesis.txt"
+guard foreign "holds no AgentHub install" --prefix "$notours"
+checks=$((checks + 1))
+[ -f "$notours/thesis.txt" ] || fail "the refused prefix lost a file"
+
+echo "== AGENTHUB_HOME pointing somewhere else is refused =="
+checks=$((checks + 1))
+export AGENTHUB_HOME="$notours"
+if dry_run Linux x86_64 "$work/guard-agenthub-home.txt" \
+	--version v0.1.0 --prefix "$work/pfx-ah"; then
+	fail "AGENTHUB_HOME pointing at a foreign directory was accepted"
+fi
+unset AGENTHUB_HOME
+commands_only "$work/guard-agenthub-home.txt" "$work/guard-agenthub-home.cmds"
+contains agenthub-home "$work/guard-agenthub-home.txt" "holds no AgentHub install"
+lacks agenthub-home "$work/guard-agenthub-home.cmds" "rm"
+
+echo "== HOME unset is a message, not an unbound variable =="
+checks=$((checks + 1))
+if env -u HOME PATH="$no_service_ah:$uname_shim:$PATH" sh "$installer" \
+	--dry-run --version v0.1.0 >"$work/no-home.txt" 2>&1; then
+	fail "an unset HOME was accepted"
+fi
+contains no-home "$work/no-home.txt" "HOME is not set"
+lacks no-home "$work/no-home.txt" "unbound variable"
+
+# ---- the cleanup trap never rm -rf's an empty path -------------------------
+
+# mktemp is shimmed to succeed while printing nothing, which is the shape that
+# puts an empty string into TEMP_DIR after the trap is armed. rm is shimmed to
+# record rather than delete, so a missing guard is a line in a log rather than
+# a deleted directory.
+echo "== the cleanup trap guards its variables =="
+# shellcheck disable=SC2016 # the literal text of the guard, not an expansion
+contains cleanup-guard "$installer" '[ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]'
+trap_shim="$work/shim-trap"
+mkdir -p "$trap_shim"
+printf '#!/bin/sh\nexit 0\n' >"$trap_shim/mktemp"
+cat >"$trap_shim/rm" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$work/rm.log"
+EOF
+chmod +x "$trap_shim/mktemp" "$trap_shim/rm"
+: >"$work/rm.log"
+checks=$((checks + 1))
+if PATH="$trap_shim:$no_service_ah:$uname_shim:$PATH" sh "$installer" \
+	--from "$work/no-such-archive.tar.gz" --prefix "$work/pfx-trap" --no-service \
+	>"$work/trap.txt" 2>&1; then
+	fail "a --from that is not a file was accepted"
+fi
+contains trap "$work/trap.txt" "is not a file"
+checks=$((checks + 1))
+[ ! -s "$work/rm.log" ] || fail "the cleanup trap ran rm with an empty TEMP_DIR: $(cat "$work/rm.log")"
+
+# ---- what the last lines tell a stranger -----------------------------------
+
+echo "== the closing lines say what to do next =="
+contains closing "$work/svc-none.txt" "Open agenthub-desktop from Applications; it starts on a setup checklist."
+contains closing "$work/svc-none.txt" "| sh -s -- --no-service"
+contains closing "$work/svc-none.txt" "$work/pfx/bin/ah"
+contains closing "$work/svc-none.txt" "node: running as a background service"
+contains closing "$work/darwin-cli.txt" "node: not registered (--no-service)"
+contains closing "$work/linux.txt" "it starts on a setup checklist."
 
 echo
 if [ "$failures" -ne 0 ]; then
