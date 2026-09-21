@@ -312,6 +312,7 @@ func TestTheOwnerSurfaceIsNotRateLimited(t *testing.T) {
 	_, owner, _ := testSurfaces(t)
 	for attempt := range peerBurst * 3 {
 		request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		request.Host = "127.0.0.1:7462"
 		request.RemoteAddr = "127.0.0.1:34567"
 		response := httptest.NewRecorder()
 		owner.ServeHTTP(response, request)

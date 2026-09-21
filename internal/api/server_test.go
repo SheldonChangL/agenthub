@@ -78,6 +78,7 @@ func TestSendAndInboxRoundTrip(t *testing.T) {
 func TestForeignBrowserOriginIsRejected(t *testing.T) {
 	_, handler := testServer(t)
 	request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+	request.Host = "127.0.0.1:7462"
 	request.Header.Set("Origin", "https://attacker.example")
 	response := httptest.NewRecorder()
 
@@ -88,9 +89,36 @@ func TestForeignBrowserOriginIsRejected(t *testing.T) {
 	}
 }
 
+// A browser page whose hostname was rebound to 127.0.0.1 reaches this port with
+// a same-origin GET: no Origin header, so the origin check above never fires,
+// and the page can read the answer. What that request cannot hide is its Host
+// header, which names the attacker's site rather than this machine.
+func TestOwnerAPIRefusesAForeignHost(t *testing.T) {
+	_, handler := testServer(t)
+	for _, host := range []string{"evil.example.com:7462", "evil.example.com", "192.168.1.20:7462", ""} {
+		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("Host %q: response code = %d; want 403", host, response.Code)
+		}
+	}
+	for _, host := range []string{"127.0.0.1:7462", "localhost:7462", "[::1]:7462", "LOCALHOST", "127.0.0.1"} {
+		request := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Errorf("Host %q: response code = %d; want 200", host, response.Code)
+		}
+	}
+}
+
 func TestJSONLikeContentTypeIsRejected(t *testing.T) {
 	_, handler := testServer(t)
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"to":"codex:x","body":"hello"}`))
+	request.Host = "127.0.0.1:7462"
 	request.Header.Set("Content-Type", "application/jsonp")
 	response := httptest.NewRecorder()
 
@@ -160,6 +188,9 @@ func perform(t *testing.T, handler http.Handler, method, path string, body any) 
 		}
 	}
 	req := httptest.NewRequest(method, path, &encoded)
+	// httptest's default Host is example.com, which the owner API now refuses
+	// (see TestOwnerAPIRefusesAForeignHost); a local client says 127.0.0.1.
+	req.Host = "127.0.0.1:7462"
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

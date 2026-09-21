@@ -19,6 +19,7 @@ import (
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/identity"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
@@ -821,6 +822,74 @@ func TestOneAddressCannotFillTheIncomingList(t *testing.T) {
 	}
 }
 
+// The name a requester writes about itself is printed on the comparison
+// screen, on one line, beside the fingerprint it labels. A name with a line
+// break in it would add a row of the attacker's choosing to that screen — a
+// forged "receiver" line carrying this machine's own fingerprint — and a name
+// of forty thousand bytes would push the owner's real request off it. Neither
+// is a name; both fall back to the node id the signature proved.
+func TestAPeerNameCannotForgeAComparisonRow(t *testing.T) {
+	// Every case is one request from the same test address, and the per-source
+	// cap is smaller than the number of cases, so each gets its own receiver.
+	receiver := newPairNode(t, "decides")
+	forged := "evil\n  receiver  owners real mac (this machine)     " +
+		identity.Fingerprint(receiver.keypair.Public) + "\n  x"
+	cases := []struct {
+		name, displayName, platform string
+	}{
+		{"line break", forged, "linux/amd64"},
+		{"oversized", strings.Repeat("A", 40000), "linux/amd64"},
+		{"bidi override", "mac\u202e", "linux/amd64"},
+		{"platform carries the payload", "honest", forged},
+	}
+	for _, tc := range cases {
+		receiver := newPairNode(t, "decides")
+		receiver.openWindow()
+		peer := receiver.server.PeerHandler()
+		keypair, nodeID := throwawayIdentity(t)
+		node := model.NodeIdentity{
+			ID: nodeID, DisplayName: tc.displayName, Platform: tc.platform,
+			PublicKey: identity.EncodePublicKey(keypair.Public), Fingerprint: keypair.Fingerprint(),
+		}
+		envelope, err := protocol.NewHeartbeatBuilder(receiver.store, node, keypair).
+			BuildPairRequest(time.Now(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if posted := perform(t, peer, http.MethodPost, "/v1/pair/requests", envelope); posted.Code != http.StatusAccepted {
+			t.Fatalf("%s: pair request = %d %s", tc.name, posted.Code, posted.Body.String())
+		}
+		var stored *pairing.Request
+		for _, row := range receiver.requests() {
+			if row.NodeID == nodeID {
+				row := row
+				stored = &row
+			}
+		}
+		if stored == nil {
+			t.Fatalf("%s: the request was accepted but is not listed", tc.name)
+		}
+		for field, value := range map[string]string{"display name": stored.DisplayName, "platform": stored.Platform} {
+			if strings.ContainsAny(value, "\n\r\u202e") || len(value) > label.MaxLength {
+				t.Errorf("%s: %s reached the owner's screen unsanitised: %q", tc.name, field, value)
+			}
+		}
+		if tc.displayName == "honest" {
+			if stored.DisplayName != "honest" {
+				t.Errorf("%s: an ordinary name was altered to %q", tc.name, stored.DisplayName)
+			}
+		} else if stored.DisplayName != nodeID {
+			t.Errorf("%s: display name = %q, want the fallback to node id %q", tc.name, stored.DisplayName, nodeID)
+		}
+		// One line on the screen, as the owner is told to expect.
+		var out strings.Builder
+		fmt.Fprintf(&out, "  %-9s %-34s %s\n", "requester", stored.DisplayName, stored.Fingerprint)
+		if strings.Count(out.String(), "\n") != 1 {
+			t.Errorf("%s: the comparison row renders as %d lines", tc.name, strings.Count(out.String(), "\n"))
+		}
+	}
+}
+
 // A refusal on the requesting side reaches the other machine.
 //
 // The worst case is the one this covers: the owner refused because the
@@ -910,6 +979,7 @@ func TestAnApproveLandingInsideARejectDoesNotLeaveTrustBehind(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodPost,
 			"/v1/pair/requests/"+outgoing.ID+"/approve", strings.NewReader("{}"))
+		request.Host = "127.0.0.1:7462"
 		request.Header.Set("Content-Type", "application/json")
 		receiver.owner.ServeHTTP(recorder, request)
 		approve.code, approve.body = recorder.Code, recorder.Body.String()
