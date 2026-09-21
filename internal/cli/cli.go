@@ -810,8 +810,8 @@ func (r runner) printPairRequest(request pairRequestRow) {
 //
 //	ah audience <session-id>
 //	ah audience <session-id> none
-//	ah audience <session-id> all-paired [--cwd] [--messages]
-//	ah audience <session-id> selected <node-id>... [--cwd] [--messages]
+//	ah audience <session-id> all-paired [--cwd] [--messages] [--outbound] [--auto-wake]
+//	ah audience <session-id> selected <node-id>... [--cwd] [--messages] [--outbound] [--auto-wake]
 func (r runner) audience(ctx context.Context, args []string) error {
 	if len(args) < 2 {
 		return errors.New("usage: ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")

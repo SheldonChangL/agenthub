@@ -75,9 +75,8 @@
 | `Wakes(session, limit)` | 收件匣抽屜的「喚醒紀錄」分頁 | 分頁載入；序號守衛；`limits` 顯示節點端的上限 |
 | `NodeSettings()` | 進入設定頁的節點設定區 | 讀回 `settings`（執行中）與 `saved`（存下來的）兩份；規則見 §7.8 |
 | `SaveNodeSettings(patch)` | 節點設定區的「儲存」 | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
-| `RestartService()` | 節點設定區的「重新啟動服務」 | 走 `ah service restart`；**Windows 上 `internal/service` 回 `ErrUnsupported`，這顆會失敗** |
+| `RestartService()` | 節點設定區的「重新啟動服務」 | 走 `ah service restart`；三平台都支援——macOS `launchctl kickstart -k`、Linux `systemctl --user restart`、Windows `taskkill` 掉 node 再 `schtasks /Run` 排程工作 |
 | `SetNodeAddress(...)` | 節點詳情的位址欄 | 草稿欄位，`interactionInProgress()` 期間不被背景重畫蓋掉 |
-| `SetNodeURL(url)` | 設定頁的節點 URL | 之後所有讀寫都對這個 URL |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
 | `CopyText(text)` | MCP 設定、resume 指令、指紋等所有「複製」 | 寫入剪貼簿；結果顯示在原地（對話框內或列上），不是 banner |
 

@@ -110,10 +110,11 @@ the app executable.
   that has a recorded, policy-permitted address. This app cannot record an
   address: that is `PUT /v1/nodes/{id}/address` on the node, outside the app, and
   a peer without one is silently skipped.
-- Pairing is a manual trust operation: the owner copies the peer identity and
-  compares the full fingerprint out of band. The `pair.*` wire messages have
-  schemas but still no producer or consumer, so there is no automated exchange
-  (#62, under Step 9 #63).
+- Pairing is a fingerprint-confirmed exchange: the Network view's pairing
+  drawer (or `ah pair request`, `pending`, `approve`, `confirm`, `reject`) posts
+  a signed `pair.request` to the other machine, both owners compare the same two
+  fingerprints, and each confirms on their own side (#62, #63). The manual
+  five-field form stays for two machines that cannot reach each other.
 - The heartbeat dialog shows the actual signed, schema-validated envelope. It is
   the owner's union preview; the per-peer envelopes that actually go out are
   built by `BuildFor` and are never the same document.

@@ -69,7 +69,8 @@ message naming `--prefix`, not an unbound-variable error.
 | Machine | Asset |
 |---|---|
 | macOS, Apple silicon or Intel | `agenthub-desktop_<tag>_darwin_universal.dmg` |
-| Linux x86\_64 | `agenthub-desktop_<tag>_linux_amd64.tar.gz` |
+| Linux x86\_64, WebKit2GTK 4.1 on the machine (or nothing yet) | `agenthub-desktop_<tag>_linux_amd64.tar.gz` |
+| Linux x86\_64, only WebKit2GTK 4.0 on the machine (Ubuntu 22.04, Debian 12, Mint, Pop!\_OS) | `agenthub-desktop_<tag>_linux_amd64_webkit40.tar.gz` — same contents, linked against the older ABI; a tag that predates it falls back to the 4.1 archive with a warning |
 | Linux arm64 | `agenthub_<tag>_linux_arm64.tar.gz` — there is no arm64 desktop build, and the script says so before it falls back |
 | any, with `--cli-only` | `agenthub_<tag>_<os>_<arch>.tar.gz` |
 
@@ -168,11 +169,21 @@ stopped before its directory is replaced, and the reinstall starts it again.
 
 ## Linux runtime
 
-The Linux app links the system WebKit at run time. If
-`libwebkit2gtk-4.1.so.0` is not on the library path the script warns and prints
-the package for this distribution — `apt`, `dnf` or `pacman`, read from
-`/etc/os-release`. The install still completes; `ah` and the node do not need
-GTK, only the window does.
+The Linux app links the system WebKit at run time, and the two Linux desktop
+archives link different ABIs, so the script decides which one to download
+before fetching anything: it reads `ldconfig -p` (trying `ldconfig`,
+`/sbin/ldconfig` and `/usr/sbin/ldconfig`; `AGENTHUB_LDCONFIG_PATHS` overrides
+the list for tests) and takes the `_webkit40` archive only when
+`libwebkit2gtk-4.0.so.37` is present and `libwebkit2gtk-4.1.so.0` is not.
+Everything else — 4.1 present, both present, or neither — gets the 4.1 build,
+because 4.1 is what every distribution still adding WebKit2GTK ships and so the
+one whose runtime can be installed afterwards. When no `ldconfig` answers, the
+script says so and takes the 4.1 build too.
+
+After the install, if the chosen archive's WebKit is still not on the library
+path, the script warns and prints the package for this distribution — `apt`,
+`dnf` or `pacman`, read from `/etc/os-release`. The install still completes;
+`ah` and the node do not need GTK, only the window does.
 
 ## Tests
 
