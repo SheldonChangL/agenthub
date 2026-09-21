@@ -71,6 +71,7 @@ func TestAWakeReachesTheWaitingSubscriber(t *testing.T) {
 	go func() {
 		request := httptest.NewRequest(http.MethodGet,
 			"/v1/sessions/"+session+"/wake-stream?wait=20s", nil)
+		request.Host = "127.0.0.1:7462"
 		recorder := httptest.NewRecorder()
 		owner.ServeHTTP(recorder, request)
 		answered <- recorder
@@ -207,6 +208,7 @@ func TestADisplacedSubscriberIsToldToStop(t *testing.T) {
 	go func() {
 		request := httptest.NewRequest(http.MethodGet,
 			"/v1/sessions/"+session+"/wake-stream?wait=20s", nil)
+		request.Host = "127.0.0.1:7462"
 		recorder := httptest.NewRecorder()
 		owner.ServeHTTP(recorder, request)
 		answered <- recorder
@@ -377,6 +379,7 @@ func TestDrainingEndsAHeldPoll(t *testing.T) {
 	go func() {
 		request := httptest.NewRequest(http.MethodGet,
 			"/v1/sessions/"+session+"/wake-stream?wait=5m", nil)
+		request.Host = "127.0.0.1:7462"
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 		answered <- recorder.Code
@@ -511,6 +514,7 @@ func TestAWakeWhoseResponseNeverArrivesIsNotRecordedAsWoken(t *testing.T) {
 		defer close(polled)
 		request := httptest.NewRequest(http.MethodGet,
 			"/v1/sessions/"+session+"/wake-stream?wait=20s", nil)
+		request.Host = "127.0.0.1:7462"
 		owner.ServeHTTP(newBufferedDeadConnection(), request)
 	}()
 	waitFor(t, func() bool {
