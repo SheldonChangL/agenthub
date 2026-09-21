@@ -699,6 +699,7 @@ func TestTheOwnerAPIAndTheNodeItselfWithdrawTheSameListener(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := httptest.NewRequest(http.MethodPut, "/v1/node/settings", bytes.NewReader(body))
+			request.Host = "127.0.0.1:7462" // the owner API refuses httptest's example.com
 			request.Header.Set("Content-Type", "application/json")
 			recorded := httptest.NewRecorder()
 			handler.ServeHTTP(recorded, request)

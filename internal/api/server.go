@@ -257,7 +257,7 @@ func (s *Server) Handler() http.Handler {
 	// are looking at a window — otherwise cannot ask the question at all.
 	mux.HandleFunc("GET /v1/outbound", s.outboundList)
 	mux.HandleFunc("GET /v1/outbound/{id}", s.outboundStatus)
-	return securityBoundary(mux)
+	return securityBoundary(loopbackHostOnly(mux))
 }
 
 // PeerHandler serves only what another node is allowed to reach.
@@ -1013,7 +1013,41 @@ func isLoopbackOrigin(origin string) bool {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return false
 	}
-	host := parsed.Hostname()
+	return isLoopbackHostname(parsed.Hostname())
+}
+
+// loopbackHostOnly refuses an owner-API request whose Host header names
+// anything but this machine. The owner API has no authentication because
+// reaching loopback means being here — but a browser is here too, and a page
+// on a hostname whose DNS answer was rebound to 127.0.0.1 reaches this port
+// with a same-origin GET that carries no Origin header, which securityBoundary
+// alone lets through and the page can read. The Host header on that request
+// is the attacker's hostname; a request from ah, the desktop app or a local
+// page says 127.0.0.1, [::1] or localhost. The peer surface is not wrapped: it
+// is reached by name or LAN address on purpose, and authenticates by signature.
+func loopbackHostOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHostname(hostnameOf(r.Host)) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN_HOST",
+				"the owner API answers only to a loopback Host")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// hostnameOf strips the port from a Host header value. url.Parse does the
+// bracket handling for IPv6 literals; a value it cannot parse yields "", which
+// isLoopbackHostname refuses.
+func hostnameOf(host string) string {
+	parsed, err := url.Parse("http://" + host)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func isLoopbackHostname(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}
