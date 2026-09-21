@@ -146,7 +146,10 @@ address.
    observed arriving in a real session (channel-push-not-observed.md), so #57
    is open.
 
-Steps 9 and 10 continue in #63 (automated pairing) and #67 (distribution).
+Step 9 landed: #63 (the fingerprint-confirmed pairing exchange, in the CLI
+and the desktop app). Step 10 is mostly there — tagged releases for three
+platforms, a Windows installer, `install.sh` — with #67 open only for the
+Windows autostart acceptance tracked in #65.
 
 ## Boundaries for this increment
 
