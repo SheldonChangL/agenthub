@@ -150,12 +150,16 @@ made per session.
 The one-liner above does all of this. By hand instead:
 
 1. Download `agenthub-desktop_<tag>_linux_amd64.tar.gz` (x64; there is no arm64
-   desktop build).
+   desktop build). It links WebKit2GTK 4.1; on Ubuntu 22.04, Debian 12, Mint or
+   Pop!_OS, which ship only 4.0, take
+   `agenthub-desktop_<tag>_linux_amd64_webkit40.tar.gz` instead — same
+   contents, older ABI. The one-liner reads `ldconfig` and picks for you.
 2. Check it: `sha256sum -c SHA256SUMS --ignore-missing`.
 3. Unpack it and run `./agenthub-desktop`, keeping the other three binaries
    beside it. There is no Gatekeeper equivalent here; `chmod +x` is all.
-4. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1. The
-   `README.txt` inside names the package for Debian, Fedora and Arch.
+4. It links the system WebKit, so it needs GTK 3 and WebKit2GTK 4.1 (or 4.0
+   for the `_webkit40` archive). The `README.txt` inside names the package for
+   Debian, Fedora and Arch.
 5. First launch is the same as macOS: install the background service from
    Settings before anything else — see **First launch** above.
 
