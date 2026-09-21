@@ -15,6 +15,7 @@ import (
 
 	"agenthub.local/agenthub/internal/id"
 	"agenthub.local/agenthub/internal/identity"
+	"agenthub.local/agenthub/internal/label"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
@@ -268,8 +269,8 @@ func (s *Server) receivePairRequest(w http.ResponseWriter, r *http.Request) {
 		ID:          requestID,
 		Direction:   pairing.Incoming,
 		NodeID:      descriptor.NodeID,
-		DisplayName: displayNameOr(descriptor.DisplayName, descriptor.NodeID),
-		Platform:    descriptor.Platform,
+		DisplayName: peerNameOr(descriptor.DisplayName, descriptor.NodeID),
+		Platform:    label.Printable(descriptor.Platform),
 		PublicKey:   identity.EncodePublicKey(public),
 		// Derived here, from the key that actually arrived. The fingerprint the
 		// requester wrote into its own descriptor is not read at all.
@@ -441,8 +442,8 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 		ID:               answer.RequestID,
 		Direction:        pairing.Outgoing,
 		NodeID:           answer.Node.NodeID,
-		DisplayName:      displayNameOr(answer.Node.DisplayName, answer.Node.NodeID),
-		Platform:         answer.Node.Platform,
+		DisplayName:      peerNameOr(answer.Node.DisplayName, answer.Node.NodeID),
+		Platform:         label.Printable(answer.Node.Platform),
 		PublicKey:        identity.EncodePublicKey(public),
 		Fingerprint:      identity.Fingerprint(public),
 		LocalFingerprint: s.node.Fingerprint,
@@ -1211,4 +1212,18 @@ func displayNameOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// peerNameOr is displayNameOr for a name the other machine wrote. The name is
+// printed on the fingerprint-comparison screen beside the fingerprint it
+// labels, on one line, and everything ADR-004 asks of the owner is that they
+// compare those lines. A name carrying a line break can therefore append a
+// forged "receiver" row showing this machine's own fingerprint, with the
+// requester's real one pushed to the line below; a name of forty thousand
+// bytes can push the owner's own request off the screen. label.Printable is
+// what the mDNS path already applies to the same fields: it refuses control
+// characters, bidi overrides and anything over label.MaxLength, and returns ""
+// for a name it will not vouch for, which falls back to the verified node id.
+func peerNameOr(value, fallback string) string {
+	return displayNameOr(label.Printable(value), fallback)
 }
