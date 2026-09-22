@@ -102,7 +102,6 @@ export const TEXT = {
   "local.clearFilters": "清除篩選",
   "local.selectAllTitle": "全選目前篩選結果",
   "local.colStatus": "狀態",
-  "local.colManagement": "管理",
   "session.managed.managed": "受管理",
   "session.managed.unmanaged": "未受管理",
   "local.colAudience": "公開對象",
@@ -290,6 +289,7 @@ export const TEXT = {
   "audience.applied.selected.one": "已公開給指定節點 {n} 個 session。",
   "audience.applied.selected.other": "已公開給指定節點 {n} 個 session。",
 
+  "row.providerTitle": "{provider} · 管理方式 {management}",
   "row.flagIn": "收",
   "row.flagOut": "送",
   "row.flagWake": "醒",

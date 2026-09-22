@@ -51,9 +51,12 @@
         <div class="spacer"></div>
         <div class="actions">
           <button id="service-pill" class="servicepill" data-t-title="app.servicePillTitle"><span class="dot"></span><span id="service-pill-text" data-t="service.pillLoading"></span></button>
-          <button id="btn-reload" class="ghost" data-t="app.reload"></button>
+          <!-- Hidden, not removed: the list reloads itself every fifteen
+               seconds and after every write, so this button asked for
+               something that had already happened. The id stays because the
+               handler and the language check both still reach for it. -->
+          <button id="btn-reload" class="ghost hidden" data-t="app.reload"></button>
           <button id="btn-discover" class="ghost" data-t="app.rescan"></button>
-          <button id="btn-heartbeat" class="ghost" data-t="app.previewHeartbeat"></button>
         </div>
       </header>
 
@@ -92,14 +95,13 @@
           <div class="tablescroll">
             <table>
               <colgroup>
-                <col class="c-check" /><col class="c-session" /><col class="c-status" /><col class="c-mgmt" /><col class="c-audience" /><col class="c-flags" /><col class="c-cwd" /><col class="c-last" /><col class="c-actions" />
+                <col class="c-check" /><col class="c-session" /><col class="c-status" /><col class="c-audience" /><col class="c-flags" /><col class="c-cwd" /><col class="c-last" /><col class="c-actions" />
               </colgroup>
               <thead>
                 <tr>
                   <th class="col-check"><input type="checkbox" id="select-all" data-t-title="local.selectAllTitle" /></th>
                   <th class="sortable" data-sort="id">SESSION</th>
                   <th class="sortable" data-sort="status" data-t="local.colStatus"></th>
-                  <th class="sortable" data-sort="management" data-t="local.colManagement"></th>
                   <th class="sortable" data-sort="audience" data-t="local.colAudience"></th>
                   <th data-t="local.colFlags"></th>
                   <th class="sortable" data-sort="cwd" data-t="local.colCwd"></th>
@@ -264,6 +266,13 @@
                   <span class="k" data-t="identity.publicKey"></span>
                   <span class="v keyvalue" id="identity-public-key">—</span>
                   <span><button id="copy-identity-key" class="ghost" data-t="identity.copyKey"></button> <span id="identity-copy-status" class="muted"></span></span>
+                </div>
+                <!-- What this identity actually broadcasts. It used to be the
+                     fourth button in the title bar, on every screen, for
+                     something an owner looks at once. -->
+                <div class="row">
+                  <span class="k" data-t="heartbeat.title"></span>
+                  <span><button id="btn-heartbeat" class="ghost" data-t="app.previewHeartbeat"></button></span>
                 </div>
               </div>
             </div>

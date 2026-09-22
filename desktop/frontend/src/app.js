@@ -418,8 +418,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
-  // sessionRow builds the nine cells once. Everything that changes between
+  // sessionRow builds the eight cells once. Everything that changes between
   // ticks is written by updateSessionRow into these same elements.
+  //
+  // There is no MANAGED cell. The node sends model.Management, and every
+  // session this app has ever listed is "unmanaged" — a column of one repeated
+  // word across a thousand rows, costing 128px next to the working directory,
+  // which is the column that actually runs out of room. The value is on the
+  // provider badge's tooltip, so a node that one day says something else is
+  // still readable from the row.
   function sessionRow(session) {
     const tr = document.createElement("tr");
 
@@ -442,14 +449,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusPill = element("span", "pill");
     statusCell.append(statusPill);
 
-    const managementCell = element("td", "muted mgmt");
-
     const audienceCell = element("td");
     const audiencePill = element("span", "pill");
     audienceCell.append(audiencePill);
 
-    // The four audience flags, readable without opening the dialog. Only
-    // meaningful when something is published; a private row shows them dim.
+    // The four audience flags, readable without opening the dialog. They say
+    // what a peer may do with this session, so on a session no peer can see
+    // they say nothing at all — an unpublished row leaves the cell empty rather
+    // than showing four dashed boxes that are dim for a reason nothing states.
     const flagsCell = element("td");
     const chips = element("span", "flagchips");
     const flagCwd = element("span", "flag", "CWD");
@@ -506,11 +513,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     group.append(inboxButton, resumeButton);
     actionsCell.append(group);
 
-    tr.append(checkCell, idCell, statusCell, managementCell, audienceCell,
+    tr.append(checkCell, idCell, statusCell, audienceCell,
       flagsCell, cwdCell, seenCell, actionsCell);
     tr.sessionParts = {
-      checkbox, idCell, providerTag, label, statusPill, managementCell,
-      audiencePill, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
+      checkbox, idCell, providerTag, label, statusPill,
+      audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
       seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
     };
     updateSessionRow(tr, session);
@@ -538,6 +545,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const { rest } = shortId(session.id);
     parts.providerTag.textContent = session.provider;
+    // Where the MANAGED column went. It is one word, the same one on every
+    // row, and this is the badge it qualifies.
+    parts.providerTag.title = t("row.providerTitle", {
+      provider: session.provider,
+      management: managementLabel(session.management),
+    });
     parts.label.className = session.title ? "title" : "";
     parts.label.textContent = session.title ? session.title : rest;
     parts.idCell.title = session.title ? `${session.title}\n${session.id}` : session.id;
@@ -545,13 +558,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusClass = statusPillClass(session.status);
     parts.statusPill.className = statusClass ? `pill ${statusClass}` : "pill";
     parts.statusPill.textContent = session.status;
-    parts.managementCell.textContent = managementLabel(session.management);
 
     const audience = describeAudience(session.audience);
     parts.audiencePill.className = audience.published ? "pill public" : "pill";
     parts.audiencePill.textContent = audience.text;
 
+    // The flags describe what a peer is allowed to do with this session, so on
+    // one no peer has been given they describe nothing. Hidden rather than
+    // drawn dim: four boxes per row, on the rows where they mean least, were
+    // most of the ink in this table.
     const a = session.audience ?? {};
+    const audienceMode = a.mode ?? "none";
+    parts.chips.classList.toggle("hidden", audienceMode === "none");
     setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
     setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
     setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
@@ -624,6 +642,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const show = held !== null && held > 0;
     badge.className = `inboxbadge${full ? " full" : ""}${show ? "" : " hidden"}`;
     badge.textContent = show ? String(held) : "";
+    // A row with nothing waiting keeps the button and loses the word. The
+    // stylesheet swaps the label for an envelope; the label element and its
+    // text stay in the DOM, so the tooltip, the accessible name and the
+    // language switch all still reach it — what shrinks is the ink, on the
+    // rows where this button has nothing to report.
+    button.className = show ? "ghost inbox" : "ghost inbox compact";
     // The number alone does not say what it counts, and the button's own title
     // is the only place a pointer can ask.
     //
