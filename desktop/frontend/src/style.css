@@ -364,11 +364,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    always exactly as wide as the card, so a narrow window squeezes the columns
    until the last one is cut off at the card's edge with no way to reach it —
    the resume button was half outside the window and unclickable. */
-table { width: 100%; min-width: 1200px; border-collapse: collapse; table-layout: fixed; }
+table { width: 100%; min-width: 1080px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 36px; }
 col.c-session { width: 264px; }
 col.c-status { width: 84px; }
-col.c-mgmt { width: 128px; }
 col.c-audience { width: 112px; }
 col.c-flags { width: 164px; }
 col.c-last { width: 92px; }
@@ -489,6 +488,19 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .flag.warn.on { background: rgba(224, 163, 62, 0.16); color: var(--amber); }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
+/* A session holding nothing keeps the button and loses the word: an envelope
+   instead of 「收件匣」 on every one of a thousand rows. The label element and
+   its text are still there — hidden, not removed — so the tooltip, the
+   accessible name and the language switch all still reach it. */
+.rowactions button.inbox.compact { padding: 0 8px; }
+.rowactions button.inbox.compact .label {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.rowactions button.inbox.compact::before { content: "\2709"; font-size: 13px; line-height: 1; }
 
 /* How many messages a session is still holding (#146). It rides inside the
    Inbox button and on the 本機 session tab, and it is absent — not zero —

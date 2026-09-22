@@ -103,7 +103,6 @@ export const TEXT = {
   "local.clearFilters": "Clear filters",
   "local.selectAllTitle": "Select everything the filters show",
   "local.colStatus": "STATUS",
-  "local.colManagement": "MANAGED",
   // The node sends model.Management, which is an enum and not a sentence:
   // "managed" means this app started the session and can stop it. Anything
   // else the node may send one day is shown as it arrived rather than guessed
@@ -295,6 +294,7 @@ export const TEXT = {
   "audience.applied.selected.one": "Published {n} session to the chosen nodes.",
   "audience.applied.selected.other": "Published {n} sessions to the chosen nodes.",
 
+  "row.providerTitle": "{provider} · management: {management}",
   "row.flagIn": "IN",
   "row.flagOut": "OUT",
   "row.flagWake": "WAKE",
