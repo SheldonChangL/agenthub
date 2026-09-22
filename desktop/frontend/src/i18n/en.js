@@ -5,6 +5,10 @@
 // its keys against zh-Hant.js and fails on a value that still contains Han.
 export const TEXT = {
   /* ---------------- pairing drawer and the pairing exchange ---------------- */
+  "pair.wizardTitle": "Pair with another machine",
+  "pair.step1Heading": "Can this machine be reached",
+  "pair.step2Heading": "Where the other machine is",
+  "pair.step3Heading": "Compare the fingerprints",
   "pair.open": "Pair with another machine",
   "pair.close": "Close the pairing window",
   "pair.windowOpen": "Pairing window open",
@@ -121,9 +125,7 @@ export const TEXT = {
   "network.pairedNodes": "Paired nodes",
   "network.pairNew": "Pair another machine…",
   "network.pairNewTitle": "Pair by hand",
-  "network.pairingMode": "Pairing mode",
   "network.pairingLoading": "Reading…",
-  "network.pairingOnlyIdentity": "Pairing only establishes identity. To let the other machine see a session you still set its audience, one session at a time, in the local view.",
   "network.pickANode": "Pick a node on the left to see its details.",
 
   "settings.nav.service": "Background service",
@@ -194,6 +196,7 @@ export const TEXT = {
   "pair.announcingNote": "nodes you have already paired with do not appear here",
   "pair.manualAddressHeading": "Address shown on the other screen",
 
+  "pairManual.summary": "Advanced: two machines that cannot reach each other",
   "pairManual.footNote": "The fallback for two machines that cannot reach each other: fill in five fields by hand and carry the public key across yourself.",
   "pairManual.open": "Enter pairing details by hand…",
   "pairManual.introBefore": "Run ",

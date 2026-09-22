@@ -4,6 +4,10 @@
 // desktop/frontend_test.go 用 regex 讀這兩個檔並比對鍵，表格一旦變成程式碼，那個檢查就會被放棄。
 export const TEXT = {
   /* ---------------- pairing drawer and the pairing exchange ---------------- */
+  "pair.wizardTitle": "與另一台機器配對",
+  "pair.step1Heading": "這台機器能不能被連到",
+  "pair.step2Heading": "對方在哪裡",
+  "pair.step3Heading": "比對指紋",
   "pair.open": "與另一台機器配對",
   "pair.close": "關閉配對視窗",
   "pair.windowOpen": "配對視窗開啟中",
@@ -116,9 +120,7 @@ export const TEXT = {
   "network.pairedNodes": "已配對節點",
   "network.pairNew": "配對另一台機器…",
   "network.pairNewTitle": "手動配對",
-  "network.pairingMode": "配對模式",
   "network.pairingLoading": "讀取中…",
-  "network.pairingOnlyIdentity": "配對只確認身分。要讓對方看到 session，仍須在本機視圖逐一設定公開對象。",
   "network.pickANode": "選擇左側的節點以檢視詳細資料。",
 
   "settings.nav.service": "背景服務",
@@ -189,6 +191,7 @@ export const TEXT = {
   "pair.announcingNote": "已配對的節點不會出現在這裡",
   "pair.manualAddressHeading": "對方畫面顯示的位址",
 
+  "pairManual.summary": "進階：兩台互相連不到的機器",
   "pairManual.footNote": "兩台機器連不上彼此時的退路：手動填 5 個欄位，公鑰要自己帶過去。",
   "pairManual.open": "手動輸入配對資料…",
   "pairManual.introBefore": "請在對方機器上執行 ",
