@@ -529,6 +529,9 @@ export const TEXT = {
   "service.uninstalled": "The background service is removed; the node has stopped.",
 
   /* ---------------- node settings, and the last of the wiring ---------------- */
+  "pair.formDirty": "Node settings has unsaved changes. Press Save or Read again on that page first, then come back to this button.",
+  "pair.formDirtyFields": "Unsaved: {fields}.",
+  "app.rescanNothingFound": " AgentHub reads the files Claude Code and Codex leave on disk, so this machine has none of theirs right now; start a session in one of them and scan again.",
   "app.busyLoad": "Loading",
   "app.rescanned": "Rescan finished: {claude} Claude, {codex} Codex, {total} in all.",
   "app.rescanSkipped": " ({skipped} more could not be parsed and were skipped.)",
@@ -620,25 +623,10 @@ export const TEXT = {
   "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot find out what is holding the node: {error}",
   "onboarding.service.bodyNoAhNodeDown": "The node is not answering, and the ah command is not on this machine, so this window cannot find out what was holding it ({error}). It can still start the node that ships with this app; if a service manager was holding the node here, start it that way instead.",
 
-  "onboarding.sessions.title": "Find your local sessions",
-  "onboarding.sessions.body": "AgentHub reads the files Claude Code and Codex leave on disk. Scan once to fill the table below; after that it keeps itself up to date.",
-  "onboarding.sessions.bodyNoneFound": "The last scan found no Claude Code or Codex session on this machine. AgentHub only knows about the ones those tools have written files for, so start a session in one of them and scan again.",
-  "onboarding.sessions.action": "Scan for sessions",
 
-  "onboarding.reachable.title": "Make this machine reachable",
-  "onboarding.reachable.body": "Until you say otherwise the node only accepts connections from this computer. Choose an address on your own network and the node restarts on it.",
-  "onboarding.reachable.bodyLoading": "Waiting for the node to say what it is listening on…",
-  "onboarding.reachable.bodyNoAddress": "This machine has no private network address to offer. Set the listening address by hand in node settings.",
-  "onboarding.reachable.bodyDone": "Another machine can reach this one at {address}.",
-  "onboarding.reachable.bodyNodeDown": "The node is not answering, so it cannot say what it is listening on. Start it in step 1 first.",
-  "onboarding.reachable.bodyUnreadable": "The node settings could not be read, so there is nothing to offer here yet.",
-  "onboarding.reachable.retry": "Try reading again",
-  "onboarding.reachable.formDirty": "Node settings has unsaved changes. Press Save or Read again on that page first, then come back to this button.",
-  "onboarding.reachable.formDirtyFields": "Unsaved: {fields}.",
-  "onboarding.reachable.openSettings": "Open node settings",
 
   "onboarding.pair.title": "Pair with another machine",
-  "onboarding.pair.body": "Pairing links this machine to another: each of you checks the same fingerprint is on both screens. It shares nothing by itself: what each machine publishes stays a separate decision, made per session.",
+  "onboarding.pair.body": "Pairing links this machine to another: each of you checks the same fingerprint is on both screens. The drawer's first step makes sure this machine can be reached, the second finds the other one, the third compares the fingerprints. Pairing shares nothing by itself — what each machine publishes stays a separate decision, made per session.",
   "onboarding.pair.action": "Open pairing",
 
   "onboarding.publish.title": "Publish a session",

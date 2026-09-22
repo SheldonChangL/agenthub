@@ -524,9 +524,12 @@ export const TEXT = {
   "service.uninstalled": "背景服務已移除；節點已停止。",
 
   /* ---------------- node settings, and the last of the wiring ---------------- */
+  "pair.formDirty": "節點設定頁有還沒存的改動。先到那一頁按「儲存」或「重新讀取」，再回來按這顆。",
+  "pair.formDirtyFields": "未存：{fields}。",
+  "app.rescanNothingFound": " AgentHub 讀的是 Claude Code 和 Codex 自己寫在硬碟上的檔案，所以這台機器目前沒有它們留下的 session；在其中一個開一段對話再掃一次。",
   "app.busyLoad": "載入",
   "app.rescanned": "掃描完成：Claude {claude}、Codex {codex}，共 {total} 個。",
-  "app.rescanSkipped": "（另有 {skipped} 筆無法解析已略過。）",
+  "app.rescanSkipped": "（另有 {skipped} 筆讀不懂，已跳過。）",
   "heartbeat.busy": "讀取 heartbeat",
   "inbox.clearConfirm": "清空 {session} 的收件匣？這個動作無法復原。",
   "inbox.busyClear": "清空收件匣",
@@ -615,25 +618,10 @@ export const TEXT = {
   "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，所以這個視窗查不出節點是被什麼帶起來的：{error}",
   "onboarding.service.bodyNoAhNodeDown": "節點沒有回應，而且這台機器上沒有 ah 指令，所以這個視窗查不出節點本來是被什麼帶起來的（{error}）。它還是可以直接啟動隨這個 app 一起安裝的節點；如果這台機器上的節點本來是由服務管理員帶起來的，請改用那邊的方式啟動。",
 
-  "onboarding.sessions.title": "找出這台機器上的 session",
-  "onboarding.sessions.body": "AgentHub 是讀 Claude Code 和 Codex 留在硬碟上的檔案。掃描一次，下面的表格就會有東西；之後它會自己保持更新。",
-  "onboarding.sessions.bodyNoneFound": "上次掃描在這台機器上找不到任何 Claude Code 或 Codex 的 session。AgentHub 只認得那些工具寫過檔案的 session，先在其中一邊開一個再掃一次。",
-  "onboarding.sessions.action": "掃描 session",
 
-  "onboarding.reachable.title": "讓這台機器連得到",
-  "onboarding.reachable.body": "在你改它之前，節點只接受這台電腦自己的連線。挑一個自己網路上的位址，節點會用它重新啟動。",
-  "onboarding.reachable.bodyLoading": "正在等節點回答它聽在哪裡…",
-  "onboarding.reachable.bodyNoAddress": "這台機器沒有可以提供的私有網路位址。請到節點設定裡自己填對外位址。",
-  "onboarding.reachable.bodyDone": "別台機器可以用 {address} 連到這一台。",
-  "onboarding.reachable.bodyNodeDown": "節點沒有回應，說不出它聽在哪裡。請先在步驟 1 把它啟動。",
-  "onboarding.reachable.bodyUnreadable": "讀不到節點設定，所以這裡暫時沒有東西可以給你按。",
-  "onboarding.reachable.retry": "重新讀取一次",
-  "onboarding.reachable.formDirty": "節點設定還有沒存的改動。請先在那頁按「儲存」或「重新讀取」，再回來按這裡。",
-  "onboarding.reachable.formDirtyFields": "沒存的是：{fields}。",
-  "onboarding.reachable.openSettings": "打開節點設定",
 
   "onboarding.pair.title": "和另一台機器配對",
-  "onboarding.pair.body": "配對是把這台機器和另一台接起來：你們各自確認兩個螢幕上是同一組指紋。它本身不會分享任何東西：每台機器要公開什麼，仍然是一個一個 session 分開決定的。",
+  "onboarding.pair.body": "配對把兩台機器綁在一起：兩邊各自確認螢幕上的指紋一樣。抽屜裡的第一步會先確認這台機器連得到，第二步找對方，第三步比對指紋。配對本身不分享任何東西——公開哪些 session 是另一個決定，一個一個設。",
   "onboarding.pair.action": "打開配對",
 
   "onboarding.publish.title": "公開一個 session",

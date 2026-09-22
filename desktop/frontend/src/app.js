@@ -117,10 +117,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // about that card is computed from state on every render, so a step that
     // regresses comes back — but a card the owner has closed stays closed.
     ui: { backdrop: true, motion: false, lang: "", onboardingDismissed: false },
-    // Whether the last rescan came back with nothing. "No sessions yet" and
-    // "we looked and there are none" are different sentences, and only the
-    // second one is worth spending a paragraph on where AgentHub looks.
-    discoveredNothing: false,
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -130,9 +126,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nodeSettings null, and without this the panel would re-read on every
     // repaint.
     nodeSettingsTried: false,
-    // Set when a read came back without a baseline, so the checklist offers a
-    // retry instead of a spinner nothing will ever end.
-    nodeSettingsUnreadable: false,
     nodePrivateSuggested: "",
     nodeReachable: false,
     serviceFormTouched: false,
@@ -938,108 +931,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       });
     }
 
-    // 2. Only once a read has reached the node. An empty table on a read that
-    //    failed says nothing about what is on this disk.
-    if (state.loadedOnce) {
-      const done = state.sessions.length > 0;
-      steps.push({
-        id: "sessions",
-        title: t("onboarding.sessions.title"),
-        // A scan that came back with nothing turns the step into the
-        // explanation it needs: a second press of the same button would find
-        // the same nothing.
-        body: !done && state.discoveredNothing
-          ? t("onboarding.sessions.bodyNoneFound")
-          : t("onboarding.sessions.body"),
-        done,
-        actions: done ? [] : [{
-          label: t("onboarding.sessions.action"),
-          primary: true,
-          run: () => discoverSessions().catch(() => {}),
-        }],
-      });
-    }
-
-    // 3. Reachability, which is the step with a switch behind it.
-    //
-    //    The buttons are built by peerListenRepairs() and executed by
-    //    applyPeerListenRepair(), the same pair the node settings panel uses.
-    //    That is deliberate on two counts. peerListenRepairs names "allow LAN
-    //    connections" in the label exactly when clicking would turn it on
-    //    (docs/ui-contract.md §7.8 rule 4: this window never ticks that box
-    //    behind anybody), and applyPeerListenRepair goes through the form, so
-    //    the save is validated, restarted and checked for having stuck by the
-    //    one path that already does all three.
-    const here = pairHereState(state.pairing?.state);
-    const reachable = { id: "reachable", title: t("onboarding.reachable.title"), done: here.reachable === true, actions: [] };
-    if (!state.nodeReachable) {
-      // Nothing here can be asked of a node that is not answering, and the
-      // read that would fill this step is not even attempted while it is down.
-      // Saying so beats "Waiting for the node to say…" forever, which is what
-      // this used to show: a sentence that reads as a hang, under a step that
-      // has no button and no timeout.
-      reachable.done = false;
-      reachable.body = t("onboarding.reachable.bodyNodeDown");
-    } else if (reachable.done) {
-      reachable.body = t("onboarding.reachable.bodyDone", { address: here.address });
-    } else if (state.nodeSettingsUnreadable) {
-      // One failed read used to wedge this step on "Waiting…" for the life of
-      // the window, because the once-per-window latch was set before the await
-      // and never cleared. Now the failure is said, and the retry clears the
-      // latch so the next render asks again.
-      reachable.body = t("onboarding.reachable.bodyUnreadable");
-      reachable.actions = [{
-        label: t("onboarding.reachable.retry"),
-        primary: true,
-        run: () => {
-          // Only the failure is cleared here. The once-per-window latch was
-          // already released by the read that failed — that is the fix for the
-          // wedge — so this button has one thing to undo, not two.
-          state.nodeSettingsUnreadable = false;
-          renderOnboarding();
-        },
-      }];
-    } else if (!state.nodeSettings) {
-      // applyPeerListenRepair fills the real form, so the form has to hold the
-      // node's current answer before any of this is offered.
-      reachable.body = t("onboarding.reachable.bodyLoading");
-    } else {
-      const current = state.nodeSettings.saved?.peerListen
-        || state.nodeSettings.settings?.peerListen
-        || LOOPBACK_LISTEN;
-      const options = peerListenRepairs(
-        { reason: "loopback", address: current },
-        state.nodeAddresses ?? { list: [], failure: "" },
-        // The node's SAVED answer, never the form's checkbox. This card lives
-        // on the local view; the checkbox lives in the settings form two tabs
-        // away and is live-editable, so an unsaved tick over there dropped the
-        // "and allow LAN connections" clause from this label while the click
-        // still turned it on — the silent tick §7.8 rule 4 exists to forbid.
-        // (renderPeerListenProblem may read the checkbox: it renders inside
-        // that form, where what is on screen is what a press would send.)
-        Boolean(state.nodeSettings.saved?.allowLan),
-      );
-      // peerListenRepairs always ends with "stay local only", which is this
-      // step's skip: an owner who has decided to be off the network needs a way
-      // to say so, or the card is the thing they learn to ignore.
-      const offersAddress = options.some((option) => option.peerListen !== "");
-      reachable.body = offersAddress ? t("onboarding.reachable.body") : t("onboarding.reachable.bodyNoAddress");
-      reachable.actions = options.map((option) => ({
-        label: option.label,
-        primary: option.primary,
-        run: () => applyPeerListenRepairFromCard(option).catch(() => {}),
-      }));
-      if (!offersAddress) {
-        reachable.actions.unshift({
-          label: t("onboarding.reachable.openSettings"),
-          primary: true,
-          run: () => goToNodeSettings(),
-        });
-      }
-    }
-    steps.push(reachable);
-
-    // 4. A doorway to the drawer, which explains the rest itself.
+    // 2. A doorway to the drawer, which explains the rest itself — including
+    //    「這台機器能不能被連到」, which used to be a step of its own here. It was
+    //    a step about a listening address, two views from the drawer where the
+    //    address is needed and read out, and the repair it offered is now in
+    //    that drawer's own first step.
     const paired = state.nodes.length > 0;
     steps.push({
       id: "pair",
@@ -1049,10 +945,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       actions: paired ? [] : [{ label: t("onboarding.pair.action"), primary: true, run: () => goToPairing() }],
     });
 
-    // 5. Text, and a button that points rather than acts. Opening the audience
-    //    dialog with nothing selected is a dead dialog — it resets all four
-    //    flags every time on purpose (docs/ui-contract.md §3.5) — so this one
-    //    puts the keyboard on the checkbox that starts a selection.
+    // 3. Text, and a button that points rather than acts. Opening the audience
+    //    dialog with nothing selected is a dead dialog, so this one puts the
+    //    keyboard on the checkbox that starts a selection.
     const published = (state.counts.all_paired ?? 0) + (state.counts.selected ?? 0) > 0;
     steps.push({
       id: "publish",
@@ -1086,7 +981,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // milliseconds, every time — nobody ever read it. So the flag the hide reads
   // is set by the next load() instead, which is fifteen seconds away.
   let onboardingFarewellSpent = false;
-  let onboardingSettingsAsked = false;
 
   // Called by load(), once per tick, before it renders. A farewell put up during
   // the previous tick has been on screen for that whole tick by now, so this
@@ -1159,24 +1053,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     section.classList.toggle("hidden", !show);
     if (!show) return;
-    // The reachability step offers buttons that fill the node settings form, so
-    // the form has to hold the node's answer first. Asked once per window: a
-    // read on every render would re-fire on every background tick.
-    if (!state.nodeSettings && !onboardingSettingsAsked && !state.nodeSettingsUnreadable
-      && state.nodeReachable) {
-      onboardingSettingsAsked = true;
-      // A read that did not produce a baseline clears the latch, so the retry
-      // button this puts on the step can ask again. loadNodeSettings resolves
-      // either way — it turns a rejection into view.error, which applyNodeSettings
-      // reports without replacing state.nodeSettings — so the check is whether
-      // the baseline is there, not whether the promise settled.
-      const done = () => {
-        state.nodeSettingsUnreadable = !state.nodeSettings;
-        if (state.nodeSettingsUnreadable) onboardingSettingsAsked = false;
-        renderOnboarding();
-      };
-      loadNodeSettings().then(done, done);
-    }
+    // No node-settings read here any more. The step that needed one — the
+    // listening address — is the pairing drawer's own first step now, and that
+    // drawer asks for itself when it opens.
     // Said out loud on the one render that shows every tick. Ticks alone do not
     // explain why the card is about to disappear.
     el("onboarding-alldone").classList.toggle("hidden", !onboardingAllDoneShown);
@@ -1517,6 +1396,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // moment before the change.
   let overviewRequest = 0;
   let overviewApplied = 0;
+  // Set before the scan rather than after it, so a slow Discover cannot be
+  // started twice by the fifteen-second tick landing in the middle of it.
+  let autoDiscoverTried = false;
 
   // Anything the owner is in the middle of that a repainted table would pull out
   // from under them: a write in flight, rows selected that a rescan could drop,
@@ -1655,6 +1537,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     state.nodeReachable = reachable;
     loadService().catch(() => {});
+
+    // The scan that used to be step 2 of the checklist.
+    //
+    // 「Press this button once」 is not a step. It is the one thing this window
+    // can do on its own the moment it has a node to ask, and a first launch is
+    // exactly the case: the table is empty because nobody has scanned yet, not
+    // because there is nothing on the disk. Once per window, on the first read
+    // that actually REACHED the node — an empty list from a read that did not
+    // is not a fact about this machine (#114) — and the result goes to the
+    // banner discoverSessions already writes, which now also says where
+    // AgentHub looks when it finds nothing.
+    if (reachable && !autoDiscoverTried && state.sessions.length === 0) {
+      autoDiscoverTried = true;
+      discoverSessions().catch(() => {});
+    }
 
     // The badges, read once behind the list rather than once per row (#146).
     //
@@ -4394,13 +4291,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return withBusy(t("app.rescan"), async () => {
       const counts = await api.Discover();
       await load();
-      // Kept so the checklist can tell "nothing found yet" from "we looked and
-      // there is nothing here", which are different things to say.
-      state.discoveredNothing = (counts.total ?? 0) === 0;
       const skipped = counts.skipped ?? 0;
+      const total = counts.total ?? 0;
+      // A scan that found nothing carries the explanation that used to be a
+      // checklist step: AgentHub reads what those two tools leave on disk, so
+      // an empty answer is a fact about this machine's disk rather than about
+      // AgentHub. Said once, here, where the answer is.
       banner(t("app.rescanned", {
         claude: counts.claude, codex: counts.codex, total: counts.total,
-      }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : ""), skipped === 0);
+      }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : "")
+        + (total === 0 ? t("app.rescanNothingFound") : ""), skipped === 0 && total > 0);
     });
   }
 
@@ -4882,11 +4782,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await saveNodeSettings();
   }
 
-  // applyPeerListenRepairFromCard is the checklist's way into the same repair.
+  // applyPeerListenRepairFromCard is the pairing drawer's way into the same
+  // repair. (It was the checklist's; that step is now the drawer's first one.)
   //
   // applyPeerListenRepair fills the settings form and presses save, which is
   // right when the button is IN that form: what is on screen is what the owner
-  // means to send. From the checklist it is not — the card is on another view,
+  // means to send. From the drawer it is not — that panel is elsewhere,
   // and the form may be holding edits nobody has saved. Pressing save there
   // would commit a private range or an auto-wake tick the owner was still
   // thinking about, as a side effect of a button about a listening address.
@@ -4902,8 +4803,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Named, not just counted. "There are unsaved changes" over a form the
       // owner does not remember editing is a dead end; the field's own label is
       // what takes them to the thing to save or read again.
-      banner(t("onboarding.reachable.formDirty") + " "
-        + t("onboarding.reachable.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
+      banner(t("pair.formDirty") + " "
+        + t("pair.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
       goToNodeSettings();
       return;
     }
@@ -5692,7 +5593,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
-    renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
+    renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair, applyPeerListenRepairFromCard,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
     onboardingSteps, onboardingTriggered, renderOnboarding, spendOnboardingFarewell, goToService, goToPairing, discoverSessions,
