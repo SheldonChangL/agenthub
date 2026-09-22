@@ -534,18 +534,55 @@
           </div>
         </div>
 
-        <div class="sectionlabel"><span data-t="audience.whatHeading"></span> <span style="font-weight: 400; letter-spacing: 0" data-t="audience.whatHeadingNote"></span></div>
-        <div class="flags">
-          <label><input type="checkbox" id="audience-cwd" /><span><b data-t="audience.flagCwd"></b><em data-t="audience.flagCwdWhy"></em></span></label>
-          <label><input type="checkbox" id="audience-messages" /><span><b data-t="audience.flagMessages"></b><em data-t="audience.flagMessagesWhy"></em></span></label>
-          <label><input type="checkbox" id="audience-outbound" /><span><b data-t="audience.flagOutbound"></b><em data-t="audience.flagOutboundWhy"></em></span></label>
-          <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b data-t="audience.flagAutoWake"></b><em data-t="audience.flagAutoWakeWhy"></em></span></label>
+        <!-- Three situations first, the eight combinations behind them second.
+             The four flags used to be the only way to answer "what may they
+             do", which meant reading four sentences and working out which
+             three of them are the one thing you meant. A preset writes the
+             boxes; touching a box unsets the preset and says so. -->
+        <div class="sectionlabel"><span data-t="audience.whatHeading"></span></div>
+        <div class="options" id="audience-presets">
+          <label class="option">
+            <input type="radio" name="audience-preset" value="view" checked />
+            <span>
+              <b data-t="audience.presetView"></b>
+              <em data-t="audience.presetViewWhy"></em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-preset" value="messages" />
+            <span>
+              <b data-t="audience.presetMessages"></b>
+              <em data-t="audience.presetMessagesWhy"></em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-preset" value="wake" id="audience-preset-wake" />
+            <span>
+              <b data-t="audience.presetWake"></b>
+              <em data-t="audience.presetWakeWhy"></em>
+            </span>
+          </label>
         </div>
-        <!-- Why the box above may do nothing. Filled in by the dialog from
-             the node's own -auto-wake flag and the providers of whatever is
-             selected; the box itself is never disabled, because an owner may
-             legitimately set this up before the node is restarted. -->
-        <div id="audience-autowake-note"></div>
+        <!-- Says the combination is a custom one when the boxes below hold
+             something no preset names, and carries the reset note whenever
+             more than one session is selected. -->
+        <p id="audience-preset-note" class="muted"></p>
+        <details class="audienceadvanced" id="audience-advanced">
+          <summary data-t="audience.advancedSummary"></summary>
+          <div class="flags">
+            <label><input type="checkbox" id="audience-cwd" /><span><b data-t="audience.flagCwd"></b><em data-t="audience.flagCwdWhy"></em></span></label>
+            <label><input type="checkbox" id="audience-messages" /><span><b data-t="audience.flagMessages"></b><em data-t="audience.flagMessagesWhy"></em></span></label>
+            <label><input type="checkbox" id="audience-outbound" /><span><b data-t="audience.flagOutbound"></b><em data-t="audience.flagOutboundWhy"></em></span></label>
+            <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b data-t="audience.flagAutoWake"></b><em data-t="audience.flagAutoWakeWhy"></em></span></label>
+          </div>
+          <!-- Why the box above may do nothing. Filled in by the dialog from
+               the node's own -auto-wake flag and the providers of whatever is
+               selected. The box is disabled only for a selection that is all
+               Claude Code, where the push was measured never to be injected
+               and no restart changes that; a node started without -auto-wake
+               leaves it live, because an owner may set a session up first. -->
+          <div id="audience-autowake-note"></div>
+        </details>
 
         <div class="modal-actions">
           <span id="audience-note" class="muted" data-t="audience.rescanNote"></span>
