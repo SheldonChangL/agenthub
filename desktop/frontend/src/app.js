@@ -796,7 +796,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function goToPairing() {
     state.view = "network";
     render();
-    openPairingDrawer();
+    openPairingDrawer().catch(() => {});
   }
 
   // Which of the four situations this card exists for the window is in. The
@@ -1323,13 +1323,85 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   /* ---------------- pairing drawer ---------------- */
 
-  function openPairingDrawer() {
+  // Opening the drawer opens the window, and dismissing it closes one with
+  // nothing pending.
+  //
+  // The window used to be two buttons inside the drawer whose entire purpose is
+  // that the window be open — so the commonest first run was: press 「配對另一
+  // 台機器…」, read a panel that says nobody can get in, and not notice that the
+  // thing it describes has to be started by a second button further down. The
+  // node still owns the window's duration and its expiry; this only removes the
+  // step of asking for one.
+  async function openPairingDrawer() {
     el("pairing-modal").classList.remove("hidden");
-    loadPairing().catch(() => {});
     loadPairRequests().catch(() => {});
+    await loadPairing();
+    // Step 1 offers the settings form's own repair buttons, and
+    // applyPeerListenRepair fills that real form, so the node's answer has to
+    // be in it before any of them can be pressed.
+    ensurePairingNodeSettings();
+    await openPairingWindowIfNeeded();
   }
+
+  async function openPairingWindowIfNeeded() {
+    const pairing = state.pairing;
+    if (!pairing || state.busy) return;
+    // A node that will not answer the window endpoints is not asked. The
+    // fallback is for an answer from before that field existed.
+    const windowAvailable = pairing.windowAvailable ?? (pairing.availability === "on");
+    if (!windowAvailable || pairing.state?.open) return;
+    try {
+      // No duration: the node's own default is the one the node documents.
+      await api.OpenPairing(0);
+    } catch (error) {
+      banner(pairErrorMessage(error));
+      return;
+    }
+    await loadPairing();
+  }
+
+  // closePairingDrawer only hides it. The window is left alone, because two
+  // callers — the remedy button that goes to node settings, and the one that
+  // opens the manual form — are steps in the middle of pairing rather than the
+  // end of it.
   function closePairingDrawer() {
     el("pairing-modal").classList.add("hidden");
+  }
+
+  // dismissPairingDrawer is the owner saying they are done, and it closes the
+  // window too — unless a row is mid-exchange. Somebody at another keyboard is
+  // waiting on those, and a window shut under them is the one disappearance the
+  // other machine actually feels.
+  async function dismissPairingDrawer() {
+    const pending = (state.pairRequests ?? []).some(
+      (request) => request.state === "pending" || request.state === "awaiting-confirm");
+    closePairingDrawer();
+    if (pending || state.busy || !state.pairing?.state?.open) return;
+    try {
+      await api.ClosePairing();
+    } catch {
+      // The node closes the window itself when its time runs out, so a refusal
+      // here costs a few minutes of announcing rather than anything an owner
+      // has to act on — and the drawer it would be reported in is gone.
+      return;
+    }
+    await loadPairing();
+  }
+
+  // Asked once while the drawer is open, for the same reason the checklist asks
+  // once per window: a read on every render would re-fire on every tick.
+  let pairingSettingsAsked = false;
+  function ensurePairingNodeSettings() {
+    if (state.nodeSettings || pairingSettingsAsked || !state.nodeReachable) return;
+    pairingSettingsAsked = true;
+    const done = () => {
+      // A read that produced no baseline releases the latch, so the next time
+      // the drawer is opened it asks again rather than offering nothing for the
+      // life of the window.
+      if (!state.nodeSettings) pairingSettingsAsked = false;
+      renderPairHere();
+    };
+    loadNodeSettings().then(done, done);
   }
 
   // pairingDrawerOpen is what the two-second poll asks. The exchange's rows are
@@ -2243,9 +2315,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // than in front of it: the remedy is the act, and the node's words are
       // the detail that says which listener it is about.
       if (here.problem) note.append(element("div", "muted", here.problem));
-      const fix = element("button", "primary", PAIR_TEXT.hereFix);
+      // The repair itself, here, rather than a button that takes the owner to
+      // the settings page to find it. These are peerListenRepairs' own options,
+      // so the label names 「允許區網連線」 exactly when pressing would turn it
+      // on (docs/ui-contract.md §7.8 rule 4) and the save goes through the form
+      // — one validation, one restart, one "did it stick" check.
+      const actions = element("div", "repairactions");
+      const options = pairHereRepairs();
+      for (const option of options) {
+        const button = element("button", option.primary ? "primary" : "ghost", option.label);
+        button.disabled = state.busy;
+        button.onclick = () => applyPeerListenRepairFromCard(option).catch(() => {});
+        actions.append(button);
+      }
+      // Always a way through to the form. The options above come from the
+      // node's own answer, and a machine with no private address of its own —
+      // or one whose settings could not be read — has none to offer.
+      const fix = element("button", options.length === 0 ? "primary" : "ghost", PAIR_TEXT.hereFix);
       fix.onclick = () => goToNodeSettings();
-      note.append(fix);
+      actions.append(fix);
+      note.append(actions);
       el("copy-pair-address").disabled = true;
       return;
     }
@@ -2256,6 +2345,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // that announces it is what to fall back on when the other machine's list
     // stays empty anyway.
     note.textContent = window_.notice ? PAIR_TEXT.hereNote : PAIR_TEXT.hereNoteAnnouncing;
+  }
+
+  // pairHereRepairs is peerListenRepairs' list, minus its last entry.
+  //
+  // That entry is 「就先只在本機」, which is the checklist's skip: an owner who
+  // has decided to stay off the network needs a way to say so there. Here it is
+  // the opposite of what was asked for — this block exists because the other
+  // machine cannot reach this one — so offering it would be offering to do
+  // nothing under the heading that says nothing works.
+  function pairHereRepairs() {
+    if (!state.nodeSettings) return [];
+    const current = state.nodeSettings.saved?.peerListen
+      || state.nodeSettings.settings?.peerListen
+      || LOOPBACK_LISTEN;
+    return peerListenRepairs(
+      { reason: "loopback", address: current },
+      state.nodeAddresses ?? { list: [], failure: "" },
+      // The node's SAVED answer, never the settings form's live checkbox: that
+      // form is two tabs away and editable, and an unsaved tick over there
+      // would drop the clause from a label whose click still turns it on.
+      Boolean(state.nodeSettings.saved?.allowLan),
+    ).filter((option) => option.peerListen !== "");
   }
 
   // copyPairAddress hands that address to the clipboard, and says so when the
@@ -2354,6 +2465,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       headline.textContent = t("pair.readingState");
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       note.textContent = "";
       return;
     }
@@ -2379,6 +2491,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = t("pair.notLookingNote");
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       return;
     }
     if (!windowAvailable) {
@@ -2387,6 +2500,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = pairing.error || "";
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       return;
     }
 
@@ -2400,6 +2514,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const canAnnounce = (announcing.announceableAddresses ?? 0) > 0;
     on.disabled = state.busy;
     off.disabled = state.busy || !window_.open;
+    showPairingWindowButtons(Boolean(window_.open));
 
     if (window_.open) {
       const left = pairingRemaining();
@@ -2449,6 +2564,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       headline.textContent = PAIR_TEXT.windowClosed;
       note.replaceChildren(...broadcastWarning(t("pair.leadOnOpen"), t("pair.tailTradeoff")));
     }
+  }
+
+  // showPairingWindowButtons leaves the one button that is worth pressing.
+  //
+  // Both were always on screen, side by side, in a drawer that opens the window
+  // for you: one of them was therefore always the one that does nothing, and
+  // which one changed with a state nobody was reading. The open button is the
+  // way back from a window closed by hand or expired; the close button is the
+  // way to stop announcing without leaving the drawer. Neither is ever removed
+  // from the page — the disabled state above is what the checks read, and a
+  // button that vanishes cannot be reported as unavailable.
+  function showPairingWindowButtons(open) {
+    el("btn-pairing-on").classList.toggle("hidden", open);
+    el("btn-pairing-off").classList.toggle("hidden", !open);
   }
 
   // announceLine says what the announce loop actually managed to do.
@@ -4091,7 +4220,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // machine for them sat behind a secondary link. The form is still one click
   // away, from the drawer's own footer, which is where the sentence explaining
   // when to use it already is.
-  el("btn-pair").onclick = openPairingDrawer;
+  el("btn-pair").onclick = () => openPairingDrawer().catch(() => {});
   el("pair-close").onclick = closePairModal;
   el("copy-local-public-key").onclick = () => copyLocalPublicKey();
   el("pair-modal").onclick = (event) => {
@@ -5307,9 +5436,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     render();
   };
 
-  el("pairing-close").onclick = closePairingDrawer;
+  el("pairing-close").onclick = () => dismissPairingDrawer().catch(() => {});
   el("pairing-modal").onclick = (event) => {
-    if (event.target === el("pairing-modal")) closePairingDrawer();
+    if (event.target === el("pairing-modal")) dismissPairingDrawer().catch(() => {});
   };
   el("btn-pair-manual").onclick = () => {
     closePairingDrawer();
@@ -5418,7 +5547,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
