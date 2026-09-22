@@ -4074,15 +4074,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!state.nodeReachable && !status.installed && !state.serviceFormTouched) openServiceForm().catch(() => {});
   }
 
-  // renderServiceRepair offers the one action that fixes a unit which overrides
-  // this window.
+  // renderServiceRepair states the one fact this panel knows and the settings
+  // form cannot work out for itself.
   //
   // A unit that passes a node setting on every start wins over everything the
-  // settings page saves, and the node's own log is the only place that says so.
-  // An owner reading a form whose writes do nothing has no way to reach that
-  // conclusion, so the panel says it and offers the repair: register the
-  // service again with nothing but the database path, which is what this app
-  // installs today.
+  // settings page saves, and the node's own log is the only other place that
+  // says so. It is a statement here and no longer a button: the repair reinstalls
+  // the service, which is not a thing to do while reading a status line, and the
+  // moment it matters is the moment a write is about to be undone. That moment
+  // is Save on the node settings form, which is where it is now asked.
   function renderServiceRepair(status) {
     const repair = el("service-repair");
     repair.replaceChildren();
@@ -4090,18 +4090,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!status.installed || pinned.length === 0) return;
     repair.append(
       element("div", "stale",
-        t("service.pinnedSettings", { pinned: pinned.join(t("candidate.flagJoin")) })),
-      element("div", "muted",
-        status.dbPathKnown && status.dbPath
-          ? t("service.unpinExplainsDb", { path: status.dbPath })
-          : t("service.unpinExplains")),
-    );
-    const button = document.createElement("button");
-    button.id = "service-unpin";
-    button.className = "primary";
-    button.textContent = t("service.unpin");
-    button.onclick = () => reinstallWithoutPinnedSettings(status);
-    repair.append(button);
+        t("service.pinnedSettings", { pinned: pinned.join(t("candidate.flagJoin")) })));
   }
 
   // reinstallWithoutPinnedSettings re-registers the service with the database it
@@ -4110,15 +4099,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The database path is carried over deliberately and is the whole reason this
   // is not just "press install": a reinstall that dropped it would put the node
   // on a different database, which is a different identity and no pairings.
+  //
+  // Answers whether it ran, so the save that asked for it knows whether to go
+  // ahead: an owner who says no to re-registering has not agreed to a write
+  // that a unit flag would silently undo a second later.
   async function reinstallWithoutPinnedSettings(status) {
     if (status.installed && !status.dbPathKnown) {
       banner(t("service.unpinNeedsDbPath"));
-      return;
+      return false;
     }
     const ok = confirm(t("service.unpinConfirm", {
       path: status.dbPath || t("service.nodeDefaultLocation"),
     }));
-    if (!ok) return;
+    if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
     await withBusy(t("service.busyReregister"), async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
@@ -4127,6 +4120,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await load();
       banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
+    return true;
   }
 
   async function openServiceForm() {
@@ -5235,6 +5229,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (Object.keys(patch).length === 0) {
       banner(t("nodeSettings.noChange"));
       return;
+    }
+    // A unit that carries start-up flags is given them on every start and the
+    // node writes back what it was given, so a value saved here is replaced a
+    // second or two later and nothing in the node's answer says why — the
+    // sources column reads "flag" for a value that is genuinely stored.
+    //
+    // This used to be a warning and a button in the background service section,
+    // two panels away from the form whose writes it undoes. Asked here instead,
+    // at the moment it decides the outcome, and before the write rather than
+    // after it: the re-registered unit restarts the node, so the values saved
+    // below are read by a process that is no longer given anything.
+    //
+    // Outside withBusy because re-registering has its own; a refusal stops the
+    // save, since an owner who will not clear the unit has not agreed to a
+    // write the unit will quietly undo.
+    const pinned = state.service?.pinnedSettings ?? [];
+    if (state.service?.installed && pinned.length > 0) {
+      if (!(await reinstallWithoutPinnedSettings(state.service))) return;
     }
     await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
