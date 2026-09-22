@@ -171,7 +171,12 @@
               <div class="service-head">
                 <div id="service-line" class="line" data-t="service.lineLoading"></div>
                 <div class="headactions">
-                  <button id="service-refresh" class="ghost" data-t="service.refresh"></button>
+                  <!-- Hidden: the status is re-read after every Overview and
+                       after every write here, so this button asked for
+                       something that had just happened. The id stays because
+                       render() disables it with the rest and the handler is
+                       what every other path calls. -->
+                  <button id="service-refresh" class="ghost hidden" data-t="service.refresh"></button>
                   <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
                   <button id="service-open" class="ghost" data-t="service.install"></button>
                   <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
@@ -179,9 +184,12 @@
               </div>
               <div id="service-repair"></div>
               <div id="service-form" class="card hidden">
-                <div class="cardhead"><span data-t="service.install2"></span><span class="muted" data-t="service.formHeadNote"></span></div>
+                <div class="cardhead"><span data-t="service.install2"></span></div>
                 <div class="cardbody serviceform">
-                  <p class="muted" style="margin: 0" data-t="service.formIntro"></p>
+                  <!-- One paragraph, not four notes around one field: what a
+                       reinstall replaces, what the node keeps for itself, and
+                       where the display name comes from. -->
+                  <p class="muted" style="margin: 0" data-t="service.formNote"></p>
                   <div class="fieldgrid">
                     <label>
                       <span class="fieldlabel"><span data-t="service.dbLabel"></span><small data-t="service.dbHint"></small></span>
@@ -191,7 +199,7 @@
                   <div id="service-db-note" class="muted"></div>
                 </div>
                 <div class="cardfoot">
-                  <span class="muted"><span data-t="service.displayNameNoteBefore"></span><code>--display-name</code><span data-t="service.displayNameNoteAfter"></span></span>
+                  <span></span>
                   <span>
                     <button id="service-cancel" class="ghost" data-t="common.cancel"></button>
                     <button id="service-install" class="primary" data-t="service.install2"></button>

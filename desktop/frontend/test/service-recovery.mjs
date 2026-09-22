@@ -146,8 +146,11 @@ if (!text("banner").includes("對外位址沒有綁起來")) {
 }
 
 // 5. A unit that pins node settings overrides this window on every start. The
-//    panel has to say so — the node's log was the only place that did — and
-//    offer the repair.
+//    panel has to say so — the node's log was the only place that did. It says
+//    it and no longer offers the repair here: re-registering the service is not
+//    a thing to do while reading a status line, and the moment it decides
+//    anything is the moment a write is about to be undone, which is Save on the
+//    node settings form (section 6b).
 app.state.service = {
   supported: true, installed: true, running: true, pid: 7, unitPath: "/u", logHint: "/log",
   dbPath: "/Users/me/agenthub/data/agenthub.db", dbPathKnown: true,
@@ -158,13 +161,49 @@ if (!text("service-repair").includes("peer-listen")) {
   failures.push(`a unit that pins settings was not reported: ${text("service-repair")}`);
 }
 
+if (text("service-repair").includes("自己管")) {
+  failures.push("the service panel still carries the repair button; it belongs to the save that it decides");
+}
+
 // 6. And the repair keeps the database it is already using. A reinstall that
 //    dropped it is what gave this machine a new identity.
 installed = [];
 confirmed = true;
-await app.reinstallWithoutPinnedSettings(app.state.service);
+if (await app.reinstallWithoutPinnedSettings(app.state.service) !== true) {
+  failures.push("re-registering did not report that it ran, so a save cannot tell whether to go ahead");
+}
 if (installed.length !== 1 || installed[0].dbPath !== "/Users/me/agenthub/data/agenthub.db") {
   failures.push(`re-registering sent ${JSON.stringify(installed)}, want the database already in use`);
+}
+
+// 6b. Saving a node setting while the unit carries start-up flags clears the
+//     unit first, and asks before it does. The flag is given on every start and
+//     the node stores what it was given, so without this the save is undone a
+//     second or two later and the node's answer says nothing about why.
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+installed = [];
+saved = [];
+confirmations = [];
+confirmed = false;
+await app.saveNodeSettings();
+if (confirmations.length !== 1) {
+  failures.push(`saving against a pinned unit asked ${confirmations.length} times, want once`);
+}
+if (installed.length !== 0 || saved.length !== 0) {
+  failures.push("a refused confirmation re-registered or saved anyway");
+}
+
+installed = [];
+saved = [];
+confirmations = [];
+confirmed = true;
+await app.saveNodeSettings();
+if (installed.length !== 1) {
+  failures.push(`an accepted save re-registered ${installed.length} times, want once`);
+}
+if (saved.length !== 1 || saved[0].discover !== false) {
+  failures.push(`the save that followed sent ${JSON.stringify(saved)}, want the owner's own change`);
 }
 
 // 7. The install form never proposes a blank database path for an installed
