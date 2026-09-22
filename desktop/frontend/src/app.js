@@ -3226,32 +3226,108 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-count").textContent = plural(state.selected.size, "audience.count");
   }
 
+  // The four flag boxes, in the order the dialog lists them.
+  const AUDIENCE_FLAG_IDS = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
+
+  // The three situations the presets name, as the flags they write.
+  //
+  // Everything not named here is false. A preset is an answer to "what may they
+  // do", and an answer that leaves two of the four boxes wherever the last one
+  // left them is not one.
+  const AUDIENCE_PRESETS = {
+    view: { exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
+    messages: { exportCwd: false, acceptMessages: true, allowOutbound: false, autoWake: false },
+    wake: { exportCwd: false, acceptMessages: true, allowOutbound: false, autoWake: true },
+  };
+
+  function audienceFlagsOnForm() {
+    return {
+      exportCwd: el("audience-cwd").checked,
+      acceptMessages: el("audience-messages").checked,
+      allowOutbound: el("audience-outbound").checked,
+      autoWake: el("audience-autowake").checked,
+    };
+  }
+
+  // presetForFlags names the combination on screen, or "" for one no preset
+  // covers — which is what the advanced section is for, and what the line under
+  // the presets says out loud.
+  function presetForFlags(flags) {
+    for (const [name, wanted] of Object.entries(AUDIENCE_PRESETS)) {
+      if (Object.keys(wanted).every((key) => Boolean(flags[key]) === wanted[key])) return name;
+    }
+    return "";
+  }
+
+  function applyAudiencePreset(name) {
+    const wanted = AUDIENCE_PRESETS[name];
+    if (!wanted) return;
+    el("audience-cwd").checked = wanted.exportCwd;
+    el("audience-messages").checked = wanted.acceptMessages;
+    el("audience-outbound").checked = wanted.allowOutbound;
+    el("audience-autowake").checked = wanted.autoWake;
+    syncAudiencePreset();
+  }
+
+  // syncAudiencePreset points the radios at whatever the boxes say, and says so
+  // in words when nothing fits. It writes no box: the presets write the boxes,
+  // the boxes never write each other.
+  function syncAudiencePreset() {
+    const name = presetForFlags(audienceFlagsOnForm());
+    for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
+      radio.checked = radio.value === name;
+    }
+    const note = el("audience-preset-note");
+    const lines = [];
+    if (name === "") lines.push(t("audience.presetCustom"));
+    // Only on a selection of more than one. A single session opens showing its
+    // own settings, so the sentence about them being reset is untrue there —
+    // and it was the sentence the whole dialog was read through.
+    if (state.selected.size > 1) lines.push(t("audience.resetNote"));
+    note.textContent = lines.join(" ");
+  }
+
   function openAudienceModal() {
     renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
     renderAudienceNodeList();
-    // The mode starts at 不公開 every time, like the flags: a mode left over from
-    // the last selection is a publication about to happen to a different one.
+
+    // One session opens showing what that session already is; several open at
+    // 不公開 with every flag off.
+    //
+    // The reset was there because the dialog applies to whatever is selected
+    // and reads its values from the boxes, so a value left over from the last
+    // time it was opened is a setting about to be applied to a different set of
+    // sessions — and one of these flags starts turns in an agent with nobody
+    // watching. That argument is about leftovers, and it is untouched: several
+    // sessions may disagree, and there is no honest way to show one state for
+    // many, so off stays the safe half of that disagreement. For exactly one
+    // session there is no disagreement and nothing left over — the values shown
+    // are that session's own, read from the overview — and blanking them meant
+    // that changing 「誰看得到」 silently withdrew every flag the session had.
+    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
+    const current = only?.audience ?? {};
+    const mode = only ? (current.mode ?? "none") : "none";
     for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
-      radio.checked = radio.value === "none";
+      radio.checked = radio.value === mode;
     }
-    // Every flag starts off, every time.
-    //
-    // The dialog applies to whatever is selected and reads its values from the
-    // boxes, so a box left ticked from the last time it was opened is a setting
-    // about to be applied to a different set of sessions. That was survivable
-    // while the flags only governed what could be read; one of them now starts
-    // turns in an agent with nobody watching, and inheriting that from a
-    // previous dialog is not something anyone would choose on purpose.
-    //
-    // Off rather than the current value: these apply to a selection, which may
-    // hold sessions that disagree, and there is no honest way to show one state
-    // for several. Off is the safe half of that disagreement.
-    for (const id of ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"]) {
-      el(id).checked = false;
+    if (only && mode === "selected") {
+      const granted = new Set(current.nodes ?? []);
+      for (const box of document.querySelectorAll("#audience-node-list input.audience-node-box")) {
+        box.checked = granted.has(box.value);
+        // renderAudienceNodeList paints the row from the box's own onchange, so
+        // a box ticked here has to say so itself.
+        box.onchange?.();
+      }
     }
+    el("audience-cwd").checked = Boolean(only && current.exportCwd);
+    el("audience-messages").checked = Boolean(only && current.acceptMessages);
+    el("audience-outbound").checked = Boolean(only && current.allowOutbound);
+    el("audience-autowake").checked = Boolean(only && current.autoWake);
+
     renderAutoWakeNote();
+    syncAudiencePreset();
     el("audience-modal").classList.remove("hidden");
     syncAudienceForm();
   }
@@ -3270,16 +3346,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function renderAutoWakeNote() {
     const note = el("audience-autowake-note");
     note.replaceChildren();
-    if (!state.nodeAutoWake) {
-      note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
-      return;
-    }
     // Which providers are selected decides which of the remaining obstacles
     // apply, and a mixed selection gets both sentences: the owner is about to
     // apply one setting to sessions that will behave differently.
     const providers = new Set(
       state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
     );
+    // A selection that is nothing but Claude Code is the one case where this
+    // box cannot work and no restart will change that: the push was measured
+    // arriving and never being injected (docs/channel-push-not-observed.md).
+    // So it is turned off here rather than explained — the argument for leaving
+    // it live is that an owner may set a session up before restarting the node,
+    // and there is nothing here to restart into.
+    const claudeOnly = providers.size === 1 && providers.has("claude");
+    el("audience-autowake").disabled = claudeOnly;
+    el("audience-preset-wake").disabled = claudeOnly;
+    if (claudeOnly) {
+      el("audience-autowake").checked = false;
+      note.append(element("div", "muted", t("audience.autoWakeClaude")));
+      return;
+    }
+    if (!state.nodeAutoWake) {
+      note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
+      return;
+    }
     if (providers.has("codex")) {
       note.append(element("div", "muted", t("audience.autoWakeCodex")));
     }
@@ -4276,6 +4366,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   };
   for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
     radio.onchange = syncAudienceForm;
+  }
+  // A preset writes the boxes; a box unsets the preset. Never the other way
+  // round, so nothing this dialog shows is a value it invented.
+  for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
+    radio.onchange = () => applyAudiencePreset(radio.value);
+  }
+  for (const id of AUDIENCE_FLAG_IDS) {
+    el(id).onchange = syncAudiencePreset;
   }
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
@@ -5421,7 +5519,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (state.inboxView) renderInbox(state.inboxView);
       renderOutbound();
     }
-    if (!el("audience-modal").classList.contains("hidden")) renderAudienceCount();
+    if (!el("audience-modal").classList.contains("hidden")) {
+      renderAudienceCount();
+      // Both are sentences this dialog derives rather than reads off a key, so
+      // paintStatic cannot reach them.
+      renderAutoWakeNote();
+      syncAudiencePreset();
+    }
     if (state.mcpSession) {
       el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
       renderMCPStatus(state.mcpStatus);
@@ -5565,7 +5669,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
-    openAudienceModal, renderAudienceCount, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
+    openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
+    syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
