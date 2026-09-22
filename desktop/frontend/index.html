@@ -165,12 +165,17 @@
               <strong data-t="service.introStrong"></strong><span data-t="service.introAfter"></span>
             </p>
             <div id="service-panel" class="hidden">
+              <!-- The status sentence and the buttons wrap onto two rows rather
+                   than the group being pushed past the card's edge, where its
+                   overflow cut the last label to one character. -->
               <div class="service-head">
                 <div id="service-line" class="line" data-t="service.lineLoading"></div>
-                <button id="service-refresh" class="ghost" data-t="service.refresh"></button>
-                <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
-                <button id="service-open" class="ghost" data-t="service.install"></button>
-                <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
+                <div class="headactions">
+                  <button id="service-refresh" class="ghost" data-t="service.refresh"></button>
+                  <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
+                  <button id="service-open" class="ghost" data-t="service.install"></button>
+                  <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
+                </div>
               </div>
               <div id="service-repair"></div>
               <div id="service-form" class="card hidden">
