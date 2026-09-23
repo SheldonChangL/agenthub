@@ -388,6 +388,7 @@ export const TEXT = {
   "pair.announceLast": "Last broadcast: {when}",
   "pair.announceNeverYet": "The first broadcast has not gone out yet.",
 
+  "candidate.notice.candidates_unverified": "Every field here was chosen by whoever sent the packet, on a network anyone can write to. Nothing in this list has been verified and appearing in it grants nothing. The fingerprint shown is the one announced: use it to find the right machine, never as proof of which machine it is. What settles that is comparing the fingerprint on both machines when pairing.",
   "candidate.notLooking": "This machine is not looking, so nothing appears here, no matter who else on the segment is broadcasting.",
   "candidate.stateUnreadable": "The pairing state could not be read, so this list cannot be trusted either and nothing is shown.",
   "candidate.listUnreadable": "The candidate list could not be read, so nothing is shown here. That is a local read problem, not evidence that nobody is broadcasting.",

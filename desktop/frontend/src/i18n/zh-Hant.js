@@ -383,6 +383,7 @@ export const TEXT = {
   "pair.announceLast": "最後一次廣播：{when}",
   "pair.announceNeverYet": "還沒有送出第一次廣播。",
 
+  "candidate.notice.candidates_unverified": "這裡的每個欄位都是發出封包的人自己填的，而這個網段誰都能寫。清單裡沒有任何東西經過驗證，出現在清單上也不授予任何權限。顯示的指紋是對方宣告的：用它找出正確的機器，但絕不能當成它是哪台機器的證明。能確定這件事的，是配對時在兩台機器上比對指紋。",
   "candidate.notLooking": "這台機器沒有在看，所以這裡不會有任何內容——不論同網段有誰在廣播。",
   "candidate.stateUnreadable": "配對狀態讀不到，所以這份清單也不可信，這裡不顯示任何內容。",
   "candidate.listUnreadable": "無法取得候選清單，所以這裡不顯示任何內容。這是本機的讀取問題，不代表沒有人在廣播。",

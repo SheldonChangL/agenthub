@@ -191,6 +191,13 @@ func (s *Server) pairingCandidates(w http.ResponseWriter, _ *http.Request) {
 		// machine they are looking for may be missing for that reason.
 		"full":   s.candidates.Full(),
 		"notice": candidateNotice,
+		// The same sentence as a code, so a reader in another language can say
+		// it in that language. The desktop window rendered notice verbatim, so
+		// its zh-Hant screen carried one paragraph of English (#194). notice
+		// stays, in English, for readers that predate the code — ah prints
+		// the body as it is — and a reader that does not know a code falls
+		// back to it.
+		"noticeCode": candidateNoticeCode,
 	})
 }
 
@@ -209,6 +216,10 @@ type candidateView struct {
 	// id since it was first seen.
 	Contested bool `json:"contested,omitempty"`
 }
+
+// candidateNoticeCode names candidateNotice. Stable: a reader keys its own
+// translation on it, so it changes only when the sentence's meaning does.
+const candidateNoticeCode = "candidates_unverified"
 
 const candidateNotice = "Every field here was chosen by whoever sent the packet, on a network " +
 	"anyone can write to. Nothing in this list has been verified and appearing in it grants nothing. " +

@@ -2774,7 +2774,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     keepChildren(rows, wanted);
     // The node's own words about what this list is worth, so the warning here
     // cannot drift from the guarantees the node actually makes.
-    if (pairing.notice) notice.textContent = pairing.notice;
+    //
+    // Said in the window's language when the node names the sentence with a
+    // code this window knows; the node's English otherwise — a code added
+    // after this build, or a node from before codes (#194). A zh-Hant window
+    // used to show this paragraph in English whatever it was set to.
+    const said = candidateNoticeText(pairing);
+    if (said) notice.textContent = said;
+  }
+
+  // candidateNoticeText is the candidate list's notice in this window's words.
+  // The code is the node's and only ever picks a key; a value that is not a
+  // plain code picks nothing, and the English sentence is shown as data.
+  function candidateNoticeText(pairing) {
+    const code = typeof pairing?.noticeCode === "string" && /^[a-z0-9_]{1,64}$/.test(pairing.noticeCode)
+      ? pairing.noticeCode : "";
+    const key = `candidate.notice.${code}`;
+    if (code && t(key) !== key) return t(key);
+    return pairing?.notice || "";
   }
 
   // candidateRow builds the row once. Everything that changes between renders is
@@ -5864,7 +5881,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing, askConfirm, confirmKey,
     openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
     syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
-    candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
+    candidateRow, candidateNoticeText, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
