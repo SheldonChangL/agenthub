@@ -12,6 +12,7 @@
 //   node frontend/test/audience-dialog.mjs
 
 import { document } from "./dom-shim.mjs";
+import { TEXT as EN_TEXT } from "../src/i18n/en.js";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -273,10 +274,10 @@ if (noteText().includes("套用後會關閉喚醒")) {
   failures.push("a Claude session that never had auto-wake was told it would be turned off");
 }
 
-/* ---------------- a grant to a machine that is no longer paired (#194) ---- */
+/* ---------------- a grant to a machine the read did not list (#194) ------ */
 
 // One session in selected mode, published to a paired node and to one that is
-// no longer in the paired list. The dialog used to draw boxes only for paired
+// not in the paired list this read returned. The dialog used to draw boxes only for paired
 // nodes, so the second grant had no box, readAudienceForm left it out and 套用
 // withdrew it without a word. It gets a row of its own now, ticked, saying
 // what it is — and unticking it is how it is withdrawn on purpose.
@@ -293,8 +294,13 @@ if (noteText().includes("套用後會關閉喚醒")) {
     failures.push(`a grant to a machine no longer paired was dropped by opening and applying: ${JSON.stringify(form.nodes)}`);
   }
   const list = el("audience-node-list").serialize();
-  if (!list.includes("node_gone") || !list.includes(ZH["audience.formerNode"])) {
-    failures.push(`the unlisted grant is not shown as a machine no longer paired: ${list}`);
+  if (!list.includes("node_gone") || !list.includes(ZH["audience.unlistedNode"])) {
+    failures.push(`the unlisted grant is not shown as a machine this read did not list: ${list}`);
+  }
+  // Not called unpaired: a revoke deletes the grants with the trust, so the
+  // one way this row appears is a pairing-list read that failed.
+  if (/已不在配對|no longer (a )?paired/i.test(ZH["audience.unlistedNode"] + EN_TEXT["audience.unlistedNode"])) {
+    failures.push("the unlisted grant is still described as a machine no longer paired");
   }
   // Unticked on purpose, it goes.
   const box = el("audience-node-list").children
@@ -316,6 +322,23 @@ if (noteText().includes("套用後會關閉喚醒")) {
     failures.push("a multi-session dialog listed one session's unlisted grant");
   }
   module.state.nodes = [];
+
+  // The read that actually produces that row: Overview reached the node but
+  // its pairing list failed, and came back as no nodes. The dialog says the
+  // list could not be read — not 「還沒有配對任何機器」 — and keeps the grant.
+  module.state.nodesError = "trusted nodes: 500 Internal Server Error";
+  withSelection(true, [granted]);
+  const failed = el("audience-node-list").textContent;
+  if (!failed.includes(ZH["audience.nodesReadFailed"].replace("{error}", module.state.nodesError))) {
+    failures.push(`a failed pairing-list read is not said in the dialog: ${failed}`);
+  }
+  if (failed.includes(ZH["audience.noNodesYet"])) {
+    failures.push("a failed pairing-list read was described as no machine being paired");
+  }
+  if (!module.readAudienceForm().nodes.includes("node_paired") || !module.readAudienceForm().nodes.includes("node_gone")) {
+    failures.push(`a failed pairing-list read dropped a grant: ${JSON.stringify(module.readAudienceForm().nodes)}`);
+  }
+  module.state.nodesError = "";
 }
 
 if (failures.length > 0) {

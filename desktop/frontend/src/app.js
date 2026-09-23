@@ -20,6 +20,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     nodes: [],
     peers: [],
     presenceError: "",
+    // The pairing list's own read error, from a read that otherwise reached the
+    // node. Overview answers an empty node list then (desktop/app.go, the
+    // trustedNodes branch), so without it the audience dialog would describe
+    // every paired machine as unpaired.
+    nodesError: "",
     selectedNode: null,
     busy: false,
     // pairing is loaded separately from the overview: it changes on its own — a
@@ -1577,6 +1582,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.nodeAutoWake = Boolean(overview.node?.autoWake);
       state.peers = overview.peers ?? [];
       state.presenceError = overview.presenceError ?? "";
+      // A reachable Overview carries an error only when its pairing-list read
+      // failed (desktop/app.go); every other failure answers unreachable.
+      state.nodesError = overview.error ?? "";
       state.loadedOnce = true;
       if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
         state.selectedNode = null;
@@ -3372,10 +3380,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // id the list does not show. Unchecked every time, like the flags.
   //
   // formerNodes are ids the one session being edited is already published to
-  // but that are no longer in state.nodes — revoked, or never listed. They get
-  // a row of their own, ticked, under a label that says what they are (#194):
-  // with no box, readAudienceForm left them out and 套用 withdrew the grant
-  // without a word. Unticking one is how the owner withdraws it on purpose.
+  // but that are not in state.nodes. They get a row of their own, ticked
+  // (#194): with no box, readAudienceForm left them out and 套用 withdrew the
+  // grant without a word. Unticking one is how the owner withdraws it on
+  // purpose.
+  //
+  // Not "a machine no longer paired", though that is what the row first said.
+  // A revoke deletes the node's grants in the same transaction
+  // (internal/registry/trust.go, RevokeNode) and SetAudience refuses a node
+  // that is not paired (internal/registry/registry.go), so a grant to a node
+  // that really is gone does not survive to be shown here. The one way this
+  // row appears is an Overview whose pairing-list read failed and came back
+  // as no nodes (desktop/app.go) — and then the machine is still paired. So
+  // the label says only that this read did not list it, and when the read is
+  // known to have failed, the dialog says that instead of 「還沒有配對任何機器」.
   //
   // The boxes are kept in audienceNodeBoxes, which openAudienceModal ticks and
   // readAudienceForm reads, so the three agree on one list.
@@ -3400,9 +3418,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       row(node.nodeId, "nodepick", element("span", `dot ${presence.className}`),
         element("span", "", node.displayName), element("span", "mono", node.nodeId));
     }
-    if (state.nodes.length === 0) list.append(element("p", "muted", t("audience.noNodesYet")));
+    if (state.nodesError) {
+      list.append(element("p", "stale", t("audience.nodesReadFailed", { error: state.nodesError })));
+    } else if (state.nodes.length === 0) {
+      list.append(element("p", "muted", t("audience.noNodesYet")));
+    }
     for (const nodeId of formerNodes) {
-      row(nodeId, "nodepick former", element("span", "muted", t("audience.formerNode")),
+      row(nodeId, "nodepick former", element("span", "muted", t("audience.unlistedNode")),
         element("span", "mono", nodeId));
     }
     el("audience-node-input").value = "";
