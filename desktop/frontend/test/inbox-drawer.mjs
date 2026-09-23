@@ -11,10 +11,11 @@
 //   node frontend/test/inbox-drawer.mjs
 
 import { document } from "./dom-shim.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
-globalThis.confirm = () => true;
+answerConfirms(document, () => true);
 const { configure, boot } = await import("../src/app.js");
 
 const failures = [];

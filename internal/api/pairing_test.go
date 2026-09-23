@@ -414,8 +414,9 @@ func TestCandidatesAreServedWithTheirProvenance(t *testing.T) {
 			NodeID      string `json:"nodeId"`
 			Fingerprint string `json:"fingerprint"`
 		} `json:"candidates"`
-		Full   bool   `json:"full"`
-		Notice string `json:"notice"`
+		Full       bool   `json:"full"`
+		Notice     string `json:"notice"`
+		NoticeCode string `json:"noticeCode"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -432,6 +433,12 @@ func TestCandidatesAreServedWithTheirProvenance(t *testing.T) {
 		if !strings.Contains(body.Notice, want) {
 			t.Errorf("the notice does not say %q: %s", want, body.Notice)
 		}
+	}
+	// And a code for it, which is what a window in another language keys its
+	// own sentence on (#194). The value is a contract: desktop/frontend's
+	// i18n tables carry "candidate.notice.candidates_unverified".
+	if body.NoticeCode != "candidates_unverified" {
+		t.Errorf("noticeCode = %q, want candidates_unverified", body.NoticeCode)
 	}
 }
 

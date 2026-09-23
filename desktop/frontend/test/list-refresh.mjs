@@ -14,9 +14,10 @@
 //   node frontend/test/list-refresh.mjs
 
 import { document } from "./dom-shim.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
 globalThis.document = document;
-globalThis.confirm = () => true;
+answerConfirms(document, () => true);
 
 const failures = [];
 const el = (id) => document.getElementById(id);

@@ -320,7 +320,7 @@ func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
 				 "platform":"darwin/arm64","fingerprint":"1223 03EA 5E96 543A 2DD8 BFEA",
 				 "firstSeen":"2026-09-07T07:00:00Z","lastSeen":"2026-09-07T07:01:00Z",
 				 "duplicate":true,"contested":true}],
-				"full":true,"notice":"nothing here has been verified"}`))
+				"full":true,"notice":"nothing here has been verified","noticeCode":"candidates_unverified"}`))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -355,6 +355,11 @@ func TestPairingCarriesEveryClaimAndFlagThroughToTheUI(t *testing.T) {
 	}
 	if pairing.Notice == "" {
 		t.Error("the node's notice was dropped, so the UI would have to invent its own")
+	}
+	// The code is what the window translates on (#194); dropped here, a
+	// zh-Hant window would be back to the node's English.
+	if pairing.NoticeCode != "candidates_unverified" {
+		t.Errorf("noticeCode = %q, want the node's candidates_unverified", pairing.NoticeCode)
 	}
 	if len(pairing.Candidates) != 1 {
 		t.Fatalf("candidates = %v, want one", pairing.Candidates)

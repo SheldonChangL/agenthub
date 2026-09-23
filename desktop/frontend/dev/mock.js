@@ -117,7 +117,7 @@ const pairing = () => ({
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
     { nodeId: "node_a91c3e7b2d5f8046c0e1", address: "192.168.50.22:7463", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF 0011 2233", firstSeen: ago(120), lastSeen: ago(5), contested: true, duplicate: true },
   ] : [],
-  full: false, notice: candidateNotice,
+  full: false, notice: candidateNotice, noticeCode: "candidates_unverified",
 });
 const log = (...a) => console.log("[mock]", ...a);
 

@@ -20,6 +20,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     nodes: [],
     peers: [],
     presenceError: "",
+    // The pairing list's own read error, from a read that otherwise reached the
+    // node. Overview answers an empty node list then (desktop/app.go, the
+    // trustedNodes branch), so without it the audience dialog would describe
+    // every paired machine as unpaired.
+    nodesError: "",
     selectedNode: null,
     busy: false,
     // pairing is loaded separately from the overview: it changes on its own — a
@@ -213,11 +218,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Provider metadata is untrusted input (docs/architecture.md). Every value that
   // originates from a provider reaches the DOM as text, never as markup, so a
   // working directory or session ID containing HTML cannot execute in the app.
-  // docsRef names the section of docs/desktop-window.md that holds the
-  // explanation a state used to carry on screen. The section titles are that
-  // file's own headings, which is why they are not translated.
-  function docsRef(section) {
-    return t("common.docsRef", { section });
+  // whyDetails is the explanation a state used to carry on screen, folded
+  // under a 「說明」 the owner can open.
+  //
+  // It used to be a `title` naming a section of docs/desktop-window.md (#194).
+  // That file is in the repository, not in the installed app, so the tooltip
+  // sent the owner to something they did not have; and a title on a
+  // paragraph is shown only to a pointer — the keyboard and a screen reader
+  // never reach it. A <summary> is focusable and opens with Enter or Space, and
+  // the sentences inside are the ones the owner needs, in their language.
+  // docs/desktop-window.md stays, for readers of the repository.
+  function whyDetails(key) {
+    const details = document.createElement("details");
+    details.className = "why";
+    details.append(element("summary", "", t("common.why")), element("p", "", t(key)));
+    return details;
   }
 
   function element(tag, className = "", text = "") {
@@ -300,7 +315,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // describeAudience answers "published to whom" in one cell.
   function describeAudience(audience) {
     const mode = audience?.mode ?? "none";
-    if (mode === "all_paired") return { text: t("audience.cell.allPaired"), published: true };
+    // The table's own wording, shorter than the chip's and the dialog's: at
+    // 900px the column holds 88px of pill, and 「Every paired machine」 is
+    // 124px, so it was cut to 「Every paired ma」 (#194). The tooltip and the
+    // filter chip keep the whole phrase.
+    if (mode === "all_paired") {
+      return { text: t("audience.cell.allPairedShort"), title: t("audience.cell.allPaired"), published: true };
+    }
     if (mode === "selected") {
       const count = audience?.nodes?.length ?? 0;
       return {
@@ -562,17 +583,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const audience = describeAudience(session.audience);
     parts.audiencePill.className = audience.published ? "pill public" : "pill";
     parts.audiencePill.textContent = audience.text;
-    // The column is sized for the 900px window, where the longest wordings
-    // (「Every paired machine」) clip; the tooltip carries the whole of it.
-    parts.audiencePill.title = audience.text;
+    // The column is sized for the 900px window, with every table wording
+    // measured to fit it (style.css col.c-audience); the tooltip carries the
+    // whole of it anyway, and the long form where the cell uses a short one.
+    parts.audiencePill.title = audience.title ?? audience.text;
 
     // The flags describe what a peer is allowed to do with this session, so on
     // one no peer has been given they describe nothing. Hidden rather than
     // drawn dim: four boxes per row, on the rows where they mean least, were
     // most of the ink in this table.
+    //
+    // "No peer has been given it" is describeAudience's `published`, not the
+    // mode: 「指定：無」 — selected, with no nodes — is as unpublished as 不公開,
+    // and it used to wear four chips anyway (#194).
     const a = session.audience ?? {};
-    const audienceMode = a.mode ?? "none";
-    parts.chips.classList.toggle("hidden", audienceMode === "none");
+    parts.chips.classList.toggle("hidden", !audience.published);
     setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
     setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
     setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
@@ -1266,7 +1291,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await openPairingWindowIfNeeded();
   }
 
-  async function openPairingWindowIfNeeded() {
+  // keepBanner is for a caller whose own result is already on the banner — the
+  // repair from step 1, whose save and restart said what they did. A refused
+  // OpenPairing used to replace that sentence, so the owner learned the window
+  // did not open and lost whether the address they had just fixed was saved.
+  // The failure is added after it instead.
+  async function openPairingWindowIfNeeded({ keepBanner = false } = {}) {
     // The drawer can be dismissed while loadPairing is still on its way: a
     // window opened after that is one nobody asked for, and nothing on screen
     // would then close it.
@@ -1281,10 +1311,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // No duration: the node's own default is the one the node documents.
       await api.OpenPairing(0);
     } catch (error) {
-      banner(pairErrorMessage(error));
+      const failure = pairErrorMessage(error);
+      const shown = el("banner");
+      const before = keepBanner && !shown.classList.contains("hidden") ? shown.textContent : "";
+      banner(before ? `${before} ${failure}` : failure);
       return;
     }
     await loadPairing();
+    // Dismissed while OpenPairing was on its way (#194). dismissPairingDrawer
+    // ran then, saw no open window and left; the window this call has just
+    // opened would otherwise stay open for the node's whole default duration
+    // with no drawer on screen to close it. So the dismissal is run again now
+    // that there is something to close — with its own rule intact: a row
+    // mid-exchange keeps the window open.
+    if (!pairingDrawerOpen()) await dismissPairingDrawer({ windowOpened: true });
   }
 
   // closePairingDrawer only hides it. The window is left alone, because two
@@ -1305,15 +1345,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // be expired by the node the moment the window closed (ExpirePending,
   // internal/api/pair.go). A read that fails leaves the window to its own
   // timeout, because it cannot say nobody is waiting.
-  async function dismissPairingDrawer() {
+  //
+  // windowOpened is the caller knowing better than state.pairing: the drawer's
+  // own OpenPairing has just succeeded, and a read of the window that failed
+  // afterwards must not be taken as "nothing to close".
+  async function dismissPairingDrawer({ windowOpened = false } = {}) {
     closePairingDrawer();
-    if (state.busy || !state.pairing?.state?.open) return;
+    const open = () => windowOpened || Boolean(state.pairing?.state?.open);
+    if (state.busy || !open()) return;
     await loadPairRequests({ render: false });
     // Reopened while the read was out: the owner is not done after all.
     if (pairingDrawerOpen() || state.pairRequestsError) return;
     const pending = (state.pairRequests ?? []).some(
       (request) => request.state === "pending" || request.state === "awaiting-confirm");
-    if (pending || state.busy || !state.pairing?.state?.open) return;
+    if (pending || state.busy || !open()) return;
     try {
       await api.ClosePairing();
     } catch {
@@ -1439,7 +1484,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // or a dialog standing on top of the list. The periodic tick and the moment a
   // background read lands both ask this — one list of conditions, checked twice,
   // because the state can change while the read is in the air.
-  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "pairing-modal", "mcp-modal", "modal"];
+  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "pairing-modal", "mcp-modal", "modal", "confirm-modal"];
   function anyModalOpen({ exceptPairingDrawer = false } = {}) {
     return MODAL_IDS.some((id) => {
       if (exceptPairingDrawer && id === "pairing-modal") return false;
@@ -1545,6 +1590,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.nodeAutoWake = Boolean(overview.node?.autoWake);
       state.peers = overview.peers ?? [];
       state.presenceError = overview.presenceError ?? "";
+      // A reachable Overview carries an error only when its pairing-list read
+      // failed (desktop/app.go); every other failure answers unreachable.
+      state.nodesError = overview.error ?? "";
       state.loadedOnce = true;
       if (state.selectedNode && !state.nodes.some((node) => node.nodeId === state.selectedNode)) {
         state.selectedNode = null;
@@ -1642,6 +1690,111 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       : t("app.unreachable", { url: line.nodeUrl, version });
   }
 
+  // askConfirm asks one yes-or-no question in the window's own dialog, and
+  // answers whether the owner said yes.
+  //
+  // Not window.confirm, because in the shipped macOS app window.confirm never
+  // asks anything. Wails v2 makes itself the WKWebView's WKUIDelegate and
+  // implements only the file picker from that protocol (WailsContext.m,
+  // runOpenPanelWithParameters); WebKit treats a delegate without
+  // runJavaScriptConfirmPanelWithMessage as the owner pressing Cancel, so every
+  // destructive button behind a confirm() — clearing an inbox, removing the
+  // service, moving the database — did nothing, silently. The browser mock and
+  // the node checks both answered confirm() themselves, so neither could see it.
+  //
+  // One question at a time: a second one asked while the first is open waits
+  // behind it and is shown once the first is answered. It used to answer the
+  // first "no" instead, so anything that asked while the owner was reading —
+  // a background path, a second button reached by Tab — silently turned their
+  // pending decision into a cancel. Esc, 取消 and a click on the backdrop are
+  // all "no". The body
+  // keeps its line breaks. A dangerous confirm button is drawn red and does
+  // not start with the keyboard on it, so a stray Enter cancels rather than
+  // deletes.
+  //
+  // The backdrop answers only a press that began on it after the question was
+  // already up. The dialog opens inside the first click and covers the whole
+  // window, so the second half of a double-click on 清空收件匣… or 儲存 lands
+  // on the backdrop: counted as "no", it closed the question before it could
+  // be read, and on 儲存 it answered the pinned-settings question for the
+  // owner. So a backdrop click counts only when its pointerdown was on the
+  // backdrop too, that pointerdown came CONFIRM_BACKDROP_GRACE_MS or more after
+  // the dialog opened, and the click is not the second of a multi-click.
+  const CONFIRM_BACKDROP_GRACE_MS = 400;
+  const confirmNow = () => globalThis.performance?.now?.() ?? Date.now();
+  let confirmPending = null;
+  const confirmQueue = [];
+  function askConfirm(question) {
+    if (confirmPending) return new Promise((resolve) => confirmQueue.push({ question, resolve }));
+    return showConfirm(question);
+  }
+  function showConfirm({ title, body = "", confirmLabel = t("common.confirm"), danger = false }) {
+    const modal = el("confirm-modal");
+    const ok = el("confirm-ok");
+    const cancel = el("confirm-cancel");
+    el("confirm-title").textContent = title;
+    el("confirm-body").textContent = body;
+    el("confirm-body").classList.toggle("hidden", !body);
+    ok.textContent = confirmLabel;
+    ok.className = danger ? "danger" : "primary";
+    const before = document.activeElement;
+    modal.classList.remove("hidden");
+    return new Promise((resolve) => {
+      const finish = (answer) => {
+        if (confirmPending !== finish) return;
+        confirmPending = null;
+        modal.classList.add("hidden");
+        if (before && typeof before.focus === "function") before.focus();
+        resolve(answer);
+        const next = confirmQueue.shift();
+        if (next) showConfirm(next.question).then(next.resolve);
+      };
+      confirmPending = finish;
+      ok.onclick = () => finish(true);
+      cancel.onclick = () => finish(false);
+      const openedAt = confirmNow();
+      let pressedBackdrop = false;
+      modal.onpointerdown = (event) => {
+        pressedBackdrop = event?.target === modal
+          && confirmNow() - openedAt >= CONFIRM_BACKDROP_GRACE_MS;
+      };
+      modal.onclick = (event) => {
+        const started = pressedBackdrop;
+        pressedBackdrop = false;
+        if (event?.target !== modal || !started) return;
+        if (Number(event?.detail) > 1) return;
+        finish(false);
+      };
+      (danger ? cancel : ok).focus();
+    });
+  }
+  // Esc answers "no" wherever the keyboard is: a click on the question's own
+  // text moves focus out of both buttons, and the dialog must still close.
+  //
+  // And Tab stays in the question. The dialog says aria-modal, but nothing held
+  // the keyboard to it: two presses of Tab reached the title bar's service pill
+  // behind the backdrop, where Enter acted on a window the owner could not
+  // see. So Tab and Shift-Tab go round the dialog's two buttons, and from
+  // anywhere else in it — the question's text, after a click — to the first
+  // or last of them.
+  function confirmKey(event) {
+    if (!confirmPending) return;
+    if (event?.key === "Tab") {
+      const order = [el("confirm-cancel"), el("confirm-ok")];
+      const at = order.indexOf(document.activeElement);
+      const step = event.shiftKey ? -1 : 1;
+      const next = at === -1 ? (step > 0 ? 0 : order.length - 1) : (at + step + order.length) % order.length;
+      event.preventDefault?.();
+      order[next].focus();
+      return;
+    }
+    if (event?.key !== "Escape") return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    confirmPending(false);
+  }
+  if (typeof document.addEventListener === "function") document.addEventListener("keydown", confirmKey, true);
+
   async function withBusy(label, fn) {
     // Ignored while another one is running. Disabling buttons covers only the
     // ids render() knows about, and the repair buttons are created on the fly —
@@ -1721,8 +1874,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   ]);
   // The one sentence about comparing, said once per undecided row; the step
   // line under the fingerprints no longer repeats it. An array because that is
-  // what reads it. Why the order matters is in docs/desktop-window.md, reached
-  // from the sentence's tooltip.
+  // what reads it. Why it matters is in the 「說明」 folded under it
+  // (whyDetails("why.compareFingerprints")).
   Object.defineProperty(PAIR_TEXT, "compare", {
     get: () => [t("pair.compare")],
     enumerable: true,
@@ -2040,11 +2193,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.pairCompare !== undecided) {
       row.pairCompare = undecided;
       parts.compare.replaceChildren(
-        ...(undecided ? PAIR_TEXT.compare.map((sentence) => {
-          const line = element("div", "stale", sentence);
-          line.title = docsRef("Comparing fingerprints when pairing");
-          return line;
-        }) : []));
+        ...(undecided
+          ? [...PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)),
+            whyDetails("why.compareFingerprints")]
+          : []));
     }
     // The two values are what two people are reading off two screens while this
     // ticks underneath them, so the block is rewritten only when the node
@@ -2276,10 +2428,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!here.reachable) {
       value.textContent = PAIR_TEXT.hereFixHeadline;
       el("copy-pair-address-status").textContent = "";
-      const why = element("div", "",
-        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable);
-      why.title = docsRef("Why nobody can reach this machine yet");
-      note.replaceChildren(why);
+      const whyText = here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable;
+      const options = pairHereRepairs();
+      // Rebuilt only when what it says changes. The network view reloads the
+      // pairing state every five seconds and lands here each time; rebuilding
+      // the block regardless folded a 「說明」 the owner had just opened and
+      // dropped the keyboard from its summary onto the page (#195 review), and
+      // did the same to a repair button someone was about to press. The
+      // signature is every string and option the block is built from, so a
+      // language switch or a new answer from the node still redraws it.
+      const signature = JSON.stringify([whyText, t("common.why"), t("why.unreachable"),
+        here.problem || "", options, PAIR_TEXT.hereFix]);
+      if (note.pairHereSignature === signature) {
+        for (const button of note.pairHereRepairButtons ?? []) button.disabled = state.busy;
+        el("copy-pair-address").disabled = true;
+        return;
+      }
+      note.pairHereSignature = signature;
+      note.pairHereRepairButtons = [];
+      const why = element("div", "", whyText);
+      note.replaceChildren(why, whyDetails("why.unreachable"));
       // The node's own sentence about this listener, under the remedy rather
       // than in front of it: the remedy is the act, and the node's words are
       // the detail that says which listener it is about.
@@ -2290,12 +2458,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // on (docs/ui-contract.md §7.8 rule 4) and the save goes through the form
       // — one validation, one restart, one "did it stick" check.
       const actions = element("div", "repairactions");
-      const options = pairHereRepairs();
       for (const option of options) {
         const button = element("button", option.primary ? "primary" : "ghost", option.label);
         button.disabled = state.busy;
         button.onclick = () => applyPeerListenRepairFromCard(option).catch(() => {});
         actions.append(button);
+        note.pairHereRepairButtons.push(button);
       }
       // Always a way through to the form. The options above come from the
       // node's own answer, and a machine with no private address of its own —
@@ -2308,6 +2476,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     el("copy-pair-address").disabled = false;
+    note.pairHereSignature = null;
     value.textContent = here.address;
     // Two sentences, because the two situations have different remedies: on a
     // node that announces nothing this address is the only way in, and on one
@@ -2694,7 +2863,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     keepChildren(rows, wanted);
     // The node's own words about what this list is worth, so the warning here
     // cannot drift from the guarantees the node actually makes.
-    if (pairing.notice) notice.textContent = pairing.notice;
+    //
+    // Said in the window's language when the node names the sentence with a
+    // code this window knows; the node's English otherwise — a code added
+    // after this build, or a node from before codes (#194). A zh-Hant window
+    // used to show this paragraph in English whatever it was set to.
+    const said = candidateNoticeText(pairing);
+    if (said) notice.textContent = said;
+  }
+
+  // candidateNoticeText is the candidate list's notice in this window's words.
+  // The code is the node's and only ever picks a key; a value that is not a
+  // plain code picks nothing, and the English sentence is shown as data.
+  function candidateNoticeText(pairing) {
+    const code = typeof pairing?.noticeCode === "string" && /^[a-z0-9_]{1,64}$/.test(pairing.noticeCode)
+      ? pairing.noticeCode : "";
+    const key = `candidate.notice.${code}`;
+    if (code && t(key) !== key) return t(key);
+    return pairing?.notice || "";
   }
 
   // candidateRow builds the row once. Everything that changes between renders is
@@ -2820,6 +3006,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     if (state.nodes.length === 0) {
       container.append(element("div", "empty", t("network.noNodesYet")));
+      el("node-detail-body").nodeDetailParts = null;
       el("node-detail-body").replaceChildren(
         element("div", "empty", t("network.noNodesYetDetail"))
       );
@@ -2847,9 +3034,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     const selected = state.nodes.find((node) => node.nodeId === state.selectedNode);
-    el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
-      element("div", "empty", t("network.pickANode")),
-    ]));
+    renderNodeDetail(selected);
     el("node-sessions").replaceChildren(...(selected ? nodeSessions(selected) : []));
   }
 
@@ -2973,19 +3158,69 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // evaluated at module load would freeze the language the window started in.
   const heartbeatSilenceReasonsKey = "network.heartbeatSilence";
 
+  // renderNodeDetail fills the pane beside the node list for the selected node.
+  //
+  // Every render of the network view lands here — the fifteen-second tick
+  // included — and it used to rebuild the whole pane each time. Its two
+  // 「說明」 were rebuilt with it: one the owner had opened folded shut under
+  // them, and the keyboard on its summary fell to the page (#195 review). So
+  // the top of the pane, whys included, is built once per node and language
+  // and then only has its text rewritten; what is below it (nodeDetailRest) is
+  // still rebuilt, and the address field in it keeps its own draft.
+  function renderNodeDetail(selected) {
+    const body = el("node-detail-body");
+    if (!selected) {
+      body.nodeDetailParts = null;
+      body.replaceChildren(element("div", "empty", t("network.pickANode")));
+      return;
+    }
+    const key = JSON.stringify([selected.nodeId, t("common.why"), t("why.fingerprint"), t("why.heartbeat")]);
+    let parts = body.nodeDetailParts;
+    if (!parts || parts.key !== key) {
+      parts = nodeDetailParts(key);
+      body.nodeDetailParts = parts;
+      body.replaceChildren(...parts.list);
+    }
+    fillNodeDetail(parts, selected);
+  }
+
+  // nodeDetail is the pane built fresh, for the checks that read what it says.
   function nodeDetail(node) {
-    const heading = element("h2", "", node.displayName);
-    const fingerprint = element("div", "fingerprint", node.fingerprint);
-    const note = element("p", "muted", t("network.fingerprintNote"));
-    note.title = docsRef("The fingerprint under a paired machine's name");
+    const parts = nodeDetailParts("");
+    fillNodeDetail(parts, node);
+    return parts.list;
+  }
 
-    // Trust is recorded per machine, and this page shows only this machine's
-    // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
-    // on 2026-09-10, and nothing here said that was half-done — the row simply
-    // sat there having never been heard from, which reads as the peer being off.
-    const mutualNote = element("p", "stale", t("network.mutualNote"));
-    mutualNote.title = docsRef("A paired machine whose heartbeat never arrives");
+  function nodeDetailParts(key) {
+    const parts = {
+      key,
+      heading: element("h2"),
+      fingerprint: element("div", "fingerprint"),
+      note: element("p", "muted"),
+      noteWhy: whyDetails("why.fingerprint"),
+      // Trust is recorded per machine, and this page shows only this machine's
+      // half. Pairing on the mac left the Ubuntu box answering "No paired
+      // nodes" on 2026-09-10, and nothing here said that was half-done — the
+      // row simply sat there having never been heard from, which reads as the
+      // peer being off.
+      mutualNote: element("p", "stale"),
+      mutualWhy: whyDetails("why.heartbeat"),
+      rest: element("div"),
+    };
+    parts.list = [parts.heading, parts.fingerprint, parts.note, parts.noteWhy,
+      parts.mutualNote, parts.mutualWhy, parts.rest];
+    return parts;
+  }
 
+  function fillNodeDetail(parts, node) {
+    parts.heading.textContent = node.displayName;
+    parts.fingerprint.textContent = node.fingerprint;
+    parts.note.textContent = t("network.fingerprintNote");
+    parts.mutualNote.textContent = t("network.mutualNote");
+    parts.rest.replaceChildren(...nodeDetailRest(node));
+  }
+
+  function nodeDetailRest(node) {
     const rows = [
       [t("identity.nodeId"), node.nodeId],
       [t("pairManual.platform"), node.platform],
@@ -3007,7 +3242,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const grid = element("div", "detailgrid");
     grid.append(...rows);
     return [
-      heading, fingerprint, note, mutualNote, grid,
+      grid,
       ...addressSection(node),
       element("div", "", ""), revoke, revokeNote,
     ];
@@ -3087,7 +3322,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }).length;
   }
 
+  // Asked first, in the window's own dialog, because it cannot be undone: the
+  // node's grants go in the same transaction as its trust, and pairing again
+  // does not bring them back. docs/ui-contract.md had always said 「confirm 後
+  // 執行」 and the button went straight to RevokeNode. A dangerous question,
+  // so the keyboard starts on 取消.
   async function revokeSelected(node) {
+    if (state.busy) return;
+    const ok = await askConfirm({
+      title: t("network.revokeConfirmTitle", { name: node.displayName }),
+      body: t("network.revokeConfirmBody", { name: node.displayName, nodeId: node.nodeId }),
+      confirmLabel: t("network.revoke"),
+      danger: true,
+    });
+    if (!ok) return;
     await withBusy(t("network.revoke"), async () => {
       await api.RevokeNode(node.nodeId);
       state.selectedNode = null;
@@ -3151,21 +3399,55 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // renderAudienceNodeList offers every paired node as a checkbox, so the
   // owner picks a name rather than typing an id; the text field stays for an
   // id the list does not show. Unchecked every time, like the flags.
-  function renderAudienceNodeList() {
+  //
+  // formerNodes are ids the one session being edited is already published to
+  // but that are not in state.nodes. They get a row of their own, ticked
+  // (#194): with no box, readAudienceForm left them out and 套用 withdrew the
+  // grant without a word. Unticking one is how the owner withdraws it on
+  // purpose.
+  //
+  // Not "a machine no longer paired", though that is what the row first said.
+  // A revoke deletes the node's grants in the same transaction
+  // (internal/registry/trust.go, RevokeNode) and SetAudience refuses a node
+  // that is not paired (internal/registry/registry.go), so a grant to a node
+  // that really is gone does not survive to be shown here. The one way this
+  // row appears is an Overview whose pairing-list read failed and came back
+  // as no nodes (desktop/app.go) — and then the machine is still paired. So
+  // the label says only that this read did not list it, and when the read is
+  // known to have failed, the dialog says that instead of 「還沒有配對任何機器」.
+  //
+  // The boxes are kept in audienceNodeBoxes, which openAudienceModal ticks and
+  // readAudienceForm reads, so the three agree on one list.
+  let audienceNodeBoxes = [];
+  function renderAudienceNodeList(formerNodes = []) {
     const list = el("audience-node-list");
     list.replaceChildren();
-    for (const node of state.nodes) {
-      const label = element("label", "nodepick");
+    audienceNodeBoxes = [];
+    const row = (nodeId, className, ...parts) => {
+      const label = element("label", className);
       const box = document.createElement("input");
       box.type = "checkbox";
-      box.value = node.nodeId;
+      box.value = nodeId;
       box.className = "audience-node-box";
       box.onchange = () => label.classList.toggle("on", box.checked);
-      const presence = presenceLabel(presenceFor(node.nodeId));
-      label.append(box, element("span", `dot ${presence.className}`), element("span", "", node.displayName), element("span", "mono", node.nodeId));
+      label.append(box, ...parts);
       list.append(label);
+      audienceNodeBoxes.push(box);
+    };
+    for (const node of state.nodes) {
+      const presence = presenceLabel(presenceFor(node.nodeId));
+      row(node.nodeId, "nodepick", element("span", `dot ${presence.className}`),
+        element("span", "", node.displayName), element("span", "mono", node.nodeId));
     }
-    if (state.nodes.length === 0) list.append(element("p", "muted", t("audience.noNodesYet")));
+    if (state.nodesError) {
+      list.append(element("p", "stale", t("audience.nodesReadFailed", { error: state.nodesError })));
+    } else if (state.nodes.length === 0) {
+      list.append(element("p", "muted", t("audience.noNodesYet")));
+    }
+    for (const nodeId of formerNodes) {
+      row(nodeId, "nodepick former", element("span", "muted", t("audience.unlistedNode")),
+        element("span", "mono", nodeId));
+    }
     el("audience-node-input").value = "";
   }
 
@@ -3251,7 +3533,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
-    renderAudienceNodeList();
+    // Exactly one session: see below. Worked out before the list is drawn,
+    // because it decides what the list holds — that session's grants that no
+    // paired node accounts for.
+    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
+    const listed = new Set(state.nodes.map((node) => node.nodeId));
+    const former = only?.audience?.mode === "selected"
+      ? [...new Set(only.audience.nodes ?? [])].filter((nodeId) => nodeId && !listed.has(nodeId))
+      : [];
+    renderAudienceNodeList(former);
 
     // One session opens showing what that session already is; several open at
     // 不公開 with every flag off.
@@ -3266,7 +3556,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // session there is no disagreement and nothing left over — the values shown
     // are that session's own, read from the overview — and blanking them meant
     // that changing 「誰看得到」 silently withdrew every flag the session had.
-    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
     const current = only?.audience ?? {};
     const mode = only ? (current.mode ?? "none") : "none";
     for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
@@ -3274,7 +3563,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     if (only && mode === "selected") {
       const granted = new Set(current.nodes ?? []);
-      for (const box of document.querySelectorAll("#audience-node-list input.audience-node-box")) {
+      for (const box of audienceNodeBoxes) {
         box.checked = granted.has(box.value);
         // renderAudienceNodeList paints the row from the box's own onchange, so
         // a box ticked here has to say so itself.
@@ -3366,7 +3655,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       .value.split(/[\s,]+/)
       .map((value) => value.trim())
       .filter(Boolean);
-    const checked = [...document.querySelectorAll("#audience-node-list input.audience-node-box")]
+    const checked = audienceNodeBoxes
       .filter((box) => box.checked)
       .map((box) => box.value);
     const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];
@@ -4082,27 +4371,56 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // ahead: an owner who says no to re-registering has not agreed to a write
   // that a unit flag would silently undo a second later.
   //
-  // `fields` names the settings the save that asks is about to write and the
-  // unit pins, so the question says which ones a "no" leaves out.
-  async function reinstallWithoutPinnedSettings(status, fields = status.pinnedSettings ?? []) {
+  // `touched` is the pinned flags the save that asks is about to write. The
+  // question lists every flag the unit pins, not only those: InstallService
+  // re-registers with the database path alone, so a yes unpins all of them —
+  // their values carry over because the node remembers what it was last given
+  // (docs/ui-contract.md §7.8 rule 3), but an owner asked about one setting
+  // should not learn afterwards that four were affected (#194). The ones this
+  // save changes are marked, because those are what a "no" leaves out.
+  async function reinstallWithoutPinnedSettings(status, touched = []) {
     if (status.installed && !status.dbPathKnown) {
       banner(t("service.unpinNeedsDbPath"));
       return false;
     }
-    const ok = confirm(t("service.unpinConfirm", {
-      path: status.dbPath || t("service.nodeDefaultLocation"),
-      pinned: fields.join(t("candidate.flagJoin")),
-    }));
+    const ok = await askConfirm({
+      title: t("service.unpinConfirmTitle"),
+      body: t("service.unpinConfirm", {
+        path: status.dbPath || t("service.nodeDefaultLocation"),
+        pinned: pinnedSettingsList(status.pinnedSettings ?? [], touched),
+      }),
+      confirmLabel: t("service.unpinConfirmAction"),
+    });
     if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
+    // Whether the unit was actually re-registered, which is not whether this
+    // function got to the end: withBusy catches a failed InstallService and
+    // shows it in a banner, and answering true after that sent the save on as
+    // if the unit had been cleared — for the pinned flags to undo it at the
+    // next start (#194). Set once the install has answered, because from
+    // there the unit is the new one whatever the read-back says; and never set
+    // when withBusy did not run at all, which is another write in flight.
+    let reregistered = false;
     await withBusy(t("service.busyReregister"), async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
+      reregistered = true;
       showServiceOutput(result);
       const up = await waitForNode({ previousPid });
       await load();
       banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
-    return true;
+    return reregistered;
+  }
+
+  // pinnedSettingsList names each flag the unit pins by the form's own label,
+  // and marks the ones in `touched`.
+  function pinnedSettingsList(pinned, touched) {
+    const changing = new Set(touched);
+    const keyFor = Object.fromEntries(Object.entries(NODE_SETTING_FLAGS).map(([key, flag]) => [flag, key]));
+    return pinned.map((flag) => {
+      const label = keyFor[flag] ? nodeSettingLabel(keyFor[flag]) : flag;
+      return changing.has(flag) ? t("service.pinnedChanging", { label }) : label;
+    }).join(t("candidate.flagJoin"));
   }
 
   async function openServiceForm() {
@@ -4174,15 +4492,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Asked without being able to say what the current value is, because the
       // alternative is installing over a running node's database on a guess.
       // The question names that uncertainty rather than hiding it.
-      const ok = confirm(t("service.reinstallUnknownDbConfirm", {
-        wanted: wanted || t("service.nodeDefaultLocation"),
-      }));
+      const ok = await askConfirm({
+        title: t("service.reinstallUnknownDbConfirmTitle", { wanted: wanted || t("service.nodeDefaultLocation") }),
+        body: t("service.reinstallUnknownDbConfirm"),
+        confirmLabel: t("service.reinstallConfirmAction"),
+        danger: true,
+      });
       if (!ok) return;
     } else if (baseline.installed && wanted !== baseline.path) {
-      const ok = confirm(t("service.changeDbConfirm", {
-        current: baseline.path || t("service.nodeDefaultLocation"),
-        wanted: wanted || t("service.nodeDefaultLocation"),
-      }));
+      const ok = await askConfirm({
+        title: t("service.changeDbConfirmTitle", {
+          current: baseline.path || t("service.nodeDefaultLocation"),
+          wanted: wanted || t("service.nodeDefaultLocation"),
+        }),
+        body: t("service.changeDbConfirm"),
+        confirmLabel: t("service.changeDbConfirmAction"),
+        danger: true,
+      });
       if (!ok) return;
     }
     await withBusy(t("service.busyInstall"), async () => {
@@ -4281,7 +4607,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function uninstallService() {
-    const ok = confirm(t("service.uninstallConfirm"));
+    const ok = await askConfirm({
+      title: t("service.uninstallConfirmTitle"),
+      body: t("service.uninstallConfirm"),
+      confirmLabel: t("service.uninstallConfirmAction"),
+      danger: true,
+    });
     if (!ok) return;
     await withBusy(t("service.busyUninstall"), async () => {
       const result = await api.UninstallService();
@@ -4493,14 +4824,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("inbox-modal").onclick = (event) => {
     if (event.target === el("inbox-modal")) closeInbox();
   };
-  el("inbox-clear").onclick = () => {
+  el("inbox-clear").onclick = async () => {
     const session = state.inboxSession;
     if (!session) return;
     // Not undoable, so it is asked rather than assumed. The node has no
     // "unclear", and messages that arrive between this dialog and the confirm go
-    // with the rest.
-    if (!confirm(t("inbox.clearConfirm", { session }))) return;
-    withBusy(t("inbox.busyClear"), async () => {
+    // with the rest. The session is the one the question named, captured
+    // before it was asked.
+    const ok = await askConfirm({
+      title: t("inbox.clearConfirmTitle"),
+      body: t("inbox.clearConfirm", { session }),
+      confirmLabel: t("inbox.clearConfirmAction"),
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(t("inbox.busyClear"), async () => {
       const cleared = await api.ClearInbox(session);
       // Re-read through openInbox, so the answer is sequence-guarded like every
       // other read and lands on the session it was asked about. The outcome is
@@ -4894,6 +5232,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     await applyPeerListenRepair(option);
+    // The save restarts the node, and a node that restarts comes back with its
+    // pairing window closed — so the owner was left in an open drawer that
+    // said "open to pairing" about a window that no longer existed (#194).
+    // Read what came back and open a window again, but only if the drawer is
+    // still there to show it: one opened behind a closed drawer is a window
+    // nothing on screen would close.
+    if (!pairingDrawerOpen()) return;
+    await loadPairing();
+    await openPairingWindowIfNeeded({ keepBanner: true });
   }
 
   const NODE_SETTINGS_FIELD_LABELS = {
@@ -5251,7 +5598,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let skippedNote = "";
     if (touched.length > 0) {
       const reregistered = Boolean(state.service.dbPathKnown)
-        && (await reinstallWithoutPinnedSettings(state.service, touched.map(nodeSettingLabel)));
+        && (await reinstallWithoutPinnedSettings(state.service, touched.map((key) => NODE_SETTING_FLAGS[key])));
       if (!reregistered) {
         skippedNote = [
           state.service.dbPathKnown ? "" : t("service.unpinNeedsDbPath"),
@@ -5712,10 +6059,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // What the tests reach for. Nothing here is for main.js: the app is driven
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
-    state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
+    state, load, loadPairing, render, renderRows, renderInbox, renderPairing, askConfirm, confirmKey,
     openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
     syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
-    candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
+    candidateRow, candidateNoticeText, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,

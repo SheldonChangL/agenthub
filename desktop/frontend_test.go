@@ -512,6 +512,28 @@ func TestFrontendInboxDrawerAsksTheNodeForOneSession(t *testing.T) {
 	runNodeCheck(t, "inbox-drawer.mjs")
 }
 
+// TestFrontendAsksInItsOwnDialog covers the clear that did nothing. In the
+// macOS app window.confirm is answered "no" without being shown — Wails v2's
+// WKUIDelegate implements no runJavaScriptConfirmPanel — so the window asks
+// its questions in its own dialog, and 清空收件匣 clears only after 確定.
+func TestFrontendAsksInItsOwnDialog(t *testing.T) {
+	runNodeCheck(t, "confirm-dialog.mjs")
+}
+
+// TestFrontendKeepsAnOpenedWhyOpen covers the 「說明」 folds #194 added in two
+// places redrawn on a timer — the pairing drawer's step 1 and the node detail
+// pane: after a background redraw an opened one is the same element, still
+// open, with the keyboard still on its summary.
+func TestFrontendKeepsAnOpenedWhyOpen(t *testing.T) {
+	runNodeCheck(t, "why-details.mjs")
+}
+
+// TestFrontendRowAudienceCells covers the AUDIENCE and FLAGS cells: FLAGS only
+// on a row some peer can see, which 「指定：無」 is not (#194).
+func TestFrontendRowAudienceCells(t *testing.T) {
+	runNodeCheck(t, "row-audience.mjs")
+}
+
 // TestFrontendInboxBadgesCountWhatIsHeld covers the per-row count (issue #146).
 //
 // Three rules the badge is worth nothing without: a count of zero is no badge
@@ -775,6 +797,30 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	actions := regexp.MustCompile(`\n\.col-actions \{[^}]*\}`).FindString(css)
 	if !strings.Contains(actions, "position: sticky") {
 		t.Error(".col-actions is no longer sticky, so the row actions scroll out of reach on a narrow window")
+	}
+}
+
+// TestFrontendKeepsTheDialogActionsOnTheCard pins #194's first item: at the
+// window's minimum size the audience dialog's content is taller than its card,
+// and 套用 was only reachable by scrolling the card for it. The actions bar is
+// sticky to the card's bottom edge, for every dialog. Measured in dev/mock.html
+// at 900x760: the card is 606px tall for 959px of content, and #audience-apply
+// stays inside the card at either end of the scroll.
+func TestFrontendKeepsTheDialogActionsOnTheCard(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	// The block form; the one-line `{ flex: none; }` in the list above it is a
+	// different rule.
+	rule := regexp.MustCompile(`\n\.modal-card > \.modal-actions \{\n[^}]*\}`).FindString(string(stylesheet))
+	if rule == "" {
+		t.Fatal("style.css has no .modal-card > .modal-actions rule; a dialog taller than the window scrolls its buttons away")
+	}
+	for _, want := range []string{"position: sticky", "bottom:", "background:"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf(".modal-card > .modal-actions lacks %q, so the actions scroll out of the card or show what scrolls under them", want)
+		}
 	}
 }
 

@@ -24,6 +24,7 @@
 //   node frontend/test/pairing-exchange.mjs
 
 import { document } from "./dom-shim.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 globalThis.document = document;
@@ -37,7 +38,7 @@ globalThis.setInterval = (fn, ms) => {
   ticks.push({ fn, ms });
   return ticks.length;
 };
-globalThis.confirm = () => true;
+answerConfirms(document, () => true);
 
 const LOCAL_FP = "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30";
 const THEIR_FP = "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03";
@@ -1157,7 +1158,7 @@ if (!hostileHTML.includes("&lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;"
 // Nothing a peer chose may decide a class name — including the role and whose
 // labels, which are mapped through a fixed table and otherwise shown as text.
 for (const cls of hostileHTML.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty)"$/.test(cls)) {
+  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty|why)"$/.test(cls)) {
     failures.push(`a peer-supplied value reached a class name: ${cls}`);
   }
 }

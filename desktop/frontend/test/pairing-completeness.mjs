@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as EN } from "../src/i18n/en.js";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
@@ -35,7 +36,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
-globalThis.confirm = () => true;
+answerConfirms(document, () => true);
 
 const failures = [];
 const el = (id) => document.getElementById(id);

@@ -17,6 +17,7 @@
 
 import { document } from "./dom-shim.mjs";
 import { inEnglish } from "./fixtures/in-english.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -32,11 +33,12 @@ let installed = [];
 let saved = [];
 let restarts = 0;
 let confirmed = true;
+let installFails = false;
 let confirmations = [];
-globalThis.confirm = (message) => {
+answerConfirms(document, (message) => {
   confirmations.push(message);
   return confirmed;
-};
+});
 
 // A node that is up, answering, and serving loopback because the address it was
 // told to serve is not on this machine any more.
@@ -67,7 +69,11 @@ configure({
   Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
   Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
   ServiceStatus: async () => serviceAnswer ?? app.state.service ?? {},
-  InstallService: async (form) => { installed.push(form); return { command: "ah service install", output: "registered" }; },
+  InstallService: async (form) => {
+    installed.push(form);
+    if (installFails) throw new Error("ah service install: exit status 1");
+    return { command: "ah service install", output: "registered" };
+  },
   UninstallService: noop,
   NodeSettings: async () => app.state.nodeSettingsAnswer ?? degraded,
   SaveNodeSettings: async (patch) => { saved.push(patch); return { ...degraded, ...(app.state.saveAnswer ?? {}) }; },
@@ -217,6 +223,23 @@ if (confirmations.length !== 1) {
   failures.push(`saving a pinned setting asked ${confirmations.length} times, want once`);
 } else if (!confirmations[0].includes("允許區網")) {
   failures.push(`the question does not name the pinned field it is about: ${confirmations[0]}`);
+} else {
+  // Every flag the unit pins, not only the one this save touches: a yes
+  // re-registers with the database path alone, which unpins them all (#194).
+  // The one this save changes is marked; the other is named unmarked.
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  const lan = ZH["nodeSettings.allowLan"];
+  const listen = ZH["nodeSettings.peerListenLabel"];
+  const mark = (label) => ZH["service.pinnedChanging"].replace("{label}", label);
+  if (!confirmations[0].includes(mark(lan))) {
+    failures.push(`the question does not mark ${lan} as the field this save changes: ${confirmations[0]}`);
+  }
+  if (!confirmations[0].includes(listen)) {
+    failures.push(`the question leaves out ${listen}, which the unit also pins and a yes also unpins: ${confirmations[0]}`);
+  }
+  if (confirmations[0].includes(mark(listen))) {
+    failures.push(`the question marks ${listen} as changed by a save that does not touch it: ${confirmations[0]}`);
+  }
 }
 if (installed.length !== 0) {
   failures.push("a refused confirmation re-registered anyway");
@@ -253,6 +276,33 @@ if (installed.length !== 1) {
 }
 if (saved.length !== 1 || saved[0].discover !== false || saved[0].allowLan !== false) {
   failures.push(`the save that followed sent ${JSON.stringify(saved)}, want the owner's own change`);
+}
+
+// Pinned, accepted, and the re-registration fails (#194). withBusy catches the
+// error and shows it, so the function used to finish and answer true — and the
+// save went ahead as if the unit had been cleared, to be undone by the pinned
+// flags at the next start. A failed install is "not re-registered": the
+// pinned fields are left out and named, like a refusal.
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+el("node-allow-lan").checked = false;
+resetSave();
+confirmed = true;
+installFails = true;
+if (await app.reinstallWithoutPinnedSettings(app.state.service) !== false) {
+  failures.push("a re-registration whose InstallService failed reported that it ran");
+}
+resetSave();
+await app.saveNodeSettings();
+installFails = false;
+if (installed.length !== 1) {
+  failures.push(`the failing save tried to re-register ${installed.length} times, want once`);
+}
+if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
+  failures.push(`a save whose re-registration failed sent ${JSON.stringify(saved)}, want the unpinned change alone`);
+}
+if (!text("banner").includes("沒有存") || !text("banner").includes("允許區網")) {
+  failures.push(`a pinned field left out after a failed re-registration was not named: ${text("banner")}`);
 }
 
 // A unit whose database this window cannot read is never re-registered from

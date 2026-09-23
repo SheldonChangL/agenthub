@@ -456,6 +456,29 @@ if (!full.includes("nothing here has been verified")) {
   failures.push("the node's own notice about the list was not shown");
 }
 
+// 5b. With a code this window knows, the notice is said in the window's own
+//     language (#194); with one it does not, or with none, the node's English
+//     is shown as it came. A code is only ever a key: one that is not a plain
+//     code picks nothing.
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  const noticeFor = (extra) => {
+    state.pairing = { ...state.pairing, notice: "nothing here has been verified", ...extra };
+    renderPairing();
+    return el("candidate-notice").textContent;
+  };
+  const coded = noticeFor({ noticeCode: "candidates_unverified" });
+  if (coded !== ZH["candidate.notice.candidates_unverified"]) {
+    failures.push(`a known notice code was not said in the window's language: ${coded}`);
+  }
+  for (const code of ["some_future_code", "__proto__", "candidates_unverified<b>", 42]) {
+    const said = noticeFor({ noticeCode: code });
+    if (said !== "nothing here has been verified") {
+      failures.push(`notice code ${JSON.stringify(code)} did not fall back to the node's own text: ${said}`);
+    }
+  }
+}
+
 // 6. Clicking a row must not pre-confirm anything.
 //
 // The pairing form's fingerprint field is the owner's statement that they
