@@ -959,11 +959,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // 3. Text, and a button that points rather than acts. Opening the audience
     //    dialog with nothing selected is a dead dialog, so this one puts the
     //    keyboard on the checkbox that starts a selection.
+    //
+    //    With no session at all there is nothing to tick, and the card is on
+    //    screen partly for that reason (onboardingTriggered) — so the step says
+    //    so, where it would otherwise point at an empty table. Only after a read
+    //    that reached the node: an empty list from one that did not is not a
+    //    fact about this machine (#114).
     const published = (state.counts.all_paired ?? 0) + (state.counts.selected ?? 0) > 0;
+    const noSessions = state.nodeReachable && state.sessions.length === 0;
     steps.push({
       id: "publish",
       title: t("onboarding.publish.title"),
-      body: t("onboarding.publish.body"),
+      body: noSessions
+        ? `${t("onboarding.publish.body")} ${t("onboarding.publish.noSessions")}`
+        : t("onboarding.publish.body"),
       done: published,
       actions: published ? [] : [{
         label: t("onboarding.publish.action"),
@@ -1573,7 +1582,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is not a fact about this machine (#114) — and the result goes to the
     // banner discoverSessions already writes, which now also says where
     // AgentHub looks when it finds nothing.
-    if (reachable && !autoDiscoverTried && state.sessions.length === 0) {
+    //
+    // Not while something else holds the window: discoverSessions goes through
+    // withBusy, which drops a call made while busy, so spending the flag then
+    // spent the window's only scan on nothing — and installService calls load()
+    // in the middle of its own busy stretch, on exactly the first launch this
+    // scan is for (#193 review). Left for the next load that is not busy.
+    if (reachable && !autoDiscoverTried && !state.busy && state.sessions.length === 0) {
       autoDiscoverTried = true;
       discoverSessions().catch(() => {});
     }

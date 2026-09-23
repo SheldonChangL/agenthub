@@ -631,5 +631,6 @@ export const TEXT = {
 
   "onboarding.publish.title": "公開一個 session",
   "onboarding.publish.body": "在你選之前，沒有東西會離開這台機器：在下面勾一個 session，設定誰看得到。",
+  "onboarding.publish.noSessions": "這台機器還沒有找到任何 session；開一個 Claude Code 或 Codex 再回來。",
   "onboarding.publish.action": "帶我去表格",
 };

@@ -505,6 +505,46 @@ configure(bindings);
   }
 }
 
+// A load made while something else holds the window — installService calls
+// load() in the middle of its own busy stretch, on exactly a first launch —
+// must not spend the once-per-window scan: discoverSessions goes through
+// withBusy, which drops the call, and the flag would be gone with no scan run.
+{
+  calls.Discover = 0;
+  const installing = boot({ start: false });
+  installing.state.busy = true;
+  await installing.load();
+  if (calls.Discover !== 0) {
+    failures.push(`a load made while busy asked for ${calls.Discover} scans; withBusy would drop them`);
+  }
+  installing.state.busy = false;
+  await installing.load();
+  if (calls.Discover !== 1) {
+    failures.push(`the first load after a busy one scanned ${calls.Discover} times, want 1: the busy load spent the only scan`);
+  }
+}
+
+// With no session found, the publish step says why there is nothing to tick
+// instead of pointing at an empty table — and says nothing of the kind once a
+// session exists, or before a read has reached the node (#114).
+{
+  const empty = boot({ start: false });
+  await empty.load();
+  const publish = () => empty.onboardingSteps().find((step) => step.id === "publish")?.body ?? "";
+  if (!publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push(`with no sessions the publish step does not say to start one: ${publish()}`);
+  }
+  empty.state.sessions = [{ id: "claude:one" }];
+  if (publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push("with a session found the publish step still says none was found");
+  }
+  empty.state.sessions = [];
+  empty.state.nodeReachable = false;
+  if (publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push("a read that never reached the node was reported as a machine with no sessions");
+  }
+}
+
 /* ---------------- 10. a node that is not answering ---------------- */
 
 // The one situation this card exists for. Step 1 used to be derived from the
