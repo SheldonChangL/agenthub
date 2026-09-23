@@ -1185,6 +1185,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   line-height: 1.6;
   margin: 0 0 12px;
 }
+/* The reasons under the inbox warning, folded the way the pairing fallback is. */
+.warnmore { margin: -6px 0 12px; font-size: 12px; }
+.warnmore > summary { cursor: pointer; color: var(--muted); list-style: none; }
+.warnmore > summary::-webkit-details-marker { display: none; }
+.warnmore > summary::before { content: "▸ "; }
+.warnmore[open] > summary::before { content: "▾ "; }
+.warnmore > summary:hover { color: var(--text); }
+.warnmore p { margin: 6px 0 0; line-height: 1.6; }
 .drawertabs { display: flex; gap: 2px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
 .dtab {
   height: 32px; padding: 0 12px;
