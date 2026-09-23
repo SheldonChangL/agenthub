@@ -570,9 +570,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // one no peer has been given they describe nothing. Hidden rather than
     // drawn dim: four boxes per row, on the rows where they mean least, were
     // most of the ink in this table.
+    //
+    // "No peer has been given it" is describeAudience's `published`, not the
+    // mode: 「指定：無」 — selected, with no nodes — is as unpublished as 不公開,
+    // and it used to wear four chips anyway (#194).
     const a = session.audience ?? {};
-    const audienceMode = a.mode ?? "none";
-    parts.chips.classList.toggle("hidden", audienceMode === "none");
+    parts.chips.classList.toggle("hidden", !audience.published);
     setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
     setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
     setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));

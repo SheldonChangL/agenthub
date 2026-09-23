@@ -520,6 +520,12 @@ func TestFrontendAsksInItsOwnDialog(t *testing.T) {
 	runNodeCheck(t, "confirm-dialog.mjs")
 }
 
+// TestFrontendRowAudienceCells covers the AUDIENCE and FLAGS cells: FLAGS only
+// on a row some peer can see, which 「指定：無」 is not (#194).
+func TestFrontendRowAudienceCells(t *testing.T) {
+	runNodeCheck(t, "row-audience.mjs")
+}
+
 // TestFrontendInboxBadgesCountWhatIsHeld covers the per-row count (issue #146).
 //
 // Three rules the badge is worth nothing without: a count of zero is no badge

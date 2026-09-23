@@ -164,7 +164,7 @@
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - 選取列：全選目前篩選結果（含 indeterminate）、已選取 N 個、「設定公開對象…」「收回選取」。
-- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象、**旗標**（只在已公開的列顯示）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
+- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
