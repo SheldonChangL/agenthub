@@ -1037,6 +1037,18 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .langrow { align-items: center; gap: 12px; }
 .langrow select { min-width: 160px; }
 
+/* ---------- 「說明」: the why behind a sentence, folded ----------
+   Replaces title tooltips that named docs/desktop-window.md (#194): the
+   summary is focusable, so the keyboard and a screen reader reach it. */
+details.why { margin: 2px 0 8px; font-size: 11.5px; color: var(--muted); }
+details.why > summary {
+  display: inline-block; cursor: pointer;
+  color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px;
+}
+details.why > summary:hover, details.why[open] > summary { color: var(--text); }
+details.why > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
+
 /* ---------- modals ---------- */
 
 .modal {

@@ -213,11 +213,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Provider metadata is untrusted input (docs/architecture.md). Every value that
   // originates from a provider reaches the DOM as text, never as markup, so a
   // working directory or session ID containing HTML cannot execute in the app.
-  // docsRef names the section of docs/desktop-window.md that holds the
-  // explanation a state used to carry on screen. The section titles are that
-  // file's own headings, which is why they are not translated.
-  function docsRef(section) {
-    return t("common.docsRef", { section });
+  // whyDetails is the explanation a state used to carry on screen, folded
+  // under a 「說明」 the owner can open.
+  //
+  // It used to be a `title` naming a section of docs/desktop-window.md (#194).
+  // That file is in the repository, not in the installed app, so the tooltip
+  // sent the owner to something they did not have; and a title on a
+  // paragraph is shown only to a pointer — the keyboard and a screen reader
+  // never reach it. A <summary> is focusable and opens with Enter or Space, and
+  // the sentences inside are the ones the owner needs, in their language.
+  // docs/desktop-window.md stays, for readers of the repository.
+  function whyDetails(key) {
+    const details = document.createElement("details");
+    details.className = "why";
+    details.append(element("summary", "", t("common.why")), element("p", "", t(key)));
+    return details;
   }
 
   function element(tag, className = "", text = "") {
@@ -1793,8 +1803,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   ]);
   // The one sentence about comparing, said once per undecided row; the step
   // line under the fingerprints no longer repeats it. An array because that is
-  // what reads it. Why the order matters is in docs/desktop-window.md, reached
-  // from the sentence's tooltip.
+  // what reads it. Why it matters is in the 「說明」 folded under it
+  // (whyDetails("why.compareFingerprints")).
   Object.defineProperty(PAIR_TEXT, "compare", {
     get: () => [t("pair.compare")],
     enumerable: true,
@@ -2112,11 +2122,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.pairCompare !== undecided) {
       row.pairCompare = undecided;
       parts.compare.replaceChildren(
-        ...(undecided ? PAIR_TEXT.compare.map((sentence) => {
-          const line = element("div", "stale", sentence);
-          line.title = docsRef("Comparing fingerprints when pairing");
-          return line;
-        }) : []));
+        ...(undecided
+          ? [...PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)),
+            whyDetails("why.compareFingerprints")]
+          : []));
     }
     // The two values are what two people are reading off two screens while this
     // ticks underneath them, so the block is rewritten only when the node
@@ -2350,8 +2359,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("copy-pair-address-status").textContent = "";
       const why = element("div", "",
         here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable);
-      why.title = docsRef("Why nobody can reach this machine yet");
-      note.replaceChildren(why);
+      note.replaceChildren(why, whyDetails("why.unreachable"));
       // The node's own sentence about this listener, under the remedy rather
       // than in front of it: the remedy is the act, and the node's words are
       // the detail that says which listener it is about.
@@ -3049,14 +3057,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const heading = element("h2", "", node.displayName);
     const fingerprint = element("div", "fingerprint", node.fingerprint);
     const note = element("p", "muted", t("network.fingerprintNote"));
-    note.title = docsRef("The fingerprint under a paired machine's name");
+    const noteWhy = whyDetails("why.fingerprint");
 
     // Trust is recorded per machine, and this page shows only this machine's
     // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
     // on 2026-09-10, and nothing here said that was half-done — the row simply
     // sat there having never been heard from, which reads as the peer being off.
     const mutualNote = element("p", "stale", t("network.mutualNote"));
-    mutualNote.title = docsRef("A paired machine whose heartbeat never arrives");
+    const mutualWhy = whyDetails("why.heartbeat");
 
     const rows = [
       [t("identity.nodeId"), node.nodeId],
@@ -3079,7 +3087,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const grid = element("div", "detailgrid");
     grid.append(...rows);
     return [
-      heading, fingerprint, note, mutualNote, grid,
+      heading, fingerprint, note, noteWhy, mutualNote, mutualWhy, grid,
       ...addressSection(node),
       element("div", "", ""), revoke, revokeNote,
     ];

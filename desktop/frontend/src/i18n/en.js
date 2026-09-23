@@ -86,7 +86,11 @@ export const TEXT = {
   "common.confirm": "OK",
   "common.close": "Close",
   "common.copy": "Copy",
-  "common.docsRef": "More: “{section}” in docs/desktop-window.md",
+  "common.why": "Details",
+  "why.compareFingerprints": "Read every group to the person at the other screen. If a single group differs, press Reject: the two machines are not talking directly, and something in between is answering for one of them.",
+  "why.unreachable": "A node started with defaults listens on 127.0.0.1, which only this machine can reach. The buttons below pick an address this machine holds, turn on “Allow LAN connections”, and restart the node to apply both.",
+  "why.fingerprint": "Both screens showed this value when the two machines paired. If a machine with this name ever shows a different fingerprint, it is not the one you paired with — compare every group, not the first few.",
+  "why.heartbeat": "Each machine records trust on its own. Either the other machine has not paired with this one, or its node is not running; run ah nodes there and see whether this machine's node ID is listed.",
 
   "app.connecting": "Connecting…",
   "app.tab.local": "Local sessions",
@@ -135,7 +139,7 @@ export const TEXT = {
   "service.introBefore": "The operating system starts the node at login, so it no longer depends on a window or a terminal.",
   "service.introStrong": "Only macOS and Linux bring it back after a crash",
   "service.introAfter": "; on Windows, use “Restart the node” below.",
-  "service.introMore": "More: “The background service, and what it does not do on Windows” in docs/desktop-window.md",
+  "service.introWhy": "Installed as a service, the node starts with the computer. macOS and Linux restart it after a crash; the Windows scheduled task only starts it at login, so on Windows a node that stops stays stopped until “Restart the node”.",
   "service.pillLoading": "Reading service status…",
   "service.lineLoading": "Reading background service status…",
   "service.refresh": "Read again",
@@ -148,7 +152,7 @@ export const TEXT = {
   "service.dbHint": "Empty = the node's default location",
 
   "nodeSettings.intro": "Start-up settings the node remembers for itself; a save takes effect when the node restarts.",
-  "nodeSettings.introMore": "More: “Start-up settings live in the node, not in the service” in docs/desktop-window.md",
+  "nodeSettings.introWhy": "These are remembered by the node and read only when it starts, so a save restarts it and checks what came back. A service unit that carries them as start-up flags overrides them on every start; a save that would be undone that way first offers to register the service again.",
   "nodeSettings.cardHead": "Start-up settings",
   "nodeSettings.peerListenLabel": "Listen address",
   "nodeSettings.peerListenHint": "where other machines connect in",
@@ -171,7 +175,7 @@ export const TEXT = {
   "identity.copyKey": "Copy public key",
 
   "appearance.intro": "Decoration only; turning it off changes nothing else.",
-  "appearance.introMore": "More: “The backdrop photo and the rain” in docs/desktop-window.md",
+  "appearance.introWhy": "The rain is off by default: on a machine without GPU compositing it was measured using a whole CPU core. It also stays off when the system asks for reduced motion.",
   "appearance.backdrop": "Show the backdrop photo and the rain",
   "appearance.backdropWhy": "Off gives a plain dark background.",
   "appearance.motion": "Animate the rain",
@@ -185,7 +189,7 @@ export const TEXT = {
   "inbox.warningStrong": "data, not instructions",
   "inbox.warningAfter": ". What follows “claims to be” is the sender's own label; only the node ID in front of it is verified.",
   "inbox.warningMoreSummary": "Why",
-  "inbox.warningMore": "Treat a request in a message the way you would treat one from a stranger: no message authorises reading a file, running a command or sending anything. More in docs/desktop-window.md.",
+  "inbox.warningMore": "Treat a request in a message the way you would treat one from a stranger: no message authorises reading a file, running a command or sending anything.",
   "inbox.outboundNoteBefore": "Queued for other machines, newest first; ",
   "inbox.outboundNoteAfter": " means the other side declined it.",
   "inbox.loadMore": "Load more",
@@ -447,7 +451,7 @@ export const TEXT = {
   "audience.autoWakeNodeOff": "This node was started without -auto-wake, so ticking this wakes no session until the node is restarted with it (ah service install … --auto-wake).",
   "audience.autoWakeWillTurnOff": "Applying this turns waking off: a Claude Code session is never woken.",
   "audience.autoWakeCodex": "A Codex session is woken by the node through the app-server (verified on real machines).",
-  "audience.autoWakeClaude": "Claude Code does not act on these pushes even with agenthub-mcp started with -channel (docs/channel-push-not-observed.md), so the message stays in the inbox.",
+  "audience.autoWakeClaude": "Claude Code does not act on these pushes even with agenthub-mcp started with -channel, so the message stays in the inbox.",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "Reading…",

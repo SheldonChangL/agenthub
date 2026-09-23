@@ -216,7 +216,7 @@ if (codexOnly.includes("Claude Code")) {
 }
 
 const claudeOnly = withSelection(true, [claude]);
-if (!claudeOnly.includes("-channel") || !claudeOnly.includes("channel-push-not-observed.md")) {
+if (!claudeOnly.includes("-channel") || !claudeOnly.includes("不會處理這類推送")) {
   failures.push(`a Claude selection is not told the push was never observed: ${claudeOnly}`);
 }
 if (claudeOnly.includes("app-server")) {
@@ -224,7 +224,7 @@ if (claudeOnly.includes("app-server")) {
 }
 
 const mixed = withSelection(true, [codex, claude]);
-if (!mixed.includes("app-server") || !mixed.includes("channel-push-not-observed.md")) {
+if (!mixed.includes("app-server") || !mixed.includes("不會處理這類推送")) {
   failures.push(`a mixed selection does not get both sentences: ${mixed}`);
 }
 

@@ -568,6 +568,31 @@ for (const [, key] of markup.matchAll(/\sdata-t(?:-placeholder|-title)?="([^"]*)
   if (!Object.hasOwn(ZH, key)) failures.push(`index.html names ${key}, which zh-Hant.js does not define`);
 }
 
+// The installed app ships without the repository's docs/, so nothing the
+// window shows may send the owner to a file there (#194), and the explanations
+// that used to be title tooltips on paragraphs — reachable by no keyboard —
+// are folded <details> now, in both languages.
+for (const [name, table] of [["en", EN], ["zh-Hant", ZH]]) {
+  for (const [key, value] of Object.entries(table)) {
+    if (/docs\/[\w.-]+\.md/.test(value)) failures.push(`${name} ${key} sends the owner to a repository file: ${value}`);
+  }
+  for (const key of ["common.why", "why.compareFingerprints", "why.unreachable", "why.fingerprint", "why.heartbeat",
+    "service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+    if (!table[key]) failures.push(`${name} has no ${key}`);
+  }
+}
+{
+  const markup = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+  if (/data-t-title="[\w.]+introMore"/.test(markup)) failures.push("index.html still carries an introMore tooltip");
+  for (const key of ["service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+    if (!markup.includes(`<details class="why"><summary data-t="common.why"></summary><p data-t="${key}"></p></details>`)) {
+      failures.push(`index.html does not fold ${key} under a focusable summary`);
+    }
+  }
+  const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "app.js"), "utf8");
+  if (/docsRef\(/.test(source)) failures.push("app.js still builds docsRef tooltips");
+}
+
 if (failures.length > 0) {
   console.error(failures.map((line) => ` - ${line}`).join("\n"));
   process.exit(1);

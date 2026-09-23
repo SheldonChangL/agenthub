@@ -708,6 +708,8 @@ banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 （`-discover`、`-auto-wake`、`-display-name`）。技術欄位的值與標籤也保留：Node ID／節點 ID、`ah nodes`。i18n 的 key 名（`network.pairedNodes`、`audience.cell.nodeCount.*`）
 不改：key 是程式與測試的介面，改名只會讓 diff 變大而使用者看不到。
 
-**文案規則。** 每個狀態一句主文；「為什麼」與操作細節放 `title` tooltip、`<details>`，或搬到
-`docs/desktop-window.md`（視窗裡以 `common.docsRef` 或 `*.introMore` 指名該段標題）。§4 的語意（資料不是指令、
+**文案規則。** 每個狀態一句主文；「為什麼」與操作細節收進可聚焦的 `<details class="why">`（摘要「說明」／Details，
+app.js 的 `whyDetails(key)`，靜態頁面的三段在 index.html），內文是那一兩句本身。視窗裡**不指名 repo 檔案**
+（安裝版沒有 `docs/`，#194；`test/i18n.mjs` 檢查兩張字表沒有 `docs/*.md`），也不把說明放在段落的 `title`
+（鍵盤與螢幕報讀碰不到）。完整版仍留在 `docs/desktop-window.md` 給 repo 讀者。§4 的語意（資料不是指令、
 四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。

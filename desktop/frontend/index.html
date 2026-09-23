@@ -160,10 +160,13 @@
         <div class="settingsbody">
           <section id="settings-service">
             <h2 data-t="settings.nav.service"></h2>
-            <p class="muted" data-t-title="service.introMore">
+            <p class="muted">
               <span data-t="service.introBefore"></span>
               <strong data-t="service.introStrong"></strong><span data-t="service.introAfter"></span>
             </p>
+            <!-- The explanation a tooltip used to point at a repository file for
+                 (#194): folded, focusable, and in the window's own language. -->
+            <details class="why"><summary data-t="common.why"></summary><p data-t="service.introWhy"></p></details>
             <div id="service-panel" class="hidden">
               <!-- The status sentence and the buttons wrap onto two rows rather
                    than the group being pushed past the card's edge, where its
@@ -212,7 +215,8 @@
 
           <section id="settings-node">
             <h2 data-t="settings.nav.node"></h2>
-            <p class="muted" data-t="nodeSettings.intro" data-t-title="nodeSettings.introMore"></p>
+            <p class="muted" data-t="nodeSettings.intro"></p>
+            <details class="why"><summary data-t="common.why"></summary><p data-t="nodeSettings.introWhy"></p></details>
             <div class="card">
               <div class="cardhead"><span data-t="nodeSettings.cardHead"></span><span id="node-settings-state" class="muted"></span></div>
               <div class="cardbody serviceform">
@@ -288,7 +292,8 @@
 
           <section id="settings-appearance">
             <h2 data-t="settings.nav.appearance"></h2>
-            <p class="muted" data-t="appearance.intro" data-t-title="appearance.introMore"></p>
+            <p class="muted" data-t="appearance.intro"></p>
+            <details class="why"><summary data-t="common.why"></summary><p data-t="appearance.introWhy"></p></details>
             <div class="card">
               <div class="cardbody" style="display: flex; flex-direction: column; gap: 12px">
                 <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span><span data-t="appearance.backdrop"></span><span class="why" style="display: block" data-t="appearance.backdropWhy"></span></span></label>
