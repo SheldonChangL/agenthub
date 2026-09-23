@@ -1691,6 +1691,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // keeps its line breaks. A dangerous confirm button is drawn red and does
   // not start with the keyboard on it, so a stray Enter cancels rather than
   // deletes.
+  //
+  // The backdrop answers only a press that began on it after the question was
+  // already up. The dialog opens inside the first click and covers the whole
+  // window, so the second half of a double-click on 清空收件匣… or 儲存 lands
+  // on the backdrop: counted as "no", it closed the question before it could
+  // be read, and on 儲存 it answered the pinned-settings question for the
+  // owner. So a backdrop click counts only when its pointerdown was on the
+  // backdrop too, that pointerdown came CONFIRM_BACKDROP_GRACE_MS or more after
+  // the dialog opened, and the click is not the second of a multi-click.
+  const CONFIRM_BACKDROP_GRACE_MS = 400;
+  const confirmNow = () => globalThis.performance?.now?.() ?? Date.now();
   let confirmPending = null;
   function askConfirm({ title, body = "", confirmLabel = t("common.confirm"), danger = false }) {
     if (confirmPending) confirmPending(false);
@@ -1715,8 +1726,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       confirmPending = finish;
       ok.onclick = () => finish(true);
       cancel.onclick = () => finish(false);
+      const openedAt = confirmNow();
+      let pressedBackdrop = false;
+      modal.onpointerdown = (event) => {
+        pressedBackdrop = event?.target === modal
+          && confirmNow() - openedAt >= CONFIRM_BACKDROP_GRACE_MS;
+      };
       modal.onclick = (event) => {
-        if (event?.target === modal) finish(false);
+        const started = pressedBackdrop;
+        pressedBackdrop = false;
+        if (event?.target !== modal || !started) return;
+        if (Number(event?.detail) > 1) return;
+        finish(false);
       };
       (danger ? cancel : ok).focus();
     });
