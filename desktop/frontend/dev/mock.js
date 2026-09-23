@@ -378,3 +378,48 @@ const preview = boot({ backdropUrl: backdrop });
 // whatever the machine taking them is set to. `?lang=en` / `?lang=zh-Hant`.
 const previewLanguage = query.get("lang");
 if (previewLanguage) preview.setUILanguage(previewLanguage);
+
+// The layout check for the window's minimum size (main.go: MinWidth 900). Set
+// the viewport to 900×760, then run `await layoutCheck()` in the console: it
+// visits every surface and reports, for each, whether anything in it scrolls
+// sideways — the root's own scrollWidth against its clientWidth, and every
+// descendant whose overflow-x lets it scroll and whose content is wider than it
+// is. The Local table is in the list because it was the one surface left out,
+// and it scrolled: 1080px of table in 866px, with the sticky actions column
+// lying on top of the working directory (#193 review).
+globalThis.layoutCheck = async () => {
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 250));
+  const $ = (selector) => document.querySelector(selector);
+  const measure = (name, root) => {
+    const offenders = [...root.querySelectorAll("*")]
+      .filter((node) => /auto|scroll/.test(getComputedStyle(node).overflowX) && node.scrollWidth > node.clientWidth)
+      .map((node) => `${node.id || node.className} ${node.scrollWidth}>${node.clientWidth}`);
+    return { surface: name, scrollWidth: root.scrollWidth, clientWidth: root.clientWidth,
+      ok: root.scrollWidth <= root.clientWidth && offenders.length === 0, offenders };
+  };
+  const view = async (name) => { $(`[data-view="${name}"]`).click(); await pause(); };
+  const results = [];
+  await view("local");
+  results.push(measure("local table", $(".tablescroll")));
+  await view("settings");
+  for (const id of ["settings-service", "settings-node", "settings-identity", "settings-appearance"]) {
+    results.push(measure(`settings ${id.slice(9)}`, $(`#${id}`)));
+  }
+  results.push(measure("settings body", $(".settingsbody")));
+  await view("network");
+  results.push(measure("network", $("#network-view")));
+  $("#btn-pair").click(); await pause();
+  results.push(measure("pairing drawer", $("#pairing-modal .drawer-card")));
+  $("#pairing-close").click(); await pause();
+  await view("local");
+  $("#rows button.inbox").click(); await pause();
+  results.push(measure("inbox drawer", $("#inbox-modal .drawer-card")));
+  $("#inbox-close").click(); await pause();
+  $("#rows input[type=checkbox]").click(); await pause();
+  $("#btn-audience").click(); await pause();
+  results.push(measure("audience modal", $("#audience-modal .modal-card")));
+  $("#audience-close").click();
+  results.push(measure("document", document.documentElement));
+  console.table(results);
+  return results;
+};
