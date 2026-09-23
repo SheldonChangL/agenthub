@@ -132,7 +132,10 @@ body.no-backdrop .backdrop .rain { display: none; }
    a spacer element so the whole strip stays one draggable region. */
 body.mac .titlebar { padding-left: 78px; }
 
-.brand { display: flex; align-items: center; gap: 10px; }
+/* The brand gives up width before the tabs do: at 900px the tabs were the
+   ones squeezed, and 「區網」 and 「設定」 broke into one character per line. */
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
+.brand > div { min-width: 0; }
 .brand h1 { font-size: 13px; margin: 0; font-weight: 600; line-height: 1.2; }
 .brand p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.2; }
 
@@ -147,6 +150,7 @@ body.mac .titlebar { padding-left: 78px; }
 .tabs { --wails-draggable: no-drag; display: flex; gap: 2px; margin-left: 12px; }
 .tab {
   display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap; flex: none;
   height: 30px; padding: 0 12px;
   border-radius: 6px;
   color: var(--muted);
