@@ -267,7 +267,8 @@
   訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
 - `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
 
-對話框（`.modal`）：
+對話框（`.modal`）：卡片本身捲動，`.modal-actions`（每個對話框的最後一塊）`position: sticky` 貼在卡片底部，
+900×760 下內容比卡片高時動作鈕仍在可視範圍內（#194）。
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
