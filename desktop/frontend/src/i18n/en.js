@@ -636,5 +636,6 @@ export const TEXT = {
 
   "onboarding.publish.title": "Publish a session",
   "onboarding.publish.body": "Nothing leaves this machine until you choose it: tick a session below and set who may see it.",
+  "onboarding.publish.noSessions": "No session has been found on this machine yet: start Claude Code or Codex, then come back.",
   "onboarding.publish.action": "Take me to the table",
 };
