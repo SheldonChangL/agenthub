@@ -1291,7 +1291,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await openPairingWindowIfNeeded();
   }
 
-  async function openPairingWindowIfNeeded() {
+  // keepBanner is for a caller whose own result is already on the banner — the
+  // repair from step 1, whose save and restart said what they did. A refused
+  // OpenPairing used to replace that sentence, so the owner learned the window
+  // did not open and lost whether the address they had just fixed was saved.
+  // The failure is added after it instead.
+  async function openPairingWindowIfNeeded({ keepBanner = false } = {}) {
     // The drawer can be dismissed while loadPairing is still on its way: a
     // window opened after that is one nobody asked for, and nothing on screen
     // would then close it.
@@ -1306,7 +1311,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // No duration: the node's own default is the one the node documents.
       await api.OpenPairing(0);
     } catch (error) {
-      banner(pairErrorMessage(error));
+      const failure = pairErrorMessage(error);
+      const shown = el("banner");
+      const before = keepBanner && !shown.classList.contains("hidden") ? shown.textContent : "";
+      banner(before ? `${before} ${failure}` : failure);
       return;
     }
     await loadPairing();
@@ -5219,7 +5227,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nothing on screen would close.
     if (!pairingDrawerOpen()) return;
     await loadPairing();
-    await openPairingWindowIfNeeded();
+    await openPairingWindowIfNeeded({ keepBanner: true });
   }
 
   const NODE_SETTINGS_FIELD_LABELS = {

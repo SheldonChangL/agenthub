@@ -42,6 +42,8 @@ let calls = { Discover: 0, InstallService: 0, SaveNodeSettings: 0, RestartNode: 
 // default, which asks for no window; section 5 swaps in a node that has one.
 let pairingAnswer = { availability: "unknown", candidates: [] };
 const openPairingCalls = [];
+// Set to make the next OpenPairing refuse, as a node does when it cannot open one.
+let openPairingRefusal = null;
 
 const SETTINGS = {
   settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
@@ -62,7 +64,11 @@ const bindings = {
   Discover: async () => { calls.Discover += 1; return { claude: 0, codex: 0, total: 0, skipped: 0 }; },
   SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
   Pairing: async () => { calls.Pairing += 1; return pairingAnswer; },
-  OpenPairing: async (seconds) => { openPairingCalls.push(seconds); return { open: true }; },
+  OpenPairing: async (seconds) => {
+    openPairingCalls.push(seconds);
+    if (openPairingRefusal) throw new Error(openPairingRefusal);
+    return { open: true };
+  },
   ClosePairing: noop, Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop,
   Outbound: noop, Wakes: noop, PairRequests: async () => [],
   StartPairRequest: noop, ApprovePairRequest: noop, ConfirmPairRequest: noop, RejectPairRequest: noop,
@@ -360,6 +366,27 @@ await app.applyPeerListenRepairFromCard(lanRepair);
 if (openPairingCalls.length !== 0) {
   failures.push(`a repair pressed with the drawer closed opened a pairing window: ${JSON.stringify(openPairingCalls)}`);
 }
+// A window the node refuses to reopen after the repair is said after what the
+// repair did, not instead of it: the banner still says the save went through.
+el("pairing-modal").classList.remove("hidden");
+openPairingCalls.length = 0;
+const savedSaid = el("banner").textContent;
+if (savedSaid === "" || el("banner").classList.contains("hidden")) {
+  failures.push("the repair left nothing on the banner to keep");
+}
+openPairingRefusal = "pairing window: node refused";
+await app.applyPeerListenRepairFromCard(lanRepair);
+openPairingRefusal = null;
+const afterRefusal = el("banner").textContent;
+if (openPairingCalls.length !== 1) failures.push(`the refused reopen was tried ${openPairingCalls.length} times, want 1`);
+if (!afterRefusal.startsWith(savedSaid)) {
+  failures.push(`a refused reopen replaced what the save said: ${afterRefusal}`);
+}
+if (!afterRefusal.includes("node refused")) {
+  failures.push(`a refused reopen was not said: ${afterRefusal}`);
+}
+if (el("banner").className.includes("ok")) failures.push("a banner carrying a failure is drawn as a success");
+el("pairing-modal").classList.add("hidden");
 pairingAnswer = { availability: "unknown", candidates: [] };
 app.state.pairing = pairingBefore;
 
