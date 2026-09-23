@@ -130,9 +130,14 @@ and nothing in the node's answer says why. The window notices, says so on the
 background service section, and offers to register the service again with
 nothing but the database path the moment a save would be undone by it.
 
+Installing the service writes only the database path. The display name is not
+set there either: the node keeps the one it was last given with
+`--display-name`.
+
 ## The backdrop photo and the rain
 
-Both are decoration and turning them off changes nothing else.
+Both are decoration and turning them off changes nothing else. The rain also
+switches itself off when the system asks for reduced motion.
 
 The rain is off by default and worth leaving off. Measured on an HP ProBook with
 an Intel HD 520 (WebKitGTK 2.40): with the rain running the app's process tree
