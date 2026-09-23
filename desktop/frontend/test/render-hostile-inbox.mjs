@@ -93,6 +93,20 @@ if (!rendered.includes('class="fingerprint">node_evil')) {
 if (!rendered.includes("自稱")) {
   failures.push("the sender-chosen half is not marked as chosen");
 }
+// And the warning above the list says which half that is, in the sentence that
+// is always shown — not only inside the folded 「為什麼」, which is where the
+// UX pass had moved it (#193 review).
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  const { TEXT: EN } = await import("../src/i18n/en.js");
+  const always = (T) => T["inbox.warningBefore"] + T["inbox.warningStrong"] + T["inbox.warningAfter"];
+  if (!always(ZH).includes("自稱") || !always(ZH).includes("節點 ID 經過驗證")) {
+    failures.push(`the inbox warning's main sentence no longer says only the node id is verified: ${always(ZH)}`);
+  }
+  if (!always(EN).includes(EN["sender.claimsToBe"].trim()) || !/node ID[^.]*verified/.test(always(EN))) {
+    failures.push(`the English inbox warning's main sentence no longer says only the node id is verified: ${always(EN)}`);
+  }
+}
 if (!rendered.includes('class="claimed">codex:')) {
   failures.push("the session id is not marked as the sender's own label");
 }
