@@ -1285,6 +1285,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     await loadPairing();
+    // Dismissed while OpenPairing was on its way (#194). dismissPairingDrawer
+    // ran then, saw no open window and left; the window this call has just
+    // opened would otherwise stay open for the node's whole default duration
+    // with no drawer on screen to close it. So the dismissal is run again now
+    // that there is something to close — with its own rule intact: a row
+    // mid-exchange keeps the window open.
+    if (!pairingDrawerOpen()) await dismissPairingDrawer({ windowOpened: true });
   }
 
   // closePairingDrawer only hides it. The window is left alone, because two
@@ -1305,15 +1312,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // be expired by the node the moment the window closed (ExpirePending,
   // internal/api/pair.go). A read that fails leaves the window to its own
   // timeout, because it cannot say nobody is waiting.
-  async function dismissPairingDrawer() {
+  //
+  // windowOpened is the caller knowing better than state.pairing: the drawer's
+  // own OpenPairing has just succeeded, and a read of the window that failed
+  // afterwards must not be taken as "nothing to close".
+  async function dismissPairingDrawer({ windowOpened = false } = {}) {
     closePairingDrawer();
-    if (state.busy || !state.pairing?.state?.open) return;
+    const open = () => windowOpened || Boolean(state.pairing?.state?.open);
+    if (state.busy || !open()) return;
     await loadPairRequests({ render: false });
     // Reopened while the read was out: the owner is not done after all.
     if (pairingDrawerOpen() || state.pairRequestsError) return;
     const pending = (state.pairRequests ?? []).some(
       (request) => request.state === "pending" || request.state === "awaiting-confirm");
-    if (pending || state.busy || !state.pairing?.state?.open) return;
+    if (pending || state.busy || !open()) return;
     try {
       await api.ClosePairing();
     } catch {
@@ -4975,6 +4987,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     await applyPeerListenRepair(option);
+    // The save restarts the node, and a node that restarts comes back with its
+    // pairing window closed — so the owner was left in an open drawer that
+    // said "open to pairing" about a window that no longer existed (#194).
+    // Read what came back and open a window again, but only if the drawer is
+    // still there to show it: one opened behind a closed drawer is a window
+    // nothing on screen would close.
+    if (!pairingDrawerOpen()) return;
+    await loadPairing();
+    await openPairingWindowIfNeeded();
   }
 
   const NODE_SETTINGS_FIELD_LABELS = {

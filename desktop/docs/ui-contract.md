@@ -56,7 +56,7 @@
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、banner |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；banner 說明同時移除授權 |
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫）、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
+| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫；呼叫還在飛時抽屜被關掉，回來後照關抽屜的規則再判斷一次要不要 `ClosePairing`）；抽屜第 1 步的修復鈕存檔重啟節點後，抽屜仍開著就重讀並再開一次、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
 | `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時 | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開就**不關**（節點關視窗會作廢所有未決請求） |
 | `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；**只在抽屜開著時讀**（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定 |
 | `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走 banner，錯誤碼翻成中文（§4.3） |

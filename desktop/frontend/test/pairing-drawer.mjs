@@ -24,6 +24,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 let pairingOpen = false;
 let pairingDelay = 0;
+let openDelay = 0;
 const openCalls = [];
 const closeCalls = [];
 const Pairing = () => new Promise((resolve) => setTimeout(() => resolve({
@@ -50,7 +51,12 @@ configure({
   }),
   Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
   SetNodeAddress: noop, Pairing, PairRequests,
-  OpenPairing: async (seconds) => { openCalls.push(seconds); pairingOpen = true; return { open: true }; },
+  OpenPairing: async (seconds) => {
+    openCalls.push(seconds);
+    if (openDelay > 0) await new Promise((resolve) => setTimeout(resolve, openDelay));
+    pairingOpen = true;
+    return { open: true };
+  },
   ClosePairing: async () => { closeCalls.push(true); pairingOpen = false; return { open: false }; },
   Inbox: noop, ClearInbox: noop, Outbound: noop, Wakes: noop,
   StartPairRequest: noop, ApprovePairRequest: noop, ConfirmPairRequest: noop, RejectPairRequest: noop,
@@ -124,6 +130,53 @@ await settle();
 if (closeCalls.length !== 1) {
   failures.push(`dismissing the drawer with nobody waiting called ClosePairing ${closeCalls.length} times, want 1`);
 }
+
+/* ---------------- 3. dismissed while OpenPairing is out (#194) ---------------- */
+
+// The first read has landed and the window is being opened when the owner
+// closes the drawer. dismissPairingDrawer runs then, sees no open window yet,
+// and leaves; the window the call opens a moment later would stay open for the
+// node's whole default duration with nothing on screen to close it.
+pairingOpen = false;
+openDelay = 60;
+requests = [];
+openCalls.length = 0;
+closeCalls.length = 0;
+{
+  const opening = scope.openPairingDrawer();
+  await settle();                   // Pairing() answered, OpenPairing is out
+  if (openCalls.length !== 1) failures.push(`the drawer did not start opening a window: ${JSON.stringify(openCalls)}`);
+  await el("pairing-close").onclick();
+  if (closeCalls.length !== 0) failures.push("the dismissal closed a window that was not open yet");
+  await opening;
+  await settle();
+  if (closeCalls.length !== 1) {
+    failures.push(`a window opened after the drawer was dismissed was left open (ClosePairing ${closeCalls.length} times, want 1)`);
+  }
+  if (pairingOpen) failures.push("the node still holds a pairing window nobody is looking at");
+}
+
+// The dismissal's own rule still holds: somebody mid-exchange keeps it open.
+pairingOpen = false;
+closeCalls.length = 0;
+requests = [{ id: "req_2", state: "awaiting-confirm", direction: "outgoing" }];
+{
+  const opening = scope.openPairingDrawer();
+  await settle();
+  await el("pairing-close").onclick();
+  await opening;
+  await settle();
+  if (closeCalls.length !== 0) failures.push("the late dismissal closed the window on a request mid-exchange");
+}
+
+// And a drawer that is still open keeps the window it opened.
+pairingOpen = false;
+closeCalls.length = 0;
+requests = [];
+await scope.openPairingDrawer();
+await settle();
+if (closeCalls.length !== 0 || !pairingOpen) failures.push("an open drawer's window was closed by the in-flight check");
+openDelay = 0;
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));
