@@ -179,7 +179,7 @@
   **這裡沒有自己的按鈕**（2026-09-17）：原本的 `#btn-open-pairing`「開啟配對面板」在 `#btn-pair` 改成開抽屜之後，
   和它變成同一個 handler（`openPairingDrawer`）、同一個視圖上的兩顆一模一樣的按鈕，只是文字不同。
   重複的入口只會讓人以為兩顆做的事不一樣，所以留下節點列表上那顆 primary 的 `#btn-pair`，把這顆刪掉。
-- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字）。
+- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字；節點另回穩定代碼 `noticeCode`，目前只有 `candidates_unverified`，視窗認得就用 `candidate.notice.<code>` 以介面語言顯示，不認得或沒有代碼就顯示節點的英文 `notice`，#194）。
 - **`#btn-pair`「配對另一台機器…」（節點列表的 primary 按鈕）開的是配對抽屜，不是手動表單**（2026-09-17）。
   它本來開 `pair-modal`——那是兩台機器互相連不到時的退路，要手動填五個欄位、還要自己把 base64 公鑰帶過去。
   結果這個視圖上最顯眼的按鈕把新手丟進退路，而真正會幫他找到對方機器的交換流程躲在次要連結後面。
@@ -690,7 +690,7 @@ banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 
 `frontend/test/` 底下除了 `i18n.mjs`，全部跑在 zh-TW（`dom-shim.mjs` 的 `useLocale`），因為那些斷言是用中文寫的；英文那一半由 `i18n.mjs` 以 en-US 開機覆蓋，`TestFrontendSpeaksBothLanguages` 帶它跑。shim 的 `querySelectorAll("[data-t]")` 直接從 `index.html` 解出真的元素，並且 `i18n.mjs` 會把 shim 給的數量跟檔案裡的數量對起來——它以前回傳 `[]`，那會讓整段靜態文案的斷言全部落空。
 
-不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
+不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。要翻譯節點的一句話，就讓節點另給一個穩定代碼（如候選清單的 `noticeCode`），以代碼當 key、散文當退路。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
 
 ## 12. 詞表（2026-09-23，分支 `feat/desktop-ux-simplify`）
 
