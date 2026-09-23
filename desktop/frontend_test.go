@@ -468,6 +468,16 @@ func TestFrontendPairsTwoMachinesWithoutCopyingAKey(t *testing.T) {
 	runNodeCheck(t, "pairing-exchange.mjs")
 }
 
+// TestFrontendPairingDrawerOwnsTheWindowOnlyWhileOpen covers the two races
+// around the drawer opening and closing the pairing window by itself (#193
+// review): a drawer dismissed before the node answered must not go on to open a
+// window, and dismissing one closes the window only after asking the node, at
+// that moment, whether anybody is still waiting — the node expires every
+// pending request when the window closes.
+func TestFrontendPairingDrawerOwnsTheWindowOnlyWhileOpen(t *testing.T) {
+	runNodeCheck(t, "pairing-drawer.mjs")
+}
+
 // TestFrontendRunsEverySessionsFilterCheck covers the filter model behind the
 // session table: three groups that OR within and AND across, and counts that
 // answer "how many of what you are already looking at".

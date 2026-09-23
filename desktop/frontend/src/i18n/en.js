@@ -27,6 +27,7 @@ export const TEXT = {
   "pair.drawerSubNotAnnouncing": "Not broadcasting: the other machine connects to the address below.",
   "pair.drawerSubUnreachable": "Not broadcasting, and nothing can reach this machine yet.",
   "pair.drawerSubUnknown": "The other machine can connect only while pairing is open.",
+  "pair.closeEnds": "Closing this panel ends pairing, unless a request is still waiting on someone.",
   "pair.windowOpenUnreachable": "Pairing open, but nothing can reach this machine yet.",
   "pair.hereCopied": "Address copied to the clipboard",
   "pair.hereCopyFailed": "Could not write to the clipboard; copy the string above by hand.",
