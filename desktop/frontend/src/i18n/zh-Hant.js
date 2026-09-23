@@ -26,6 +26,7 @@ export const TEXT = {
   "pair.drawerSubNotAnnouncing": "不廣播：對方用下面的位址連進來。",
   "pair.drawerSubUnreachable": "不廣播，目前也還沒有人連得進來。",
   "pair.drawerSubUnknown": "配對開放時，對方才連得進來。",
+  "pair.closeEnds": "關掉這個面板會結束配對，除非還有請求在等人處理。",
   "pair.windowOpenUnreachable": "配對開放中，但還沒有人連得進來。",
   "pair.hereCopied": "已複製位址到剪貼簿",
   "pair.hereCopyFailed": "無法寫入剪貼簿，請手動複製上面那一串。",

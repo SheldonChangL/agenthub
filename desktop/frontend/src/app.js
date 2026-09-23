@@ -1258,6 +1258,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function openPairingWindowIfNeeded() {
+    // The drawer can be dismissed while loadPairing is still on its way: a
+    // window opened after that is one nobody asked for, and nothing on screen
+    // would then close it.
+    if (!pairingDrawerOpen()) return;
     const pairing = state.pairing;
     if (!pairing || state.busy) return;
     // A node that will not answer the window endpoints is not asked. The
@@ -1286,10 +1290,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // window too — unless a row is mid-exchange. Somebody at another keyboard is
   // waiting on those, and a window shut under them is the one disappearance the
   // other machine actually feels.
+  //
+  // The rows are read again first rather than taken from state.pairRequests,
+  // which the two-second poll last filled: a request that arrived since would
+  // be expired by the node the moment the window closed (ExpirePending,
+  // internal/api/pair.go). A read that fails leaves the window to its own
+  // timeout, because it cannot say nobody is waiting.
   async function dismissPairingDrawer() {
+    closePairingDrawer();
+    if (state.busy || !state.pairing?.state?.open) return;
+    await loadPairRequests({ render: false });
+    // Reopened while the read was out: the owner is not done after all.
+    if (pairingDrawerOpen() || state.pairRequestsError) return;
     const pending = (state.pairRequests ?? []).some(
       (request) => request.state === "pending" || request.state === "awaiting-confirm");
-    closePairingDrawer();
     if (pending || state.busy || !state.pairing?.state?.open) return;
     try {
       await api.ClosePairing();
@@ -1685,7 +1699,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     "hereHeading", "hereNote", "hereNoteAnnouncing", "hereNoAddress", "hereNoAddressWhy",
     "hereFixHeadline", "hereUnreachable", "hereFix",
     "drawerSubAnnouncing", "drawerSubNotAnnouncing", "drawerSubUnreachable", "drawerSubUnknown",
-    "windowOpenUnreachable", "hereCopied", "hereCopyFailed",
+    "windowOpenUnreachable", "hereCopied", "hereCopyFailed", "closeEnds",
     "send", "sendFromCandidate", "sendManual", "addressEmpty", "addressNote", "sent",
     "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
     "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
@@ -2481,6 +2495,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       } else if (announcing.lastError) {
         detail.append(element("div", "muted", announcing.lastError));
       }
+      // Opening the drawer opened the window without a button, so closing it
+      // closing the window has to be said, or it reads as merely hiding.
+      detail.append(element("div", "muted", PAIR_TEXT.closeEnds));
       // The broadcast tradeoff is only a tradeoff where something is actually
       // broadcast. On a node that announces nothing, the note that matters is
       // the address above, not a warning about a name nobody will hear.
