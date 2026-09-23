@@ -520,6 +520,14 @@ func TestFrontendAsksInItsOwnDialog(t *testing.T) {
 	runNodeCheck(t, "confirm-dialog.mjs")
 }
 
+// TestFrontendKeepsAnOpenedWhyOpen covers the 「說明」 folds #194 added in two
+// places redrawn on a timer — the pairing drawer's step 1 and the node detail
+// pane: after a background redraw an opened one is the same element, still
+// open, with the keyboard still on its summary.
+func TestFrontendKeepsAnOpenedWhyOpen(t *testing.T) {
+	runNodeCheck(t, "why-details.mjs")
+}
+
 // TestFrontendRowAudienceCells covers the AUDIENCE and FLAGS cells: FLAGS only
 // on a row some peer can see, which 「指定：無」 is not (#194).
 func TestFrontendRowAudienceCells(t *testing.T) {
