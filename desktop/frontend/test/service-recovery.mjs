@@ -223,6 +223,23 @@ if (confirmations.length !== 1) {
   failures.push(`saving a pinned setting asked ${confirmations.length} times, want once`);
 } else if (!confirmations[0].includes("允許區網")) {
   failures.push(`the question does not name the pinned field it is about: ${confirmations[0]}`);
+} else {
+  // Every flag the unit pins, not only the one this save touches: a yes
+  // re-registers with the database path alone, which unpins them all (#194).
+  // The one this save changes is marked; the other is named unmarked.
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  const lan = ZH["nodeSettings.allowLan"];
+  const listen = ZH["nodeSettings.peerListenLabel"];
+  const mark = (label) => ZH["service.pinnedChanging"].replace("{label}", label);
+  if (!confirmations[0].includes(mark(lan))) {
+    failures.push(`the question does not mark ${lan} as the field this save changes: ${confirmations[0]}`);
+  }
+  if (!confirmations[0].includes(listen)) {
+    failures.push(`the question leaves out ${listen}, which the unit also pins and a yes also unpins: ${confirmations[0]}`);
+  }
+  if (confirmations[0].includes(mark(listen))) {
+    failures.push(`the question marks ${listen} as changed by a save that does not touch it: ${confirmations[0]}`);
+  }
 }
 if (installed.length !== 0) {
   failures.push("a refused confirmation re-registered anyway");
