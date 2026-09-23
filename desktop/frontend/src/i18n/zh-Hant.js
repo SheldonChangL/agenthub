@@ -40,7 +40,7 @@ export const TEXT = {
   "pair.requestsEmptyAll": "沒有任何配對請求。已結束的請求只留十分鐘。",
   "pair.requestsUnread": "還沒有向節點讀過配對請求。",
   "pair.requestsFailed": "無法向本機節點取得配對請求，所以這裡不顯示任何內容。這是本機的讀取問題，不代表對方沒有送出。",
-  "pair.compare": "對方螢幕上是同樣的兩組指紋、同樣的順序。逐組比對，只要有一組不同就按拒絕。",
+  "pair.compare": "對方螢幕上是同樣的兩組指紋、同樣的順序。逐組比對，只要有一組不同就按拒絕——那表示中間有東西在攔截。",
   "pair.approve": "指紋一致，核准",
   "pair.confirm": "指紋一致，確認",
   "pair.reject": "拒絕",

@@ -41,7 +41,7 @@ export const TEXT = {
   "pair.requestsEmptyAll": "No pairing requests at all. Finished ones are kept for ten minutes.",
   "pair.requestsUnread": "The node has not been asked for pairing requests yet.",
   "pair.requestsFailed": "The pairing requests could not be read from the local node, so nothing is shown here. That is a local read failure, not a sign that nobody sent one.",
-  "pair.compare": "The other screen shows these two fingerprints in the same order. Compare them group by group; if any group differs, press Reject.",
+  "pair.compare": "The other screen shows these two fingerprints in the same order. Compare them group by group; if any group differs, press Reject — something is intercepting the connection.",
   "pair.approve": "Fingerprints match, approve",
   "pair.confirm": "Fingerprints match, confirm",
   "pair.reject": "Reject",
