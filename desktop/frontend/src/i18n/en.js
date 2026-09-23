@@ -443,6 +443,7 @@ export const TEXT = {
   "identity.keyCopyFailed": "Could not write to the clipboard ({error}). Copy the string above by hand, including the trailing =.",
 
   "audience.noNodesYet": "No machine has been paired yet.",
+  "audience.formerNode": "No longer a paired machine",
   "audience.autoWakeNodeOff": "This node was started without -auto-wake, so ticking this wakes no session until the node is restarted with it (ah service install … --auto-wake).",
   "audience.autoWakeWillTurnOff": "Applying this turns waking off: a Claude Code session is never woken.",
   "audience.autoWakeCodex": "A Codex session is woken by the node through the app-server (verified on real machines).",

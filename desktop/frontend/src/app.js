@@ -3223,21 +3223,41 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // renderAudienceNodeList offers every paired node as a checkbox, so the
   // owner picks a name rather than typing an id; the text field stays for an
   // id the list does not show. Unchecked every time, like the flags.
-  function renderAudienceNodeList() {
+  //
+  // formerNodes are ids the one session being edited is already published to
+  // but that are no longer in state.nodes — revoked, or never listed. They get
+  // a row of their own, ticked, under a label that says what they are (#194):
+  // with no box, readAudienceForm left them out and 套用 withdrew the grant
+  // without a word. Unticking one is how the owner withdraws it on purpose.
+  //
+  // The boxes are kept in audienceNodeBoxes, which openAudienceModal ticks and
+  // readAudienceForm reads, so the three agree on one list.
+  let audienceNodeBoxes = [];
+  function renderAudienceNodeList(formerNodes = []) {
     const list = el("audience-node-list");
     list.replaceChildren();
-    for (const node of state.nodes) {
-      const label = element("label", "nodepick");
+    audienceNodeBoxes = [];
+    const row = (nodeId, className, ...parts) => {
+      const label = element("label", className);
       const box = document.createElement("input");
       box.type = "checkbox";
-      box.value = node.nodeId;
+      box.value = nodeId;
       box.className = "audience-node-box";
       box.onchange = () => label.classList.toggle("on", box.checked);
-      const presence = presenceLabel(presenceFor(node.nodeId));
-      label.append(box, element("span", `dot ${presence.className}`), element("span", "", node.displayName), element("span", "mono", node.nodeId));
+      label.append(box, ...parts);
       list.append(label);
+      audienceNodeBoxes.push(box);
+    };
+    for (const node of state.nodes) {
+      const presence = presenceLabel(presenceFor(node.nodeId));
+      row(node.nodeId, "nodepick", element("span", `dot ${presence.className}`),
+        element("span", "", node.displayName), element("span", "mono", node.nodeId));
     }
     if (state.nodes.length === 0) list.append(element("p", "muted", t("audience.noNodesYet")));
+    for (const nodeId of formerNodes) {
+      row(nodeId, "nodepick former", element("span", "muted", t("audience.formerNode")),
+        element("span", "mono", nodeId));
+    }
     el("audience-node-input").value = "";
   }
 
@@ -3323,7 +3343,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
-    renderAudienceNodeList();
+    // Exactly one session: see below. Worked out before the list is drawn,
+    // because it decides what the list holds — that session's grants that no
+    // paired node accounts for.
+    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
+    const listed = new Set(state.nodes.map((node) => node.nodeId));
+    const former = only?.audience?.mode === "selected"
+      ? [...new Set(only.audience.nodes ?? [])].filter((nodeId) => nodeId && !listed.has(nodeId))
+      : [];
+    renderAudienceNodeList(former);
 
     // One session opens showing what that session already is; several open at
     // 不公開 with every flag off.
@@ -3338,7 +3366,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // session there is no disagreement and nothing left over — the values shown
     // are that session's own, read from the overview — and blanking them meant
     // that changing 「誰看得到」 silently withdrew every flag the session had.
-    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
     const current = only?.audience ?? {};
     const mode = only ? (current.mode ?? "none") : "none";
     for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
@@ -3346,7 +3373,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     if (only && mode === "selected") {
       const granted = new Set(current.nodes ?? []);
-      for (const box of document.querySelectorAll("#audience-node-list input.audience-node-box")) {
+      for (const box of audienceNodeBoxes) {
         box.checked = granted.has(box.value);
         // renderAudienceNodeList paints the row from the box's own onchange, so
         // a box ticked here has to say so itself.
@@ -3438,7 +3465,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       .value.split(/[\s,]+/)
       .map((value) => value.trim())
       .filter(Boolean);
-    const checked = [...document.querySelectorAll("#audience-node-list input.audience-node-box")]
+    const checked = audienceNodeBoxes
       .filter((box) => box.checked)
       .map((box) => box.value);
     const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];

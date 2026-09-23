@@ -1152,6 +1152,9 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 }
 .nodes .nodepick.on { border-color: var(--accent); background: var(--accent-dim); }
 .nodes .nodepick .mono { margin-left: auto; color: var(--muted); }
+/* A machine this session is published to that is no longer paired: kept, and
+   said to be what it is, so 套用 does not withdraw it unseen (#194). */
+.nodes .nodepick.former { border-style: dashed; }
 .nodes p { margin: 4px 0 0; font-size: 11.5px; }
 
 .flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin: 0 0 4px; }
