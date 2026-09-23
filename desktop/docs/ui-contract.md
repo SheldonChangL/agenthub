@@ -95,8 +95,9 @@
 ### 3.1 全域
 
 - 標題列：連線點（ok/bad）、`node-line`（節點名稱 · 平台 · URL）；三個分頁 `本機 session` / `區網` / `設定`
-  （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
-  重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
+  （前兩個帶計數）；右側兩個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
+  重新掃描（`btn-discover`）。`btn-reload` 保留在 DOM 但 `hidden`（15 秒背景輪詢取代它）；預覽 heartbeat
+  移到設定頁的身分區（§2 `Heartbeat()`）。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
 - **收件匣徽章（#146，2026-09-18）**：數字，不是「新」。
   - 定義是 **held，不是未讀**：節點沒有「已讀」這個概念，桌面端在抽屜裡讀也刻意不標示
     （抽屜那句「在這裡讀不會把訊息交給 agent，也不會標示已讀」仍然成立，也仍然是真的）。
@@ -148,12 +149,12 @@
     除了「節點連不到」以外，每一條都要 `state.loadedOnce` 才算數——讀不到節點時的空表格不是這台機器的事實
     （#114）。關掉之後寫進 `UI_PREFS_KEY` 的 `onboardingDismissed`，**不會自己再打開**；
     要找回來只有設定 → 外觀的「Show the setup checklist」。
-  - **五個步驟**，每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
+  - **三個步驟**（2026-09-23 起；原本五步），每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
     所以在終端機把服務移除掉，那一步會自己回來：①把節點跑成背景服務（`goToService()`；不支援服務管理員的
-    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②找出本機 session（跟 `btn-discover` 同一個
-    `discoverSessions()`；掃出 0 筆時 body 換成「AgentHub 是讀那些工具寫在硬碟上的檔案」的解釋）
-    ③讓這台機器連得到（見下）④和另一台機器配對（`goToPairing()`：先切到區網視圖再 `openPairingDrawer()`，
-    因為交換清單只在那個視圖被輪詢）⑤公開一個 session（純文字 + 把焦點放到 `#select-all`）。
+    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②和另一台機器配對（`goToPairing()`：先切到區網視圖再
+    `openPairingDrawer()`，因為交換清單只在那個視圖被輪詢；「讓這台機器連得到」併進抽屜第 1 步）③公開一個 session
+    （純文字 + 把焦點放到 `#select-all`；連得到節點但 0 筆 session 時加一句 `onboarding.publish.noSessions`）。
+    原本的「找出本機 session」不再是步驟：視窗第一次連得到節點且 0 筆 session 時自動 `Discover()` 一次（§2）。
   - **元素識別**：本機視圖會被 15 秒的 `load()` tick 重畫，所以 `renderOnboarding()` 以 step id 為 key
     原地更新，只有「步驟集合改變」時才寫容器；按鈕依位置保留。理由與 `updateCandidateRow` 一樣：
     重建會把使用者正要按下去的那顆按鈕換掉。`state.busy` 時每顆按鈕 disabled。
@@ -163,11 +164,11 @@
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - 選取列：全選目前篩選結果（含 indeterminate）、已選取 N 個、「設定公開對象…」「收回選取」。
-- **表格 9 欄**：勾選、SESSION（含 provider badge）、狀態、管理、公開對象、**旗標**、工作目錄、最後活動、**動作**。
-- **有排序**：6 個表頭可排序（`id`、`status`、`management`、`audience`、`cwd`、`lastSeenAt`），
+- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象、**旗標**（只在已公開的列顯示）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
+- **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
-- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 176px。MCP 入口已移除，見 §10。
+- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
 - 空狀態：「沒有符合條件的 session。」
 
 ### 3.3 區網視圖
