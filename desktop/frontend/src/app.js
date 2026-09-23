@@ -4168,14 +4168,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
     if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
+    // Whether the unit was actually re-registered, which is not whether this
+    // function got to the end: withBusy catches a failed InstallService and
+    // shows it in a banner, and answering true after that sent the save on as
+    // if the unit had been cleared — for the pinned flags to undo it at the
+    // next start (#194). Set once the install has answered, because from
+    // there the unit is the new one whatever the read-back says; and never set
+    // when withBusy did not run at all, which is another write in flight.
+    let reregistered = false;
     await withBusy(t("service.busyReregister"), async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
+      reregistered = true;
       showServiceOutput(result);
       const up = await waitForNode({ previousPid });
       await load();
       banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
-    return true;
+    return reregistered;
   }
 
   async function openServiceForm() {
