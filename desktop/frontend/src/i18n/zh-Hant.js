@@ -432,6 +432,8 @@ export const TEXT = {
   "network.revoke": "撤銷信任",
   "network.revokeNote": "撤銷會同時移除這台機器持有的所有 session 授權，再次配對不會恢復。",
   "network.revoked": "已撤銷 {name}，並移除它持有的所有授權。",
+  "network.revokeConfirmTitle": "撤銷對 {name} 的信任？",
+  "network.revokeConfirmBody": "這台機器將不再信任 {name}（{nodeId}），它持有的所有 session 授權會一起移除。\n\n這無法復原：再次配對也不會恢復這些授權。",
   "network.addressRecorded": "目前記錄的位址是 {address}，訊息會送到這裡。",
   "network.addressMissing": "沒有位址：送到這台機器的訊息會被靜默跳過，ah send 仍會回 queued。有 --discover 時會自動學到；沒有就在下面填。",
   "network.recordAddress": "記錄位址",

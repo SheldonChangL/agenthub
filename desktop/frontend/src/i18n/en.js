@@ -437,6 +437,8 @@ export const TEXT = {
   "network.revoke": "Revoke trust",
   "network.revokeNote": "Revoking also removes every session grant this machine holds; pairing again does not bring them back.",
   "network.revoked": "Revoked {name}, and removed every grant it held.",
+  "network.revokeConfirmTitle": "Revoke trust in {name}?",
+  "network.revokeConfirmBody": "{name} ({nodeId}) will no longer be trusted by this machine, and every session grant it holds is removed with it.\n\nThis cannot be undone: pairing again does not bring those grants back.",
   "network.addressRecorded": "The recorded address is {address}; messages go there.",
   "network.addressMissing": "No address: messages to this machine are skipped silently, and ah send still answers queued. With --discover it is learned automatically; without it, type it below.",
   "network.recordAddress": "Record the address",

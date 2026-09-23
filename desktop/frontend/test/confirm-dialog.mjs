@@ -54,12 +54,14 @@ answerConfirms(document, (question) => {
 });
 
 let clearCalls = [];
+let revokeCalls = [];
 let clearResult = { removed: 4 };
 const { configure, boot } = await import("../src/app.js");
 const noop = async () => ({});
 configure({
   Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
-  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  Discover: noop, SetAudience: noop, TrustNode: noop, Heartbeat: noop,
+  RevokeNode: async (nodeId) => { revokeCalls.push(nodeId); return {}; },
   Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
   CopyText: noop, MCPConfig: noop, Outbound: noop, Wakes: noop,
   Inbox: async (sessionId) => ({ sessionId, messages: [], held: 0, capacity: 500 }),
@@ -89,6 +91,45 @@ if (clearCalls.length !== 1 || clearCalls[0] !== SESSION) {
 }
 if (!el("inbox-body").serialize().includes("移除 4 則")) {
   failures.push(`the clear result is not in the drawer: ${el("inbox-body").serialize()}`);
+}
+
+// 4b. 撤銷信任 cannot be undone — the node's grants go with its trust — so it
+//     is asked first, as a dangerous question, and 取消 revokes nothing.
+{
+  const PEER = { nodeId: "node_peer000000000000", displayName: "bench", platform: "linux/amd64", fingerprint: "AAAA" };
+  app.state.nodes = [PEER];
+  app.state.view = "network";
+  app.state.selectedNode = PEER.nodeId;
+  app.render();
+  const buttons = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.tagName === "button") buttons.push(node);
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(el("node-detail-body"));
+  const revoke = buttons.find((button) => button.textContent === "撤銷信任");
+  if (!revoke) {
+    failures.push("the node detail has no 撤銷信任 button");
+  } else {
+    asked = [];
+    answer = false;
+    el("confirm-ok").className = "";
+    await revoke.onclick();
+    await settle();
+    if (asked.length !== 1) failures.push(`撤銷信任 asked ${asked.length} questions, want 1`);
+    else if (!asked[0].includes("bench") || !asked[0].includes(PEER.nodeId)) failures.push(`the revoke question does not name the machine: ${asked[0]}`);
+    if (revokeCalls.length !== 0) failures.push(`a cancelled revoke called RevokeNode ${JSON.stringify(revokeCalls)}`);
+    if (!el("confirm-ok").classList.contains("danger")) failures.push("the revoke question is not drawn as a dangerous one");
+    answer = true;
+    await revoke.onclick();
+    await settle();
+    if (revokeCalls.length !== 1 || revokeCalls[0] !== PEER.nodeId) {
+      failures.push(`a confirmed revoke called RevokeNode with ${JSON.stringify(revokeCalls)}, want ["${PEER.nodeId}"]`);
+    }
+  }
+  app.state.view = "local";
+  app.state.selectedNode = null;
 }
 
 // 5. askConfirm itself, with the fixture's automatic answer taken off the
