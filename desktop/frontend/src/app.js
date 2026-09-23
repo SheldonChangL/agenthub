@@ -562,6 +562,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const audience = describeAudience(session.audience);
     parts.audiencePill.className = audience.published ? "pill public" : "pill";
     parts.audiencePill.textContent = audience.text;
+    // The column is sized for the 900px window, where the longest wordings
+    // (「Every paired machine」) clip; the tooltip carries the whole of it.
+    parts.audiencePill.title = audience.text;
 
     // The flags describe what a peer is allowed to do with this session, so on
     // one no peer has been given they describe nothing. Hidden rather than
@@ -578,6 +581,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.cwdText.textContent = session.cwd ? session.cwd : "—";
     parts.cwdCell.title = session.cwd ? session.cwd : "";
     parts.seenCell.textContent = relative(session.lastSeenAt);
+    parts.seenCell.title = parts.seenCell.textContent;
 
     // The two button labels. Written here and not at creation: see sessionRow.
     //

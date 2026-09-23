@@ -725,6 +725,33 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 			"instead of scrolling and the last one is cut off with no way to reach it")
 	}
 
+	// ...but not so wide that the window's own minimum scrolls. main.go sets
+	// MinWidth 900; the card's margins and border leave 866px of scroller
+	// (measured in dev/mock.html). At min-width 1080px the table scrolled there
+	// and the sticky actions column covered the working directory (#193
+	// review). The fixed columns must also leave SESSION and WORKING DIRECTORY,
+	// which carry no width, something to split.
+	const scrollerAtMinWidth = 866
+	const flexibleFloor = 2 * 100
+	if m := regexp.MustCompile(`min-width: (\d+)px`).FindStringSubmatch(table); m != nil {
+		if px, _ := strconv.Atoi(m[1]); px > scrollerAtMinWidth {
+			t.Errorf("the table's min-width is %dpx, wider than the %dpx the 900px window leaves it: "+
+				"the smallest window scrolls and the sticky actions cover other columns", px, scrollerAtMinWidth)
+		}
+	}
+	fixed := 0
+	for _, m := range regexp.MustCompile(`col\.c-(\w+) \{ width: (\d+)px; \}`).FindAllStringSubmatch(css, -1) {
+		if m[1] == "session" || m[1] == "cwd" {
+			t.Errorf("col.c-%s has a fixed width; it is one of the two columns that take what the others leave", m[1])
+		}
+		px, _ := strconv.Atoi(m[2])
+		fixed += px
+	}
+	if fixed > scrollerAtMinWidth-flexibleFloor {
+		t.Errorf("the fixed columns add up to %dpx, leaving SESSION and WORKING DIRECTORY less than %dpx "+
+			"between them in the 900px window", fixed, flexibleFloor)
+	}
+
 	// And the actions stay put while the rest scrolls under them.
 	actions := regexp.MustCompile(`\n\.col-actions \{[^}]*\}`).FindString(css)
 	if !strings.Contains(actions, "position: sticky") {
