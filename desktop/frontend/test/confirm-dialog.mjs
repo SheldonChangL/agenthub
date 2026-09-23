@@ -107,8 +107,40 @@ const two = { title: "要清空嗎？", body: "第一段。\n\n第二段。", co
 if (await ask(() => el("confirm-ok").onclick(), two) !== true) failures.push("確定 did not answer true");
 if (await ask(() => el("confirm-cancel").onclick(), two) !== false) failures.push("取消 did not answer false");
 if (await ask(() => app.confirmKey({ key: "Escape" }), two) !== false) failures.push("Esc did not answer false");
-if (await ask(() => el("confirm-modal").onclick({ target: el("confirm-modal") }), two) !== false) {
-  failures.push("a click on the backdrop did not answer false");
+// The backdrop: a fresh press on it, begun once the question has been up for
+// a moment, is "no".
+{
+  const modal = el("confirm-modal");
+  const pending = app.askConfirm(two);
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  modal.onpointerdown?.({ target: modal });
+  modal.onclick({ target: modal, detail: 1 });
+  if (await pending !== false) failures.push("a click on the backdrop did not answer false");
+}
+// A double-click on the button that asks: the dialog opens inside the first
+// click and covers the window, so the second press and click of the same
+// gesture land on the backdrop. That is not an answer, whichever way the
+// browser reports it — as a second click, or as a plain one too soon.
+{
+  const modal = el("confirm-modal");
+  const pending = app.askConfirm(two);
+  modal.onpointerdown?.({ target: modal });
+  modal.onclick({ target: modal, detail: 2 });
+  if (modal.classList.contains("hidden")) failures.push("the second click of a double-click on the backdrop closed the question");
+  modal.onpointerdown?.({ target: modal });
+  modal.onclick({ target: modal, detail: 1 });
+  if (modal.classList.contains("hidden")) failures.push("a backdrop press the moment the question opened closed it");
+  // Nor is a press that began inside the card and was released outside it.
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  modal.onpointerdown?.({ target: el("confirm-body") });
+  modal.onclick({ target: modal, detail: 1 });
+  if (modal.classList.contains("hidden")) failures.push("a press begun on the card and released on the backdrop closed the question");
+  // And the second click of a double-click is still not one after the grace.
+  modal.onpointerdown?.({ target: modal });
+  modal.onclick({ target: modal, detail: 2 });
+  if (modal.classList.contains("hidden")) failures.push("a double-click on the backdrop closed the question");
+  el("confirm-cancel").onclick();
+  await pending;
 }
 {
   const pending = app.askConfirm(two);

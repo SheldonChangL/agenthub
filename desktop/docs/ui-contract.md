@@ -283,7 +283,8 @@
   所有「做了就回不去」的動作都在這裡問，**不用 `window.confirm`／`alert`／`prompt`**——macOS 版
   WKWebView 的 UIDelegate（Wails v2 `WailsContext.m`）只實作了 `runOpenPanelWithParameters`，
   沒有 `runJavaScriptConfirmPanelWithMessage`，WebKit 因此把每個 `confirm()` 當成按了取消、畫面上什麼也不出現。
-  Esc、取消、點背景都回 false；`danger` 時確認鈕是紅色且焦點預設在「取消」；body 以 `pre-line` 保留換行；
+  Esc、取消、點背景都回 false——點背景只算按下與點擊都在背景、按下晚於開啟 400ms、且不是連點第二下的那一次
+  （對話框在第一下 click 裡就蓋滿視窗，雙擊的第二下必落在背景）；`danger` 時確認鈕是紅色且焦點預設在「取消」；body 以 `pre-line` 保留換行；
   z-index 高於抽屜（收件匣抽屜會從裡面問）。同時只有一題，第二題會讓第一題回 false。
 
 ## 4. 安全與文案契約（測試逐字斷言的，不可改寫）
