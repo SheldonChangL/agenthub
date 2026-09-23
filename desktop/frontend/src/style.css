@@ -132,7 +132,10 @@ body.no-backdrop .backdrop .rain { display: none; }
    a spacer element so the whole strip stays one draggable region. */
 body.mac .titlebar { padding-left: 78px; }
 
-.brand { display: flex; align-items: center; gap: 10px; }
+/* The brand gives up width before the tabs do: at 900px the tabs were the
+   ones squeezed, and 「區網」 and 「設定」 broke into one character per line. */
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; }
+.brand > div { min-width: 0; }
 .brand h1 { font-size: 13px; margin: 0; font-weight: 600; line-height: 1.2; }
 .brand p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.2; }
 
@@ -147,6 +150,7 @@ body.mac .titlebar { padding-left: 78px; }
 .tabs { --wails-draggable: no-drag; display: flex; gap: 2px; margin-left: 12px; }
 .tab {
   display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap; flex: none;
   height: 30px; padding: 0 12px;
   border-radius: 6px;
   color: var(--muted);
@@ -363,24 +367,47 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* min-width is what makes .tablescroll actually scroll. Without it the table is
    always exactly as wide as the card, so a narrow window squeezes the columns
    until the last one is cut off at the card's edge with no way to reach it —
-   the resume button was half outside the window and unclickable. */
-table { width: 100%; min-width: 1200px; border-collapse: collapse; table-layout: fixed; }
-col.c-check { width: 36px; }
-col.c-session { width: 264px; }
-col.c-status { width: 84px; }
-col.c-mgmt { width: 128px; }
-col.c-audience { width: 112px; }
-col.c-flags { width: 164px; }
-col.c-last { width: 92px; }
-/* Wide enough for all three buttons plus the cell's padding: measured at 241px
-   (63 + 83 + 67, two 4px gaps, 10px padding each side), with slack for a font
-   that renders the labels wider. At 214px the third button was cut off by the
-   cell's own `overflow: hidden` at EVERY window width, not only narrow ones. */
+   the resume button was half outside the window and unclickable.
+
+   It is kept BELOW the card's width at the window's 900px minimum (866px of
+   scroller, measured), so at every width the app allows the whole row fits and
+   nothing scrolls. At 1080px it scrolled at 900px, and the sticky actions
+   column then sat on top of the working-directory and last-seen columns
+   (#193 review). The fixed columns below are sized to their content at the
+   widest language (measured in dev/mock.html, English and zh-Hant, with the
+   6px cell padding below): all four flag chips and both row buttons fit. The
+   audience pill's longest English wording does not, and clips with its text in
+   the tooltip. They add up to 636px, and SESSION and WORKING DIRECTORY carry
+   no width, so they split what is left and clip with an ellipsis — the full
+   title and path stay in the cells' titles. */
+table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
+col.c-check { width: 32px; }
+col.c-status { width: 76px; }
+col.c-audience { width: 96px; }
+col.c-flags { width: 156px; }
+col.c-last { width: 104px; }
+/* Wide enough for both buttons plus the cell's padding: measured at 241px when
+   there were three (63 + 83 + 67, two 4px gaps, 10px padding each side), with
+   slack for a font that renders the labels wider. At 214px the third button was
+   cut off by the cell's own `overflow: hidden` at EVERY window width, not only
+   narrow ones.
+
    The inbox button gained a count badge (#146), which is inline rather than
    floated so it can never be cut off by that same overflow — it widens the
-   button by about 22px when a session is holding something, so the column
-   went from 176px to 200px rather than staying exactly at the old fit. */
-col.c-actions { width: 200px; }
+   button by about 22px when a session is holding something, so the column went
+   from 176px to 200px rather than staying exactly at the old fit.
+
+   The comment above used to end four lines earlier, which left this paragraph
+   standing as CSS: the browser read it as the start of a selector and swallowed
+   the rule underneath, so col.c-actions had no width in a real window at all.
+   Verified in the WebView's own CSSOM: the style element's text held the rule
+   and document.styleSheets did not. The Go check matches the declaration as
+   text, so it stayed green throughout.
+
+   Measured again for #193 in dev/mock.html, with the row buttons' padding cut
+   to 8px and the cell's to 6px: the widest row (a three-digit badge) is 172px
+   including padding, which is what the column is. */
+col.c-actions { width: 172px; }
 
 thead th {
   position: sticky; top: 0; z-index: 1;
@@ -388,9 +415,13 @@ thead th {
   text-align: left;
   font-size: 10px; letter-spacing: 0.08em; font-weight: 600;
   color: var(--muted);
-  padding: 9px 10px;
+  padding: 9px 6px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
+  /* A column narrower than its header clips the header instead of painting it
+     over the next one: WORKING DIRECTORY is wider than its column at 900px. */
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 thead th.sortable { cursor: pointer; user-select: none; }
 thead th.sortable:hover { color: var(--text); }
@@ -400,7 +431,7 @@ thead th .sortmark.hint { opacity: 0.3; }
 thead th.sortable:hover .sortmark.hint { opacity: 0.7; }
 
 tbody td {
-  padding: 8px 10px;
+  padding: 8px 6px;
   border-bottom: 1px solid rgba(38, 46, 55, 0.7);
   white-space: nowrap;
   max-width: 420px;
@@ -412,7 +443,7 @@ tbody tr { height: 38px; }
 tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 tbody tr.sel { background: var(--accent-dim); }
 
-.col-check { width: 36px; text-align: center; }
+.col-check { width: 32px; text-align: center; }
 /* Pinned to the right edge of the scroller: the row can scroll horizontally
    under it, and the three actions stay where they can be clicked however narrow
    the window is. Opaque because scrolled content passes beneath. */
@@ -467,10 +498,10 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .pill.bad { color: #f0908a; border-color: rgba(229, 84, 75, 0.45); }
 
 /* The four audience flags, as small squares that are lit or dashed. */
-.flagchips { display: inline-flex; gap: 4px; }
+.flagchips { display: inline-flex; gap: 3px; }
 .flag {
   display: inline-flex; align-items: center;
-  height: 16px; padding: 0 5px;
+  height: 16px; padding: 0 4px;
   border-radius: 4px;
   font-size: 10px;
   border: 1px dashed var(--line);
@@ -480,6 +511,20 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .flag.warn.on { background: rgba(224, 163, 62, 0.16); color: var(--amber); }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
+.rowactions button { padding: 0 8px; }
+/* A session holding nothing keeps the button and loses the word: an envelope
+   instead of 「收件匣」 on every one of a thousand rows. The label element and
+   its text are still there — hidden, not removed — so the tooltip, the
+   accessible name and the language switch all still reach it. */
+.rowactions button.inbox.compact { padding: 0 8px; }
+.rowactions button.inbox.compact .label {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.rowactions button.inbox.compact::before { content: "\2709"; font-size: 13px; line-height: 1; }
 
 /* How many messages a session is still holding (#146). It rides inside the
    Inbox button and on the 本機 session tab, and it is absent — not zero —
@@ -553,7 +598,8 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   overflow-y: auto;
 }
 .nodelist-head {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  flex-wrap: wrap;
   padding: 10px 14px;
   border-bottom: 1px solid var(--line);
   font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted);
@@ -564,7 +610,8 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   padding: 12px 14px;
   border-top: 1px solid var(--line);
 }
-.nodelist-foot p { margin: 8px 0 10px; font-size: 11.5px; line-height: 1.55; }
+.nodelist-foot p { margin: 8px 0 0; font-size: 11.5px; line-height: 1.55; }
+.nodelist-foot p:empty { display: none; }
 .nodelist-foot button { width: 100%; justify-content: center; }
 
 .noderow {
@@ -589,12 +636,15 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .noderow .presence.unknown { font-style: italic; }
 .noderow .noaddr { color: #f0908a; font-size: 11px; }
 
+/* No max-width, for the reason .tablewrap has none: the content is what the
+   window is for. Both used to stop short so the backdrop photo showed down the
+   right-hand side — a strip too narrow to make out, bought with the width the
+   longest values needed. */
 .nodedetail {
   flex: 1; min-width: 0;
   overflow: auto;
   padding: 22px 26px;
   margin: 12px 16px;
-  max-width: 900px;
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--panel);
@@ -611,9 +661,11 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   user-select: text;
 }
 .nodedetail p { font-size: 12px; line-height: 1.6; }
+/* Auto-fit rather than three fixed columns: at a 900px window the three were
+   about 180px each, and a node id or an address is longer than that. */
 .detailgrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 10px;
   margin: 14px 0;
 }
@@ -633,11 +685,59 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 
 /* ---------- pairing panel (drawer) and candidates ---------- */
 
-.pairing-state { padding: 12px 14px; }
+/* The window's whole state on one line: what it is doing, how long is left,
+   and the one button that is useful in that state. It used to be a headline, a
+   22px countdown of its own and a row of two buttons, one of which was always
+   the wrong one to press. */
+.pairing-state { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.pairing-state .statusline {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
 .pairing-state .line { font-weight: 600; }
-.countdown { font-family: var(--mono); font-size: 22px; color: var(--amber); font-variant-numeric: tabular-nums; }
-.pairing-actions { display: flex; gap: 8px; padding: 0 14px 12px; }
-#pairing-note { padding: 0 14px 12px; font-size: 11.5px; line-height: 1.6; }
+.countdown {
+  font-family: var(--mono); font-size: 13px; color: var(--amber);
+  font-variant-numeric: tabular-nums;
+}
+.countdown:empty { display: none; }
+.pairing-state button { height: 24px; font-size: 12px; }
+#pairing-note { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
+#pairing-note:empty { display: none; }
+#pairing-detail:empty { display: none; }
+
+/* The three steps, numbered, in the order the two people act. The number is
+   what says these are in order; the drawer scrolls through them rather than
+   hiding two thirds of itself behind a wizard's Next button, because the
+   person at the other keyboard is working through the same three. */
+.pairstep { padding: 14px 0 4px; border-bottom: 1px solid var(--line); }
+.pairstep:last-child { border-bottom: none; }
+.pairstep .stephead {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0 14px 10px;
+  font-size: 12.5px; font-weight: 600;
+}
+.pairstep .stephead .stepn {
+  flex: none;
+  width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 11px;
+}
+.pairstep .stephead .showdecided { margin-left: auto; font-size: 11.5px; }
+.pairstep .nodelist-head { border-bottom: none; padding-bottom: 6px; }
+
+/* The five-field fallback, folded. */
+.pairadvanced { padding: 4px 14px 12px; }
+.pairadvanced > summary {
+  cursor: pointer; color: var(--muted); font-size: 12px;
+  list-style: none;
+}
+.pairadvanced > summary::-webkit-details-marker { display: none; }
+.pairadvanced > summary::before { content: "▸ "; }
+.pairadvanced[open] > summary::before { content: "▾ "; }
+.pairadvanced > summary:hover { color: var(--text); }
+.pairadvanced p { margin: 8px 0; font-size: 11.5px; line-height: 1.6; }
 
 /* required by frontend_test.go: candidate rows scroll */
 #candidate-rows {
@@ -736,11 +836,6 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .pairrow .decide { display: flex; gap: 8px; justify-content: flex-end; }
 .pairrow .decide button { height: 26px; font-size: 12px; }
 
-.pairingsummary { padding: 12px 14px; border-top: 1px solid var(--line); }
-.pairingsummary .head { display: flex; align-items: center; justify-content: space-between; }
-.pairingsummary p { margin: 8px 0 10px; font-size: 11.5px; line-height: 1.55; }
-.pairingsummary button { width: 100%; justify-content: center; }
-
 /* required by frontend_test.go: a notice explaining an absence */
 .stale {
   margin: 8px 0;
@@ -820,11 +915,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   flex: 1; min-width: 0;
   overflow: auto;
   padding: 24px 32px;
-  max-width: 860px;
   background: var(--panel);
-  border-right: 1px solid var(--line);
 }
-.settingsbody section { max-width: 760px; margin-bottom: 28px; }
+/* A reading measure rather than a hard stop: the panel fills the window, and
+   the prose inside it does not run the whole width of a wide screen. Cards,
+   forms and the command output are not capped — they hold paths and addresses
+   that were being wrapped for the sake of a backdrop nobody could see. */
+.settingsbody section { margin-bottom: 28px; }
+.settingsbody h2 + p { max-width: 78ch; }
 .settingsbody h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
 .settingsbody h2 + p { margin: 0 0 16px; font-size: 12px; }
 
@@ -844,19 +942,34 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .card .cardbody { padding: 14px; }
 .card .cardfoot {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap;
   padding: 10px 14px;
   border-top: 1px solid var(--line);
 }
+/* The hint beside the buttons is a sentence; the buttons are not. The sentence
+   gives way first and the group stays whole. */
+.card .cardfoot > :first-child { flex: 1 1 260px; min-width: 0; }
+.card .cardfoot > span:last-child { display: flex; gap: 8px; flex-wrap: wrap; }
 
+/* The status sentence and the buttons, on one line while they fit and on two
+   when they do not.
+ *
+ * They used to be one nowrap row: 「背景服務：已安裝且執行中（pid 4213）· …」 is a
+ * whole sentence and the four buttons after it were pushed past the panel's
+ * edge, where the card's own overflow cut them. 「移除服務…」 rendered as 「移」.
+ * The line takes the width it needs, the buttons keep theirs, and the group
+ * drops to its own row rather than being clipped. */
 .service-head {
   display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
   padding: 12px 14px;
   border-radius: var(--radius);
   border: 1px solid var(--line);
   background: var(--panel);
   margin-bottom: 14px;
 }
-.service-head .line { flex: 1; font-size: 12.5px; line-height: 1.5; }
+.service-head .line { flex: 1 1 340px; min-width: 0; font-size: 12.5px; line-height: 1.5; }
+.service-head .headactions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .service-head .line.ok { color: var(--text); }
 .service-head .line.warn { color: var(--amber); }
 
@@ -915,6 +1028,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   display: flex; align-items: center; justify-content: center;
   z-index: 20;
 }
+/* The card scrolls; its blocks do not shrink.
+ *
+ * It was `overflow: hidden` over a flex column, so a card taller than 80vh
+ * did not scroll — it squeezed its children, and each of those clipped what
+ * did not fit. Measured at 900x760: both radio groups in the audience dialog
+ * held 185px of options in a 142px box with no scrollbar, so the third choice
+ * in each was on screen nowhere and reachable by nothing. The <pre> panels
+ * still take the space that is left and scroll inside it. */
 .modal-card {
   width: min(760px, 88vw);
   max-height: 80vh;
@@ -924,8 +1045,18 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-radius: 10px;
   padding: 14px 18px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
+  overflow: hidden auto;
 }
+.modal-card > header,
+.modal-card > p,
+.modal-card > .sectionlabel,
+.modal-card > .options,
+.modal-card > .flags,
+.modal-card > .selectedlist,
+.modal-card > details,
+.modal-card > .pairform,
+.modal-card > .localidentity,
+.modal-card > .modal-actions { flex: none; }
 .modal-card header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .modal-card h2 { font-size: 14px; margin: 0; font-weight: 600; }
 .modal-card p { margin: 8px 0 12px; font-size: 12px; line-height: 1.6; }
@@ -951,11 +1082,12 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 }
 .modal-actions {
   display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  flex-wrap: wrap;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
-.modal-actions .muted { flex: 1; font-size: 11.5px; line-height: 1.5; }
+.modal-actions .muted { flex: 1 1 240px; min-width: 0; font-size: 11.5px; line-height: 1.5; }
 
 .sectionlabel { font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); margin: 10px 0 8px; }
 
@@ -984,7 +1116,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .nodes .nodepick .mono { margin-left: auto; color: var(--muted); }
 .nodes p { margin: 4px 0 0; font-size: 11.5px; }
 
-.flags { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 4px; }
+.flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin: 0 0 4px; }
 .flags label {
   display: flex; gap: 10px;
   padding: 10px 12px;
@@ -997,6 +1129,19 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .flags label em { font-style: normal; font-size: 11px; color: var(--muted); }
 .flags label.warn { border-color: rgba(224, 163, 62, 0.4); background: rgba(224, 163, 62, 0.05); }
 .flags label.warn em { color: var(--amber); }
+/* The eight combinations, folded behind the three situations that name them. */
+.audienceadvanced { margin: 10px 0 4px; }
+.audienceadvanced > summary {
+  cursor: pointer; color: var(--muted); font-size: 12px;
+  list-style: none; margin-bottom: 8px;
+}
+.audienceadvanced > summary::-webkit-details-marker { display: none; }
+.audienceadvanced > summary::before { content: "\25B8 "; }
+.audienceadvanced[open] > summary::before { content: "\25BE "; }
+.audienceadvanced > summary:hover { color: var(--text); }
+.flags label input:disabled + span b { color: var(--dim); }
+#audience-preset-note { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
+#audience-preset-note:empty { display: none; }
 #audience-autowake-note { font-size: 11.5px; line-height: 1.6; }
 #audience-autowake-note > div { margin-top: 6px; }
 .selectedlist {
@@ -1009,10 +1154,10 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   max-height: 72px; overflow: auto;
 }
 
-.pairform { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.pairform label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); }
-.pairform label:nth-child(4), .pairform label:nth-child(5) { grid-column: 1 / -1; }
-.pairform input { font-family: var(--mono); font-size: 12px; }
+#pair-modal .pairform { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; padding: 0; }
+#pair-modal .pairform label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); }
+#pair-modal .pairform label:nth-child(4), #pair-modal .pairform label:nth-child(5) { grid-column: 1 / -1; }
+#pair-modal .pairform input { font-family: var(--mono); font-size: 12px; }
 /* The prefill note is three separate claims about where the fields came from;
    they read as one wall of text without the gaps. */
 #pair-prefill-note > div + div { margin-top: 6px; }
@@ -1046,10 +1191,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .drawer-card .drawerbody { flex: 1; min-height: 0; overflow: auto; padding: 14px 18px; }
 .drawer-card footer {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap;
   padding: 12px 18px;
   border-top: 1px solid var(--line);
   font-size: 11.5px;
 }
+.drawer-card footer > :first-child { flex: 1 1 200px; min-width: 0; }
+.drawer-card header { flex-wrap: wrap; }
+.drawer-card header > div { flex: 1 1 240px; min-width: 0; }
 .drawer-card .warning {
   padding: 10px 12px;
   border-radius: 6px;
@@ -1060,6 +1209,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   line-height: 1.6;
   margin: 0 0 12px;
 }
+/* The reasons under the inbox warning, folded the way the pairing fallback is. */
+.warnmore { margin: -6px 0 12px; font-size: 12px; }
+.warnmore > summary { cursor: pointer; color: var(--muted); list-style: none; }
+.warnmore > summary::-webkit-details-marker { display: none; }
+.warnmore > summary::before { content: "▸ "; }
+.warnmore[open] > summary::before { content: "▾ "; }
+.warnmore > summary:hover { color: var(--text); }
+.warnmore p { margin: 6px 0 0; line-height: 1.6; }
 .drawertabs { display: flex; gap: 2px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
 .dtab {
   height: 32px; padding: 0 12px;

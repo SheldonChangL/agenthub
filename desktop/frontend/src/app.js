@@ -117,10 +117,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // about that card is computed from state on every render, so a step that
     // regresses comes back — but a card the owner has closed stays closed.
     ui: { backdrop: true, motion: false, lang: "", onboardingDismissed: false },
-    // Whether the last rescan came back with nothing. "No sessions yet" and
-    // "we looked and there are none" are different sentences, and only the
-    // second one is worth spending a paragraph on where AgentHub looks.
-    discoveredNothing: false,
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -130,9 +126,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nodeSettings null, and without this the panel would re-read on every
     // repaint.
     nodeSettingsTried: false,
-    // Set when a read came back without a baseline, so the checklist offers a
-    // retry instead of a spinner nothing will ever end.
-    nodeSettingsUnreadable: false,
     nodePrivateSuggested: "",
     nodeReachable: false,
     serviceFormTouched: false,
@@ -220,6 +213,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Provider metadata is untrusted input (docs/architecture.md). Every value that
   // originates from a provider reaches the DOM as text, never as markup, so a
   // working directory or session ID containing HTML cannot execute in the app.
+  // docsRef names the section of docs/desktop-window.md that holds the
+  // explanation a state used to carry on screen. The section titles are that
+  // file's own headings, which is why they are not translated.
+  function docsRef(section) {
+    return t("common.docsRef", { section });
+  }
+
   function element(tag, className = "", text = "") {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -418,8 +418,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
-  // sessionRow builds the nine cells once. Everything that changes between
+  // sessionRow builds the eight cells once. Everything that changes between
   // ticks is written by updateSessionRow into these same elements.
+  //
+  // There is no MANAGED cell. The node sends model.Management, and every
+  // session this app has ever listed is "unmanaged" — a column of one repeated
+  // word across a thousand rows, costing 128px next to the working directory,
+  // which is the column that actually runs out of room. The value is on the
+  // provider badge's tooltip, so a node that one day says something else is
+  // still readable from the row.
   function sessionRow(session) {
     const tr = document.createElement("tr");
 
@@ -442,14 +449,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusPill = element("span", "pill");
     statusCell.append(statusPill);
 
-    const managementCell = element("td", "muted mgmt");
-
     const audienceCell = element("td");
     const audiencePill = element("span", "pill");
     audienceCell.append(audiencePill);
 
-    // The four audience flags, readable without opening the dialog. Only
-    // meaningful when something is published; a private row shows them dim.
+    // The four audience flags, readable without opening the dialog. They say
+    // what a peer may do with this session, so on a session no peer can see
+    // they say nothing at all — an unpublished row leaves the cell empty rather
+    // than showing four dashed boxes that are dim for a reason nothing states.
     const flagsCell = element("td");
     const chips = element("span", "flagchips");
     const flagCwd = element("span", "flag", "CWD");
@@ -506,11 +513,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     group.append(inboxButton, resumeButton);
     actionsCell.append(group);
 
-    tr.append(checkCell, idCell, statusCell, managementCell, audienceCell,
+    tr.append(checkCell, idCell, statusCell, audienceCell,
       flagsCell, cwdCell, seenCell, actionsCell);
     tr.sessionParts = {
-      checkbox, idCell, providerTag, label, statusPill, managementCell,
-      audiencePill, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
+      checkbox, idCell, providerTag, label, statusPill,
+      audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
       seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
     };
     updateSessionRow(tr, session);
@@ -538,6 +545,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const { rest } = shortId(session.id);
     parts.providerTag.textContent = session.provider;
+    // Where the MANAGED column went. It is one word, the same one on every
+    // row, and this is the badge it qualifies.
+    parts.providerTag.title = t("row.providerTitle", {
+      provider: session.provider,
+      management: managementLabel(session.management),
+    });
     parts.label.className = session.title ? "title" : "";
     parts.label.textContent = session.title ? session.title : rest;
     parts.idCell.title = session.title ? `${session.title}\n${session.id}` : session.id;
@@ -545,13 +558,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusClass = statusPillClass(session.status);
     parts.statusPill.className = statusClass ? `pill ${statusClass}` : "pill";
     parts.statusPill.textContent = session.status;
-    parts.managementCell.textContent = managementLabel(session.management);
 
     const audience = describeAudience(session.audience);
     parts.audiencePill.className = audience.published ? "pill public" : "pill";
     parts.audiencePill.textContent = audience.text;
+    // The column is sized for the 900px window, where the longest wordings
+    // (「Every paired machine」) clip; the tooltip carries the whole of it.
+    parts.audiencePill.title = audience.text;
 
+    // The flags describe what a peer is allowed to do with this session, so on
+    // one no peer has been given they describe nothing. Hidden rather than
+    // drawn dim: four boxes per row, on the rows where they mean least, were
+    // most of the ink in this table.
     const a = session.audience ?? {};
+    const audienceMode = a.mode ?? "none";
+    parts.chips.classList.toggle("hidden", audienceMode === "none");
     setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
     setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
     setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
@@ -560,6 +581,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.cwdText.textContent = session.cwd ? session.cwd : "—";
     parts.cwdCell.title = session.cwd ? session.cwd : "";
     parts.seenCell.textContent = relative(session.lastSeenAt);
+    parts.seenCell.title = parts.seenCell.textContent;
 
     // The two button labels. Written here and not at creation: see sessionRow.
     //
@@ -624,6 +646,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const show = held !== null && held > 0;
     badge.className = `inboxbadge${full ? " full" : ""}${show ? "" : " hidden"}`;
     badge.textContent = show ? String(held) : "";
+    // A row with nothing waiting keeps the button and loses the word. The
+    // stylesheet swaps the label for an envelope; the label element and its
+    // text stay in the DOM, so the tooltip, the accessible name and the
+    // language switch all still reach it — what shrinks is the ink, on the
+    // rows where this button has nothing to report.
+    button.className = show ? "ghost inbox" : "ghost inbox compact";
     // The number alone does not say what it counts, and the button's own title
     // is the only place a pointer can ask.
     //
@@ -796,7 +824,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function goToPairing() {
     state.view = "network";
     render();
-    openPairingDrawer();
+    openPairingDrawer().catch(() => {});
   }
 
   // Which of the four situations this card exists for the window is in. The
@@ -914,108 +942,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       });
     }
 
-    // 2. Only once a read has reached the node. An empty table on a read that
-    //    failed says nothing about what is on this disk.
-    if (state.loadedOnce) {
-      const done = state.sessions.length > 0;
-      steps.push({
-        id: "sessions",
-        title: t("onboarding.sessions.title"),
-        // A scan that came back with nothing turns the step into the
-        // explanation it needs: a second press of the same button would find
-        // the same nothing.
-        body: !done && state.discoveredNothing
-          ? t("onboarding.sessions.bodyNoneFound")
-          : t("onboarding.sessions.body"),
-        done,
-        actions: done ? [] : [{
-          label: t("onboarding.sessions.action"),
-          primary: true,
-          run: () => discoverSessions().catch(() => {}),
-        }],
-      });
-    }
-
-    // 3. Reachability, which is the step with a switch behind it.
-    //
-    //    The buttons are built by peerListenRepairs() and executed by
-    //    applyPeerListenRepair(), the same pair the node settings panel uses.
-    //    That is deliberate on two counts. peerListenRepairs names "allow LAN
-    //    connections" in the label exactly when clicking would turn it on
-    //    (docs/ui-contract.md §7.8 rule 4: this window never ticks that box
-    //    behind anybody), and applyPeerListenRepair goes through the form, so
-    //    the save is validated, restarted and checked for having stuck by the
-    //    one path that already does all three.
-    const here = pairHereState(state.pairing?.state);
-    const reachable = { id: "reachable", title: t("onboarding.reachable.title"), done: here.reachable === true, actions: [] };
-    if (!state.nodeReachable) {
-      // Nothing here can be asked of a node that is not answering, and the
-      // read that would fill this step is not even attempted while it is down.
-      // Saying so beats "Waiting for the node to say…" forever, which is what
-      // this used to show: a sentence that reads as a hang, under a step that
-      // has no button and no timeout.
-      reachable.done = false;
-      reachable.body = t("onboarding.reachable.bodyNodeDown");
-    } else if (reachable.done) {
-      reachable.body = t("onboarding.reachable.bodyDone", { address: here.address });
-    } else if (state.nodeSettingsUnreadable) {
-      // One failed read used to wedge this step on "Waiting…" for the life of
-      // the window, because the once-per-window latch was set before the await
-      // and never cleared. Now the failure is said, and the retry clears the
-      // latch so the next render asks again.
-      reachable.body = t("onboarding.reachable.bodyUnreadable");
-      reachable.actions = [{
-        label: t("onboarding.reachable.retry"),
-        primary: true,
-        run: () => {
-          // Only the failure is cleared here. The once-per-window latch was
-          // already released by the read that failed — that is the fix for the
-          // wedge — so this button has one thing to undo, not two.
-          state.nodeSettingsUnreadable = false;
-          renderOnboarding();
-        },
-      }];
-    } else if (!state.nodeSettings) {
-      // applyPeerListenRepair fills the real form, so the form has to hold the
-      // node's current answer before any of this is offered.
-      reachable.body = t("onboarding.reachable.bodyLoading");
-    } else {
-      const current = state.nodeSettings.saved?.peerListen
-        || state.nodeSettings.settings?.peerListen
-        || LOOPBACK_LISTEN;
-      const options = peerListenRepairs(
-        { reason: "loopback", address: current },
-        state.nodeAddresses ?? { list: [], failure: "" },
-        // The node's SAVED answer, never the form's checkbox. This card lives
-        // on the local view; the checkbox lives in the settings form two tabs
-        // away and is live-editable, so an unsaved tick over there dropped the
-        // "and allow LAN connections" clause from this label while the click
-        // still turned it on — the silent tick §7.8 rule 4 exists to forbid.
-        // (renderPeerListenProblem may read the checkbox: it renders inside
-        // that form, where what is on screen is what a press would send.)
-        Boolean(state.nodeSettings.saved?.allowLan),
-      );
-      // peerListenRepairs always ends with "stay local only", which is this
-      // step's skip: an owner who has decided to be off the network needs a way
-      // to say so, or the card is the thing they learn to ignore.
-      const offersAddress = options.some((option) => option.peerListen !== "");
-      reachable.body = offersAddress ? t("onboarding.reachable.body") : t("onboarding.reachable.bodyNoAddress");
-      reachable.actions = options.map((option) => ({
-        label: option.label,
-        primary: option.primary,
-        run: () => applyPeerListenRepairFromCard(option).catch(() => {}),
-      }));
-      if (!offersAddress) {
-        reachable.actions.unshift({
-          label: t("onboarding.reachable.openSettings"),
-          primary: true,
-          run: () => goToNodeSettings(),
-        });
-      }
-    }
-    steps.push(reachable);
-
-    // 4. A doorway to the drawer, which explains the rest itself.
+    // 2. A doorway to the drawer, which explains the rest itself — including
+    //    「這台機器能不能被連到」, which used to be a step of its own here. It was
+    //    a step about a listening address, two views from the drawer where the
+    //    address is needed and read out, and the repair it offered is now in
+    //    that drawer's own first step.
     const paired = state.nodes.length > 0;
     steps.push({
       id: "pair",
@@ -1025,15 +956,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       actions: paired ? [] : [{ label: t("onboarding.pair.action"), primary: true, run: () => goToPairing() }],
     });
 
-    // 5. Text, and a button that points rather than acts. Opening the audience
-    //    dialog with nothing selected is a dead dialog — it resets all four
-    //    flags every time on purpose (docs/ui-contract.md §3.5) — so this one
-    //    puts the keyboard on the checkbox that starts a selection.
+    // 3. Text, and a button that points rather than acts. Opening the audience
+    //    dialog with nothing selected is a dead dialog, so this one puts the
+    //    keyboard on the checkbox that starts a selection.
+    //
+    //    With no session at all there is nothing to tick, and the card is on
+    //    screen partly for that reason (onboardingTriggered) — so the step says
+    //    so, where it would otherwise point at an empty table. Only after a read
+    //    that reached the node: an empty list from one that did not is not a
+    //    fact about this machine (#114).
     const published = (state.counts.all_paired ?? 0) + (state.counts.selected ?? 0) > 0;
+    const noSessions = state.nodeReachable && state.sessions.length === 0;
     steps.push({
       id: "publish",
       title: t("onboarding.publish.title"),
-      body: t("onboarding.publish.body"),
+      body: noSessions
+        ? `${t("onboarding.publish.body")} ${t("onboarding.publish.noSessions")}`
+        : t("onboarding.publish.body"),
       done: published,
       actions: published ? [] : [{
         label: t("onboarding.publish.action"),
@@ -1062,7 +1001,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // milliseconds, every time — nobody ever read it. So the flag the hide reads
   // is set by the next load() instead, which is fifteen seconds away.
   let onboardingFarewellSpent = false;
-  let onboardingSettingsAsked = false;
 
   // Called by load(), once per tick, before it renders. A farewell put up during
   // the previous tick has been on screen for that whole tick by now, so this
@@ -1135,24 +1073,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     section.classList.toggle("hidden", !show);
     if (!show) return;
-    // The reachability step offers buttons that fill the node settings form, so
-    // the form has to hold the node's answer first. Asked once per window: a
-    // read on every render would re-fire on every background tick.
-    if (!state.nodeSettings && !onboardingSettingsAsked && !state.nodeSettingsUnreadable
-      && state.nodeReachable) {
-      onboardingSettingsAsked = true;
-      // A read that did not produce a baseline clears the latch, so the retry
-      // button this puts on the step can ask again. loadNodeSettings resolves
-      // either way — it turns a rejection into view.error, which applyNodeSettings
-      // reports without replacing state.nodeSettings — so the check is whether
-      // the baseline is there, not whether the promise settled.
-      const done = () => {
-        state.nodeSettingsUnreadable = !state.nodeSettings;
-        if (state.nodeSettingsUnreadable) onboardingSettingsAsked = false;
-        renderOnboarding();
-      };
-      loadNodeSettings().then(done, done);
-    }
+    // No node-settings read here any more. The step that needed one — the
+    // listening address — is the pairing drawer's own first step now, and that
+    // drawer asks for itself when it opens.
     // Said out loud on the one render that shows every tick. Ticks alone do not
     // explain why the card is about to disappear.
     el("onboarding-alldone").classList.toggle("hidden", !onboardingAllDoneShown);
@@ -1323,13 +1246,99 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   /* ---------------- pairing drawer ---------------- */
 
-  function openPairingDrawer() {
+  // Opening the drawer opens the window, and dismissing it closes one with
+  // nothing pending.
+  //
+  // The window used to be two buttons inside the drawer whose entire purpose is
+  // that the window be open — so the commonest first run was: press 「配對另一
+  // 台機器…」, read a panel that says nobody can get in, and not notice that the
+  // thing it describes has to be started by a second button further down. The
+  // node still owns the window's duration and its expiry; this only removes the
+  // step of asking for one.
+  async function openPairingDrawer() {
     el("pairing-modal").classList.remove("hidden");
-    loadPairing().catch(() => {});
     loadPairRequests().catch(() => {});
+    await loadPairing();
+    // Step 1 offers the settings form's own repair buttons, and
+    // applyPeerListenRepair fills that real form, so the node's answer has to
+    // be in it before any of them can be pressed.
+    ensurePairingNodeSettings();
+    await openPairingWindowIfNeeded();
   }
+
+  async function openPairingWindowIfNeeded() {
+    // The drawer can be dismissed while loadPairing is still on its way: a
+    // window opened after that is one nobody asked for, and nothing on screen
+    // would then close it.
+    if (!pairingDrawerOpen()) return;
+    const pairing = state.pairing;
+    if (!pairing || state.busy) return;
+    // A node that will not answer the window endpoints is not asked. The
+    // fallback is for an answer from before that field existed.
+    const windowAvailable = pairing.windowAvailable ?? (pairing.availability === "on");
+    if (!windowAvailable || pairing.state?.open) return;
+    try {
+      // No duration: the node's own default is the one the node documents.
+      await api.OpenPairing(0);
+    } catch (error) {
+      banner(pairErrorMessage(error));
+      return;
+    }
+    await loadPairing();
+  }
+
+  // closePairingDrawer only hides it. The window is left alone, because two
+  // callers — the remedy button that goes to node settings, and the one that
+  // opens the manual form — are steps in the middle of pairing rather than the
+  // end of it.
   function closePairingDrawer() {
     el("pairing-modal").classList.add("hidden");
+  }
+
+  // dismissPairingDrawer is the owner saying they are done, and it closes the
+  // window too — unless a row is mid-exchange. Somebody at another keyboard is
+  // waiting on those, and a window shut under them is the one disappearance the
+  // other machine actually feels.
+  //
+  // The rows are read again first rather than taken from state.pairRequests,
+  // which the two-second poll last filled: a request that arrived since would
+  // be expired by the node the moment the window closed (ExpirePending,
+  // internal/api/pair.go). A read that fails leaves the window to its own
+  // timeout, because it cannot say nobody is waiting.
+  async function dismissPairingDrawer() {
+    closePairingDrawer();
+    if (state.busy || !state.pairing?.state?.open) return;
+    await loadPairRequests({ render: false });
+    // Reopened while the read was out: the owner is not done after all.
+    if (pairingDrawerOpen() || state.pairRequestsError) return;
+    const pending = (state.pairRequests ?? []).some(
+      (request) => request.state === "pending" || request.state === "awaiting-confirm");
+    if (pending || state.busy || !state.pairing?.state?.open) return;
+    try {
+      await api.ClosePairing();
+    } catch {
+      // The node closes the window itself when its time runs out, so a refusal
+      // here costs a few minutes of announcing rather than anything an owner
+      // has to act on — and the drawer it would be reported in is gone.
+      return;
+    }
+    await loadPairing();
+  }
+
+  // Asked once while the drawer is open, for the same reason the checklist asks
+  // once per window: a read on every render would re-fire on every tick.
+  let pairingSettingsAsked = false;
+  function ensurePairingNodeSettings() {
+    if (state.nodeSettings || pairingSettingsAsked || !state.nodeReachable) return;
+    pairingSettingsAsked = true;
+    const done = () => {
+      // A read that produced no baseline releases the latch, so the next time
+      // the drawer is opened it asks again rather than offering nothing for the
+      // life of the window.
+      if (!state.nodeSettings) pairingSettingsAsked = false;
+      renderPairHere();
+    };
+    loadNodeSettings().then(done, done);
   }
 
   // pairingDrawerOpen is what the two-second poll asks. The exchange's rows are
@@ -1421,6 +1430,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // moment before the change.
   let overviewRequest = 0;
   let overviewApplied = 0;
+  // Set before the scan rather than after it, so a slow Discover cannot be
+  // started twice by the fifteen-second tick landing in the middle of it.
+  let autoDiscoverTried = false;
 
   // Anything the owner is in the middle of that a repainted table would pull out
   // from under them: a write in flight, rows selected that a rescan could drop,
@@ -1560,6 +1572,27 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.nodeReachable = reachable;
     loadService().catch(() => {});
 
+    // The scan that used to be step 2 of the checklist.
+    //
+    // 「Press this button once」 is not a step. It is the one thing this window
+    // can do on its own the moment it has a node to ask, and a first launch is
+    // exactly the case: the table is empty because nobody has scanned yet, not
+    // because there is nothing on the disk. Once per window, on the first read
+    // that actually REACHED the node — an empty list from a read that did not
+    // is not a fact about this machine (#114) — and the result goes to the
+    // banner discoverSessions already writes, which now also says where
+    // AgentHub looks when it finds nothing.
+    //
+    // Not while something else holds the window: discoverSessions goes through
+    // withBusy, which drops a call made while busy, so spending the flag then
+    // spent the window's only scan on nothing — and installService calls load()
+    // in the middle of its own busy stretch, on exactly the first launch this
+    // scan is for (#193 review). Left for the next load that is not busy.
+    if (reachable && !autoDiscoverTried && !state.busy && state.sessions.length === 0) {
+      autoDiscoverTried = true;
+      discoverSessions().catch(() => {});
+    }
+
     // The badges, read once behind the list rather than once per row (#146).
     //
     // Under this load's own sequence number, like everything above: a slow
@@ -1681,15 +1714,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     "hereHeading", "hereNote", "hereNoteAnnouncing", "hereNoAddress", "hereNoAddressWhy",
     "hereFixHeadline", "hereUnreachable", "hereFix",
     "drawerSubAnnouncing", "drawerSubNotAnnouncing", "drawerSubUnreachable", "drawerSubUnknown",
-    "windowOpenUnreachable", "hereCopied", "hereCopyFailed",
+    "windowOpenUnreachable", "hereCopied", "hereCopyFailed", "closeEnds",
     "send", "sendFromCandidate", "sendManual", "addressEmpty", "addressNote", "sent",
-    "requestsHeading", "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
+    "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
     "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
   ]);
-  // The three sentences a person carries out step by step, as an array because
-  // that is what reads them.
+  // The one sentence about comparing, said once per undecided row; the step
+  // line under the fingerprints no longer repeats it. An array because that is
+  // what reads it. Why the order matters is in docs/desktop-window.md, reached
+  // from the sentence's tooltip.
   Object.defineProperty(PAIR_TEXT, "compare", {
-    get: () => [t("pair.compare.1"), t("pair.compare.2"), t("pair.compare.3")],
+    get: () => [t("pair.compare")],
     enumerable: true,
   });
   PAIR_TEXT.state = pairGroup("pair.state", [
@@ -2005,7 +2040,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.pairCompare !== undecided) {
       row.pairCompare = undecided;
       parts.compare.replaceChildren(
-        ...(undecided ? PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)) : []));
+        ...(undecided ? PAIR_TEXT.compare.map((sentence) => {
+          const line = element("div", "stale", sentence);
+          line.title = docsRef("Comparing fingerprints when pairing");
+          return line;
+        }) : []));
     }
     // The two values are what two people are reading off two screens while this
     // ticks underneath them, so the block is rewritten only when the node
@@ -2054,7 +2093,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
     if (waiting.length === 0) return;
     line.append(element("div", "stale",
-      plural(waiting.length, "pair.waiting", { panel: PAIR_TEXT.requestsHeading })));
+      plural(waiting.length, "pair.waiting", { panel: t("pair.step3Heading") })));
   }
 
   // The exchange's rows, keyed by request id and kept across renders.
@@ -2237,15 +2276,34 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!here.reachable) {
       value.textContent = PAIR_TEXT.hereFixHeadline;
       el("copy-pair-address-status").textContent = "";
-      note.replaceChildren(element("div", "",
-        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable));
+      const why = element("div", "",
+        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable);
+      why.title = docsRef("Why nobody can reach this machine yet");
+      note.replaceChildren(why);
       // The node's own sentence about this listener, under the remedy rather
       // than in front of it: the remedy is the act, and the node's words are
       // the detail that says which listener it is about.
       if (here.problem) note.append(element("div", "muted", here.problem));
-      const fix = element("button", "primary", PAIR_TEXT.hereFix);
+      // The repair itself, here, rather than a button that takes the owner to
+      // the settings page to find it. These are peerListenRepairs' own options,
+      // so the label names 「允許區網連線」 exactly when pressing would turn it
+      // on (docs/ui-contract.md §7.8 rule 4) and the save goes through the form
+      // — one validation, one restart, one "did it stick" check.
+      const actions = element("div", "repairactions");
+      const options = pairHereRepairs();
+      for (const option of options) {
+        const button = element("button", option.primary ? "primary" : "ghost", option.label);
+        button.disabled = state.busy;
+        button.onclick = () => applyPeerListenRepairFromCard(option).catch(() => {});
+        actions.append(button);
+      }
+      // Always a way through to the form. The options above come from the
+      // node's own answer, and a machine with no private address of its own —
+      // or one whose settings could not be read — has none to offer.
+      const fix = element("button", options.length === 0 ? "primary" : "ghost", PAIR_TEXT.hereFix);
       fix.onclick = () => goToNodeSettings();
-      note.append(fix);
+      actions.append(fix);
+      note.append(actions);
       el("copy-pair-address").disabled = true;
       return;
     }
@@ -2256,6 +2314,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // that announces it is what to fall back on when the other machine's list
     // stays empty anyway.
     note.textContent = window_.notice ? PAIR_TEXT.hereNote : PAIR_TEXT.hereNoteAnnouncing;
+  }
+
+  // pairHereRepairs is peerListenRepairs' list, minus its last entry.
+  //
+  // That entry is 「就先只在本機」, which is the checklist's skip: an owner who
+  // has decided to stay off the network needs a way to say so there. Here it is
+  // the opposite of what was asked for — this block exists because the other
+  // machine cannot reach this one — so offering it would be offering to do
+  // nothing under the heading that says nothing works.
+  function pairHereRepairs() {
+    if (!state.nodeSettings) return [];
+    const current = state.nodeSettings.saved?.peerListen
+      || state.nodeSettings.settings?.peerListen
+      || LOOPBACK_LISTEN;
+    return peerListenRepairs(
+      { reason: "loopback", address: current },
+      state.nodeAddresses ?? { list: [], failure: "" },
+      // The node's SAVED answer, never the settings form's live checkbox: that
+      // form is two tabs away and editable, and an unsaved tick over there
+      // would drop the clause from a label whose click still turns it on.
+      Boolean(state.nodeSettings.saved?.allowLan),
+    ).filter((option) => option.peerListen !== "");
   }
 
   // copyPairAddress hands that address to the clipboard, and says so when the
@@ -2354,6 +2434,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       headline.textContent = t("pair.readingState");
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       note.textContent = "";
       return;
     }
@@ -2379,6 +2460,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = t("pair.notLookingNote");
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       return;
     }
     if (!windowAvailable) {
@@ -2387,6 +2469,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.textContent = pairing.error || "";
       on.disabled = true;
       off.disabled = true;
+      showPairingWindowButtons(false);
       return;
     }
 
@@ -2400,6 +2483,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const canAnnounce = (announcing.announceableAddresses ?? 0) > 0;
     on.disabled = state.busy;
     off.disabled = state.busy || !window_.open;
+    showPairingWindowButtons(Boolean(window_.open));
 
     if (window_.open) {
       const left = pairingRemaining();
@@ -2426,6 +2510,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       } else if (announcing.lastError) {
         detail.append(element("div", "muted", announcing.lastError));
       }
+      // Opening the drawer opened the window without a button, so closing it
+      // closing the window has to be said, or it reads as merely hiding.
+      detail.append(element("div", "muted", PAIR_TEXT.closeEnds));
       // The broadcast tradeoff is only a tradeoff where something is actually
       // broadcast. On a node that announces nothing, the note that matters is
       // the address above, not a warning about a name nobody will hear.
@@ -2449,6 +2536,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       headline.textContent = PAIR_TEXT.windowClosed;
       note.replaceChildren(...broadcastWarning(t("pair.leadOnOpen"), t("pair.tailTradeoff")));
     }
+  }
+
+  // showPairingWindowButtons leaves the one button that is worth pressing.
+  //
+  // Both were always on screen, side by side, in a drawer that opens the window
+  // for you: one of them was therefore always the one that does nothing, and
+  // which one changed with a state nobody was reading. The open button is the
+  // way back from a window closed by hand or expired; the close button is the
+  // way to stop announcing without leaving the drawer. Neither is ever removed
+  // from the page — the disabled state above is what the checks read, and a
+  // button that vanishes cannot be reported as unavailable.
+  function showPairingWindowButtons(open) {
+    el("btn-pairing-on").classList.toggle("hidden", open);
+    el("btn-pairing-off").classList.toggle("hidden", !open);
   }
 
   // announceLine says what the announce loop actually managed to do.
@@ -2488,7 +2589,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       line.textContent = "";
       return;
     }
-    line.textContent = left === 0 ? "" : t("pair.timeLeft", { left: clock(left) });
+    // "Pairing open · 4:00": the headline carries the words, this carries the
+    // separator and the clock, which are the same in both languages and so do
+    // not belong in the tables (docs/ui-contract.md §11 rule 5).
+    line.textContent = left === 0 ? "" : `· ${clock(left)}`;
   }
 
   // The candidate rows, keyed by node id and kept across renders.
@@ -2873,12 +2977,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const heading = element("h2", "", node.displayName);
     const fingerprint = element("div", "fingerprint", node.fingerprint);
     const note = element("p", "muted", t("network.fingerprintNote"));
+    note.title = docsRef("The fingerprint under a paired machine's name");
 
     // Trust is recorded per machine, and this page shows only this machine's
     // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
     // on 2026-09-10, and nothing here said that was half-done — the row simply
     // sat there having never been heard from, which reads as the peer being off.
     const mutualNote = element("p", "stale", t("network.mutualNote"));
+    mutualNote.title = docsRef("A paired machine whose heartbeat never arrives");
 
     const rows = [
       [t("identity.nodeId"), node.nodeId],
@@ -3073,32 +3179,119 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-count").textContent = plural(state.selected.size, "audience.count");
   }
 
+  // The four flag boxes, in the order the dialog lists them.
+  const AUDIENCE_FLAG_IDS = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
+
+  // The three situations the presets name, as the flags they write.
+  //
+  // A preset answers "what may they do with messages", so it writes the three
+  // message flags and all three of them — an answer that leaves one wherever
+  // the last one left it is not one. Whether the working directory is shown is
+  // a different question, and a preset leaves that box as it found it: writing
+  // it off silently withdrew a setting the owner could not see change, because
+  // the box is in the collapsed advanced section (#193 review).
+  //
+  // Waking includes replying. A woken agent is told to answer the peer
+  // (AGENTS.md, "When AgentHub wakes you"), and without allowOutbound the node
+  // refuses that send, so a wake preset without it wakes an agent that cannot
+  // do the one thing it was woken for.
+  const AUDIENCE_PRESETS = {
+    view: { acceptMessages: false, allowOutbound: false, autoWake: false },
+    messages: { acceptMessages: true, allowOutbound: false, autoWake: false },
+    wake: { acceptMessages: true, allowOutbound: true, autoWake: true },
+  };
+
+  function audienceFlagsOnForm() {
+    return {
+      exportCwd: el("audience-cwd").checked,
+      acceptMessages: el("audience-messages").checked,
+      allowOutbound: el("audience-outbound").checked,
+      autoWake: el("audience-autowake").checked,
+    };
+  }
+
+  // presetForFlags names the combination on screen, or "" for one no preset
+  // covers — which is what the advanced section is for, and what the line under
+  // the presets says out loud.
+  function presetForFlags(flags) {
+    for (const [name, wanted] of Object.entries(AUDIENCE_PRESETS)) {
+      if (Object.keys(wanted).every((key) => Boolean(flags[key]) === wanted[key])) return name;
+    }
+    return "";
+  }
+
+  function applyAudiencePreset(name) {
+    const wanted = AUDIENCE_PRESETS[name];
+    if (!wanted) return;
+    el("audience-messages").checked = wanted.acceptMessages;
+    el("audience-outbound").checked = wanted.allowOutbound;
+    el("audience-autowake").checked = wanted.autoWake;
+    syncAudiencePreset();
+  }
+
+  // syncAudiencePreset points the radios at whatever the boxes say, and says so
+  // in words when nothing fits. It writes no box: the presets write the boxes,
+  // the boxes never write each other.
+  function syncAudiencePreset() {
+    const name = presetForFlags(audienceFlagsOnForm());
+    for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
+      radio.checked = radio.value === name;
+    }
+    const note = el("audience-preset-note");
+    const lines = [];
+    if (name === "") lines.push(t("audience.presetCustom"));
+    // Only on a selection of more than one. A single session opens showing its
+    // own settings, so the sentence about them being reset is untrue there —
+    // and it was the sentence the whole dialog was read through.
+    if (state.selected.size > 1) lines.push(t("audience.resetNote"));
+    note.textContent = lines.join(" ");
+  }
+
   function openAudienceModal() {
     renderAudienceCount();
     const picked = state.sessions.filter((session) => state.selected.has(session.id));
     el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
     renderAudienceNodeList();
-    // The mode starts at 不公開 every time, like the flags: a mode left over from
-    // the last selection is a publication about to happen to a different one.
+
+    // One session opens showing what that session already is; several open at
+    // 不公開 with every flag off.
+    //
+    // The reset was there because the dialog applies to whatever is selected
+    // and reads its values from the boxes, so a value left over from the last
+    // time it was opened is a setting about to be applied to a different set of
+    // sessions — and one of these flags starts turns in an agent with nobody
+    // watching. That argument is about leftovers, and it is untouched: several
+    // sessions may disagree, and there is no honest way to show one state for
+    // many, so off stays the safe half of that disagreement. For exactly one
+    // session there is no disagreement and nothing left over — the values shown
+    // are that session's own, read from the overview — and blanking them meant
+    // that changing 「誰看得到」 silently withdrew every flag the session had.
+    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
+    const current = only?.audience ?? {};
+    const mode = only ? (current.mode ?? "none") : "none";
     for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
-      radio.checked = radio.value === "none";
+      radio.checked = radio.value === mode;
     }
-    // Every flag starts off, every time.
-    //
-    // The dialog applies to whatever is selected and reads its values from the
-    // boxes, so a box left ticked from the last time it was opened is a setting
-    // about to be applied to a different set of sessions. That was survivable
-    // while the flags only governed what could be read; one of them now starts
-    // turns in an agent with nobody watching, and inheriting that from a
-    // previous dialog is not something anyone would choose on purpose.
-    //
-    // Off rather than the current value: these apply to a selection, which may
-    // hold sessions that disagree, and there is no honest way to show one state
-    // for several. Off is the safe half of that disagreement.
-    for (const id of ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"]) {
-      el(id).checked = false;
+    if (only && mode === "selected") {
+      const granted = new Set(current.nodes ?? []);
+      for (const box of document.querySelectorAll("#audience-node-list input.audience-node-box")) {
+        box.checked = granted.has(box.value);
+        // renderAudienceNodeList paints the row from the box's own onchange, so
+        // a box ticked here has to say so itself.
+        box.onchange?.();
+      }
     }
+    el("audience-cwd").checked = Boolean(only && current.exportCwd);
+    el("audience-messages").checked = Boolean(only && current.acceptMessages);
+    el("audience-outbound").checked = Boolean(only && current.allowOutbound);
+    el("audience-autowake").checked = Boolean(only && current.autoWake);
+
     renderAutoWakeNote();
+    syncAudiencePreset();
+    // A session whose flags are no preset's opens with the flags in view: the
+    // radios are all empty then, and the only place that says what the session
+    // actually does is the section that would otherwise start collapsed.
+    el("audience-advanced").open = presetForFlags(audienceFlagsOnForm()) === "";
     el("audience-modal").classList.remove("hidden");
     syncAudienceForm();
   }
@@ -3114,19 +3307,47 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // observed.md). None of it is a reason to disable the box — an owner may
   // reasonably set a session up before restarting the node — so this only says
   // what will happen, and never blocks the dialog.
+  //
+  // It sits above the collapsed advanced section, not inside it: the sentence
+  // that says the box was turned off is about something the owner is about to
+  // apply, and folded away it was a flag withdrawn without a word (#193
+  // review). Hidden when it has nothing to say.
   function renderAutoWakeNote() {
     const note = el("audience-autowake-note");
     note.replaceChildren();
+    renderAutoWakeNoteLines(note);
+    note.classList.toggle("hidden", note.children.length === 0);
+  }
+
+  function renderAutoWakeNoteLines(note) {
+    // Which providers are selected decides which of the remaining obstacles
+    // apply, and a mixed selection gets both sentences: the owner is about to
+    // apply one setting to sessions that will behave differently.
+    const picked = state.sessions.filter((session) => state.selected.has(session.id));
+    const providers = new Set(picked.map((session) => session.provider));
+    // A selection that is nothing but Claude Code is the one case where this
+    // box cannot work and no restart will change that: the push was measured
+    // arriving and never being injected (docs/channel-push-not-observed.md).
+    // So it is turned off here rather than explained — the argument for leaving
+    // it live is that an owner may set a session up before restarting the node,
+    // and there is nothing here to restart into.
+    const claudeOnly = providers.size === 1 && providers.has("claude");
+    el("audience-autowake").disabled = claudeOnly;
+    el("audience-preset-wake").disabled = claudeOnly;
+    if (claudeOnly) {
+      el("audience-autowake").checked = false;
+      // Read from the sessions, not the box, which the line above has just
+      // cleared — and a language switch repaints this after it.
+      if (picked.some((session) => session.audience?.autoWake)) {
+        note.append(element("div", "warning", t("audience.autoWakeWillTurnOff")));
+      }
+      note.append(element("div", "muted", t("audience.autoWakeClaude")));
+      return;
+    }
     if (!state.nodeAutoWake) {
       note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
       return;
     }
-    // Which providers are selected decides which of the remaining obstacles
-    // apply, and a mixed selection gets both sentences: the owner is about to
-    // apply one setting to sessions that will behave differently.
-    const providers = new Set(
-      state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
-    );
     if (providers.has("codex")) {
       note.append(element("div", "muted", t("audience.autoWakeCodex")));
     }
@@ -3831,15 +4052,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!state.nodeReachable && !status.installed && !state.serviceFormTouched) openServiceForm().catch(() => {});
   }
 
-  // renderServiceRepair offers the one action that fixes a unit which overrides
-  // this window.
+  // renderServiceRepair states the one fact this panel knows and the settings
+  // form cannot work out for itself.
   //
   // A unit that passes a node setting on every start wins over everything the
-  // settings page saves, and the node's own log is the only place that says so.
-  // An owner reading a form whose writes do nothing has no way to reach that
-  // conclusion, so the panel says it and offers the repair: register the
-  // service again with nothing but the database path, which is what this app
-  // installs today.
+  // settings page saves, and the node's own log is the only other place that
+  // says so. It is a statement here and no longer a button: the repair reinstalls
+  // the service, which is not a thing to do while reading a status line, and the
+  // moment it matters is the moment a write is about to be undone. That moment
+  // is Save on the node settings form, which is where it is now asked.
   function renderServiceRepair(status) {
     const repair = el("service-repair");
     repair.replaceChildren();
@@ -3847,18 +4068,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!status.installed || pinned.length === 0) return;
     repair.append(
       element("div", "stale",
-        t("service.pinnedSettings", { pinned: pinned.join(t("candidate.flagJoin")) })),
-      element("div", "muted",
-        status.dbPathKnown && status.dbPath
-          ? t("service.unpinExplainsDb", { path: status.dbPath })
-          : t("service.unpinExplains")),
-    );
-    const button = document.createElement("button");
-    button.id = "service-unpin";
-    button.className = "primary";
-    button.textContent = t("service.unpin");
-    button.onclick = () => reinstallWithoutPinnedSettings(status);
-    repair.append(button);
+        t("service.pinnedSettings", { pinned: pinned.join(t("candidate.flagJoin")) })));
   }
 
   // reinstallWithoutPinnedSettings re-registers the service with the database it
@@ -3867,15 +4077,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The database path is carried over deliberately and is the whole reason this
   // is not just "press install": a reinstall that dropped it would put the node
   // on a different database, which is a different identity and no pairings.
-  async function reinstallWithoutPinnedSettings(status) {
+  //
+  // Answers whether it ran, so the save that asked for it knows whether to go
+  // ahead: an owner who says no to re-registering has not agreed to a write
+  // that a unit flag would silently undo a second later.
+  //
+  // `fields` names the settings the save that asks is about to write and the
+  // unit pins, so the question says which ones a "no" leaves out.
+  async function reinstallWithoutPinnedSettings(status, fields = status.pinnedSettings ?? []) {
     if (status.installed && !status.dbPathKnown) {
       banner(t("service.unpinNeedsDbPath"));
-      return;
+      return false;
     }
     const ok = confirm(t("service.unpinConfirm", {
       path: status.dbPath || t("service.nodeDefaultLocation"),
+      pinned: fields.join(t("candidate.flagJoin")),
     }));
-    if (!ok) return;
+    if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
     await withBusy(t("service.busyReregister"), async () => {
       const result = await api.InstallService({ dbPath: status.dbPath });
@@ -3884,6 +4102,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await load();
       banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
+    return true;
   }
 
   async function openServiceForm() {
@@ -4091,7 +4310,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // machine for them sat behind a secondary link. The form is still one click
   // away, from the drawer's own footer, which is where the sentence explaining
   // when to use it already is.
-  el("btn-pair").onclick = openPairingDrawer;
+  el("btn-pair").onclick = () => openPairingDrawer().catch(() => {});
   el("pair-close").onclick = closePairModal;
   el("copy-local-public-key").onclick = () => copyLocalPublicKey();
   el("pair-modal").onclick = (event) => {
@@ -4124,6 +4343,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
     radio.onchange = syncAudienceForm;
   }
+  // A preset writes the boxes; a box unsets the preset. Never the other way
+  // round, so nothing this dialog shows is a value it invented.
+  for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
+    radio.onchange = () => applyAudiencePreset(radio.value);
+  }
+  for (const id of AUDIENCE_FLAG_IDS) {
+    el(id).onchange = syncAudiencePreset;
+  }
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
     if (audience.mode === "selected" && audience.nodes.length === 0) {
@@ -4149,13 +4376,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return withBusy(t("app.rescan"), async () => {
       const counts = await api.Discover();
       await load();
-      // Kept so the checklist can tell "nothing found yet" from "we looked and
-      // there is nothing here", which are different things to say.
-      state.discoveredNothing = (counts.total ?? 0) === 0;
       const skipped = counts.skipped ?? 0;
+      const total = counts.total ?? 0;
+      // A scan that found nothing carries the explanation that used to be a
+      // checklist step: AgentHub reads what those two tools leave on disk, so
+      // an empty answer is a fact about this machine's disk rather than about
+      // AgentHub. Said once, here, where the answer is.
       banner(t("app.rescanned", {
         claude: counts.claude, codex: counts.codex, total: counts.total,
-      }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : ""), skipped === 0);
+      }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : "")
+        + (total === 0 ? t("app.rescanNothingFound") : ""), skipped === 0 && total > 0);
     });
   }
 
@@ -4637,11 +4867,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await saveNodeSettings();
   }
 
-  // applyPeerListenRepairFromCard is the checklist's way into the same repair.
+  // applyPeerListenRepairFromCard is the pairing drawer's way into the same
+  // repair. (It was the checklist's; that step is now the drawer's first one.)
   //
   // applyPeerListenRepair fills the settings form and presses save, which is
   // right when the button is IN that form: what is on screen is what the owner
-  // means to send. From the checklist it is not — the card is on another view,
+  // means to send. From the drawer it is not — that panel is elsewhere,
   // and the form may be holding edits nobody has saved. Pressing save there
   // would commit a private range or an auto-wake tick the owner was still
   // thinking about, as a side effect of a button about a listening address.
@@ -4657,8 +4888,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Named, not just counted. "There are unsaved changes" over a form the
       // owner does not remember editing is a dead end; the field's own label is
       // what takes them to the thing to save or read again.
-      banner(t("onboarding.reachable.formDirty") + " "
-        + t("onboarding.reachable.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
+      banner(t("pair.formDirty") + " "
+        + t("pair.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
       goToNodeSettings();
       return;
     }
@@ -4955,6 +5186,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // from and what the node merges a write onto. Diffing against the running
   // values instead is what let an unrelated save withdraw a remembered address,
   // and made a flag-pinned switch impossible to write.
+  // Each field of the patch as the flag a service unit pins it with — the names
+  // ServiceStatus reports in pinnedSettings (desktop/service.go).
+  const NODE_SETTING_FLAGS = {
+    peerListen: "peer-listen",
+    allowLan: "allow-lan",
+    discover: "discover",
+    treatAsPrivate: "treat-as-private",
+    autoWake: "auto-wake",
+  };
+
   function readNodeSettingsPatch() {
     // The saved configuration, because that is what the node merges a write
     // onto — see applyNodeSettings.
@@ -4985,6 +5226,55 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(t("nodeSettings.noChange"));
       return;
     }
+    // A unit that carries start-up flags is given them on every start and the
+    // node writes back what it was given, so a value saved here is replaced a
+    // second or two later and nothing in the node's answer says why — the
+    // sources column reads "flag" for a value that is genuinely stored.
+    //
+    // This used to be a warning and a button in the background service section,
+    // two panels away from the form whose writes it undoes. Asked here instead,
+    // at the moment it decides the outcome, and before the write rather than
+    // after it: the re-registered unit restarts the node, so the values saved
+    // below are read by a process that is no longer given anything.
+    //
+    // Outside withBusy because re-registering has its own.
+    //
+    // Asked only when this save touches a setting the unit pins: a unit that
+    // pins the peer listener does nothing to a change of discovery, and asking
+    // about it there made every save a question about the service (#193
+    // review). A refusal — or a unit whose database path this window cannot
+    // read, so re-registering it could move the node onto another identity —
+    // leaves out the pinned fields, which the unit would quietly undo, and
+    // still saves the rest; a banner names what was left out.
+    const pinned = new Set(state.service?.installed ? (state.service.pinnedSettings ?? []) : []);
+    const touched = Object.keys(patch).filter((key) => pinned.has(NODE_SETTING_FLAGS[key]));
+    let skippedNote = "";
+    if (touched.length > 0) {
+      const reregistered = Boolean(state.service.dbPathKnown)
+        && (await reinstallWithoutPinnedSettings(state.service, touched.map(nodeSettingLabel)));
+      if (!reregistered) {
+        skippedNote = [
+          state.service.dbPathKnown ? "" : t("service.unpinNeedsDbPath"),
+          t("nodeSettings.pinnedNotSaved", { pinned: touched.map(nodeSettingLabel).join(t("candidate.flagJoin")) }),
+        ].filter(Boolean).join(" ");
+        for (const key of touched) delete patch[key];
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      banner(skippedNote);
+      return;
+    }
+    await saveNodeSettingsPatch(patch);
+    // After the save's own report, which is a single banner that each outcome
+    // replaces: said last, so the fields that were left out are not overwritten
+    // by the sentence about the ones that were saved.
+    if (skippedNote) {
+      const said = el("banner").classList.contains("hidden") ? "" : el("banner").textContent;
+      banner([said, skippedNote].filter(Boolean).join(" "));
+    }
+  }
+
+  async function saveNodeSettingsPatch(patch) {
     await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
       let view;
@@ -5190,6 +5480,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // because the restart had already made them agree. Comparing what was asked
   // for against what is there needs no theory about why.
   function didNotStick(patch, savedAfter) {
+    return Object.keys(patch)
+      .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
+      .map(nodeSettingLabel);
+  }
+
+  // nodeSettingLabel is the form's own name for a field of the patch.
+  function nodeSettingLabel(key) {
     const labels = {
       peerListen: t("nodeSettings.peerListenLabel"),
       allowLan: t("nodeSettings.allowLan"),
@@ -5197,9 +5494,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       treatAsPrivate: t("nodeSettings.privateLabel"),
       autoWake: t("nodeSettings.autoWakeShort"),
     };
-    return Object.keys(patch)
-      .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
-      .map((key) => labels[key] ?? key);
+    return labels[key] ?? key;
   }
 
   // sameSettingValue compares one field the way the node does: a list of ranges
@@ -5268,7 +5563,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (state.inboxView) renderInbox(state.inboxView);
       renderOutbound();
     }
-    if (!el("audience-modal").classList.contains("hidden")) renderAudienceCount();
+    if (!el("audience-modal").classList.contains("hidden")) {
+      renderAudienceCount();
+      // Both are sentences this dialog derives rather than reads off a key, so
+      // paintStatic cannot reach them.
+      renderAutoWakeNote();
+      syncAudiencePreset();
+    }
     if (state.mcpSession) {
       el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
       renderMCPStatus(state.mcpStatus);
@@ -5307,9 +5608,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     render();
   };
 
-  el("pairing-close").onclick = closePairingDrawer;
+  el("pairing-close").onclick = () => dismissPairingDrawer().catch(() => {});
   el("pairing-modal").onclick = (event) => {
-    if (event.target === el("pairing-modal")) closePairingDrawer();
+    if (event.target === el("pairing-modal")) dismissPairingDrawer().catch(() => {});
   };
   el("btn-pair-manual").onclick = () => {
     closePairingDrawer();
@@ -5412,16 +5713,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
-    openAudienceModal, renderAudienceCount, readAudienceForm, openInbox, openMCPConfig, closeMCPConfig,
+    openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
+    syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer, didNotStick, sameSettingValue, paintAfterSave,
+    copyResumeCommand, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,
-    renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair,
+    renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair, applyPeerListenRepairFromCard,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
     onboardingSteps, onboardingTriggered, renderOnboarding, spendOnboardingFarewell, goToService, goToPairing, discoverSessions,
