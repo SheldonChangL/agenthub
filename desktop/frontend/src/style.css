@@ -1105,6 +1105,19 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-top: 1px solid var(--line);
 }
 .modal-actions .muted { flex: 1 1 240px; min-width: 0; font-size: 11.5px; line-height: 1.5; }
+/* The actions stay on the card while its body scrolls under them (#194). At
+   the window's minimum size (900x760) the audience dialog is 959px of content
+   in a 606px card, so 套用 sat 310px below the card's bottom edge and was
+   reachable only by scrolling for it. Sticky to the scroller's bottom edge —
+   -14px is the card's own bottom padding, taken back so the bar meets the
+   edge and nothing scrolls visibly beneath it — and opaque, so what scrolls
+   under it does not show through. Every dialog's actions are the card's last
+   child, so this is every dialog. */
+.modal-card > .modal-actions {
+  position: sticky; bottom: -14px; z-index: 1;
+  margin-bottom: -14px; padding-bottom: 14px;
+  background: var(--panel-solid);
+}
 
 /* The window's own confirm (askConfirm in app.js). Above the drawers, because
    the inbox drawer is where one of its questions is asked from; narrower than

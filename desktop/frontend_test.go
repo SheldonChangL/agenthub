@@ -786,6 +786,30 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	}
 }
 
+// TestFrontendKeepsTheDialogActionsOnTheCard pins #194's first item: at the
+// window's minimum size the audience dialog's content is taller than its card,
+// and 套用 was only reachable by scrolling the card for it. The actions bar is
+// sticky to the card's bottom edge, for every dialog. Measured in dev/mock.html
+// at 900x760: the card is 606px tall for 959px of content, and #audience-apply
+// stays inside the card at either end of the scroll.
+func TestFrontendKeepsTheDialogActionsOnTheCard(t *testing.T) {
+	stylesheet, err := os.ReadFile(filepath.Join("frontend", "src", "style.css"))
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	// The block form; the one-line `{ flex: none; }` in the list above it is a
+	// different rule.
+	rule := regexp.MustCompile(`\n\.modal-card > \.modal-actions \{\n[^}]*\}`).FindString(string(stylesheet))
+	if rule == "" {
+		t.Fatal("style.css has no .modal-card > .modal-actions rule; a dialog taller than the window scrolls its buttons away")
+	}
+	for _, want := range []string{"position: sticky", "bottom:", "background:"} {
+		if !strings.Contains(rule, want) {
+			t.Errorf(".modal-card > .modal-actions lacks %q, so the actions scroll out of the card or show what scrolls under them", want)
+		}
+	}
+}
+
 // TestFrontendLeavesRoomForTheMacWindowButtons covers the other half of #153.
 //
 // desktop/main.go asks for mac.TitleBarHiddenInset(), which draws the traffic
