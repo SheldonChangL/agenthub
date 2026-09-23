@@ -4066,13 +4066,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Answers whether it ran, so the save that asked for it knows whether to go
   // ahead: an owner who says no to re-registering has not agreed to a write
   // that a unit flag would silently undo a second later.
-  async function reinstallWithoutPinnedSettings(status) {
+  //
+  // `fields` names the settings the save that asks is about to write and the
+  // unit pins, so the question says which ones a "no" leaves out.
+  async function reinstallWithoutPinnedSettings(status, fields = status.pinnedSettings ?? []) {
     if (status.installed && !status.dbPathKnown) {
       banner(t("service.unpinNeedsDbPath"));
       return false;
     }
     const ok = confirm(t("service.unpinConfirm", {
       path: status.dbPath || t("service.nodeDefaultLocation"),
+      pinned: fields.join(t("candidate.flagJoin")),
     }));
     if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
@@ -5167,6 +5171,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // from and what the node merges a write onto. Diffing against the running
   // values instead is what let an unrelated save withdraw a remembered address,
   // and made a flag-pinned switch impossible to write.
+  // Each field of the patch as the flag a service unit pins it with — the names
+  // ServiceStatus reports in pinnedSettings (desktop/service.go).
+  const NODE_SETTING_FLAGS = {
+    peerListen: "peer-listen",
+    allowLan: "allow-lan",
+    discover: "discover",
+    treatAsPrivate: "treat-as-private",
+    autoWake: "auto-wake",
+  };
+
   function readNodeSettingsPatch() {
     // The saved configuration, because that is what the node merges a write
     // onto — see applyNodeSettings.
@@ -5208,13 +5222,44 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // after it: the re-registered unit restarts the node, so the values saved
     // below are read by a process that is no longer given anything.
     //
-    // Outside withBusy because re-registering has its own; a refusal stops the
-    // save, since an owner who will not clear the unit has not agreed to a
-    // write the unit will quietly undo.
-    const pinned = state.service?.pinnedSettings ?? [];
-    if (state.service?.installed && pinned.length > 0) {
-      if (!(await reinstallWithoutPinnedSettings(state.service))) return;
+    // Outside withBusy because re-registering has its own.
+    //
+    // Asked only when this save touches a setting the unit pins: a unit that
+    // pins the peer listener does nothing to a change of discovery, and asking
+    // about it there made every save a question about the service (#193
+    // review). A refusal — or a unit whose database path this window cannot
+    // read, so re-registering it could move the node onto another identity —
+    // leaves out the pinned fields, which the unit would quietly undo, and
+    // still saves the rest; a banner names what was left out.
+    const pinned = new Set(state.service?.installed ? (state.service.pinnedSettings ?? []) : []);
+    const touched = Object.keys(patch).filter((key) => pinned.has(NODE_SETTING_FLAGS[key]));
+    let skippedNote = "";
+    if (touched.length > 0) {
+      const reregistered = Boolean(state.service.dbPathKnown)
+        && (await reinstallWithoutPinnedSettings(state.service, touched.map(nodeSettingLabel)));
+      if (!reregistered) {
+        skippedNote = [
+          state.service.dbPathKnown ? "" : t("service.unpinNeedsDbPath"),
+          t("nodeSettings.pinnedNotSaved", { pinned: touched.map(nodeSettingLabel).join(t("candidate.flagJoin")) }),
+        ].filter(Boolean).join(" ");
+        for (const key of touched) delete patch[key];
+      }
     }
+    if (Object.keys(patch).length === 0) {
+      banner(skippedNote);
+      return;
+    }
+    await saveNodeSettingsPatch(patch);
+    // After the save's own report, which is a single banner that each outcome
+    // replaces: said last, so the fields that were left out are not overwritten
+    // by the sentence about the ones that were saved.
+    if (skippedNote) {
+      const said = el("banner").classList.contains("hidden") ? "" : el("banner").textContent;
+      banner([said, skippedNote].filter(Boolean).join(" "));
+    }
+  }
+
+  async function saveNodeSettingsPatch(patch) {
     await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
       let view;
@@ -5420,6 +5465,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // because the restart had already made them agree. Comparing what was asked
   // for against what is there needs no theory about why.
   function didNotStick(patch, savedAfter) {
+    return Object.keys(patch)
+      .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
+      .map(nodeSettingLabel);
+  }
+
+  // nodeSettingLabel is the form's own name for a field of the patch.
+  function nodeSettingLabel(key) {
     const labels = {
       peerListen: t("nodeSettings.peerListenLabel"),
       allowLan: t("nodeSettings.allowLan"),
@@ -5427,9 +5479,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       treatAsPrivate: t("nodeSettings.privateLabel"),
       autoWake: t("nodeSettings.autoWakeShort"),
     };
-    return Object.keys(patch)
-      .filter((key) => !sameSettingValue(patch[key], savedAfter?.[key], key))
-      .map((key) => labels[key] ?? key);
+    return labels[key] ?? key;
   }
 
   // sameSettingValue compares one field the way the node does: a list of ranges
