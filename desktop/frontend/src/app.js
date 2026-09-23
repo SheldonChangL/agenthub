@@ -3322,7 +3322,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }).length;
   }
 
+  // Asked first, in the window's own dialog, because it cannot be undone: the
+  // node's grants go in the same transaction as its trust, and pairing again
+  // does not bring them back. docs/ui-contract.md had always said 「confirm 後
+  // 執行」 and the button went straight to RevokeNode. A dangerous question,
+  // so the keyboard starts on 取消.
   async function revokeSelected(node) {
+    if (state.busy) return;
+    const ok = await askConfirm({
+      title: t("network.revokeConfirmTitle", { name: node.displayName }),
+      body: t("network.revokeConfirmBody", { name: node.displayName, nodeId: node.nodeId }),
+      confirmLabel: t("network.revoke"),
+      danger: true,
+    });
+    if (!ok) return;
     await withBusy(t("network.revoke"), async () => {
       await api.RevokeNode(node.nodeId);
       state.selectedNode = null;
