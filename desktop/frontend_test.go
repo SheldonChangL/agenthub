@@ -512,6 +512,14 @@ func TestFrontendInboxDrawerAsksTheNodeForOneSession(t *testing.T) {
 	runNodeCheck(t, "inbox-drawer.mjs")
 }
 
+// TestFrontendAsksInItsOwnDialog covers the clear that did nothing. In the
+// macOS app window.confirm is answered "no" without being shown — Wails v2's
+// WKUIDelegate implements no runJavaScriptConfirmPanel — so the window asks
+// its questions in its own dialog, and 清空收件匣 clears only after 確定.
+func TestFrontendAsksInItsOwnDialog(t *testing.T) {
+	runNodeCheck(t, "confirm-dialog.mjs")
+}
+
 // TestFrontendInboxBadgesCountWhatIsHeld covers the per-row count (issue #146).
 //
 // Three rules the badge is worth nothing without: a count of zero is no badge

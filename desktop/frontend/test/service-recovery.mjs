@@ -17,6 +17,7 @@
 
 import { document } from "./dom-shim.mjs";
 import { inEnglish } from "./fixtures/in-english.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -33,10 +34,10 @@ let saved = [];
 let restarts = 0;
 let confirmed = true;
 let confirmations = [];
-globalThis.confirm = (message) => {
+answerConfirms(document, (message) => {
   confirmations.push(message);
   return confirmed;
-};
+});
 
 // A node that is up, answering, and serving loopback because the address it was
 // told to serve is not on this machine any more.

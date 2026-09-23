@@ -64,10 +64,10 @@
 | `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」 | 同上 |
 | `RejectPairRequest(id)` | 任一未決請求列「拒絕」 | 成功後把節點回的 `nextStep` 放進 banner——推不出去的拒絕只有這裡會說 |
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
-| `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `confirm` 後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
+| `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
 | `InstallService(form)` | 服務表單「安裝為背景服務」 | 顯示 `$ command` + output；失敗把錯誤放進 output 區 |
-| `UninstallService()` | `service-uninstall` | confirm；成功後 reload |
+| `UninstallService()` | `service-uninstall` | `askConfirm`；成功後 reload |
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
 
@@ -260,7 +260,7 @@
   規則見 §7.8。
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9。
 
-### 3.5 覆蓋層（6 個：2 個抽屜 + 4 個對話框）
+### 3.5 覆蓋層（7 個：2 個抽屜 + 5 個對話框）
 
 抽屜（`.drawer`，從右側滑出）：
 - `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
@@ -276,6 +276,12 @@
   開啟即展開進階區並顯示「自訂」。喚醒的說明 `audience-autowake-note` 在進階區**外面**。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
+- `confirm-modal` 是非題（`askConfirm({title, body, confirmLabel, danger})`，回 Promise<boolean>）：
+  所有「做了就回不去」的動作都在這裡問，**不用 `window.confirm`／`alert`／`prompt`**——macOS 版
+  WKWebView 的 UIDelegate（Wails v2 `WailsContext.m`）只實作了 `runOpenPanelWithParameters`，
+  沒有 `runJavaScriptConfirmPanelWithMessage`，WebKit 因此把每個 `confirm()` 當成按了取消、畫面上什麼也不出現。
+  Esc、取消、點背景都回 false；`danger` 時確認鈕是紅色且焦點預設在「取消」；body 以 `pre-line` 保留換行；
+  z-index 高於抽屜（收件匣抽屜會從裡面問）。同時只有一題，第二題會讓第一題回 false。
 
 ## 4. 安全與文案契約（測試逐字斷言的，不可改寫）
 
@@ -333,7 +339,7 @@
   （僅區網視圖**且配對抽屜開著**，`state.busy` 時跳過——每次讀都會讓節點去對端輪詢）、1 秒倒數、
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
-- `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
+- `inbox-clear` 在 `askConfirm` 回 false（取消／Esc／背景）時不呼叫 `ClearInbox`；回 true 時呼叫並把結果畫在抽屜內（測試 `confirm-dialog.mjs`）。app.js 不得呼叫 `window.confirm`／`alert`／`prompt`（同一個測試逐字檢查原始碼）。
 - 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。
 
 ### 4.1 測試架構的耦合
