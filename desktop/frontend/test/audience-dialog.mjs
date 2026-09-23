@@ -291,7 +291,7 @@ if (noteText().includes("套用後會關閉喚醒")) {
   if (form.mode !== "selected") failures.push(`the dialog opened a selected session as ${form.mode}`);
   if (!form.nodes.includes("node_paired")) failures.push("the paired grant was not ticked");
   if (!form.nodes.includes("node_gone")) {
-    failures.push(`a grant to a machine no longer paired was dropped by opening and applying: ${JSON.stringify(form.nodes)}`);
+    failures.push(`a grant to a machine the read did not list was dropped by opening and applying: ${JSON.stringify(form.nodes)}`);
   }
   const list = el("audience-node-list").serialize();
   if (!list.includes("node_gone") || !list.includes(ZH["audience.unlistedNode"])) {
