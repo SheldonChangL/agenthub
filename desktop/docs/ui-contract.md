@@ -272,6 +272,8 @@
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
+  單選且 mode `selected` 時，已授權但不在 `state.nodes` 的節點另列一列「已不在配對清單的機器」，預設勾著，
+  取消勾選才會撤銷；否則套用會把它靜默撤掉（#194）。
   三個情境 preset 只寫三個訊息旗標（只看見：全關；能留訊息：`acceptMessages`；留訊息並喚醒：
   `acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值；現值不是任何 preset 時，
   開啟即展開進階區並顯示「自訂」。喚醒的說明 `audience-autowake-note` 在進階區**外面**。

@@ -273,6 +273,51 @@ if (noteText().includes("套用後會關閉喚醒")) {
   failures.push("a Claude session that never had auto-wake was told it would be turned off");
 }
 
+/* ---------------- a grant to a machine that is no longer paired (#194) ---- */
+
+// One session in selected mode, published to a paired node and to one that is
+// no longer in the paired list. The dialog used to draw boxes only for paired
+// nodes, so the second grant had no box, readAudienceForm left it out and 套用
+// withdrew it without a word. It gets a row of its own now, ticked, saying
+// what it is — and unticking it is how it is withdrawn on purpose.
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  module.state.nodes = [{ nodeId: "node_paired", displayName: "bench" }];
+  const granted = { id: "codex:granted", provider: "codex",
+    audience: { mode: "selected", nodes: ["node_paired", "node_gone"], acceptMessages: true } };
+  withSelection(true, [granted]);
+  const form = module.readAudienceForm();
+  if (form.mode !== "selected") failures.push(`the dialog opened a selected session as ${form.mode}`);
+  if (!form.nodes.includes("node_paired")) failures.push("the paired grant was not ticked");
+  if (!form.nodes.includes("node_gone")) {
+    failures.push(`a grant to a machine no longer paired was dropped by opening and applying: ${JSON.stringify(form.nodes)}`);
+  }
+  const list = el("audience-node-list").serialize();
+  if (!list.includes("node_gone") || !list.includes(ZH["audience.formerNode"])) {
+    failures.push(`the unlisted grant is not shown as a machine no longer paired: ${list}`);
+  }
+  // Unticked on purpose, it goes.
+  const box = el("audience-node-list").children
+    .flatMap((label) => label.children ?? [])
+    .find((child) => child && child.value === "node_gone");
+  if (!box) {
+    failures.push("no box to untick for the unlisted grant");
+  } else {
+    box.checked = false;
+    box.onchange?.();
+    if (module.readAudienceForm().nodes.includes("node_gone")) {
+      failures.push("unticking the unlisted grant did not withdraw it");
+    }
+  }
+  // Several sessions still open empty: nothing is carried from one to many.
+  const other = { id: "codex:other", provider: "codex", audience: { mode: "selected", nodes: ["node_gone"] } };
+  withSelection(true, [granted, other]);
+  if (el("audience-node-list").serialize().includes("node_gone")) {
+    failures.push("a multi-session dialog listed one session's unlisted grant");
+  }
+  module.state.nodes = [];
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
