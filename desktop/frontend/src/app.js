@@ -1686,8 +1686,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // service, moving the database — did nothing, silently. The browser mock and
   // the node checks both answered confirm() themselves, so neither could see it.
   //
-  // One question at a time: a second one while the first is open answers the
-  // first "no". Esc, 取消 and a click on the backdrop are all "no". The body
+  // One question at a time: a second one asked while the first is open waits
+  // behind it and is shown once the first is answered. It used to answer the
+  // first "no" instead, so anything that asked while the owner was reading —
+  // a background path, a second button reached by Tab — silently turned their
+  // pending decision into a cancel. Esc, 取消 and a click on the backdrop are
+  // all "no". The body
   // keeps its line breaks. A dangerous confirm button is drawn red and does
   // not start with the keyboard on it, so a stray Enter cancels rather than
   // deletes.
@@ -1703,8 +1707,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   const CONFIRM_BACKDROP_GRACE_MS = 400;
   const confirmNow = () => globalThis.performance?.now?.() ?? Date.now();
   let confirmPending = null;
-  function askConfirm({ title, body = "", confirmLabel = t("common.confirm"), danger = false }) {
-    if (confirmPending) confirmPending(false);
+  const confirmQueue = [];
+  function askConfirm(question) {
+    if (confirmPending) return new Promise((resolve) => confirmQueue.push({ question, resolve }));
+    return showConfirm(question);
+  }
+  function showConfirm({ title, body = "", confirmLabel = t("common.confirm"), danger = false }) {
     const modal = el("confirm-modal");
     const ok = el("confirm-ok");
     const cancel = el("confirm-cancel");
@@ -1722,6 +1730,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         modal.classList.add("hidden");
         if (before && typeof before.focus === "function") before.focus();
         resolve(answer);
+        const next = confirmQueue.shift();
+        if (next) showConfirm(next.question).then(next.resolve);
       };
       confirmPending = finish;
       ok.onclick = () => finish(true);
@@ -1744,8 +1754,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   // Esc answers "no" wherever the keyboard is: a click on the question's own
   // text moves focus out of both buttons, and the dialog must still close.
+  //
+  // And Tab stays in the question. The dialog says aria-modal, but nothing held
+  // the keyboard to it: two presses of Tab reached the title bar's service pill
+  // behind the backdrop, where Enter acted on a window the owner could not
+  // see. So Tab and Shift-Tab go round the dialog's two buttons, and from
+  // anywhere else in it — the question's text, after a click — to the first
+  // or last of them.
   function confirmKey(event) {
-    if (!confirmPending || event?.key !== "Escape") return;
+    if (!confirmPending) return;
+    if (event?.key === "Tab") {
+      const order = [el("confirm-cancel"), el("confirm-ok")];
+      const at = order.indexOf(document.activeElement);
+      const step = event.shiftKey ? -1 : 1;
+      const next = at === -1 ? (step > 0 ? 0 : order.length - 1) : (at + step + order.length) % order.length;
+      event.preventDefault?.();
+      order[next].focus();
+      return;
+    }
+    if (event?.key !== "Escape") return;
     event.preventDefault?.();
     event.stopPropagation?.();
     confirmPending(false);

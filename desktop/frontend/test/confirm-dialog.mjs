@@ -160,12 +160,51 @@ if (await ask(() => app.confirmKey({ key: "Escape" }), two) !== false) failures.
   if (document.activeElement !== el("confirm-ok")) failures.push("a safe question does not start on its confirm button");
   if (!el("confirm-ok").classList.contains("primary")) failures.push("a safe confirm is not the primary button");
   if (!el("confirm-body").classList.contains("hidden")) failures.push("an empty body is shown as an empty paragraph");
-  // A second question answers the first one "no" rather than leaving it
-  // waiting for ever.
-  const second = app.askConfirm({ title: "另一個？" });
-  if (await pending !== false) failures.push("a question replaced by another did not answer false");
+  // A second question asked while the first is open waits behind it: the
+  // owner's pending answer is not turned into a "no" for them.
+  let firstAnswer = "unanswered";
+  pending.then((value) => { firstAnswer = value; });
+  const second = app.askConfirm({ title: "另一個？", danger: true });
+  await settle();
+  if (firstAnswer !== "unanswered") failures.push(`a second question answered the first one ${firstAnswer}`);
+  if (el("confirm-title").textContent !== "重新登記？") failures.push("a second question replaced the one on screen");
   el("confirm-ok").onclick();
-  if (await second !== true) failures.push("the second question was not the one the button answered");
+  if (await pending !== true) failures.push("the first question was not the one the button answered");
+  // Then the second one is asked, in its own words, and answered on its own.
+  if (el("confirm-modal").classList.contains("hidden")) failures.push("the waiting question was never shown");
+  if (el("confirm-title").textContent !== "另一個？") failures.push(`the waiting question is not the one shown: ${el("confirm-title").textContent}`);
+  if (document.activeElement !== el("confirm-cancel")) failures.push("the waiting dangerous question does not start on 取消");
+  el("confirm-cancel").onclick();
+  if (await second !== false) failures.push("the second question was not answered by its own button");
+}
+// Tab stays in the question: round its two buttons, both ways, and back in
+// from anywhere else inside it.
+{
+  const pending = app.askConfirm({ title: "要清空嗎？", danger: true });
+  const tab = (shiftKey = false) => {
+    let prevented = false;
+    app.confirmKey({ key: "Tab", shiftKey, preventDefault: () => { prevented = true; } });
+    return prevented;
+  };
+  const prevented = [tab(), tab(), tab()];
+  if (prevented.includes(false)) failures.push("Tab in the question was left to the browser, which walks into the page behind it");
+  const ids = [];
+  el("confirm-cancel").focus();
+  for (let i = 0; i < 3; i += 1) { tab(); ids.push(document.activeElement === el("confirm-ok") ? "ok" : document.activeElement === el("confirm-cancel") ? "cancel" : "outside"); }
+  if (ids.join(",") !== "ok,cancel,ok") failures.push(`Tab walked ${ids.join(",")}, want ok,cancel,ok`);
+  const back = [];
+  for (let i = 0; i < 3; i += 1) { tab(true); back.push(document.activeElement === el("confirm-ok") ? "ok" : document.activeElement === el("confirm-cancel") ? "cancel" : "outside"); }
+  if (back.join(",") !== "cancel,ok,cancel") failures.push(`Shift-Tab walked ${back.join(",")}, want cancel,ok,cancel`);
+  el("confirm-body").focus();
+  tab();
+  if (document.activeElement !== el("confirm-cancel")) failures.push("Tab from the question's text did not land on its first button");
+  el("confirm-body").focus();
+  tab(true);
+  if (document.activeElement !== el("confirm-ok")) failures.push("Shift-Tab from the question's text did not land on its last button");
+  el("confirm-cancel").onclick();
+  await pending;
+  // With no question open, Tab is the page's again.
+  if (tab()) failures.push("Tab was held with no question open");
 }
 if (!el("confirm-modal").classList.contains("hidden")) failures.push("the dialog is still open after every question was answered");
 
