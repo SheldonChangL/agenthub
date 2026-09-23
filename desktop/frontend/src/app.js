@@ -1683,7 +1683,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     "drawerSubAnnouncing", "drawerSubNotAnnouncing", "drawerSubUnreachable", "drawerSubUnknown",
     "windowOpenUnreachable", "hereCopied", "hereCopyFailed",
     "send", "sendFromCandidate", "sendManual", "addressEmpty", "addressNote", "sent",
-    "requestsHeading", "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
+    "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
     "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
   ]);
   // The one sentence about comparing, said once per undecided row; the step
@@ -2060,7 +2060,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
     if (waiting.length === 0) return;
     line.append(element("div", "stale",
-      plural(waiting.length, "pair.waiting", { panel: PAIR_TEXT.requestsHeading })));
+      plural(waiting.length, "pair.waiting", { panel: t("pair.step3Heading") })));
   }
 
   // The exchange's rows, keyed by request id and kept across renders.
