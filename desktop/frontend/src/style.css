@@ -512,11 +512,21 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
 .rowactions button { padding: 0 8px; }
-/* A session holding nothing keeps the button and loses the word: an envelope
+/* A session holding nothing keeps the button and loses the word: an inbox icon
    instead of 「收件匣」 on every one of a thousand rows. The label element and
    its text are still there — hidden, not removed — so the tooltip, the
    accessible name and the language switch all still reach it. */
-.rowactions button.inbox.compact { padding: 0 8px; }
+/* Sized from the design, source-first (docs/ui-redesign/Main.dc.html and
+   MainHacker.dc.html, the row's actions cell): in a 38px row the inbox button
+   is a 24x24 square, the same box as the resume button beside it, holding a
+   14x14 inbox-tray icon — the icon is 14/24 of its button. The row buttons
+   here are --control-h (28px) tall, the resume button included, so the
+   compact button is a 28px square and the icon 16px (14/24 x 28 = 16.3).
+   The icon is the design's own two paths, painted in currentColor through a
+   mask; the ✉ glyph it replaces was 13px of font whose ink was about half of
+   that. The square is narrower than the old glyph-plus-padding, so the actions
+   column is not widened by it. */
+.rowactions button.inbox.compact { width: var(--control-h); padding: 0; justify-content: center; }
 .rowactions button.inbox.compact .label {
   position: absolute;
   width: 1px; height: 1px;
@@ -524,7 +534,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.rowactions button.inbox.compact::before { content: "\2709"; font-size: 13px; line-height: 1; }
+.rowactions button.inbox.compact::before {
+  content: "";
+  flex: none;
+  width: 16px; height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 12h-6l-2 3h-4l-2-3H2'/><path d='M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 12h-6l-2 3h-4l-2-3H2'/><path d='M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z'/></svg>") center / contain no-repeat;
+}
 
 /* How many messages a session is still holding (#146). It rides inside the
    Inbox button and on the 本機 session tab, and it is absent — not zero —
