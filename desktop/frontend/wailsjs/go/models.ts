@@ -847,6 +847,7 @@ export namespace main {
 	    candidates: Candidate[];
 	    full: boolean;
 	    notice: string;
+	    noticeCode?: string;
 	    availability: string;
 	    windowAvailable: boolean;
 	    error?: string;
@@ -862,6 +863,7 @@ export namespace main {
 	        this.candidates = this.convertValues(source["candidates"], Candidate);
 	        this.full = source["full"];
 	        this.notice = source["notice"];
+	        this.noticeCode = source["noticeCode"];
 	        this.availability = source["availability"];
 	        this.windowAvailable = source["windowAvailable"];
 	        this.error = source["error"];
