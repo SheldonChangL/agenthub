@@ -310,7 +310,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // describeAudience answers "published to whom" in one cell.
   function describeAudience(audience) {
     const mode = audience?.mode ?? "none";
-    if (mode === "all_paired") return { text: t("audience.cell.allPaired"), published: true };
+    // The table's own wording, shorter than the chip's and the dialog's: at
+    // 900px the column holds 88px of pill, and 「Every paired machine」 is
+    // 124px, so it was cut to 「Every paired ma」 (#194). The tooltip and the
+    // filter chip keep the whole phrase.
+    if (mode === "all_paired") {
+      return { text: t("audience.cell.allPairedShort"), title: t("audience.cell.allPaired"), published: true };
+    }
     if (mode === "selected") {
       const count = audience?.nodes?.length ?? 0;
       return {
@@ -572,9 +578,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const audience = describeAudience(session.audience);
     parts.audiencePill.className = audience.published ? "pill public" : "pill";
     parts.audiencePill.textContent = audience.text;
-    // The column is sized for the 900px window, where the longest wordings
-    // (「Every paired machine」) clip; the tooltip carries the whole of it.
-    parts.audiencePill.title = audience.text;
+    // The column is sized for the 900px window, with every table wording
+    // measured to fit it (style.css col.c-audience); the tooltip carries the
+    // whole of it anyway, and the long form where the cell uses a short one.
+    parts.audiencePill.title = audience.title ?? audience.text;
 
     // The flags describe what a peer is allowed to do with this session, so on
     // one no peer has been given they describe nothing. Hidden rather than

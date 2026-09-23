@@ -43,8 +43,26 @@ for (const [id, visible] of Object.entries(want)) {
   }
 }
 
+// The table says "every paired machine" in its short form, because the long
+// one was cut to 「Every paired ma」 in the 900px window (#194); the tooltip
+// keeps the long one, and the filter chip — which has room — says it in full.
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  const { TEXT: EN } = await import("../src/i18n/en.js");
+  const tr = document.getElementById("rows").children.find((row) => row.sessionParts?.idCell?.title?.includes("claude:all"));
+  const pill = tr?.sessionParts?.audiencePill;
+  if (pill?.textContent !== ZH["audience.cell.allPairedShort"]) failures.push(`the all-paired cell reads ${pill?.textContent}`);
+  if (pill?.title !== ZH["audience.cell.allPaired"]) failures.push(`the all-paired cell's tooltip is ${pill?.title}, want the whole phrase`);
+  if (EN["audience.cell.allPairedShort"].length >= EN["audience.cell.allPaired"].length) {
+    failures.push("the English short form is not shorter than the phrase it stands in for");
+  }
+  const { CHIPS } = await import("../src/sessions/filter.js");
+  const chip = CHIPS.find((c) => c.group === "audience" && c.value === "all_paired");
+  if (chip?.labelKey !== "audience.cell.allPaired") failures.push(`the filter chip lost the whole phrase: ${chip?.labelKey}`);
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("row audience: FLAGS only on a row some peer can see");
+console.log("row audience: FLAGS only on a row some peer can see; the all-paired cell is short, its tooltip whole");
