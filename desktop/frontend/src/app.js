@@ -2938,12 +2938,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const heading = element("h2", "", node.displayName);
     const fingerprint = element("div", "fingerprint", node.fingerprint);
     const note = element("p", "muted", t("network.fingerprintNote"));
+    note.title = docsRef("The fingerprint under a paired machine's name");
 
     // Trust is recorded per machine, and this page shows only this machine's
     // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
     // on 2026-09-10, and nothing here said that was half-done — the row simply
     // sat there having never been heard from, which reads as the peer being off.
     const mutualNote = element("p", "stale", t("network.mutualNote"));
+    mutualNote.title = docsRef("A paired machine whose heartbeat never arrives");
 
     const rows = [
       [t("identity.nodeId"), node.nodeId],
