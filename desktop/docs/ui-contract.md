@@ -49,15 +49,15 @@
 | 綁定 | 現在的入口 | 觸發後必須發生的事 |
 |---|---|---|
 | `Overview()` | 啟動、`btn-reload`、每次寫入後 | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取 |
-| `Discover()` | `btn-discover` | 掃描後 reload；banner 報 claude/codex/total/skipped 數 |
-| `Heartbeat()` | `btn-heartbeat` | 對話框顯示已簽章 envelope 純文字 |
+| `Discover()` | `btn-discover`；視窗第一次**連得到節點**而且 0 筆 session 時自動呼叫一次（`state.busy` 時不算，留給下一次不忙的讀取） | 掃描後 reload；banner 報 claude/codex/total/skipped 數 |
+| `Heartbeat()` | `btn-heartbeat`（在設定頁的身分區 `settings-identity`） | 對話框顯示已簽章 envelope 純文字 |
 | `SetAudience(ids, audience)` | 公開對象對話框「套用」、`btn-unpublish` | 成功：清空選取、關對話框、banner；部分失敗：留著選取、banner 第一個錯誤 |
 | `SetVisibility(ids, visibility)` | 目前**沒有** UI 入口 | 保留為未接綁定；不算缺功能 |
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、banner |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；banner 說明同時移除授權 |
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | `btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
-| `ClosePairing()` | `btn-pairing-off` | |
+| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫）、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
+| `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時 | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開就**不關**（節點關視窗會作廢所有未決請求） |
 | `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；**只在抽屜開著時讀**（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定 |
 | `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走 banner，錯誤碼翻成中文（§4.3） |
 | `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」 | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
@@ -85,11 +85,19 @@
 > 這一節在改版期間停在改版前的狀態，寫著「無排序」「表格 8 欄」「chip 帶全域計數」「安裝表單六個欄位」，
 > 全部與程式不符，而且 §7.6 自己就寫著安裝表單只剩資料庫路徑。以下每一條都對照過原始碼。
 
+> **2026-09-23 更新（分支 `feat/desktop-ux-simplify`）**：以下清單的畫面沒有增減，但有六處改了形狀——
+> 面板用滿視窗寬度、按鈕列換行不裁切；配對收成一個三步抽屜（能不能被連到／對方在哪裡／比對指紋），
+> 區網左欄只留主按鈕與一行狀態；本機表格去掉 MANAGED 欄、FLAGS 只在已公開的列顯示、Refresh 離開標題列；
+> 公開對象對話框先問情境（三個 preset），四個旗標收進「進階」；背景服務與節點設定不再互相覆蓋
+> （衝突在節點設定按儲存時問一次）；首次啟動清單剩三步。文案每個狀態只留一句，原本的解釋搬到
+> `docs/desktop-window.md`，視窗裡用 tooltip 或 `<details>` 指過去；用詞見 §12。
+
 ### 3.1 全域
 
 - 標題列：連線點（ok/bad）、`node-line`（節點名稱 · 平台 · URL）；三個分頁 `本機 session` / `區網` / `設定`
-  （前兩個帶計數）；右側四個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
-  重新整理、重新掃描、預覽 heartbeat。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
+  （前兩個帶計數）；右側兩個控制項：**服務狀態 pill**（`service-pill`，點了跳設定頁的服務區）、
+  重新掃描（`btn-discover`）。`btn-reload` 保留在 DOM 但 `hidden`（15 秒背景輪詢取代它）；預覽 heartbeat
+  移到設定頁的身分區（§2 `Heartbeat()`）。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
 - **收件匣徽章（#146，2026-09-18）**：數字，不是「新」。
   - 定義是 **held，不是未讀**：節點沒有「已讀」這個概念，桌面端在抽屜裡讀也刻意不標示
     （抽屜那句「在這裡讀不會把訊息交給 agent，也不會標示已讀」仍然成立，也仍然是真的）。
@@ -141,12 +149,12 @@
     除了「節點連不到」以外，每一條都要 `state.loadedOnce` 才算數——讀不到節點時的空表格不是這台機器的事實
     （#114）。關掉之後寫進 `UI_PREFS_KEY` 的 `onboardingDismissed`，**不會自己再打開**；
     要找回來只有設定 → 外觀的「Show the setup checklist」。
-  - **五個步驟**，每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
+  - **三個步驟**（2026-09-23 起；原本五步），每個是 `{id, title, body, done, actions}`，`done` 每次 render 都從 state 重算、**不存**，
     所以在終端機把服務移除掉，那一步會自己回來：①把節點跑成背景服務（`goToService()`；不支援服務管理員的
-    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②找出本機 session（跟 `btn-discover` 同一個
-    `discoverSessions()`；掃出 0 筆時 body 換成「AgentHub 是讀那些工具寫在硬碟上的檔案」的解釋）
-    ③讓這台機器連得到（見下）④和另一台機器配對（`goToPairing()`：先切到區網視圖再 `openPairingDrawer()`，
-    因為交換清單只在那個視圖被輪詢）⑤公開一個 session（純文字 + 把焦點放到 `#select-all`）。
+    平台換成 `restartNode()`；`toolError` 只解釋不給按鈕）②和另一台機器配對（`goToPairing()`：先切到區網視圖再
+    `openPairingDrawer()`，因為交換清單只在那個視圖被輪詢；「讓這台機器連得到」併進抽屜第 1 步）③公開一個 session
+    （純文字 + 把焦點放到 `#select-all`；連得到節點但 0 筆 session 時加一句 `onboarding.publish.noSessions`）。
+    原本的「找出本機 session」不再是步驟：視窗第一次連得到節點且 0 筆 session 時自動 `Discover()` 一次（§2）。
   - **元素識別**：本機視圖會被 15 秒的 `load()` tick 重畫，所以 `renderOnboarding()` 以 step id 為 key
     原地更新，只有「步驟集合改變」時才寫容器；按鈕依位置保留。理由與 `updateCandidateRow` 一樣：
     重建會把使用者正要按下去的那顆按鈕換掉。`state.busy` 時每顆按鈕 disabled。
@@ -156,11 +164,11 @@
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - 選取列：全選目前篩選結果（含 indeterminate）、已選取 N 個、「設定公開對象…」「收回選取」。
-- **表格 9 欄**：勾選、SESSION（含 provider badge）、狀態、管理、公開對象、**旗標**、工作目錄、最後活動、**動作**。
-- **有排序**：6 個表頭可排序（`id`、`status`、`management`、`audience`、`cwd`、`lastSeenAt`），
+- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象、**旗標**（只在已公開的列顯示）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
+- **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
-- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 176px。MCP 入口已移除，見 §10。
+- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
 - 空狀態：「沒有符合條件的 session。」
 
 ### 3.3 區網視圖
@@ -205,7 +213,7 @@
    欄位不存在（舊節點）才退回 `pairAddressReachable()` 自己判字串：空字串、loopback
    （`isLoopbackListen`）、未指定位址（`0.0.0.0`、`::`）都是**還不能用**。
    欄位缺席**不得**當成 false——那是替節點講它沒講過的話。Go 端因此用 `*bool`。
-   同時**視窗 headline 不得只說「配對視窗開啟中」**——那讀起來像「好了」，而實際上視窗開著卻沒有入口，
+   同時**視窗 headline 不得只說「配對開放中」**——那讀起來像「好了」，而實際上視窗開著卻沒有入口，
    使用者會跑去另一台乾等。測試：`pairing-exchange.mjs` §8a（沒有 `peerAddress` 欄位的預設節點）、
    §8a-ii（節點自己說不可達＋原因）、§8a-iii（真的區網位址）、§8b（loopback 字串）。
 
@@ -262,7 +270,10 @@
 對話框（`.modal`）：
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
-  **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
+  **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
+  三個情境 preset 只寫三個訊息旗標（只看見：全關；能留訊息：`acceptMessages`；留訊息並喚醒：
+  `acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值；現值不是任何 preset 時，
+  開啟即展開進階區並顯示「自訂」。喚醒的說明 `audience-autowake-note` 在進階區**外面**。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
 
@@ -281,8 +292,8 @@
 | 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」、無名時「（未提供名稱）」 | 候選資料進 class |
 | availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
 | `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
-| availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對中 · 剩 m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
-| `state.peerAddress` 是 loopback / `0.0.0.0` / `::`，**或整個欄位不存在**（預設節點） | 「還沒有人連得進這台機器」＋「允許區網連線」＋跳設定按鈕；`copy-pair-address` disabled；headline 不得只說「配對視窗開啟中」 | 把 `127.0.0.1:7463` 當成對方要輸入的位址印出來；把整塊 `#pair-here` 藏起來 |
+| availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對開放中 · m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
+| `state.peerAddress` 是 loopback / `0.0.0.0` / `::`，**或整個欄位不存在**（預設節點） | 「還沒有人連得進這台機器」＋「允許區網連線」＋跳設定按鈕；`copy-pair-address` disabled；headline 不得只說「配對開放中」 | 把 `127.0.0.1:7463` 當成對方要輸入的位址印出來；把整塊 `#pair-here` 藏起來 |
 | `state.peerAddressReachable === false` | 補救那一段 ＋ 節點自己的 `peerAddressProblem` 當次要細節行 | 用前端自己的猜測蓋掉節點的判定 |
 | `state.peerAddress` 非空且可達 | `#pair-here` 一律顯示，**有沒有廣播都顯示**；旁邊那句依 `state.notice` 有無而不同 | 只在沒廣播時才顯示 |
 | 抽屜標題 `#pairing-sub` | 依 `announceableAddresses` 換句子 | 不廣播的節點上出現「開啟後同網段的人都會知道」（兩種寫法都算，有逗號沒逗號） |
@@ -293,8 +304,8 @@
 | 配對請求列（已結束） | 一句結果 + 節點的 `nextStep` | 核准／確認按鈕 |
 | 配對面板任何位置 | | 「自動核准」「略過比對」「全部核准」「不比對」 |
 | availability 未知 | 「不可信」、錯誤原文 | 「-discover」「機器在廣播。」 |
-| 配對視窗開啟 | headline 含「開啟中」；倒數含 `:` | 到期時「0:00」 |
-| 配對視窗到期 | 「已到期」，且觸發一次 `Pairing()` | |
+| 配對開放中 | headline 含「開放中」；倒數含 `:` | 到期時「0:00」 |
+| 配對到期 | 「已到期」，且觸發一次 `Pairing()` | |
 | Peer 離線 | 「離線」 | 舊 session id |
 | Peer 從未 | 「尚未收到」 | 「離線」、session id |
 | Peer presenceError | | 「尚未收到」、session id、presence label class |
@@ -323,7 +334,7 @@
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
-- 公開對象對話框每次開啟四個旗標為 false，且 `readAudienceForm()` 回傳四個 false。
+- 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。
 
 ### 4.1 測試架構的耦合
 
@@ -375,6 +386,12 @@
 8. **audience 四個旗標在表格看不到。** → 公開對象欄加旗標圖示或展開列。
 9. **四個 modal 同層級。** → heartbeat 與收件匣改側邊抽屜；配對與公開對象保持 modal（有不可逆動作）。
 10. **區網視圖左欄塞了三件事**（節點清單、配對模式、候選）。→ 配對模式與候選合成一個「配對」分頁或抽屜，節點清單獨立。
+
+**2026-09-23 狀態（分支 `feat/desktop-ux-simplify`）**：第 10 條已處理（配對抽屜三步，左欄只剩主按鈕與一行狀態）；
+第 9 條早已是現況（收件匣是抽屜、heartbeat 是對話框），這次沒動；第 8 條部分處理——FLAGS 只在已公開的列顯示，
+沒有展開列；第 7 條的未讀數早已由 `held` 計數處理，這次只把沒有訊息時的按鈕縮成圖示。
+第 1–6 條這次沒碰。另外這次處理了清單外的問題：每個狀態兩到四句解釋、node/machine 與 announce/broadcast 混用、
+「配對視窗」當名詞。
 
 ## 6. 驗收清單（2026-09-11 實作分支 `feat/desktop-ui-redesign` 的狀態）
 
@@ -500,20 +517,29 @@
    自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
    不改使用者控制的欄位。
 
-**規則 4 與首次啟動清單的第三步（2026-09-17）。** 那一步要做的事正是「一鍵讓這台機器連得到」，
-而那一鍵在允許區網是關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；
-它不禁止一顆使用者親手按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，
-連理由都寫在 `peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。
-這個視窗不會背著任何人勾那個框。」
+**規則 4 與配對抽屜的第一步。** 那一步要做的事正是「一鍵讓這台機器連得到」，而那一鍵在允許區網是
+關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；它不禁止一顆使用者親手
+按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，連理由都寫在
+`peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。這個視窗不會背著
+任何人勾那個框。」
 
-所以清單第三步的按鈕**就是用 `peerListenRepairs()` 產生的**，餵給它一個合成的
-`{reason: "loopback", address: <目前的 peerListen>}` 加上 `fetchLocalAddresses()` 的結果，
-按下去走 `applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的
-旗標；存檔走表單那條路，所以驗證、重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；
-`peerListenRepairs()` 最後那個「就先只在本機」同時是這一步的 skip；以及**光是 render 這張卡片不會去寫
-`#node-allow-lan`**（`frontend/test/onboarding.mjs` 逐項斷言這四件事）。
-前提是節點設定已經讀進來過——`applyPeerListenRepair` 填的是真正的表單——所以 `renderOnboarding()`
-在卡片可見且 `state.nodeSettings` 還是 null 時，每個視窗生命週期呼叫一次 `loadNodeSettings()`。
+（這一步原本是首次啟動清單的第三步；UX 簡化〔#193〕把它移進配對抽屜，清單剩三步，不再讀節點設定。）
+
+所以抽屜第一步的按鈕**就是用 `peerListenRepairs()` 產生的**（`pairHereRepairs()`），餵給它一個合成的
+`{reason: "loopback", address: <存下來的 peerListen>}` 加上節點回報的位址清單，按下去走
+`applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的旗標
+（看的是節點**存下來的** `allowLan`，不是設定頁上還沒存的勾選框）；存檔走表單那條路，所以驗證、
+重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；「就先只在本機」這個選項在這裡被濾掉
+（這一區存在的理由就是對方連不進來）；以及**光是 render 抽屜不會去寫 `#node-allow-lan`**
+（`frontend/test/onboarding.mjs` 對抽屜逐項斷言）。前提是節點設定已經讀進來過——
+`applyPeerListenRepair` 填的是真正的表單——所以 `ensurePairingNodeSettings()` 在抽屜打開且
+`state.nodeSettings` 還是 null 時呼叫一次 `loadNodeSettings()`（一個視窗生命週期只問一次；讀取失敗、
+沒拿到基準時才放開，下次開抽屜再問）。
+
+**規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
+在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；
+使用者取消、或讀不到服務用的資料庫路徑（重新登記可能換掉節點身分）時，被固定的欄位不送、其餘照存，
+banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
@@ -656,3 +682,23 @@
 `frontend/test/` 底下除了 `i18n.mjs`，全部跑在 zh-TW（`dom-shim.mjs` 的 `useLocale`），因為那些斷言是用中文寫的；英文那一半由 `i18n.mjs` 以 en-US 開機覆蓋，`TestFrontendSpeaksBothLanguages` 帶它跑。shim 的 `querySelectorAll("[data-t]")` 直接從 `index.html` 解出真的元素，並且 `i18n.mjs` 會把 shim 給的數量跟檔案裡的數量對起來——它以前回傳 `[]`，那會讓整段靜態文案的斷言全部落空。
 
 不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
+
+## 12. 詞表（2026-09-23，分支 `feat/desktop-ux-simplify`）
+
+視窗面向使用者的用詞，en 與 zh-Hant 各一組，兩張表一起守：
+
+| 概念 | en | zh-Hant | 不再用 |
+|---|---|---|---|
+| 另一台已配對或要配對的電腦 | machine（the other machine, paired machines） | 機器（另一台機器、已配對機器） | node、節點（指對方時） |
+| 這台電腦 | this machine | 這台機器 | this node、本節點（指這台電腦時） |
+| 在網段上通告自己 | broadcast | 廣播 | announce、宣告 |
+| 可配對的狀態 | Pairing open · mm:ss | 配對開放中 · mm:ss | pairing window、配對視窗（當名詞） |
+
+**node 還留在哪裡。** node 是 `agenthub-node` 這個行程的名字，所以講那個行程本身的句子保留它：設定頁的
+背景服務、節點設定（Node settings）與本機身分三區，「啟動／重新啟動節點」與它的狀態行，以及引用旗標的句子
+（`-discover`、`-auto-wake`、`-display-name`）。技術欄位的值與標籤也保留：Node ID／節點 ID、`ah nodes`。i18n 的 key 名（`network.pairedNodes`、`audience.cell.nodeCount.*`）
+不改：key 是程式與測試的介面，改名只會讓 diff 變大而使用者看不到。
+
+**文案規則。** 每個狀態一句主文；「為什麼」與操作細節放 `title` tooltip、`<details>`，或搬到
+`docs/desktop-window.md`（視窗裡以 `common.docsRef` 或 `*.introMore` 指名該段標題）。§4 的語意（資料不是指令、
+四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。

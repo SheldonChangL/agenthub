@@ -251,6 +251,40 @@ const keyedElements = (markup) => {
 };
 let keyed = null;
 
+// The radio groups index.html declares, as real nodes.
+//
+// The shim used to answer [] for every name selector, which meant the audience
+// dialog's own "pick one of these" logic was never executed: openAudienceModal
+// wrote its mode into nothing, selectedMode() read a null and answered 不公開,
+// and every check that opened the dialog agreed with itself. Deleting the loop
+// that resets the mode radios left the suite green.
+//
+// Only radios, and only by name: everything else the module queries for
+// (#view-switch, thead th.sortable, the node-picker boxes) is built by the
+// renderers under test or genuinely absent here, and answering those from the
+// markup would hand back elements nothing in this shim can keep in step.
+const radioGroups = (() => {
+  let groups = null;
+  return () => {
+    if (groups) return groups;
+    groups = new Map();
+    for (const [tag] of markupSource.matchAll(/<input[^>]*>/g)) {
+      const name = /\sname="([^"]+)"/.exec(tag);
+      if (!name) continue;
+      const id = /\sid="([^"]+)"/.exec(tag);
+      const node = id ? document.getElementById(id[1]) : new Node("input");
+      node.type = "radio";
+      node.value = (/\svalue="([^"]*)"/.exec(tag) ?? ["", ""])[1];
+      // The one the markup ships checked, which is what a freshly loaded page
+      // has before any script runs.
+      node.checked = /\schecked[\s/>]/.test(tag);
+      if (!groups.has(name[1])) groups.set(name[1], []);
+      groups.get(name[1]).push(node);
+    }
+    return groups;
+  };
+})();
+
 export const document = {
   get activeElement() {
     return focused;
@@ -270,13 +304,21 @@ export const document = {
   // markup here for those to be found in. The translation selectors are the
   // exception — those are answered from index.html itself, above.
   querySelectorAll: (selector) => {
-    const attribute = /^\[(data-t(?:-placeholder|-title)?)\]$/.exec(String(selector));
-    if (!attribute) return [];
-    keyed ??= keyedElements(markupSource);
-    return keyed[attribute[1]];
+    const text = String(selector);
+    const attribute = /^\[(data-t(?:-placeholder|-title)?)\]$/.exec(text);
+    if (attribute) {
+      keyed ??= keyedElements(markupSource);
+      return keyed[attribute[1]];
+    }
+    const radio = /^input\[name="([^"]+)"\](:checked)?$/.exec(text);
+    if (radio) {
+      const group = radioGroups().get(radio[1]) ?? [];
+      return radio[2] ? group.filter((node) => node.checked) : group;
+    }
+    return [];
   },
   // And null for a single one, which is what "nothing is selected" looks like.
   // Returning undefined instead made every caller throw on the optional chain
   // that follows, which reads as a broken shim rather than an empty document.
-  querySelector: () => null,
+  querySelector: (selector) => document.querySelectorAll(selector)[0] ?? null,
 };

@@ -146,8 +146,11 @@ if (!text("banner").includes("對外位址沒有綁起來")) {
 }
 
 // 5. A unit that pins node settings overrides this window on every start. The
-//    panel has to say so — the node's log was the only place that did — and
-//    offer the repair.
+//    panel has to say so — the node's log was the only place that did. It says
+//    it and no longer offers the repair here: re-registering the service is not
+//    a thing to do while reading a status line, and the moment it decides
+//    anything is the moment a write is about to be undone, which is Save on the
+//    node settings form (section 6b).
 app.state.service = {
   supported: true, installed: true, running: true, pid: 7, unitPath: "/u", logHint: "/log",
   dbPath: "/Users/me/agenthub/data/agenthub.db", dbPathKnown: true,
@@ -158,14 +161,121 @@ if (!text("service-repair").includes("peer-listen")) {
   failures.push(`a unit that pins settings was not reported: ${text("service-repair")}`);
 }
 
+// A statement, not a button: the sentence may say the save will ask, but the
+// panel itself must not offer the reinstall.
+if (el("service-repair").serialize().includes("<button")) {
+  failures.push("the service panel still carries the repair button; it belongs to the save that it decides");
+}
+if (!text("service-repair").includes("儲存時會問你")) {
+  failures.push(`the pinned-settings line does not say the save will ask: ${text("service-repair")}`);
+}
+
 // 6. And the repair keeps the database it is already using. A reinstall that
 //    dropped it is what gave this machine a new identity.
 installed = [];
 confirmed = true;
-await app.reinstallWithoutPinnedSettings(app.state.service);
+if (await app.reinstallWithoutPinnedSettings(app.state.service) !== true) {
+  failures.push("re-registering did not report that it ran, so a save cannot tell whether to go ahead");
+}
 if (installed.length !== 1 || installed[0].dbPath !== "/Users/me/agenthub/data/agenthub.db") {
   failures.push(`re-registering sent ${JSON.stringify(installed)}, want the database already in use`);
 }
+
+// 6b. Saving a node setting the unit pins clears the unit first, and asks
+//     before it does. The flag is given on every start and the node stores
+//     what it was given, so without this the save is undone a second or two
+//     later and the node's answer says nothing about why.
+//
+//     Only a setting the unit pins: this unit pins peer-listen and allow-lan,
+//     and a change of discovery is not about the unit at all. And a "no" — or a
+//     unit whose database this window cannot read — leaves out the pinned
+//     fields and still saves the rest, with a banner naming what was left out
+//     (#193 review).
+const resetSave = () => { installed = []; saved = []; confirmations = []; };
+
+// Not pinned: saved straight away, no question.
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+resetSave();
+confirmed = false;
+await app.saveNodeSettings();
+if (confirmations.length !== 0) {
+  failures.push(`saving a setting the unit does not pin asked ${confirmations.length} times, want never`);
+}
+if (installed.length !== 0 || saved.length !== 1 || saved[0].discover !== false) {
+  failures.push(`saving an unpinned setting re-registered ${installed.length} times and sent ${JSON.stringify(saved)}`);
+}
+
+// Pinned and declined: asked once, naming the field, and the rest still saved.
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+el("node-allow-lan").checked = false;
+resetSave();
+confirmed = false;
+await app.saveNodeSettings();
+if (confirmations.length !== 1) {
+  failures.push(`saving a pinned setting asked ${confirmations.length} times, want once`);
+} else if (!confirmations[0].includes("允許區網")) {
+  failures.push(`the question does not name the pinned field it is about: ${confirmations[0]}`);
+}
+if (installed.length !== 0) {
+  failures.push("a refused confirmation re-registered anyway");
+}
+if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
+  failures.push(`a refused confirmation sent ${JSON.stringify(saved)}, want the unpinned change alone`);
+}
+if (!text("banner").includes("沒有存") || !text("banner").includes("允許區網")) {
+  failures.push(`a pinned field left out of the save was not named: ${text("banner")}`);
+}
+
+// Only pinned fields, declined: nothing to save, and the banner says why.
+app.applyNodeSettings(degraded, addresses);
+el("node-allow-lan").checked = false;
+resetSave();
+confirmed = false;
+await app.saveNodeSettings();
+if (installed.length !== 0 || saved.length !== 0) {
+  failures.push(`a refused save of pinned fields only still sent ${JSON.stringify(saved)}`);
+}
+if (!text("banner").includes("沒有存")) {
+  failures.push(`a refused save of pinned fields only said nothing: ${text("banner")}`);
+}
+
+// Pinned and accepted: re-registered once, then the whole change saved.
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+el("node-allow-lan").checked = false;
+resetSave();
+confirmed = true;
+await app.saveNodeSettings();
+if (installed.length !== 1) {
+  failures.push(`an accepted save re-registered ${installed.length} times, want once`);
+}
+if (saved.length !== 1 || saved[0].discover !== false || saved[0].allowLan !== false) {
+  failures.push(`the save that followed sent ${JSON.stringify(saved)}, want the owner's own change`);
+}
+
+// A unit whose database this window cannot read is never re-registered from
+// here — that could move the node onto another identity — so nothing is asked,
+// and the pinned field is left out with the reason.
+const unreadable = app.state.service;
+app.state.service = { ...unreadable, dbPath: "", dbPathKnown: false };
+app.applyNodeSettings(degraded, addresses);
+el("node-discover").checked = false;
+el("node-allow-lan").checked = false;
+resetSave();
+confirmed = true;
+await app.saveNodeSettings();
+if (confirmations.length !== 0 || installed.length !== 0) {
+  failures.push("a unit with an unreadable database path was offered, or given, a re-registration");
+}
+if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
+  failures.push(`with an unreadable database path the save sent ${JSON.stringify(saved)}, want the unpinned change alone`);
+}
+if (!text("banner").includes("資料庫路徑") || !text("banner").includes("沒有存")) {
+  failures.push(`with an unreadable database path the banner does not say what was left out and why: ${text("banner")}`);
+}
+app.state.service = unreadable;
 
 // 7. The install form never proposes a blank database path for an installed
 //    service. Blank means the node's default, which is a different database and

@@ -51,9 +51,12 @@
         <div class="spacer"></div>
         <div class="actions">
           <button id="service-pill" class="servicepill" data-t-title="app.servicePillTitle"><span class="dot"></span><span id="service-pill-text" data-t="service.pillLoading"></span></button>
-          <button id="btn-reload" class="ghost" data-t="app.reload"></button>
+          <!-- Hidden, not removed: the list reloads itself every fifteen
+               seconds and after every write, so this button asked for
+               something that had already happened. The id stays because the
+               handler and the language check both still reach for it. -->
+          <button id="btn-reload" class="ghost hidden" data-t="app.reload"></button>
           <button id="btn-discover" class="ghost" data-t="app.rescan"></button>
-          <button id="btn-heartbeat" class="ghost" data-t="app.previewHeartbeat"></button>
         </div>
       </header>
 
@@ -92,14 +95,13 @@
           <div class="tablescroll">
             <table>
               <colgroup>
-                <col class="c-check" /><col class="c-session" /><col class="c-status" /><col class="c-mgmt" /><col class="c-audience" /><col class="c-flags" /><col class="c-cwd" /><col class="c-last" /><col class="c-actions" />
+                <col class="c-check" /><col class="c-session" /><col class="c-status" /><col class="c-audience" /><col class="c-flags" /><col class="c-cwd" /><col class="c-last" /><col class="c-actions" />
               </colgroup>
               <thead>
                 <tr>
                   <th class="col-check"><input type="checkbox" id="select-all" data-t-title="local.selectAllTitle" /></th>
                   <th class="sortable" data-sort="id">SESSION</th>
                   <th class="sortable" data-sort="status" data-t="local.colStatus"></th>
-                  <th class="sortable" data-sort="management" data-t="local.colManagement"></th>
                   <th class="sortable" data-sort="audience" data-t="local.colAudience"></th>
                   <th data-t="local.colFlags"></th>
                   <th class="sortable" data-sort="cwd" data-t="local.colCwd"></th>
@@ -132,15 +134,13 @@
             <button id="btn-pair" class="primary" data-t="network.pairNew"></button>
           </div>
           <div id="node-rows"></div>
+          <!-- One line of state, not a panel. The card that used to sit here
+               carried a heading, a pill, a sentence and a button that opened
+               the same drawer as the primary button six rows above it — two
+               entry points to one thing, which reads as two different things. -->
           <div class="nodelist-foot">
-            <div class="pairingsummary">
-              <div class="head">
-                <span class="grouplabel" data-t="network.pairingMode"></span>
-                <span id="pairing-summary" class="pill" data-t="network.pairingLoading"></span>
-              </div>
-              <p id="pairing-summary-line" class="muted"></p>
-            </div>
-            <p class="muted" data-t="network.pairingOnlyIdentity"></p>
+            <span id="pairing-summary" class="pill" data-t="network.pairingLoading"></span>
+            <p id="pairing-summary-line" class="muted"></p>
           </div>
         </aside>
         <div class="nodedetail">
@@ -160,23 +160,36 @@
         <div class="settingsbody">
           <section id="settings-service">
             <h2 data-t="settings.nav.service"></h2>
-            <p class="muted">
+            <p class="muted" data-t-title="service.introMore">
               <span data-t="service.introBefore"></span>
               <strong data-t="service.introStrong"></strong><span data-t="service.introAfter"></span>
             </p>
             <div id="service-panel" class="hidden">
+              <!-- The status sentence and the buttons wrap onto two rows rather
+                   than the group being pushed past the card's edge, where its
+                   overflow cut the last label to one character. -->
               <div class="service-head">
                 <div id="service-line" class="line" data-t="service.lineLoading"></div>
-                <button id="service-refresh" class="ghost" data-t="service.refresh"></button>
-                <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
-                <button id="service-open" class="ghost" data-t="service.install"></button>
-                <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
+                <div class="headactions">
+                  <!-- Hidden: the status is re-read after every Overview and
+                       after every write here, so this button asked for
+                       something that had just happened. The id stays because
+                       render() disables it with the rest and the handler is
+                       what every other path calls. -->
+                  <button id="service-refresh" class="ghost hidden" data-t="service.refresh"></button>
+                  <button id="service-restart" class="ghost hidden" data-t="service.restart"></button>
+                  <button id="service-open" class="ghost" data-t="service.install"></button>
+                  <button id="service-uninstall" class="ghost danger" data-t="service.uninstall"></button>
+                </div>
               </div>
               <div id="service-repair"></div>
               <div id="service-form" class="card hidden">
-                <div class="cardhead"><span data-t="service.install2"></span><span class="muted" data-t="service.formHeadNote"></span></div>
+                <div class="cardhead"><span data-t="service.install2"></span></div>
                 <div class="cardbody serviceform">
-                  <p class="muted" style="margin: 0" data-t="service.formIntro"></p>
+                  <!-- One paragraph, not four notes around one field: what a
+                       reinstall replaces, what the node keeps for itself, and
+                       where the display name comes from. -->
+                  <p class="muted" style="margin: 0" data-t="service.formNote"></p>
                   <div class="fieldgrid">
                     <label>
                       <span class="fieldlabel"><span data-t="service.dbLabel"></span><small data-t="service.dbHint"></small></span>
@@ -186,7 +199,7 @@
                   <div id="service-db-note" class="muted"></div>
                 </div>
                 <div class="cardfoot">
-                  <span class="muted"><span data-t="service.displayNameNoteBefore"></span><code>--display-name</code><span data-t="service.displayNameNoteAfter"></span></span>
+                  <span></span>
                   <span>
                     <button id="service-cancel" class="ghost" data-t="common.cancel"></button>
                     <button id="service-install" class="primary" data-t="service.install2"></button>
@@ -199,7 +212,7 @@
 
           <section id="settings-node">
             <h2 data-t="settings.nav.node"></h2>
-            <p class="muted" data-t="nodeSettings.intro"></p>
+            <p class="muted" data-t="nodeSettings.intro" data-t-title="nodeSettings.introMore"></p>
             <div class="card">
               <div class="cardhead"><span data-t="nodeSettings.cardHead"></span><span id="node-settings-state" class="muted"></span></div>
               <div class="cardbody serviceform">
@@ -262,13 +275,20 @@
                   <span class="v keyvalue" id="identity-public-key">—</span>
                   <span><button id="copy-identity-key" class="ghost" data-t="identity.copyKey"></button> <span id="identity-copy-status" class="muted"></span></span>
                 </div>
+                <!-- What this identity actually broadcasts. It used to be the
+                     fourth button in the title bar, on every screen, for
+                     something an owner looks at once. -->
+                <div class="row">
+                  <span class="k" data-t="heartbeat.title"></span>
+                  <span><button id="btn-heartbeat" class="ghost" data-t="app.previewHeartbeat"></button></span>
+                </div>
               </div>
             </div>
           </section>
 
           <section id="settings-appearance">
             <h2 data-t="settings.nav.appearance"></h2>
-            <p class="muted" data-t="appearance.intro"></p>
+            <p class="muted" data-t="appearance.intro" data-t-title="appearance.introMore"></p>
             <div class="card">
               <div class="cardbody" style="display: flex; flex-direction: column; gap: 12px">
                 <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span><span data-t="appearance.backdrop"></span><span class="why" style="display: block" data-t="appearance.backdropWhy"></span></span></label>
@@ -312,6 +332,12 @@
             <p class="warning">
               <span data-t="inbox.warningBefore"></span><b data-t="inbox.warningStrong"></b><span data-t="inbox.warningAfter"></span>
             </p>
+            <!-- The reasons behind the sentence above, folded: the sentence is
+                 the rule, and the rule has to be read every time. -->
+            <details class="warnmore">
+              <summary data-t="inbox.warningMoreSummary"></summary>
+              <p class="muted" data-t="inbox.warningMore"></p>
+            </details>
             <div id="inbox-body"></div>
           </div>
           <div id="inbox-pane-outbound" class="hidden">
@@ -332,12 +358,17 @@
       </div>
     </div>
 
-    <!-- ============ drawer: pairing mode and the machines announcing ============ -->
+    <!-- ============ drawer: pair with another machine, in three steps ========
+         One drawer, three numbered steps, in the order the two people act:
+         can they reach me, where are they, do the fingerprints match. The
+         window itself is opened when this drawer opens and closed when it is
+         dismissed with nothing pending, so it is a state line rather than a
+         pair of buttons somebody has to find and press in the right order. -->
     <div id="pairing-modal" class="drawer hidden">
       <div class="drawer-card">
         <header>
           <div>
-            <h2 data-t="network.pairingMode"></h2>
+            <h2 data-t="pair.wizardTitle"></h2>
             <!-- Rendered from JS: the sentence is only true on a node that
                  actually announces, and it sat at the top of the panel whose
                  point is that nobody will see a node that does not. -->
@@ -347,62 +378,85 @@
         </header>
         <div class="drawerbody" style="padding: 0">
           <div class="pairing-state">
-            <div id="pairing-headline" class="line"></div>
-            <!-- Its own element so the countdown can tick without redrawing
-                 the rows: rebuilding those every second replaces the one the
-                 pointer is over. -->
-            <div id="pairing-countdown" class="countdown"></div>
+            <div class="statusline">
+              <div id="pairing-headline" class="line"></div>
+              <!-- Its own element so the countdown can tick without redrawing
+                   the rows: rebuilding those every second replaces the one the
+                   pointer is over. -->
+              <div id="pairing-countdown" class="countdown"></div>
+              <span class="spacer"></span>
+              <!-- The manual override. Opening the drawer opens the window and
+                   dismissing it closes one with nothing pending, so only one of
+                   these is ever the useful one and only that one is shown. -->
+              <button id="btn-pairing-on" class="ghost" data-t="pair.open"></button>
+              <button id="btn-pairing-off" class="ghost" data-t="pair.close"></button>
+            </div>
             <div id="pairing-detail"></div>
-          </div>
-          <div class="pairing-actions">
-            <button id="btn-pairing-on" class="primary" data-t="pair.open"></button>
-            <button id="btn-pairing-off" class="ghost" data-t="pair.close"></button>
+            <p id="pairing-note" class="muted"></p>
           </div>
           <!-- A row waiting for this owner is the one time-critical thing in
-               this drawer, and the panel holding it is below the candidate
-               list. This line sits at the top and says so. -->
+               this drawer, and step 3 that holds it is at the bottom. This line
+               sits at the top and says so. -->
           <div id="pair-waiting"></div>
-          <!-- The address the other machine has to type. Shown only when the
-               node says it is not announcing, because then this is the whole
-               way in — and shown in the key font, not in prose, so it is read
-               and copied rather than retyped from the middle of a sentence. -->
-          <div id="pair-here" class="localidentity hidden">
-            <div class="line">
-              <span class="muted" data-t="pair.hereHeading"></span>
-              <button id="copy-pair-address" class="ghost" data-t="common.copy"></button>
+
+          <section class="pairstep">
+            <div class="stephead"><span class="stepn">1</span><span data-t="pair.step1Heading"></span></div>
+            <!-- The address the other machine has to type, in the key font so
+                 it is read and copied rather than retyped out of a sentence.
+                 Shown whether or not this node announces: mDNS that does not
+                 carry between two segments is exactly as silent as mDNS that is
+                 off, and only the sentence beside the address differs. When
+                 nothing can reach this machine the repair is offered here, in
+                 place, rather than two tabs away in the settings form. -->
+            <div id="pair-here" class="localidentity hidden">
+              <div class="line">
+                <span class="muted" data-t="pair.hereHeading"></span>
+                <button id="copy-pair-address" class="ghost" data-t="common.copy"></button>
+              </div>
+              <div id="pair-local-address" class="keyvalue">—</div>
+              <div id="copy-pair-address-status" class="muted"></div>
+              <div id="pair-here-note" class="muted"></div>
             </div>
-            <div id="pair-local-address" class="keyvalue">—</div>
-            <div id="copy-pair-address-status" class="muted"></div>
-            <div id="pair-here-note" class="muted"></div>
-          </div>
-          <p id="pairing-note" class="muted"></p>
-          <div class="nodelist-head"><span data-t="pair.announcingHeading"></span><span class="muted" style="font-weight: 400; letter-spacing: 0" data-t="pair.announcingNote"></span></div>
-          <!-- Outside the scroller below, because it qualifies every row in
-               it: inside, a full list scrolls its own warning out of view,
-               which is exactly the state an attacker can hold. -->
-          <div id="candidate-full"></div>
-          <div id="candidate-rows"></div>
-          <p id="candidate-notice" class="muted"></p>
-          <!-- Typing the address is the path that works when nothing is
-               announcing, which is every node without -discover and every pair
-               of machines on a cable. -->
-          <div class="nodelist-head"><span data-t="pair.manualAddressHeading"></span></div>
-          <div class="pairform">
-            <input id="pair-address" type="text" spellcheck="false" placeholder="192.168.1.20:7463" />
-            <button id="btn-pair-send" class="primary" data-t="pair.send"></button>
-          </div>
-          <p id="pair-address-note" class="muted" data-t="pair.addressNote"></p>
-          <div class="nodelist-head">
-            <span data-t="pair.requestsHeading"></span>
-            <label class="showdecided muted"><input id="pair-requests-all" type="checkbox" /> <span data-t="pair.showDecided"></span></label>
-          </div>
-          <div id="pair-requests"></div>
-          <p id="pair-requests-note" class="muted"></p>
+          </section>
+
+          <section class="pairstep">
+            <div class="stephead"><span class="stepn">2</span><span data-t="pair.step2Heading"></span></div>
+            <div class="nodelist-head"><span data-t="pair.announcingHeading"></span><span class="muted" style="font-weight: 400; letter-spacing: 0" data-t="pair.announcingNote"></span></div>
+            <!-- Outside the scroller below, because it qualifies every row in
+                 it: inside, a full list scrolls its own warning out of view,
+                 which is exactly the state an attacker can hold. -->
+            <div id="candidate-full"></div>
+            <div id="candidate-rows"></div>
+            <p id="candidate-notice" class="muted"></p>
+            <!-- Typing the address is the path that works when nothing is
+                 announcing, which is every node without -discover and every
+                 pair of machines on a cable. Same step, because it is the same
+                 question: where is the other machine. -->
+            <div class="nodelist-head"><span data-t="pair.manualAddressHeading"></span></div>
+            <div class="pairform">
+              <input id="pair-address" type="text" spellcheck="false" placeholder="192.168.1.20:7463" />
+              <button id="btn-pair-send" class="primary" data-t="pair.send"></button>
+            </div>
+            <p id="pair-address-note" class="muted" data-t="pair.addressNote"></p>
+            <!-- The five-field fallback, folded away: it is for two machines
+                 that cannot open a connection to each other at all, which is
+                 not the case anybody arrives here in. -->
+            <details class="pairadvanced">
+              <summary data-t="pairManual.summary"></summary>
+              <p class="muted" data-t="pairManual.footNote"></p>
+              <button id="btn-pair-manual" class="ghost" data-t="pairManual.open"></button>
+            </details>
+          </section>
+
+          <section class="pairstep">
+            <div class="stephead">
+              <span class="stepn">3</span><span data-t="pair.step3Heading"></span>
+              <label class="showdecided muted"><input id="pair-requests-all" type="checkbox" /> <span data-t="pair.showDecided"></span></label>
+            </div>
+            <div id="pair-requests"></div>
+            <p id="pair-requests-note" class="muted"></p>
+          </section>
         </div>
-        <footer>
-          <span class="muted" data-t="pairManual.footNote"></span>
-          <button id="btn-pair-manual" class="ghost" data-t="pairManual.open"></button>
-        </footer>
       </div>
     </div>
 
@@ -494,18 +548,58 @@
           </div>
         </div>
 
-        <div class="sectionlabel"><span data-t="audience.whatHeading"></span> <span style="font-weight: 400; letter-spacing: 0" data-t="audience.whatHeadingNote"></span></div>
-        <div class="flags">
-          <label><input type="checkbox" id="audience-cwd" /><span><b data-t="audience.flagCwd"></b><em data-t="audience.flagCwdWhy"></em></span></label>
-          <label><input type="checkbox" id="audience-messages" /><span><b data-t="audience.flagMessages"></b><em data-t="audience.flagMessagesWhy"></em></span></label>
-          <label><input type="checkbox" id="audience-outbound" /><span><b data-t="audience.flagOutbound"></b><em data-t="audience.flagOutboundWhy"></em></span></label>
-          <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b data-t="audience.flagAutoWake"></b><em data-t="audience.flagAutoWakeWhy"></em></span></label>
+        <!-- Three situations first, the eight combinations behind them second.
+             The four flags used to be the only way to answer "what may they
+             do", which meant reading four sentences and working out which
+             three of them are the one thing you meant. A preset writes the
+             boxes; touching a box unsets the preset and says so. -->
+        <div class="sectionlabel"><span data-t="audience.whatHeading"></span></div>
+        <div class="options" id="audience-presets">
+          <label class="option">
+            <input type="radio" name="audience-preset" value="view" checked />
+            <span>
+              <b data-t="audience.presetView"></b>
+              <em data-t="audience.presetViewWhy"></em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-preset" value="messages" />
+            <span>
+              <b data-t="audience.presetMessages"></b>
+              <em data-t="audience.presetMessagesWhy"></em>
+            </span>
+          </label>
+          <label class="option">
+            <input type="radio" name="audience-preset" value="wake" id="audience-preset-wake" />
+            <span>
+              <b data-t="audience.presetWake"></b>
+              <em data-t="audience.presetWakeWhy"></em>
+            </span>
+          </label>
         </div>
-        <!-- Why the box above may do nothing. Filled in by the dialog from
-             the node's own -auto-wake flag and the providers of whatever is
-             selected; the box itself is never disabled, because an owner may
-             legitimately set this up before the node is restarted. -->
-        <div id="audience-autowake-note"></div>
+        <!-- Says the combination is a custom one when the boxes below hold
+             something no preset names, and carries the reset note whenever
+             more than one session is selected. -->
+        <p id="audience-preset-note" class="muted"></p>
+        <!-- Why the auto-wake box may do nothing, or has been turned off.
+             Filled in by the dialog from the node's own -auto-wake flag and
+             the providers of whatever is selected. Outside the advanced
+             section so that it is read without opening it: a selection that is
+             all Claude Code has the box turned off, and a session that had it
+             on loses it when the dialog is applied. The box is disabled only
+             there, where the push was measured never to be injected and no
+             restart changes that; a node started without -auto-wake leaves it
+             live, because an owner may set a session up first. -->
+        <div id="audience-autowake-note" class="hidden"></div>
+        <details class="audienceadvanced" id="audience-advanced">
+          <summary data-t="audience.advancedSummary"></summary>
+          <div class="flags">
+            <label><input type="checkbox" id="audience-cwd" /><span><b data-t="audience.flagCwd"></b><em data-t="audience.flagCwdWhy"></em></span></label>
+            <label><input type="checkbox" id="audience-messages" /><span><b data-t="audience.flagMessages"></b><em data-t="audience.flagMessagesWhy"></em></span></label>
+            <label><input type="checkbox" id="audience-outbound" /><span><b data-t="audience.flagOutbound"></b><em data-t="audience.flagOutboundWhy"></em></span></label>
+            <label class="warn"><input type="checkbox" id="audience-autowake" /><span><b data-t="audience.flagAutoWake"></b><em data-t="audience.flagAutoWakeWhy"></em></span></label>
+          </div>
+        </details>
 
         <div class="modal-actions">
           <span id="audience-note" class="muted" data-t="audience.rescanNote"></span>

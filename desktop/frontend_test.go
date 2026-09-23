@@ -350,15 +350,21 @@ func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
 	}
 }
 
-// TestFrontendAudienceDialogStartsEveryFlagOff drives the dialog itself.
+// TestFrontendAudienceDialogStartsOffForManyAndAsItselfForOne drives the
+// dialog itself.
 //
 // It applies to whatever is selected and reads its values straight from the
-// boxes, so a box left ticked from the last time it was opened is a setting
-// about to be applied to a different set of sessions. That was survivable
-// while the flags governed only what could be read; one of them now starts a
-// turn in an agent with nobody watching, and inheriting that from a previous
-// dialog is not a thing anyone would choose on purpose.
-func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
+// boxes. With several sessions selected they can disagree and no one state is
+// honest for all of them, so every flag starts off: a box left ticked from the
+// last time the dialog was opened is a setting about to be applied to a
+// different set of sessions, and one of the flags starts a turn in an agent
+// with nobody watching. With exactly one there is nothing left over — the
+// values shown are that session's own, read from the overview — and blanking
+// them meant changing who can see it silently withdrew every flag it had.
+//
+// The script prints one sentence on success, which names both halves; checked
+// here so a run that exits 0 without reaching them is not taken as a pass.
+func TestFrontendAudienceDialogStartsOffForManyAndAsItselfForOne(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed; skipping the audience dialog check")
@@ -370,6 +376,9 @@ func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("audience dialog check failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "one session opens as itself") {
+		t.Fatalf("audience dialog check exited 0 without reporting the single-session case:\n%s", output)
 	}
 }
 
@@ -466,6 +475,16 @@ func TestFrontendPairingIsCompleteFromInsideTheWindow(t *testing.T) {
 // dialled and nothing else.
 func TestFrontendPairsTwoMachinesWithoutCopyingAKey(t *testing.T) {
 	runNodeCheck(t, "pairing-exchange.mjs")
+}
+
+// TestFrontendPairingDrawerOwnsTheWindowOnlyWhileOpen covers the two races
+// around the drawer opening and closing the pairing window by itself (#193
+// review): a drawer dismissed before the node answered must not go on to open a
+// window, and dismissing one closes the window only after asking the node, at
+// that moment, whether anybody is still waiting — the node expires every
+// pending request when the window closes.
+func TestFrontendPairingDrawerOwnsTheWindowOnlyWhileOpen(t *testing.T) {
+	runNodeCheck(t, "pairing-drawer.mjs")
 }
 
 // TestFrontendRunsEverySessionsFilterCheck covers the filter model behind the
@@ -723,6 +742,33 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	if !strings.Contains(table, "min-width") {
 		t.Error("the table rule sets no min-width, so a narrow window compresses the columns " +
 			"instead of scrolling and the last one is cut off with no way to reach it")
+	}
+
+	// ...but not so wide that the window's own minimum scrolls. main.go sets
+	// MinWidth 900; the card's margins and border leave 866px of scroller
+	// (measured in dev/mock.html). At min-width 1080px the table scrolled there
+	// and the sticky actions column covered the working directory (#193
+	// review). The fixed columns must also leave SESSION and WORKING DIRECTORY,
+	// which carry no width, something to split.
+	const scrollerAtMinWidth = 866
+	const flexibleFloor = 2 * 100
+	if m := regexp.MustCompile(`min-width: (\d+)px`).FindStringSubmatch(table); m != nil {
+		if px, _ := strconv.Atoi(m[1]); px > scrollerAtMinWidth {
+			t.Errorf("the table's min-width is %dpx, wider than the %dpx the 900px window leaves it: "+
+				"the smallest window scrolls and the sticky actions cover other columns", px, scrollerAtMinWidth)
+		}
+	}
+	fixed := 0
+	for _, m := range regexp.MustCompile(`col\.c-(\w+) \{ width: (\d+)px; \}`).FindAllStringSubmatch(css, -1) {
+		if m[1] == "session" || m[1] == "cwd" {
+			t.Errorf("col.c-%s has a fixed width; it is one of the two columns that take what the others leave", m[1])
+		}
+		px, _ := strconv.Atoi(m[2])
+		fixed += px
+	}
+	if fixed > scrollerAtMinWidth-flexibleFloor {
+		t.Errorf("the fixed columns add up to %dpx, leaving SESSION and WORKING DIRECTORY less than %dpx "+
+			"between them in the 900px window", fixed, flexibleFloor)
 	}
 
 	// And the actions stay put while the rest scrolls under them.

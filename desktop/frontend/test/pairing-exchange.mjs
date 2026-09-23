@@ -199,6 +199,19 @@ for (const sentence of PAIR_TEXT.compare) {
 // Once, and above the two lines it is about — the layout the node's own wording
 // assumes ("two fingerprints are shown: the requester first…"). Below them it
 // reads as a comment on the decision instead of as the instruction for reading.
+// The half that says why: a mismatch means something is intercepting the
+// connection. Without it "press Reject" reads as a typo check, and ui-contract
+// §4 lists this wording as part of the contract. Both languages, main sentence
+// — not a tooltip.
+if (!PAIR_TEXT.compare.join(" ").includes("攔截")) {
+  failures.push("the compare instruction no longer says a differing group means the connection is being intercepted");
+}
+{
+  const { TEXT: EN } = await import("../src/i18n/en.js");
+  if (!/intercept/.test(EN["pair.compare"]) || !ZH["pair.compare"].includes("攔截")) {
+    failures.push("pair.compare lost the clause naming interception in en or zh-Hant");
+  }
+}
 if (html.indexOf(PAIR_TEXT.compare[0]) > html.indexOf(THEIR_FP)) {
   failures.push("the fingerprint notice is printed below the fingerprints it describes");
 }

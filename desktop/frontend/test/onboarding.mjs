@@ -1,13 +1,18 @@
-// The first-launch checklist: what it shows, when, and what its buttons press.
+// The first launch, from the checklist to a paired node.
 //
-// This card is the first screen a stranger sees after the installer finishes,
+// The card is the first screen a stranger sees after the installer finishes,
 // and every control it offers already exists somewhere else in the window. So
 // what is checked here is not the controls but the joins: that a step is shown
 // only when the window actually knows the thing it claims, that each button
-// reaches the binding the panel's own button reaches and reaches it once, that
-// the reachability button never turns on LAN access without saying so in its
-// own label (docs/ui-contract.md §7.8 rule 4), and that the fifteen-second
-// refresh does not replace the button an owner is halfway through clicking.
+// reaches the binding the panel's own button reaches and reaches it once, and
+// that the fifteen-second refresh does not replace the button an owner is
+// halfway through clicking.
+//
+// Two of the five steps are no longer steps. Scanning for sessions is done by
+// the window on the first read that reaches the node, and 「can this machine be
+// reached」 is the pairing drawer's own first step — so the §7.8 rule 4
+// assertions about naming 「allow LAN connections」 before setting it follow the
+// repair buttons there, and are made against the drawer below.
 //
 //   node frontend/test/onboarding.mjs
 
@@ -86,7 +91,6 @@ function allGood() {
   app.state.nodes = [{ nodeId: "node_other" }];
   app.state.counts = { total: 1, all_paired: 1, selected: 0 };
   app.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
-  app.state.discoveredNothing = false;
 }
 
 // Back to hidden through the card's own path rather than by poking its class:
@@ -135,23 +139,14 @@ app.state.service = { supported: false, installed: false, running: false };
 app.renderOnboarding();
 if (shown()) failures.push("a platform with no service manager was told to install a service");
 
-/* ---------------- 3. never over a read that did not land ---------------- */
+/* ---------------- 3. three steps, and the scan is not one -------------- */
 
-// The anti-#114 assertion. An empty table on a read that never reached the node
-// is not a fact about this machine, and a step telling somebody to scan for
-// sessions they may well have is the card asserting one.
 settle();
-app.state.loadedOnce = false;
-app.state.sessions = [];
 app.state.nodeReachable = false;
 app.renderOnboarding();
 if (!shown()) failures.push("an unreachable node did not show the checklist, which is what it is for");
-if (stepIds().includes("sessions")) {
-  failures.push("a window that has never reached the node was told its session list is empty");
-}
-app.state.loadedOnce = true;
-if (!stepIds().includes("sessions")) {
-  failures.push("the sessions step did not come back once a read had landed");
+if (stepIds().join(",") !== "service,pair,publish") {
+  failures.push(`the checklist offers ${stepIds().join(",")}, want service,pair,publish`);
 }
 
 /* ---------------- 4. each button presses the one binding ---------------- */
@@ -178,21 +173,6 @@ if (el("service-form").classList.contains("hidden")) {
 }
 if (calls.InstallService !== 0) {
   failures.push(`the service step installed a service nobody confirmed (${calls.InstallService} calls)`);
-}
-
-// The sessions step is the rescan button, once.
-settle();
-app.state.sessions = [];
-app.state.view = "local";
-calls.Discover = 0;
-await press("sessions");
-if (calls.Discover !== 1) failures.push(`the sessions step called Discover ${calls.Discover} times, want 1`);
-// A scan that came back empty turns the step into the explanation. Pressing
-// again would find the same nothing.
-if (!app.state.discoveredNothing) failures.push("an empty rescan was not remembered");
-const empty = app.onboardingSteps().find((step) => step.id === "sessions");
-if (empty.body !== ZH["onboarding.sessions.bodyNoneFound"]) {
-  failures.push(`a scan that found nothing did not explain where AgentHub looks: ${empty.body}`);
 }
 
 // The pairing step is a doorway to the drawer, on the view the drawer polls from.
@@ -237,10 +217,12 @@ if (calls.RestartNode !== 1) {
   failures.push(`the start step called RestartNode ${calls.RestartNode} times, want 1`);
 }
 
-/* ---------------- 5. the switch is named, or it is not flipped ---------------- */
+/* -------- 5. the switch is named, or it is not flipped (drawer step 1) ---- */
 
 // docs/ui-contract.md §7.8 rule 4. The label says every flag the click sets,
-// and nothing but a pressed button sets them.
+// and nothing but a pressed button sets them. These buttons were the
+// checklist's; they are the pairing drawer's first step now, offered in place
+// of a button that sent the owner two views away to find them.
 settle();
 app.state.pairing = { windowAvailable: true, state: { peerAddress: "", peerAddressReachable: false } };
 await app.loadNodeSettings();
@@ -250,81 +232,95 @@ const lanClause = ZH["nodeSettings.repairAddressAndLan"]
 const noLanClause = ZH["nodeSettings.repairAddress"]
   .replace("{interface}", "en0").replace("{address}", "192.168.50.10");
 
+// The buttons as the drawer actually renders them, not as the option list
+// describes them: what an owner presses is the rendered node.
+const repairButtons = () => {
+  app.renderPairHere();
+  const actions = [...el("pair-here-note").children].find((child) => child.className === "repairactions");
+  return [...(actions?.children ?? [])];
+};
+
 el("node-allow-lan").checked = false;
-let reach = app.onboardingSteps().find((step) => step.id === "reachable");
-if (reach.done) failures.push("a node on loopback was called reachable");
-if (reach.actions[0]?.label !== lanClause) {
-  failures.push(`with LAN access off the button does not say it turns it on: ${reach.actions[0]?.label}`);
+if (app.pairHereState(app.state.pairing.state).reachable) {
+  failures.push("a node with no announceable address was called reachable");
 }
-// The skip is always last, and always there.
-if (reach.actions.at(-1)?.label !== ZH["nodeSettings.repairLoopback"]) {
-  failures.push(`the step offers no way to stay local: ${reach.actions.map((a) => a.label).join(" | ")}`);
+let buttons = repairButtons();
+if (!el("pair-here-note").textContent.includes(ZH["pair.hereNoAddressWhy"])) {
+  failures.push(`step 1 did not say why nobody can get in: ${el("pair-here-note").textContent}`);
+}
+if (buttons[0]?.textContent !== lanClause) {
+  failures.push(`with LAN access off the button does not say it turns it on: ${buttons[0]?.textContent}`);
+}
+// 「stay on this machine only」 is peerListenRepairs' last option and the
+// checklist's skip. It is not offered here: this block exists because the other
+// machine cannot reach this one, so an option that changes nothing is an answer
+// to a different question. The way through to the form is what is last.
+if (buttons.some((button) => button.textContent === ZH["nodeSettings.repairLoopback"])) {
+  failures.push("the drawer offered 「stay local」 under the heading that says nothing can reach this machine");
+}
+if (buttons.at(-1)?.textContent !== ZH["pair.hereFix"]) {
+  failures.push(`no way through to the settings form: ${buttons.map((b) => b.textContent).join(" | ")}`);
 }
 
 // The clause follows what the NODE has stored, not what the settings form is
-// showing. The card is on another view; that checkbox is live-editable over
-// there, and a tick nobody saved used to drop "and allow LAN connections" from
-// this label while the click still turned it on — the silent tick §7.8 rule 4
-// forbids, arrived at from the other direction.
+// showing. That form is on another view and live-editable, and a tick nobody
+// saved used to drop "and allow LAN connections" from this label while the
+// click still turned it on — the silent tick §7.8 rule 4 forbids, arrived at
+// from the other direction.
 el("node-allow-lan").checked = true;
-reach = app.onboardingSteps().find((step) => step.id === "reachable");
-if (reach.actions[0]?.label !== lanClause) {
-  failures.push(`an unsaved tick in the settings form took the LAN clause off the card's label: ${reach.actions[0]?.label}`);
+if (repairButtons()[0]?.textContent !== lanClause) {
+  failures.push(`an unsaved tick in the settings form took the LAN clause off the label: ${repairButtons()[0]?.textContent}`);
 }
 el("node-allow-lan").checked = false;
 app.state.nodeSettings.saved = { ...app.state.nodeSettings.saved, allowLan: true };
-reach = app.onboardingSteps().find((step) => step.id === "reachable");
-if (reach.actions[0]?.label !== noLanClause) {
-  failures.push(`with LAN access already saved on, the button still promises to turn it on: ${reach.actions[0]?.label}`);
+if (repairButtons()[0]?.textContent !== noLanClause) {
+  failures.push(`with LAN access already saved on, the button still promises to turn it on: ${repairButtons()[0]?.textContent}`);
 }
 app.state.nodeSettings.saved = { ...app.state.nodeSettings.saved, allowLan: false };
 
-// And the card's button never carries an unrelated unsaved edit into the save.
+// And the button never carries an unrelated unsaved edit into the save.
 // applyPeerListenRepair presses save on the form as it stands, which is right
-// for the button inside that form and wrong for one two views away: a private
+// for the button inside that form and wrong for one in a drawer: a private
 // range somebody was still typing would be committed by a click about a
 // listening address.
 el("node-private").value = "10.9.0.0/16";
 calls.SaveNodeSettings = 0;
 app.state.view = "local";
-await press("reachable");
+await repairButtons()[0].onclick();
 if (calls.SaveNodeSettings !== 0) {
-  failures.push("the card saved the settings form while it held an edit nobody asked to save");
+  failures.push("the drawer saved the settings form while it held an edit nobody asked to save");
 }
 if (app.state.view !== "settings" || app.state.settingsSection !== "settings-node") {
   failures.push(`the refusal did not take the owner to the form it is about: ${app.state.view}/${app.state.settingsSection}`);
 }
-if (!el("banner").textContent.includes(ZH["onboarding.reachable.formDirty"])) {
+if (!el("banner").textContent.includes(ZH["pair.formDirty"])) {
   failures.push(`the refusal was silent: ${el("banner").textContent}`);
 }
 el("node-private").value = (SETTINGS.saved.treatAsPrivate ?? []).join(", ");
 app.state.view = "local";
 
 // A machine with nothing private to offer gets no one-click button at all: a
-// repair that lands on the node's refusal is worse than no button, so the step
-// says so and points at the form where the decision is visible.
+// repair that lands on the node's refusal is worse than no button, so what is
+// left is the way through to the form, where the decision is visible.
 app.state.nodeAddresses = { list: [{ interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }], failure: "" };
-const nowhere = app.onboardingSteps().find((step) => step.id === "reachable");
-if (nowhere.body !== ZH["onboarding.reachable.bodyNoAddress"]) {
-  failures.push(`a machine with no private address was still told to pick one: ${nowhere.body}`);
+buttons = repairButtons();
+if (buttons.length !== 1 || buttons[0].textContent !== ZH["pair.hereFix"]) {
+  failures.push(`a machine with no private address was still offered one: ${buttons.map((b) => b.textContent).join(" | ")}`);
 }
-if (nowhere.actions[0]?.label !== ZH["onboarding.reachable.openSettings"]) {
-  failures.push(`no way through to the form: ${nowhere.actions.map((a) => a.label).join(" | ")}`);
-}
-nowhere.actions[0].run();
+buttons[0].onclick();
 if (app.state.view !== "settings" || app.state.settingsSection !== "settings-node") {
   failures.push(`the fallback left the window on ${app.state.view}/${app.state.settingsSection}`);
 }
 app.state.nodeAddresses = { list: ADDRESSES, failure: "" };
 
-// Rendering the card is not a decision. Building these buttons reads the
+// Rendering the drawer is not a decision. Building these buttons reads the
 // checkbox; nothing here may write it.
 for (const before of [false, true]) {
   el("node-allow-lan").checked = before;
-  app.renderOnboarding();
-  app.onboardingSteps();
+  app.renderPairHere();
+  app.pairHereRepairs();
   if (el("node-allow-lan").checked !== before) {
-    failures.push(`merely rendering the checklist changed “allow LAN connections” to ${el("node-allow-lan").checked}`);
+    failures.push(`merely rendering step 1 changed “allow LAN connections” to ${el("node-allow-lan").checked}`);
   }
 }
 
@@ -333,7 +329,7 @@ for (const before of [false, true]) {
 el("node-allow-lan").checked = false;
 calls.SaveNodeSettings = 0;
 calls.RestartNode = 0;
-await press("reachable");
+await repairButtons()[0].onclick();
 if (calls.SaveNodeSettings !== 1) failures.push(`SaveNodeSettings called ${calls.SaveNodeSettings} times, want 1`);
 if (calls.RestartNode !== 1) failures.push(`RestartNode called ${calls.RestartNode} times, want 1`);
 if (SETTINGS.saved.peerListen !== "192.168.50.10:7463" || SETTINGS.saved.allowLan !== true) {
@@ -472,13 +468,88 @@ if (tickAt(serviceIndex) !== "✓") {
 bindings.ServiceStatus = async () => RUNNING;
 configure(bindings);
 
+/* ---------------- 9b. the scan the window runs for itself ---------------- */
+
+// The anti-#114 assertion, now about the scan the window runs itself. An empty
+// table on a read that never reached the node is not a fact about this machine,
+// and scanning on the strength of one would be the window asserting it.
+{
+  const unreachable = { ...bindings, Overview: async () => ({ reachable: false, error: "connection refused", node: {} }) };
+  calls.Discover = 0;
+  configure(unreachable);
+  const down = boot({ start: false });
+  await down.load();
+  if (calls.Discover !== 0) {
+    failures.push("a read that never reached the node still triggered a scan of this machine");
+  }
+  configure(bindings);
+}
+
+// And on the first read that does land with an empty table it scans once, by
+// itself, because "press this button once" was never a step.
+{
+  calls.Discover = 0;
+  const fresh = boot({ start: false });
+  await fresh.load();
+  if (calls.Discover !== 1) {
+    failures.push(`a first reachable read with no sessions scanned ${calls.Discover} times, want 1`);
+  }
+  await fresh.load();
+  if (calls.Discover !== 1) {
+    failures.push(`the scan ran again on a later read (${calls.Discover} in all); it is once per window`);
+  }
+  // A scan that found nothing says where AgentHub looks, in the banner, which
+  // is where the answer is. That sentence used to be the step's own body.
+  if (!el("banner").textContent.includes(ZH["app.rescanNothingFound"].trim())) {
+    failures.push(`an empty scan did not explain where AgentHub looks: ${el("banner").textContent}`);
+  }
+}
+
+// A load made while something else holds the window — installService calls
+// load() in the middle of its own busy stretch, on exactly a first launch —
+// must not spend the once-per-window scan: discoverSessions goes through
+// withBusy, which drops the call, and the flag would be gone with no scan run.
+{
+  calls.Discover = 0;
+  const installing = boot({ start: false });
+  installing.state.busy = true;
+  await installing.load();
+  if (calls.Discover !== 0) {
+    failures.push(`a load made while busy asked for ${calls.Discover} scans; withBusy would drop them`);
+  }
+  installing.state.busy = false;
+  await installing.load();
+  if (calls.Discover !== 1) {
+    failures.push(`the first load after a busy one scanned ${calls.Discover} times, want 1: the busy load spent the only scan`);
+  }
+}
+
+// With no session found, the publish step says why there is nothing to tick
+// instead of pointing at an empty table — and says nothing of the kind once a
+// session exists, or before a read has reached the node (#114).
+{
+  const empty = boot({ start: false });
+  await empty.load();
+  const publish = () => empty.onboardingSteps().find((step) => step.id === "publish")?.body ?? "";
+  if (!publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push(`with no sessions the publish step does not say to start one: ${publish()}`);
+  }
+  empty.state.sessions = [{ id: "claude:one" }];
+  if (publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push("with a session found the publish step still says none was found");
+  }
+  empty.state.sessions = [];
+  empty.state.nodeReachable = false;
+  if (publish().includes(ZH["onboarding.publish.noSessions"])) {
+    failures.push("a read that never reached the node was reported as a machine with no sessions");
+  }
+}
+
 /* ---------------- 10. a node that is not answering ---------------- */
 
 // The one situation this card exists for. Step 1 used to be derived from the
 // service manager's answer alone, so it ticked over a window showing "cannot
-// reach http://127.0.0.1:7462", and step 3 sat on "waiting for the node to
-// say…" forever because the read that fills it is never even attempted while
-// the node is down. Between them the card had nothing to press.
+// reach http://127.0.0.1:7462", and the card had nothing to press.
 store.clear();
 bindings.Overview = async () => ({
   // Shaped as App.Overview shapes it in Go: it never rejects, it answers
@@ -500,11 +571,6 @@ if (deadService.actions.length === 0) {
 if (deadService.actions[0]?.label !== ZH["onboarding.service.actionStart"]) {
   failures.push(`the step offers ${deadService.actions[0]?.label}, not the start`);
 }
-const deadReach = dead.onboardingSteps().find((step) => step.id === "reachable");
-if (deadReach.body !== ZH["onboarding.reachable.bodyNodeDown"]) {
-  failures.push(`step 3 on a dead node said: ${deadReach.body}`);
-}
-if (deadReach.done) failures.push("a dead node was called reachable from another machine");
 const pressable = dead.onboardingSteps().reduce((total, step) => total + step.actions.length, 0);
 if (pressable === 0) {
   failures.push("the checklist offered nothing to press on the one situation it exists for");
@@ -525,51 +591,62 @@ if (stillDown.done || stillDown.actions.length === 0) {
   failures.push("an installed, running service ticked the step over a node that answers nothing");
 }
 
-/* ---------------- 11. a settings read that failed does not wedge step 3 ---------------- */
+/* -------- 11. a settings read that failed does not wedge the drawer ------- */
 
-// onboardingSettingsAsked is set before the await and was never cleared, so one
-// failed read left "waiting for the node to say…" on screen for the life of the
-// window — with no button and no timeout, which reads as a hang.
+// The latch is set before the await. Left unreleased on failure, one unlucky
+// read cost the pairing drawer its repair buttons for the life of the window —
+// with nothing on screen to retry and nothing saying why. The drawer asks
+// again the next time it is opened.
 store.clear();
 bindings.Overview = async () => ({
   reachable: true, nodeUrl: "http://127.0.0.1:7462",
   node: { id: "node_local", displayName: "local", platform: "darwin/arm64" },
   sessions: [], nodes: [], peers: [], counts: {},
 });
-configure(bindings);
+// Back on loopback: section 5 saved a LAN address, and a node already serving
+// one has nothing here to repair.
+SETTINGS.saved = { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false };
+SETTINGS.settings = { ...SETTINGS.saved };
 let settingsReads = 0;
 bindings.NodeSettings = async () => { settingsReads += 1; throw new Error("dial tcp: connection refused"); };
 configure(bindings);
 const wedged = boot({ start: false });
+wedged.state.pairing = { windowAvailable: true, state: { peerAddress: "", peerAddressReachable: false } };
 await wedged.load();
-wedged.renderOnboarding();
-// The read is fired from inside the render and resolves on its own; let it.
-for (let turn = 0; turn < 8; turn++) await Promise.resolve();
 
-if (settingsReads === 0) failures.push("the checklist never asked for the node settings at all");
-const failed = wedged.onboardingSteps().find((step) => step.id === "reachable");
-if (failed.body === ZH["onboarding.reachable.bodyLoading"]) {
-  failures.push("a failed read left the step waiting for an answer that is never coming");
+const settleReads = async () => { for (let turn = 0; turn < 12; turn++) await Promise.resolve(); };
+
+await wedged.openPairingDrawer();
+await settleReads();
+if (settingsReads === 0) failures.push("the drawer never asked for the node settings at all");
+if (wedged.pairHereRepairs().length !== 0) {
+  failures.push("a failed read still produced repair options, which can only have been invented");
 }
-if (failed.body !== ZH["onboarding.reachable.bodyUnreadable"]) {
-  failures.push(`a failed read said: ${failed.body}`);
+
+// Asked once per opening, not once per render: a read on every repaint would
+// re-fire on every tick behind the drawer.
+const afterFirst = settingsReads;
+wedged.renderPairHere();
+wedged.renderPairHere();
+await settleReads();
+if (settingsReads !== afterFirst) {
+  failures.push(`rendering the drawer read the settings ${settingsReads - afterFirst} more times`);
 }
-if (failed.actions[0]?.label !== ZH["onboarding.reachable.retry"]) {
-  failures.push(`a failed read offered no retry: ${failed.actions.map((a) => a.label).join(" | ")}`);
-}
-// And the retry really asks again, which is the whole point of clearing the latch.
+
+// And the next opening asks again, which is the whole point of releasing the
+// latch on a read that produced no baseline.
 bindings.NodeSettings = async () => { settingsReads += 1; return JSON.parse(JSON.stringify(SETTINGS)); };
 configure(bindings);
-const readsBefore = settingsReads;
-failed.actions[0].run();
-for (let turn = 0; turn < 8; turn++) await Promise.resolve();
-if (settingsReads === readsBefore) {
-  failures.push("the retry button did not ask the node again");
+wedged.closePairingDrawer();
+await wedged.openPairingDrawer();
+await settleReads();
+if (settingsReads === afterFirst) {
+  failures.push("reopening the drawer did not ask the node again");
 }
-const recovered = wedged.onboardingSteps().find((step) => step.id === "reachable");
-if (recovered.body === ZH["onboarding.reachable.bodyUnreadable"]) {
-  failures.push("the step stayed on the failure after a read that succeeded");
+if (wedged.pairHereRepairs().length === 0) {
+  failures.push("the drawer offered no repair after a read that succeeded");
 }
+wedged.closePairingDrawer();
 
 /* ---------------- 12. the card says it is going, and stays up to be read ---------------- */
 
@@ -628,7 +705,7 @@ holdStatus();
 await finishing.load();
 if (!shown()) failures.push("the card vanished under the click that completed it");
 if (el("onboarding-alldone").classList.contains("hidden")) {
-  failures.push("the last render showed five ticks and never said the card was going");
+  failures.push("the last render showed three ticks and never said the card was going");
 }
 await settleStatus();
 if (!shown()) {
@@ -688,13 +765,14 @@ if (suggesting.state.nodePrivateSuggested !== "122.122.0.0/16") {
   failures.push("the form filled the range in without recording that it was its own suggestion");
 }
 
-// Back on the local view, the checklist button now has to work.
-suggesting.state.view = "local";
+// In the drawer, the repair button now has to work: the range on screen is the
+// window's own suggestion, not an edit belonging to the owner.
+suggesting.state.view = "network";
 calls.SaveNodeSettings = 0;
-const repair = suggesting.onboardingSteps().find((step) => step.id === "reachable");
-await repair.actions[0]?.run();
+const repair = suggesting.pairHereRepairs()[0];
+await suggesting.applyPeerListenRepairFromCard(repair);
 if (calls.SaveNodeSettings !== 1) {
-  failures.push("step 3 refused over a private range the window itself had filled in");
+  failures.push("the drawer refused over a private range the window itself had filled in");
 }
 if ((SETTINGS.saved.treatAsPrivate ?? []).length !== 0) {
   failures.push(`the repair declared a private range nobody asked for: ${JSON.stringify(SETTINGS.saved.treatAsPrivate)}`);
@@ -709,17 +787,17 @@ SETTINGS.settings = { ...SETTINGS.saved };
 suggesting.state.nodeSettings = null;
 await suggesting.loadNodeSettings();
 el("node-autowake").checked = true;
-suggesting.state.view = "local";
+suggesting.state.view = "network";
 calls.SaveNodeSettings = 0;
-const refused = suggesting.onboardingSteps().find((step) => step.id === "reachable");
-await refused.actions[0]?.run();
+const refused = suggesting.pairHereRepairs()[0];
+await suggesting.applyPeerListenRepairFromCard(refused);
 if (calls.SaveNodeSettings !== 0) {
-  failures.push("the card carried an unsaved auto-wake tick into a save about a listening address");
+  failures.push("the drawer carried an unsaved auto-wake tick into a save about a listening address");
 }
 if (!el("banner").textContent.includes(ZH["nodeSettings.autoWake"])) {
   failures.push(`the refusal did not name the dirty field: ${el("banner").textContent}`);
 }
-if (!el("banner").textContent.includes(ZH["onboarding.reachable.formDirty"])) {
+if (!el("banner").textContent.includes(ZH["pair.formDirty"])) {
   failures.push(`the refusal did not say which two buttons undo it: ${el("banner").textContent}`);
 }
 el("node-autowake").checked = false;
@@ -781,4 +859,5 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(` - ${failure}`);
   process.exit(1);
 }
-console.log("onboarding: shown for a reason, each button its own binding, the LAN switch named before it is set");
+console.log("onboarding: three steps shown for a reason, the scan runs itself, "
+  + "and the drawer names the LAN switch before it sets it");
