@@ -213,6 +213,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Provider metadata is untrusted input (docs/architecture.md). Every value that
   // originates from a provider reaches the DOM as text, never as markup, so a
   // working directory or session ID containing HTML cannot execute in the app.
+  // docsRef names the section of docs/desktop-window.md that holds the
+  // explanation a state used to carry on screen. The section titles are that
+  // file's own headings, which is why they are not translated.
+  function docsRef(section) {
+    return t("common.docsRef", { section });
+  }
+
   function element(tag, className = "", text = "") {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -1679,10 +1686,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     "requestsHeading", "showDecided", "requestsEmpty", "requestsEmptyAll", "requestsUnread",
     "requestsFailed", "approve", "confirm", "reject", "nodeSaid",
   ]);
-  // The three sentences a person carries out step by step, as an array because
-  // that is what reads them.
+  // The one sentence about comparing, said once per undecided row; the step
+  // line under the fingerprints no longer repeats it. An array because that is
+  // what reads it. Why the order matters is in docs/desktop-window.md, reached
+  // from the sentence's tooltip.
   Object.defineProperty(PAIR_TEXT, "compare", {
-    get: () => [t("pair.compare.1"), t("pair.compare.2"), t("pair.compare.3")],
+    get: () => [t("pair.compare")],
     enumerable: true,
   });
   PAIR_TEXT.state = pairGroup("pair.state", [
@@ -1998,7 +2007,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (row.pairCompare !== undecided) {
       row.pairCompare = undecided;
       parts.compare.replaceChildren(
-        ...(undecided ? PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)) : []));
+        ...(undecided ? PAIR_TEXT.compare.map((sentence) => {
+          const line = element("div", "stale", sentence);
+          line.title = docsRef("Comparing fingerprints when pairing");
+          return line;
+        }) : []));
     }
     // The two values are what two people are reading off two screens while this
     // ticks underneath them, so the block is rewritten only when the node
@@ -2230,8 +2243,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!here.reachable) {
       value.textContent = PAIR_TEXT.hereFixHeadline;
       el("copy-pair-address-status").textContent = "";
-      note.replaceChildren(element("div", "",
-        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable));
+      const why = element("div", "",
+        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable);
+      why.title = docsRef("Why nobody can reach this machine yet");
+      note.replaceChildren(why);
       // The node's own sentence about this listener, under the remedy rather
       // than in front of it: the remedy is the act, and the node's words are
       // the detail that says which listener it is about.
