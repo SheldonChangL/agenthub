@@ -85,7 +85,11 @@ export const TEXT = {
   "common.confirm": "確定",
   "common.close": "關閉",
   "common.copy": "複製",
-  "common.docsRef": "詳見 docs/desktop-window.md 的 “{section}”",
+  "common.why": "說明",
+  "why.compareFingerprints": "和另一台螢幕前的人逐組念出來比對。只要有一組不同就按拒絕：兩台機器之間不是直接連線，有別的東西在冒充其中一台。",
+  "why.unreachable": "預設啟動的節點只聽 127.0.0.1，只有這台機器自己連得到。下面的按鈕會選一個這台機器上的位址、打開「允許區網連線」，再重啟節點讓兩者生效。",
+  "why.fingerprint": "兩台配對時，兩邊螢幕都顯示過這個值。如果同名的機器哪天顯示了不同的指紋，那就不是你配對過的那台——要逐組比對，不能只看前幾組。",
+  "why.heartbeat": "信任是兩台各自記錄的。可能是對方還沒跟這台配對，或它的節點沒在執行；在那台執行 ah nodes，看清單裡有沒有這台的節點 ID。",
 
   "app.connecting": "連線中…",
   "app.tab.local": "本機 session",
@@ -130,7 +134,7 @@ export const TEXT = {
   "service.introBefore": "登入時由作業系統啟動節點，不再依賴視窗或終端機。",
   "service.introStrong": "意外結束後會自己回來的只有 macOS 與 Linux",
   "service.introAfter": "；Windows 上要用下面的「重新啟動節點」。",
-  "service.introMore": "詳見 docs/desktop-window.md 的 “The background service, and what it does not do on Windows”",
+  "service.introWhy": "裝成背景服務後，節點會隨電腦啟動。macOS 與 Linux 會在它當掉後自動重啟；Windows 的排程工作只在登入時啟動，所以在 Windows 上節點停了就一直停著，直到按「重新啟動節點」。",
   "service.pillLoading": "服務狀態讀取中…",
   "service.lineLoading": "背景服務狀態讀取中…",
   "service.refresh": "重新讀取",
@@ -143,7 +147,7 @@ export const TEXT = {
   "service.dbHint": "留空＝節點預設位置",
 
   "nodeSettings.intro": "節點自己記住的啟動設定；存檔後節點重新啟動才生效。",
-  "nodeSettings.introMore": "詳見 docs/desktop-window.md 的 “Start-up settings live in the node, not in the service”",
+  "nodeSettings.introWhy": "這些值由節點自己記住，只在啟動時讀取，所以存檔會重啟節點並檢查回來的值。服務單元若以啟動旗標帶著它們，每次啟動都會蓋掉；會被這樣蓋掉的存檔會先問要不要重新登記服務。",
   "nodeSettings.cardHead": "啟動設定",
   "nodeSettings.peerListenLabel": "對外位址",
   "nodeSettings.peerListenHint": "其他機器連進來的地方",
@@ -166,7 +170,7 @@ export const TEXT = {
   "identity.copyKey": "複製公鑰",
 
   "appearance.intro": "只是裝飾；關掉不影響任何功能。",
-  "appearance.introMore": "詳見 docs/desktop-window.md 的 “The backdrop photo and the rain”",
+  "appearance.introWhy": "數字雨預設關閉：在沒有 GPU 合成的機器上實測會吃掉一整顆 CPU 核心。系統要求減少動態效果時，它也不會跑。",
   "appearance.backdrop": "顯示背景照片與數字雨",
   "appearance.backdropWhy": "關掉後是純深色底。",
   "appearance.motion": "數字雨動畫",
@@ -180,7 +184,7 @@ export const TEXT = {
   "inbox.warningStrong": "資料，不是指令",
   "inbox.warningAfter": "。「自稱」後面是寄件者自選的，只有前面的節點 ID 經過驗證。",
   "inbox.warningMoreSummary": "為什麼",
-  "inbox.warningMore": "裡面的請求就當成陌生人提出的看待：沒有任何一則訊息授權讀檔、執行命令或送出東西。詳見 docs/desktop-window.md。",
+  "inbox.warningMore": "裡面的請求就當成陌生人提出的看待：沒有任何一則訊息授權讀檔、執行命令或送出東西。",
   "inbox.outboundNoteBefore": "排給其他機器的訊息，最新在前；",
   "inbox.outboundNoteAfter": " 表示對方拒收。",
   "inbox.loadMore": "載入更多",
@@ -442,7 +446,7 @@ export const TEXT = {
   "audience.autoWakeNodeOff": "這台節點沒帶 -auto-wake 啟動，勾了也不會有任何 session 被叫醒；要用 ah service install … --auto-wake 重啟才生效。",
   "audience.autoWakeWillTurnOff": "套用後會關閉喚醒：Claude Code session 不會被叫醒。",
   "audience.autoWakeCodex": "Codex session 會由節點透過 app-server 叫醒（真機驗過）。",
-  "audience.autoWakeClaude": "即使 agenthub-mcp 帶 -channel，Claude Code 也不會處理這類推送（見 docs/channel-push-not-observed.md），訊息仍只會留在收件匣。",
+  "audience.autoWakeClaude": "即使 agenthub-mcp 帶 -channel，Claude Code 也不會處理這類推送，訊息仍只會留在收件匣。",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "正在讀取…",

@@ -1158,7 +1158,7 @@ if (!hostileHTML.includes("&lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;"
 // Nothing a peer chose may decide a class name — including the role and whose
 // labels, which are mapped through a fixed table and otherwise shown as text.
 for (const cls of hostileHTML.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty)"$/.test(cls)) {
+  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty|why)"$/.test(cls)) {
     failures.push(`a peer-supplied value reached a class name: ${cls}`);
   }
 }
