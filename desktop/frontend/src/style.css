@@ -375,15 +375,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    column then sat on top of the working-directory and last-seen columns
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
-   6px cell padding below): all four flag chips and both row buttons fit. The
-   audience pill's longest English wording does not, and clips with its text in
-   the tooltip. They add up to 636px, and SESSION and WORKING DIRECTORY carry
-   no width, so they split what is left and clip with an ellipsis — the full
-   title and path stay in the cells' titles. */
+   6px cell padding below): all four flag chips, both row buttons and every
+   audience pill the table uses fit. They add up to 644px, and SESSION and
+   WORKING DIRECTORY carry no width, so they split what is left and clip with
+   an ellipsis — the full title and path stay in the cells' titles. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 32px; }
 col.c-status { width: 76px; }
-col.c-audience { width: 96px; }
+/* 104px: 92px of pill inside 6px of padding each side. Measured in
+   dev/mock.html (#194): the widest table wordings are 「Not published」 87px
+   and 「Chosen: none」 86px; 「All paired」 is 64px, 「所有已配對」 73px. At 96px
+   the first two lost their last letters, and 「Every paired machine」 (124px),
+   which the cell no longer uses, lost a whole word. The 5px over the widest
+   is for a WebView font that renders a little wider than the mock's. */
+col.c-audience { width: 104px; }
 col.c-flags { width: 156px; }
 col.c-last { width: 104px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when

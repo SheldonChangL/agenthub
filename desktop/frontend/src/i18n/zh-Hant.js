@@ -286,6 +286,7 @@ export const TEXT = {
   "time.daysAgo.other": "{n} 天前",
 
   "audience.cell.allPaired": "所有已配對",
+  "audience.cell.allPairedShort": "所有已配對",
   "audience.cell.selectedNone": "指定：無",
   "audience.cell.nodeCount.one": "{n} 台機器",
   "audience.cell.nodeCount.other": "{n} 台機器",

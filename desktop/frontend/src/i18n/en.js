@@ -291,6 +291,7 @@ export const TEXT = {
   "time.daysAgo.other": "{n} days ago",
 
   "audience.cell.allPaired": "Every paired machine",
+  "audience.cell.allPairedShort": "All paired",
   "audience.cell.selectedNone": "Chosen: none",
   "audience.cell.nodeCount.one": "{n} machine",
   "audience.cell.nodeCount.other": "{n} machines",
