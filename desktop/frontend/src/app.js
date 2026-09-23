@@ -2553,7 +2553,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       line.textContent = "";
       return;
     }
-    line.textContent = left === 0 ? "" : t("pair.timeLeft", { left: clock(left) });
+    // "Pairing open · 4:00": the headline carries the words, this carries the
+    // separator and the clock, which are the same in both languages and so do
+    // not belong in the tables (docs/ui-contract.md §11 rule 5).
+    line.textContent = left === 0 ? "" : `· ${clock(left)}`;
   }
 
   // The candidate rows, keyed by node id and kept across renders.

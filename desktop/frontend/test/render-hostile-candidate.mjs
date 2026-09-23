@@ -408,7 +408,7 @@ const emptyNoPeers = el("candidate-rows").serialize();
 if (!emptyNoPeers.includes("沒有看到任何機器在廣播")) {
   failures.push(`an empty list on a node with no paired peers did not say so: ${emptyNoPeers}`);
 }
-if (emptyNoPeers.includes("已配對節點")) {
+if (emptyNoPeers.includes("已配對機器")) {
   failures.push("a node with nothing paired was pointed at a paired list that is empty too");
 }
 
@@ -418,7 +418,7 @@ const emptyWithPeers = el("candidate-rows").serialize();
 if (!emptyWithPeers.includes("還沒配對的機器")) {
   failures.push(`an empty list was still described as nobody advertising at all: ${emptyWithPeers}`);
 }
-if (!emptyWithPeers.includes("已配對節點")) {
+if (!emptyWithPeers.includes("已配對機器")) {
   failures.push(`the empty list does not point at where a paired machine is listed: ${emptyWithPeers}`);
 }
 // Text, not markup — the em dash and the corner brackets are prose, and this

@@ -85,6 +85,13 @@
 > 這一節在改版期間停在改版前的狀態，寫著「無排序」「表格 8 欄」「chip 帶全域計數」「安裝表單六個欄位」，
 > 全部與程式不符，而且 §7.6 自己就寫著安裝表單只剩資料庫路徑。以下每一條都對照過原始碼。
 
+> **2026-09-23 更新（分支 `feat/desktop-ux-simplify`）**：以下清單的畫面沒有增減，但有六處改了形狀——
+> 面板用滿視窗寬度、按鈕列換行不裁切；配對收成一個三步抽屜（能不能被連到／對方在哪裡／比對指紋），
+> 區網左欄只留主按鈕與一行狀態；本機表格去掉 MANAGED 欄、FLAGS 只在已公開的列顯示、Refresh 離開標題列；
+> 公開對象對話框先問情境（三個 preset），四個旗標收進「進階」；背景服務與節點設定不再互相覆蓋
+> （衝突在節點設定按儲存時問一次）；首次啟動清單剩三步。文案每個狀態只留一句，原本的解釋搬到
+> `docs/desktop-window.md`，視窗裡用 tooltip 或 `<details>` 指過去；用詞見 §12。
+
 ### 3.1 全域
 
 - 標題列：連線點（ok/bad）、`node-line`（節點名稱 · 平台 · URL）；三個分頁 `本機 session` / `區網` / `設定`
@@ -205,7 +212,7 @@
    欄位不存在（舊節點）才退回 `pairAddressReachable()` 自己判字串：空字串、loopback
    （`isLoopbackListen`）、未指定位址（`0.0.0.0`、`::`）都是**還不能用**。
    欄位缺席**不得**當成 false——那是替節點講它沒講過的話。Go 端因此用 `*bool`。
-   同時**視窗 headline 不得只說「配對視窗開啟中」**——那讀起來像「好了」，而實際上視窗開著卻沒有入口，
+   同時**視窗 headline 不得只說「配對開放中」**——那讀起來像「好了」，而實際上視窗開著卻沒有入口，
    使用者會跑去另一台乾等。測試：`pairing-exchange.mjs` §8a（沒有 `peerAddress` 欄位的預設節點）、
    §8a-ii（節點自己說不可達＋原因）、§8a-iii（真的區網位址）、§8b（loopback 字串）。
 
@@ -281,8 +288,8 @@
 | 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」、無名時「（未提供名稱）」 | 候選資料進 class |
 | availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
 | `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
-| availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對中 · 剩 m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
-| `state.peerAddress` 是 loopback / `0.0.0.0` / `::`，**或整個欄位不存在**（預設節點） | 「還沒有人連得進這台機器」＋「允許區網連線」＋跳設定按鈕；`copy-pair-address` disabled；headline 不得只說「配對視窗開啟中」 | 把 `127.0.0.1:7463` 當成對方要輸入的位址印出來；把整塊 `#pair-here` 藏起來 |
+| availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對開放中 · m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
+| `state.peerAddress` 是 loopback / `0.0.0.0` / `::`，**或整個欄位不存在**（預設節點） | 「還沒有人連得進這台機器」＋「允許區網連線」＋跳設定按鈕；`copy-pair-address` disabled；headline 不得只說「配對開放中」 | 把 `127.0.0.1:7463` 當成對方要輸入的位址印出來；把整塊 `#pair-here` 藏起來 |
 | `state.peerAddressReachable === false` | 補救那一段 ＋ 節點自己的 `peerAddressProblem` 當次要細節行 | 用前端自己的猜測蓋掉節點的判定 |
 | `state.peerAddress` 非空且可達 | `#pair-here` 一律顯示，**有沒有廣播都顯示**；旁邊那句依 `state.notice` 有無而不同 | 只在沒廣播時才顯示 |
 | 抽屜標題 `#pairing-sub` | 依 `announceableAddresses` 換句子 | 不廣播的節點上出現「開啟後同網段的人都會知道」（兩種寫法都算，有逗號沒逗號） |
@@ -293,8 +300,8 @@
 | 配對請求列（已結束） | 一句結果 + 節點的 `nextStep` | 核准／確認按鈕 |
 | 配對面板任何位置 | | 「自動核准」「略過比對」「全部核准」「不比對」 |
 | availability 未知 | 「不可信」、錯誤原文 | 「-discover」「機器在廣播。」 |
-| 配對視窗開啟 | headline 含「開啟中」；倒數含 `:` | 到期時「0:00」 |
-| 配對視窗到期 | 「已到期」，且觸發一次 `Pairing()` | |
+| 配對開放中 | headline 含「開放中」；倒數含 `:` | 到期時「0:00」 |
+| 配對到期 | 「已到期」，且觸發一次 `Pairing()` | |
 | Peer 離線 | 「離線」 | 舊 session id |
 | Peer 從未 | 「尚未收到」 | 「離線」、session id |
 | Peer presenceError | | 「尚未收到」、session id、presence label class |
@@ -375,6 +382,12 @@
 8. **audience 四個旗標在表格看不到。** → 公開對象欄加旗標圖示或展開列。
 9. **四個 modal 同層級。** → heartbeat 與收件匣改側邊抽屜；配對與公開對象保持 modal（有不可逆動作）。
 10. **區網視圖左欄塞了三件事**（節點清單、配對模式、候選）。→ 配對模式與候選合成一個「配對」分頁或抽屜，節點清單獨立。
+
+**2026-09-23 狀態（分支 `feat/desktop-ux-simplify`）**：第 10 條已處理（配對抽屜三步，左欄只剩主按鈕與一行狀態）；
+第 9 條早已是現況（收件匣是抽屜、heartbeat 是對話框），這次沒動；第 8 條部分處理——FLAGS 只在已公開的列顯示，
+沒有展開列；第 7 條的未讀數早已由 `held` 計數處理，這次只把沒有訊息時的按鈕縮成圖示。
+第 1–6 條這次沒碰。另外這次處理了清單外的問題：每個狀態兩到四句解釋、node/machine 與 announce/broadcast 混用、
+「配對視窗」當名詞。
 
 ## 6. 驗收清單（2026-09-11 實作分支 `feat/desktop-ui-redesign` 的狀態）
 
@@ -656,3 +669,23 @@
 `frontend/test/` 底下除了 `i18n.mjs`，全部跑在 zh-TW（`dom-shim.mjs` 的 `useLocale`），因為那些斷言是用中文寫的；英文那一半由 `i18n.mjs` 以 en-US 開機覆蓋，`TestFrontendSpeaksBothLanguages` 帶它跑。shim 的 `querySelectorAll("[data-t]")` 直接從 `index.html` 解出真的元素，並且 `i18n.mjs` 會把 shim 給的數量跟檔案裡的數量對起來——它以前回傳 `[]`，那會讓整段靜態文案的斷言全部落空。
 
 不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
+
+## 12. 詞表（2026-09-23，分支 `feat/desktop-ux-simplify`）
+
+視窗面向使用者的用詞，en 與 zh-Hant 各一組，兩張表一起守：
+
+| 概念 | en | zh-Hant | 不再用 |
+|---|---|---|---|
+| 另一台已配對或要配對的電腦 | machine（the other machine, paired machines） | 機器（另一台機器、已配對機器） | node、節點（指對方時） |
+| 這台電腦 | this machine | 這台機器 | this node、本節點（指這台電腦時） |
+| 在網段上通告自己 | broadcast | 廣播 | announce、宣告 |
+| 可配對的狀態 | Pairing open · mm:ss | 配對開放中 · mm:ss | pairing window、配對視窗（當名詞） |
+
+**node 還留在哪裡。** node 是 `agenthub-node` 這個行程的名字，所以講那個行程本身的句子保留它：設定頁的
+背景服務、節點設定（Node settings）與本機身分三區，「啟動／重新啟動節點」與它的狀態行，以及引用旗標的句子
+（`-discover`、`-auto-wake`、`-display-name`）。技術欄位的值與標籤也保留：Node ID／節點 ID、`ah nodes`。i18n 的 key 名（`network.pairedNodes`、`audience.cell.nodeCount.*`）
+不改：key 是程式與測試的介面，改名只會讓 diff 變大而使用者看不到。
+
+**文案規則。** 每個狀態一句主文；「為什麼」與操作細節放 `title` tooltip、`<details>`，或搬到
+`docs/desktop-window.md`（視窗裡以 `common.docsRef` 或 `*.introMore` 指名該段標題）。§4 的語意（資料不是指令、
+四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。
