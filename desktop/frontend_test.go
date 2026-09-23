@@ -350,15 +350,21 @@ func TestFrontendRendersHostileInboxMessagesAsText(t *testing.T) {
 	}
 }
 
-// TestFrontendAudienceDialogStartsEveryFlagOff drives the dialog itself.
+// TestFrontendAudienceDialogStartsOffForManyAndAsItselfForOne drives the
+// dialog itself.
 //
 // It applies to whatever is selected and reads its values straight from the
-// boxes, so a box left ticked from the last time it was opened is a setting
-// about to be applied to a different set of sessions. That was survivable
-// while the flags governed only what could be read; one of them now starts a
-// turn in an agent with nobody watching, and inheriting that from a previous
-// dialog is not a thing anyone would choose on purpose.
-func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
+// boxes. With several sessions selected they can disagree and no one state is
+// honest for all of them, so every flag starts off: a box left ticked from the
+// last time the dialog was opened is a setting about to be applied to a
+// different set of sessions, and one of the flags starts a turn in an agent
+// with nobody watching. With exactly one there is nothing left over — the
+// values shown are that session's own, read from the overview — and blanking
+// them meant changing who can see it silently withdrew every flag it had.
+//
+// The script prints one sentence on success, which names both halves; checked
+// here so a run that exits 0 without reaching them is not taken as a pass.
+func TestFrontendAudienceDialogStartsOffForManyAndAsItselfForOne(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is not installed; skipping the audience dialog check")
@@ -370,6 +376,9 @@ func TestFrontendAudienceDialogStartsEveryFlagOff(t *testing.T) {
 	output, err := exec.Command(node, script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("audience dialog check failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "one session opens as itself") {
+		t.Fatalf("audience dialog check exited 0 without reporting the single-session case:\n%s", output)
 	}
 }
 

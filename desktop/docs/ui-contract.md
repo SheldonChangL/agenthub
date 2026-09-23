@@ -49,15 +49,15 @@
 | 綁定 | 現在的入口 | 觸發後必須發生的事 |
 |---|---|---|
 | `Overview()` | 啟動、`btn-reload`、每次寫入後 | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取 |
-| `Discover()` | `btn-discover` | 掃描後 reload；banner 報 claude/codex/total/skipped 數 |
-| `Heartbeat()` | `btn-heartbeat` | 對話框顯示已簽章 envelope 純文字 |
+| `Discover()` | `btn-discover`；視窗第一次**連得到節點**而且 0 筆 session 時自動呼叫一次（`state.busy` 時不算，留給下一次不忙的讀取） | 掃描後 reload；banner 報 claude/codex/total/skipped 數 |
+| `Heartbeat()` | `btn-heartbeat`（在設定頁的身分區 `settings-identity`） | 對話框顯示已簽章 envelope 純文字 |
 | `SetAudience(ids, audience)` | 公開對象對話框「套用」、`btn-unpublish` | 成功：清空選取、關對話框、banner；部分失敗：留著選取、banner 第一個錯誤 |
 | `SetVisibility(ids, visibility)` | 目前**沒有** UI 入口 | 保留為未接綁定；不算缺功能 |
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、banner |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；banner 說明同時移除授權 |
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | `btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
-| `ClosePairing()` | `btn-pairing-off` | |
+| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫）、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
+| `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時 | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開就**不關**（節點關視窗會作廢所有未決請求） |
 | `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；**只在抽屜開著時讀**（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定 |
 | `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走 banner，錯誤碼翻成中文（§4.3） |
 | `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」 | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
@@ -269,7 +269,10 @@
 對話框（`.modal`）：
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
-  **每次開啟四個旗標一律重設為 off**（測試 `audience-dialog.mjs`）。
+  **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
+  三個情境 preset 只寫三個訊息旗標（只看見：全關；能留訊息：`acceptMessages`；留訊息並喚醒：
+  `acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值；現值不是任何 preset 時，
+  開啟即展開進階區並顯示「自訂」。喚醒的說明 `audience-autowake-note` 在進階區**外面**。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
 
@@ -330,7 +333,7 @@
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
-- 公開對象對話框每次開啟四個旗標為 false，且 `readAudienceForm()` 回傳四個 false。
+- 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。
 
 ### 4.1 測試架構的耦合
 
@@ -513,20 +516,29 @@
    自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
    不改使用者控制的欄位。
 
-**規則 4 與首次啟動清單的第三步（2026-09-17）。** 那一步要做的事正是「一鍵讓這台機器連得到」，
-而那一鍵在允許區網是關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；
-它不禁止一顆使用者親手按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，
-連理由都寫在 `peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。
-這個視窗不會背著任何人勾那個框。」
+**規則 4 與配對抽屜的第一步。** 那一步要做的事正是「一鍵讓這台機器連得到」，而那一鍵在允許區網是
+關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；它不禁止一顆使用者親手
+按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，連理由都寫在
+`peerListenRepairs()` 的註解裡：「只有在按下去會打開它的時候才在標籤裡指名那個開關。這個視窗不會背著
+任何人勾那個框。」
 
-所以清單第三步的按鈕**就是用 `peerListenRepairs()` 產生的**，餵給它一個合成的
-`{reason: "loopback", address: <目前的 peerListen>}` 加上 `fetchLocalAddresses()` 的結果，
-按下去走 `applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的
-旗標；存檔走表單那條路，所以驗證、重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；
-`peerListenRepairs()` 最後那個「就先只在本機」同時是這一步的 skip；以及**光是 render 這張卡片不會去寫
-`#node-allow-lan`**（`frontend/test/onboarding.mjs` 逐項斷言這四件事）。
-前提是節點設定已經讀進來過——`applyPeerListenRepair` 填的是真正的表單——所以 `renderOnboarding()`
-在卡片可見且 `state.nodeSettings` 還是 null 時，每個視窗生命週期呼叫一次 `loadNodeSettings()`。
+（這一步原本是首次啟動清單的第三步；UX 簡化〔#193〕把它移進配對抽屜，清單剩三步，不再讀節點設定。）
+
+所以抽屜第一步的按鈕**就是用 `peerListenRepairs()` 產生的**（`pairHereRepairs()`），餵給它一個合成的
+`{reason: "loopback", address: <存下來的 peerListen>}` 加上節點回報的位址清單，按下去走
+`applyPeerListenRepair(option)`。這樣有四件事是免費得到的：標籤照規則 4 指名每一個會被設定的旗標
+（看的是節點**存下來的** `allowLan`，不是設定頁上還沒存的勾選框）；存檔走表單那條路，所以驗證、
+重啟、以及規則 3 的「重啟後實際持有的值」比對都只有一份實作；「就先只在本機」這個選項在這裡被濾掉
+（這一區存在的理由就是對方連不進來）；以及**光是 render 抽屜不會去寫 `#node-allow-lan`**
+（`frontend/test/onboarding.mjs` 對抽屜逐項斷言）。前提是節點設定已經讀進來過——
+`applyPeerListenRepair` 填的是真正的表單——所以 `ensurePairingNodeSettings()` 在抽屜打開且
+`state.nodeSettings` 還是 null 時呼叫一次 `loadNodeSettings()`（一個視窗生命週期只問一次；讀取失敗、
+沒拿到基準時才放開，下次開抽屜再問）。
+
+**規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
+在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；
+使用者取消、或讀不到服務用的資料庫路徑（重新登記可能換掉節點身分）時，被固定的欄位不送、其餘照存，
+banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
