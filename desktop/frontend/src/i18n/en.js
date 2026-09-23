@@ -235,7 +235,7 @@ export const TEXT = {
   "audience.presetMessages": "Let them leave messages",
   "audience.presetMessagesWhy": "Messages wait in the inbox; nothing is handed to the agent by itself.",
   "audience.presetWake": "Let them leave messages and wake it",
-  "audience.presetWakeWhy": "A message wakes the agent, so it acts with nobody watching.",
+  "audience.presetWakeWhy": "A message wakes the agent and it can reply, so it acts with nobody watching.",
   "audience.presetCustom": "Custom: the flags below are not one of the three above.",
   "audience.resetNote": "With more than one session selected the flags always start off.",
   "audience.advancedSummary": "Advanced: the individual flags",
@@ -443,6 +443,7 @@ export const TEXT = {
 
   "audience.noNodesYet": "No machine has been paired yet.",
   "audience.autoWakeNodeOff": "This node was started without -auto-wake, so ticking this wakes no session until the node is restarted with it (ah service install … --auto-wake).",
+  "audience.autoWakeWillTurnOff": "Applying this turns waking off: a Claude Code session is never woken.",
   "audience.autoWakeCodex": "A Codex session is woken by the node through the app-server (verified on real machines).",
   "audience.autoWakeClaude": "Claude Code does not act on these pushes even with agenthub-mcp started with -channel (docs/channel-push-not-observed.md), so the message stays in the inbox.",
 
