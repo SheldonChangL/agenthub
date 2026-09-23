@@ -230,7 +230,7 @@ export const TEXT = {
   "audience.presetMessages": "讓他們能留訊息",
   "audience.presetMessagesWhy": "訊息進收件匣等人處理，不會自己交給 agent。",
   "audience.presetWake": "讓他們能留訊息並喚醒",
-  "audience.presetWakeWhy": "訊息一到就叫醒 agent，沒有人在旁邊它也會動。",
+  "audience.presetWakeWhy": "訊息一到就叫醒 agent，並能回覆；沒有人在旁邊它也會動。",
   "audience.presetCustom": "自訂：下面的旗標不是任何一種情境的組合。",
   "audience.resetNote": "多選時旗標一律從全關開始。",
   "audience.advancedSummary": "進階：個別旗標",
@@ -438,6 +438,7 @@ export const TEXT = {
 
   "audience.noNodesYet": "還沒有配對任何機器。",
   "audience.autoWakeNodeOff": "這台節點沒帶 -auto-wake 啟動，勾了也不會有任何 session 被叫醒；要用 ah service install … --auto-wake 重啟才生效。",
+  "audience.autoWakeWillTurnOff": "套用後會關閉喚醒：Claude Code session 不會被叫醒。",
   "audience.autoWakeCodex": "Codex session 會由節點透過 app-server 叫醒（真機驗過）。",
   "audience.autoWakeClaude": "即使 agenthub-mcp 帶 -channel，Claude Code 也不會處理這類推送（見 docs/channel-push-not-observed.md），訊息仍只會留在收件匣。",
 

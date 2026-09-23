@@ -3169,13 +3169,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // The three situations the presets name, as the flags they write.
   //
-  // Everything not named here is false. A preset is an answer to "what may they
-  // do", and an answer that leaves two of the four boxes wherever the last one
-  // left them is not one.
+  // A preset answers "what may they do with messages", so it writes the three
+  // message flags and all three of them — an answer that leaves one wherever
+  // the last one left it is not one. Whether the working directory is shown is
+  // a different question, and a preset leaves that box as it found it: writing
+  // it off silently withdrew a setting the owner could not see change, because
+  // the box is in the collapsed advanced section (#193 review).
+  //
+  // Waking includes replying. A woken agent is told to answer the peer
+  // (AGENTS.md, "When AgentHub wakes you"), and without allowOutbound the node
+  // refuses that send, so a wake preset without it wakes an agent that cannot
+  // do the one thing it was woken for.
   const AUDIENCE_PRESETS = {
-    view: { exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
-    messages: { exportCwd: false, acceptMessages: true, allowOutbound: false, autoWake: false },
-    wake: { exportCwd: false, acceptMessages: true, allowOutbound: false, autoWake: true },
+    view: { acceptMessages: false, allowOutbound: false, autoWake: false },
+    messages: { acceptMessages: true, allowOutbound: false, autoWake: false },
+    wake: { acceptMessages: true, allowOutbound: true, autoWake: true },
   };
 
   function audienceFlagsOnForm() {
@@ -3200,7 +3208,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function applyAudiencePreset(name) {
     const wanted = AUDIENCE_PRESETS[name];
     if (!wanted) return;
-    el("audience-cwd").checked = wanted.exportCwd;
     el("audience-messages").checked = wanted.acceptMessages;
     el("audience-outbound").checked = wanted.allowOutbound;
     el("audience-autowake").checked = wanted.autoWake;
@@ -3266,6 +3273,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     renderAutoWakeNote();
     syncAudiencePreset();
+    // A session whose flags are no preset's opens with the flags in view: the
+    // radios are all empty then, and the only place that says what the session
+    // actually does is the section that would otherwise start collapsed.
+    el("audience-advanced").open = presetForFlags(audienceFlagsOnForm()) === "";
     el("audience-modal").classList.remove("hidden");
     syncAudienceForm();
   }
@@ -3281,15 +3292,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // observed.md). None of it is a reason to disable the box — an owner may
   // reasonably set a session up before restarting the node — so this only says
   // what will happen, and never blocks the dialog.
+  //
+  // It sits above the collapsed advanced section, not inside it: the sentence
+  // that says the box was turned off is about something the owner is about to
+  // apply, and folded away it was a flag withdrawn without a word (#193
+  // review). Hidden when it has nothing to say.
   function renderAutoWakeNote() {
     const note = el("audience-autowake-note");
     note.replaceChildren();
+    renderAutoWakeNoteLines(note);
+    note.classList.toggle("hidden", note.children.length === 0);
+  }
+
+  function renderAutoWakeNoteLines(note) {
     // Which providers are selected decides which of the remaining obstacles
     // apply, and a mixed selection gets both sentences: the owner is about to
     // apply one setting to sessions that will behave differently.
-    const providers = new Set(
-      state.sessions.filter((session) => state.selected.has(session.id)).map((session) => session.provider),
-    );
+    const picked = state.sessions.filter((session) => state.selected.has(session.id));
+    const providers = new Set(picked.map((session) => session.provider));
     // A selection that is nothing but Claude Code is the one case where this
     // box cannot work and no restart will change that: the push was measured
     // arriving and never being injected (docs/channel-push-not-observed.md).
@@ -3301,6 +3321,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-preset-wake").disabled = claudeOnly;
     if (claudeOnly) {
       el("audience-autowake").checked = false;
+      // Read from the sessions, not the box, which the line above has just
+      // cleared — and a language switch repaints this after it.
+      if (picked.some((session) => session.audience?.autoWake)) {
+        note.append(element("div", "warning", t("audience.autoWakeWillTurnOff")));
+      }
       note.append(element("div", "muted", t("audience.autoWakeClaude")));
       return;
     }

@@ -70,8 +70,10 @@ if (presetOf() !== "messages") {
 
 module.applyAudiencePreset("wake");
 const afterWake = module.readAudienceForm();
-if (!afterWake.acceptMessages || !afterWake.autoWake) {
-  failures.push(`"and wake it" did not turn both boxes on: ${JSON.stringify(afterWake)}`);
+// Waking includes replying: a woken agent is told to answer the peer
+// (AGENTS.md), and the node refuses that send without allowOutbound.
+if (!afterWake.acceptMessages || !afterWake.autoWake || !afterWake.allowOutbound) {
+  failures.push(`"and wake it" did not turn messages, outbound and wake on: ${JSON.stringify(afterWake)}`);
 }
 
 module.applyAudiencePreset("view");
@@ -90,11 +92,51 @@ if (presetOf() !== "") {
 if (!el("audience-preset-note").textContent.includes("自訂")) {
   failures.push(`a hand-set flag was not reported as custom: ${el("audience-preset-note").textContent}`);
 }
-if (module.presetForFlags({ acceptMessages: true, autoWake: true }) !== "wake") {
+if (module.presetForFlags({ acceptMessages: true, allowOutbound: true, autoWake: true }) !== "wake") {
   failures.push("the wake combination is not recognised as a preset");
 }
+if (module.presetForFlags({ acceptMessages: true, autoWake: true }) !== "") {
+  failures.push("waking without outbound is read as the wake preset, which can never reply");
+}
+
+// The working directory is not a preset's to write. It lives in the collapsed
+// section, so a preset that cleared it withdrew a setting nobody saw change.
+for (const name of ["view", "messages", "wake"]) {
+  for (const cwd of [true, false]) {
+    el("audience-cwd").checked = cwd;
+    module.applyAudiencePreset(name);
+    if (el("audience-cwd").checked !== cwd) {
+      failures.push(`the ${name} preset rewrote the working-directory box from ${cwd} to ${!cwd}`);
+    }
+    if (presetOf() !== name) {
+      failures.push(`with the working directory ${cwd ? "on" : "off"}, the ${name} preset does not read as itself`);
+    }
+  }
+}
+el("audience-cwd").checked = false;
 
 /* ---------------- one session opens as itself ----------------------------- */
+
+// A session whose flags are no preset's opens with the flags in view, because
+// the radios are all empty then and the section below is the only thing that
+// says what the session does. One that matches a preset opens folded.
+const opened = (audience) => {
+  const session = { id: "codex:shape", provider: "codex", audience: { mode: "all_paired", nodes: [], ...audience } };
+  module.state.sessions = [session];
+  module.state.selected.clear();
+  module.state.selected.add(session.id);
+  module.openAudienceModal();
+  return el("audience-advanced").open;
+};
+if (!opened({ acceptMessages: true, autoWake: true })) {
+  failures.push("a session with a custom combination opened with the advanced section folded away");
+}
+if (!el("audience-preset-note").textContent.includes("自訂")) {
+  failures.push("a session with a custom combination opened without saying it is custom");
+}
+if (opened({ exportCwd: true, acceptMessages: true })) {
+  failures.push("a session matching a preset opened with the advanced section unfolded");
+}
 
 // Reopening with exactly one session selected shows that session's own
 // audience. Blanking it here is not caution: the dialog applies everything it
@@ -208,6 +250,27 @@ if (!el("audience-preset-wake").disabled) {
 }
 if (module.readAudienceForm().autoWake) {
   failures.push("an all-Claude selection could still apply auto-wake");
+}
+
+// A Claude Code session that has auto-wake on loses it when this is applied,
+// and the dialog says so where it is read without unfolding anything: the note
+// is outside the collapsed section, and shown.
+const markup = (await import("node:fs")).readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const advanced = markup.slice(markup.indexOf('id="audience-advanced"'), markup.indexOf("</details>", markup.indexOf('id="audience-advanced"')));
+if (advanced.includes('id="audience-autowake-note"')) {
+  failures.push("the auto-wake note is inside the collapsed advanced section");
+}
+const wakingClaude = { id: "claude:woken", provider: "claude", audience: { mode: "all_paired", nodes: [], acceptMessages: true, autoWake: true } };
+withSelection(true, [wakingClaude]);
+if (!noteText().includes("套用後會關閉喚醒")) {
+  failures.push(`a Claude session with auto-wake on was not told applying turns it off: ${noteText()}`);
+}
+if (el("audience-autowake-note").classList.contains("hidden")) {
+  failures.push("the auto-wake note was hidden while it had something to say");
+}
+withSelection(true, [claude]);
+if (noteText().includes("套用後會關閉喚醒")) {
+  failures.push("a Claude session that never had auto-wake was told it would be turned off");
 }
 
 if (failures.length > 0) {
