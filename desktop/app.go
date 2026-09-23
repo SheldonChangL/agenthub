@@ -196,6 +196,10 @@ type Pairing struct {
 	// the node rather than written here, so the warning cannot drift from the
 	// guarantees the node actually makes.
 	Notice string `json:"notice"`
+	// NoticeCode names Notice, so the window can say it in its own language
+	// and fall back to Notice for a code it does not know — or for a node that
+	// predates the code and sends none.
+	NoticeCode string `json:"noticeCode,omitempty"`
 	// Availability is "on", "off", "openNotAnnouncing" or "unknown", and it is
 	// four values rather than a boolean because the panel has four different
 	// things to say. "off" is a node started without -discover and with no
@@ -261,7 +265,7 @@ func (a *App) Pairing() Pairing {
 	// whatever the candidate list says below.
 	result.WindowAvailable = true
 
-	candidates, full, notice, err := activeClient.candidates(a.ctx)
+	list, err := activeClient.candidates(a.ctx)
 	if err != nil {
 		// A node without -discover now answers the window endpoints — the
 		// window is a node-level state and the pairing exchange needs only that
@@ -278,9 +282,10 @@ func (a *App) Pairing() Pairing {
 		result.CandidatesError = err.Error()
 		return result
 	}
-	result.Candidates = candidates
-	result.Full = full
-	result.Notice = notice
+	result.Candidates = list.Candidates
+	result.Full = list.Full
+	result.Notice = list.Notice
+	result.NoticeCode = list.NoticeCode
 	return result
 }
 

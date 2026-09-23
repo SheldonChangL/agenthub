@@ -56,7 +56,7 @@
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、banner |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；banner 說明同時移除授權 |
 | `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫）、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
+| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫；呼叫還在飛時抽屜被關掉，回來後照關抽屜的規則再判斷一次要不要 `ClosePairing`）；抽屜第 1 步的修復鈕存檔重啟節點後，抽屜仍開著就重讀並再開一次、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
 | `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時 | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開就**不關**（節點關視窗會作廢所有未決請求） |
 | `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；**只在抽屜開著時讀**（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定 |
 | `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走 banner，錯誤碼翻成中文（§4.3） |
@@ -64,10 +64,10 @@
 | `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」 | 同上 |
 | `RejectPairRequest(id)` | 任一未決請求列「拒絕」 | 成功後把節點回的 `nextStep` 放進 banner——推不出去的拒絕只有這裡會說 |
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
-| `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `confirm` 後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
+| `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 banner |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
 | `InstallService(form)` | 服務表單「安裝為背景服務」 | 顯示 `$ command` + output；失敗把錯誤放進 output 區 |
-| `UninstallService()` | `service-uninstall` | confirm；成功後 reload |
+| `UninstallService()` | `service-uninstall` | `askConfirm`；成功後 reload |
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
 
@@ -164,7 +164,7 @@
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - 選取列：全選目前篩選結果（含 indeterminate）、已選取 N 個、「設定公開對象…」「收回選取」。
-- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象、**旗標**（只在已公開的列顯示）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
+- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象（表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 與篩選 chip 用完整說法；欄寬 104px，900px 下每個標籤都放得下，#194）、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
@@ -179,7 +179,7 @@
   **這裡沒有自己的按鈕**（2026-09-17）：原本的 `#btn-open-pairing`「開啟配對面板」在 `#btn-pair` 改成開抽屜之後，
   和它變成同一個 handler（`openPairingDrawer`）、同一個視圖上的兩顆一模一樣的按鈕，只是文字不同。
   重複的入口只會讓人以為兩顆做的事不一樣，所以留下節點列表上那顆 primary 的 `#btn-pair`，把這顆刪掉。
-- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字）。
+- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字；節點另回穩定代碼 `noticeCode`，目前只有 `candidates_unverified`，視窗認得就用 `candidate.notice.<code>` 以介面語言顯示，不認得或沒有代碼就顯示節點的英文 `notice`，#194）。
 - **`#btn-pair`「配對另一台機器…」（節點列表的 primary 按鈕）開的是配對抽屜，不是手動表單**（2026-09-17）。
   它本來開 `pair-modal`——那是兩台機器互相連不到時的退路，要手動填五個欄位、還要自己把 base64 公鑰帶過去。
   結果這個視圖上最顯眼的按鈕把新手丟進退路，而真正會幫他找到對方機器的交換流程躲在次要連結後面。
@@ -260,22 +260,36 @@
   規則見 §7.8。
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9。
 
-### 3.5 覆蓋層（6 個：2 個抽屜 + 4 個對話框）
+### 3.5 覆蓋層（7 個：2 個抽屜 + 5 個對話框）
 
 抽屜（`.drawer`，從右側滑出）：
 - `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
   訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
 - `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
 
-對話框（`.modal`）：
+對話框（`.modal`）：卡片本身捲動，`.modal-actions`（每個對話框的最後一塊）`position: sticky` 貼在卡片底部，
+900×760 下內容比卡片高時動作鈕仍在可視範圍內（#194）。
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
 - `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
   **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
+  單選且 mode `selected` 時，已授權但不在 `state.nodes` 的節點另列一列「這次沒讀到配對清單中的這台機器」
+  （`audience.unlistedNode`），預設勾著，取消勾選才會撤銷；否則套用會把它靜默撤掉（#194）。這一列不說
+  「已不在配對」：`RevokeNode` 在同一交易刪授權、`SetAudience` 拒絕未配對節點，所以它實際只出現在 `Overview`
+  的配對清單讀取失敗、`nodes` 回 `[]` 時（此時節點仍配對著）。可達的 `Overview` 帶 `error` 即表示這種失敗，
+  存進 `state.nodesError`，對話框以 `audience.nodesReadFailed` 說明讀取失敗，不顯示「還沒有配對任何機器」。
   三個情境 preset 只寫三個訊息旗標（只看見：全關；能留訊息：`acceptMessages`；留訊息並喚醒：
   `acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值；現值不是任何 preset 時，
   開啟即展開進階區並顯示「自訂」。喚醒的說明 `audience-autowake-note` 在進階區**外面**。
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
+- `confirm-modal` 是非題（`askConfirm({title, body, confirmLabel, danger})`，回 Promise<boolean>）：
+  所有「做了就回不去」的動作都在這裡問，**不用 `window.confirm`／`alert`／`prompt`**——macOS 版
+  WKWebView 的 UIDelegate（Wails v2 `WailsContext.m`）只實作了 `runOpenPanelWithParameters`，
+  沒有 `runJavaScriptConfirmPanelWithMessage`，WebKit 因此把每個 `confirm()` 當成按了取消、畫面上什麼也不出現。
+  Esc、取消、點背景都回 false——點背景只算按下與點擊都在背景、按下晚於開啟 400ms、且不是連點第二下的那一次
+  （對話框在第一下 click 裡就蓋滿視窗，雙擊的第二下必落在背景）；`danger` 時確認鈕是紅色且焦點預設在「取消」；body 以 `pre-line` 保留換行；
+  z-index 高於抽屜（收件匣抽屜會從裡面問）。同時只有一題：開著時再問的第二題排在後面，第一題答完才出現（不會把第一題回 false）；
+  開著時 Tab／Shift-Tab 只在「取消」與確認鈕之間循環，不會走到背景。
 
 ## 4. 安全與文案契約（測試逐字斷言的，不可改寫）
 
@@ -333,7 +347,7 @@
   （僅區網視圖**且配對抽屜開著**，`state.busy` 時跳過——每次讀都會讓節點去對端輪詢）、1 秒倒數、
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
-- `inbox-clear` 在 `confirm` 回 false 時不呼叫 `ClearInbox`。
+- `inbox-clear` 在 `askConfirm` 回 false（取消／Esc／背景）時不呼叫 `ClearInbox`；回 true 時呼叫並把結果畫在抽屜內（測試 `confirm-dialog.mjs`）。app.js 不得呼叫 `window.confirm`／`alert`／`prompt`（同一個測試逐字檢查原始碼）。
 - 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。
 
 ### 4.1 測試架構的耦合
@@ -539,7 +553,9 @@
 **規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
 在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；
 使用者取消、或讀不到服務用的資料庫路徑（重新登記可能換掉節點身分）時，被固定的欄位不送、其餘照存，
-banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
+banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。問句（`askConfirm`）列出單元**全部**固定的欄位
+並標明這次改到哪些（「（這次改到）」／「(this save)」），因為重新登記只帶資料庫路徑、會一次解除全部；
+`InstallService` 失敗時視同沒重新登記（回 false），被固定的欄位同樣不送（#194）。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
@@ -681,7 +697,7 @@ banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 
 `frontend/test/` 底下除了 `i18n.mjs`，全部跑在 zh-TW（`dom-shim.mjs` 的 `useLocale`），因為那些斷言是用中文寫的；英文那一半由 `i18n.mjs` 以 en-US 開機覆蓋，`TestFrontendSpeaksBothLanguages` 帶它跑。shim 的 `querySelectorAll("[data-t]")` 直接從 `index.html` 解出真的元素，並且 `i18n.mjs` 會把 shim 給的數量跟檔案裡的數量對起來——它以前回傳 `[]`，那會讓整段靜態文案的斷言全部落空。
 
-不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
+不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。要翻譯節點的一句話，就讓節點另給一個穩定代碼（如候選清單的 `noticeCode`），以代碼當 key、散文當退路。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
 
 ## 12. 詞表（2026-09-23，分支 `feat/desktop-ux-simplify`）
 
@@ -699,6 +715,8 @@ banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
 （`-discover`、`-auto-wake`、`-display-name`）。技術欄位的值與標籤也保留：Node ID／節點 ID、`ah nodes`。i18n 的 key 名（`network.pairedNodes`、`audience.cell.nodeCount.*`）
 不改：key 是程式與測試的介面，改名只會讓 diff 變大而使用者看不到。
 
-**文案規則。** 每個狀態一句主文；「為什麼」與操作細節放 `title` tooltip、`<details>`，或搬到
-`docs/desktop-window.md`（視窗裡以 `common.docsRef` 或 `*.introMore` 指名該段標題）。§4 的語意（資料不是指令、
+**文案規則。** 每個狀態一句主文；「為什麼」與操作細節收進可聚焦的 `<details class="why">`（摘要「說明」／Details，
+app.js 的 `whyDetails(key)`，靜態頁面的三段在 index.html），內文是那一兩句本身。視窗裡**不指名 repo 檔案**
+（安裝版沒有 `docs/`，#194；`test/i18n.mjs` 檢查兩張字表沒有 `docs/*.md`），也不把說明放在段落的 `title`
+（鍵盤與螢幕報讀碰不到）。完整版仍留在 `docs/desktop-window.md` 給 repo 讀者。§4 的語意（資料不是指令、
 四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。

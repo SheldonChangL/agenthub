@@ -375,15 +375,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    column then sat on top of the working-directory and last-seen columns
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
-   6px cell padding below): all four flag chips and both row buttons fit. The
-   audience pill's longest English wording does not, and clips with its text in
-   the tooltip. They add up to 636px, and SESSION and WORKING DIRECTORY carry
-   no width, so they split what is left and clip with an ellipsis — the full
-   title and path stay in the cells' titles. */
+   6px cell padding below): all four flag chips, both row buttons and every
+   audience pill the table uses fit. They add up to 644px, and SESSION and
+   WORKING DIRECTORY carry no width, so they split what is left and clip with
+   an ellipsis — the full title and path stay in the cells' titles. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
 col.c-check { width: 32px; }
 col.c-status { width: 76px; }
-col.c-audience { width: 96px; }
+/* 104px: 92px of pill inside 6px of padding each side. Measured in
+   dev/mock.html (#194): the widest table wordings are 「Not published」 87px
+   and 「Chosen: none」 86px; 「All paired」 is 64px, 「所有已配對」 73px. At 96px
+   the first two lost their last letters, and 「Every paired machine」 (124px),
+   which the cell no longer uses, lost a whole word. The 5px over the widest
+   is for a WebView font that renders a little wider than the mock's. */
+col.c-audience { width: 104px; }
 col.c-flags { width: 156px; }
 col.c-last { width: 104px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when
@@ -512,11 +517,21 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
 .rowactions button { padding: 0 8px; }
-/* A session holding nothing keeps the button and loses the word: an envelope
+/* A session holding nothing keeps the button and loses the word: an inbox icon
    instead of 「收件匣」 on every one of a thousand rows. The label element and
    its text are still there — hidden, not removed — so the tooltip, the
    accessible name and the language switch all still reach it. */
-.rowactions button.inbox.compact { padding: 0 8px; }
+/* Sized from the design, source-first (docs/ui-redesign/Main.dc.html and
+   MainHacker.dc.html, the row's actions cell): in a 38px row the inbox button
+   is a 24x24 square, the same box as the resume button beside it, holding a
+   14x14 inbox-tray icon — the icon is 14/24 of its button. The row buttons
+   here are --control-h (28px) tall, the resume button included, so the
+   compact button is a 28px square and the icon 16px (14/24 x 28 = 16.3).
+   The icon is the design's own two paths, painted in currentColor through a
+   mask; the ✉ glyph it replaces was 13px of font whose ink was about half of
+   that. The square is narrower than the old glyph-plus-padding, so the actions
+   column is not widened by it. */
+.rowactions button.inbox.compact { width: var(--control-h); padding: 0; justify-content: center; }
 .rowactions button.inbox.compact .label {
   position: absolute;
   width: 1px; height: 1px;
@@ -524,7 +539,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.rowactions button.inbox.compact::before { content: "\2709"; font-size: 13px; line-height: 1; }
+.rowactions button.inbox.compact::before {
+  content: "";
+  flex: none;
+  width: 16px; height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 12h-6l-2 3h-4l-2-3H2'/><path d='M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M22 12h-6l-2 3h-4l-2-3H2'/><path d='M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.7 4H7.3a2 2 0 0 0-1.8 1.1z'/></svg>") center / contain no-repeat;
+}
 
 /* How many messages a session is still holding (#146). It rides inside the
    Inbox button and on the 本機 session tab, and it is absent — not zero —
@@ -1020,6 +1042,18 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .langrow { align-items: center; gap: 12px; }
 .langrow select { min-width: 160px; }
 
+/* ---------- 「說明」: the why behind a sentence, folded ----------
+   Replaces title tooltips that named docs/desktop-window.md (#194): the
+   summary is focusable, so the keyboard and a screen reader reach it. */
+details.why { margin: 2px 0 8px; font-size: 11.5px; color: var(--muted); }
+details.why > summary {
+  display: inline-block; cursor: pointer;
+  color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px;
+}
+details.why > summary:hover, details.why[open] > summary { color: var(--text); }
+details.why > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
+
 /* ---------- modals ---------- */
 
 .modal {
@@ -1088,6 +1122,27 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-top: 1px solid var(--line);
 }
 .modal-actions .muted { flex: 1 1 240px; min-width: 0; font-size: 11.5px; line-height: 1.5; }
+/* The actions stay on the card while its body scrolls under them (#194). At
+   the window's minimum size (900x760) the audience dialog is 959px of content
+   in a 606px card, so 套用 sat 310px below the card's bottom edge and was
+   reachable only by scrolling for it. Sticky to the scroller's bottom edge —
+   -14px is the card's own bottom padding, taken back so the bar meets the
+   edge and nothing scrolls visibly beneath it — and opaque, so what scrolls
+   under it does not show through. Every dialog's actions are the card's last
+   child, so this is every dialog. */
+.modal-card > .modal-actions {
+  position: sticky; bottom: -14px; z-index: 1;
+  margin-bottom: -14px; padding-bottom: 14px;
+  background: var(--panel-solid);
+}
+
+/* The window's own confirm (askConfirm in app.js). Above the drawers, because
+   the inbox drawer is where one of its questions is asked from; narrower than
+   the other dialogs, because it holds a question and two buttons. The body is
+   pre-line so a question written in two paragraphs is shown in two. */
+.modal.confirm { z-index: 30; }
+.modal.confirm .modal-card { width: min(460px, 88vw); }
+#confirm-body { white-space: pre-line; }
 
 .sectionlabel { font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); margin: 10px 0 8px; }
 
@@ -1114,6 +1169,9 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 }
 .nodes .nodepick.on { border-color: var(--accent); background: var(--accent-dim); }
 .nodes .nodepick .mono { margin-left: auto; color: var(--muted); }
+/* A machine this session is published to that this read did not list: kept, and
+   said to be what it is, so 套用 does not withdraw it unseen (#194). */
+.nodes .nodepick.former { border-style: dashed; }
 .nodes p { margin: 4px 0 0; font-size: 11.5px; }
 
 .flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin: 0 0 4px; }

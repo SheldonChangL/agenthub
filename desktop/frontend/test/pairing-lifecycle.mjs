@@ -12,6 +12,7 @@
 //   node frontend/test/pairing-lifecycle.mjs
 
 import { document } from "./dom-shim.mjs";
+import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
 globalThis.document = document;
 
@@ -71,7 +72,7 @@ const ClearInboxStub = async (sessionId) => {
 
 let confirmAnswer = true;
 globalThis.setInterval = fakeSetInterval;
-globalThis.confirm = () => confirmAnswer;
+answerConfirms(document, () => confirmAnswer);
 
 const { configure, boot } = await import("../src/app.js");
 configure({

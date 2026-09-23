@@ -38,6 +38,12 @@ const el = (id) => document.getElementById(id);
 const noop = async () => ({});
 
 let calls = { Discover: 0, InstallService: 0, SaveNodeSettings: 0, RestartNode: 0, Pairing: 0 };
+// What Pairing() answers, and every OpenPairing the window made. Unknown by
+// default, which asks for no window; section 5 swaps in a node that has one.
+let pairingAnswer = { availability: "unknown", candidates: [] };
+const openPairingCalls = [];
+// Set to make the next OpenPairing refuse, as a node does when it cannot open one.
+let openPairingRefusal = null;
 
 const SETTINGS = {
   settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
@@ -57,8 +63,13 @@ const bindings = {
   }),
   Discover: async () => { calls.Discover += 1; return { claude: 0, codex: 0, total: 0, skipped: 0 }; },
   SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
-  Pairing: async () => { calls.Pairing += 1; return { availability: "unknown", candidates: [] }; },
-  OpenPairing: noop, ClosePairing: noop, Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop,
+  Pairing: async () => { calls.Pairing += 1; return pairingAnswer; },
+  OpenPairing: async (seconds) => {
+    openPairingCalls.push(seconds);
+    if (openPairingRefusal) throw new Error(openPairingRefusal);
+    return { open: true };
+  },
+  ClosePairing: noop, Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop,
   Outbound: noop, Wakes: noop, PairRequests: async () => [],
   StartPairRequest: noop, ApprovePairRequest: noop, ConfirmPairRequest: noop, RejectPairRequest: noop,
   ServiceStatus: async () => ({ tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 9, unitPath: "/u", logHint: "/l", dbPath: "~/agenthub.db", dbPathKnown: true }),
@@ -329,12 +340,55 @@ for (const before of [false, true]) {
 el("node-allow-lan").checked = false;
 calls.SaveNodeSettings = 0;
 calls.RestartNode = 0;
+// Pressed from inside the open drawer, on a node that can hold a window. The
+// save restarts the node and the restart ends its pairing window (#194): the
+// drawer has to read that and open one again, or it stands open over a window
+// that is gone.
+const pairingBefore = app.state.pairing;
+el("pairing-modal").classList.remove("hidden");
+pairingAnswer = { availability: "on", windowAvailable: true, state: { open: false, peerAddress: "", peerAddressReachable: false }, candidates: [] };
+openPairingCalls.length = 0;
+const lanRepair = app.pairHereRepairs()[0];
 await repairButtons()[0].onclick();
 if (calls.SaveNodeSettings !== 1) failures.push(`SaveNodeSettings called ${calls.SaveNodeSettings} times, want 1`);
 if (calls.RestartNode !== 1) failures.push(`RestartNode called ${calls.RestartNode} times, want 1`);
 if (SETTINGS.saved.peerListen !== "192.168.50.10:7463" || SETTINGS.saved.allowLan !== true) {
   failures.push(`the node was sent ${JSON.stringify(SETTINGS.saved)}, not the address and the flag the label named`);
 }
+if (openPairingCalls.length !== 1 || openPairingCalls[0] !== 0) {
+  failures.push(`after the repair restarted the node the open drawer called OpenPairing ${JSON.stringify(openPairingCalls)}, want [0]`);
+}
+// And not behind a closed drawer: a window nobody is looking at is one
+// nothing on screen would close.
+el("pairing-modal").classList.add("hidden");
+openPairingCalls.length = 0;
+await app.applyPeerListenRepairFromCard(lanRepair);
+if (openPairingCalls.length !== 0) {
+  failures.push(`a repair pressed with the drawer closed opened a pairing window: ${JSON.stringify(openPairingCalls)}`);
+}
+// A window the node refuses to reopen after the repair is said after what the
+// repair did, not instead of it: the banner still says the save went through.
+el("pairing-modal").classList.remove("hidden");
+openPairingCalls.length = 0;
+const savedSaid = el("banner").textContent;
+if (savedSaid === "" || el("banner").classList.contains("hidden")) {
+  failures.push("the repair left nothing on the banner to keep");
+}
+openPairingRefusal = "pairing window: node refused";
+await app.applyPeerListenRepairFromCard(lanRepair);
+openPairingRefusal = null;
+const afterRefusal = el("banner").textContent;
+if (openPairingCalls.length !== 1) failures.push(`the refused reopen was tried ${openPairingCalls.length} times, want 1`);
+if (!afterRefusal.startsWith(savedSaid)) {
+  failures.push(`a refused reopen replaced what the save said: ${afterRefusal}`);
+}
+if (!afterRefusal.includes("node refused")) {
+  failures.push(`a refused reopen was not said: ${afterRefusal}`);
+}
+if (el("banner").className.includes("ok")) failures.push("a banner carrying a failure is drawn as a success");
+el("pairing-modal").classList.add("hidden");
+pairingAnswer = { availability: "unknown", candidates: [] };
+app.state.pairing = pairingBefore;
 
 /* ---------------- 6. a write in flight disables every button ---------------- */
 

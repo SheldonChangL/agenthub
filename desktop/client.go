@@ -458,28 +458,34 @@ func (c *client) decodePairRequest(ctx context.Context, method, path string, inp
 	return request, nil
 }
 
+// candidateList is what /v1/pairing/candidates answers.
+type candidateList struct {
+	Candidates []Candidate `json:"candidates"`
+	// Full means an attacker could be holding the list at its limit, so the
+	// machine the owner is looking for may be missing for that reason
+	// rather than because it is not advertising.
+	Full bool `json:"full"`
+	// Notice is the node's sentence about what the list is worth, in English;
+	// NoticeCode names it, and is absent from a node that predates it.
+	Notice     string `json:"notice"`
+	NoticeCode string `json:"noticeCode"`
+}
+
 // candidates lists the machines advertising right now, with the node's own
 // notice about what the list is worth.
-func (c *client) candidates(ctx context.Context) ([]Candidate, bool, string, error) {
+func (c *client) candidates(ctx context.Context) (candidateList, error) {
 	body, err := c.request(ctx, http.MethodGet, "/v1/pairing/candidates", nil)
 	if err != nil {
-		return nil, false, "", err
+		return candidateList{}, err
 	}
-	var decoded struct {
-		Candidates []Candidate `json:"candidates"`
-		// Full means an attacker could be holding the list at its limit, so the
-		// machine the owner is looking for may be missing for that reason
-		// rather than because it is not advertising.
-		Full   bool   `json:"full"`
-		Notice string `json:"notice"`
-	}
+	var decoded candidateList
 	if err := json.Unmarshal(body, &decoded); err != nil {
-		return nil, false, "", fmt.Errorf("decode pairing candidates: %w", err)
+		return candidateList{}, fmt.Errorf("decode pairing candidates: %w", err)
 	}
 	if decoded.Candidates == nil {
 		decoded.Candidates = []Candidate{}
 	}
-	return decoded.Candidates, decoded.Full, decoded.Notice, nil
+	return decoded, nil
 }
 
 // InboxMessage is one message another node queued for a local session.
