@@ -2385,8 +2385,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!here.reachable) {
       value.textContent = PAIR_TEXT.hereFixHeadline;
       el("copy-pair-address-status").textContent = "";
-      const why = element("div", "",
-        here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable);
+      const whyText = here.address === "" ? PAIR_TEXT.hereNoAddressWhy : PAIR_TEXT.hereUnreachable;
+      const options = pairHereRepairs();
+      // Rebuilt only when what it says changes. The network view reloads the
+      // pairing state every five seconds and lands here each time; rebuilding
+      // the block regardless folded a 「說明」 the owner had just opened and
+      // dropped the keyboard from its summary onto the page (#195 review), and
+      // did the same to a repair button someone was about to press. The
+      // signature is every string and option the block is built from, so a
+      // language switch or a new answer from the node still redraws it.
+      const signature = JSON.stringify([whyText, t("common.why"), t("why.unreachable"),
+        here.problem || "", options, PAIR_TEXT.hereFix]);
+      if (note.pairHereSignature === signature) {
+        for (const button of note.pairHereRepairButtons ?? []) button.disabled = state.busy;
+        el("copy-pair-address").disabled = true;
+        return;
+      }
+      note.pairHereSignature = signature;
+      note.pairHereRepairButtons = [];
+      const why = element("div", "", whyText);
       note.replaceChildren(why, whyDetails("why.unreachable"));
       // The node's own sentence about this listener, under the remedy rather
       // than in front of it: the remedy is the act, and the node's words are
@@ -2398,12 +2415,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // on (docs/ui-contract.md §7.8 rule 4) and the save goes through the form
       // — one validation, one restart, one "did it stick" check.
       const actions = element("div", "repairactions");
-      const options = pairHereRepairs();
       for (const option of options) {
         const button = element("button", option.primary ? "primary" : "ghost", option.label);
         button.disabled = state.busy;
         button.onclick = () => applyPeerListenRepairFromCard(option).catch(() => {});
         actions.append(button);
+        note.pairHereRepairButtons.push(button);
       }
       // Always a way through to the form. The options above come from the
       // node's own answer, and a machine with no private address of its own —
@@ -2416,6 +2433,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     el("copy-pair-address").disabled = false;
+    note.pairHereSignature = null;
     value.textContent = here.address;
     // Two sentences, because the two situations have different remedies: on a
     // node that announces nothing this address is the only way in, and on one
@@ -2945,6 +2963,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     if (state.nodes.length === 0) {
       container.append(element("div", "empty", t("network.noNodesYet")));
+      el("node-detail-body").nodeDetailParts = null;
       el("node-detail-body").replaceChildren(
         element("div", "empty", t("network.noNodesYetDetail"))
       );
@@ -2972,9 +2991,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
 
     const selected = state.nodes.find((node) => node.nodeId === state.selectedNode);
-    el("node-detail-body").replaceChildren(...(selected ? nodeDetail(selected) : [
-      element("div", "empty", t("network.pickANode")),
-    ]));
+    renderNodeDetail(selected);
     el("node-sessions").replaceChildren(...(selected ? nodeSessions(selected) : []));
   }
 
@@ -3098,19 +3115,69 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // evaluated at module load would freeze the language the window started in.
   const heartbeatSilenceReasonsKey = "network.heartbeatSilence";
 
+  // renderNodeDetail fills the pane beside the node list for the selected node.
+  //
+  // Every render of the network view lands here — the fifteen-second tick
+  // included — and it used to rebuild the whole pane each time. Its two
+  // 「說明」 were rebuilt with it: one the owner had opened folded shut under
+  // them, and the keyboard on its summary fell to the page (#195 review). So
+  // the top of the pane, whys included, is built once per node and language
+  // and then only has its text rewritten; what is below it (nodeDetailRest) is
+  // still rebuilt, and the address field in it keeps its own draft.
+  function renderNodeDetail(selected) {
+    const body = el("node-detail-body");
+    if (!selected) {
+      body.nodeDetailParts = null;
+      body.replaceChildren(element("div", "empty", t("network.pickANode")));
+      return;
+    }
+    const key = JSON.stringify([selected.nodeId, t("common.why"), t("why.fingerprint"), t("why.heartbeat")]);
+    let parts = body.nodeDetailParts;
+    if (!parts || parts.key !== key) {
+      parts = nodeDetailParts(key);
+      body.nodeDetailParts = parts;
+      body.replaceChildren(...parts.list);
+    }
+    fillNodeDetail(parts, selected);
+  }
+
+  // nodeDetail is the pane built fresh, for the checks that read what it says.
   function nodeDetail(node) {
-    const heading = element("h2", "", node.displayName);
-    const fingerprint = element("div", "fingerprint", node.fingerprint);
-    const note = element("p", "muted", t("network.fingerprintNote"));
-    const noteWhy = whyDetails("why.fingerprint");
+    const parts = nodeDetailParts("");
+    fillNodeDetail(parts, node);
+    return parts.list;
+  }
 
-    // Trust is recorded per machine, and this page shows only this machine's
-    // half. Pairing on the mac left the Ubuntu box answering "No paired nodes"
-    // on 2026-09-10, and nothing here said that was half-done — the row simply
-    // sat there having never been heard from, which reads as the peer being off.
-    const mutualNote = element("p", "stale", t("network.mutualNote"));
-    const mutualWhy = whyDetails("why.heartbeat");
+  function nodeDetailParts(key) {
+    const parts = {
+      key,
+      heading: element("h2"),
+      fingerprint: element("div", "fingerprint"),
+      note: element("p", "muted"),
+      noteWhy: whyDetails("why.fingerprint"),
+      // Trust is recorded per machine, and this page shows only this machine's
+      // half. Pairing on the mac left the Ubuntu box answering "No paired
+      // nodes" on 2026-09-10, and nothing here said that was half-done — the
+      // row simply sat there having never been heard from, which reads as the
+      // peer being off.
+      mutualNote: element("p", "stale"),
+      mutualWhy: whyDetails("why.heartbeat"),
+      rest: element("div"),
+    };
+    parts.list = [parts.heading, parts.fingerprint, parts.note, parts.noteWhy,
+      parts.mutualNote, parts.mutualWhy, parts.rest];
+    return parts;
+  }
 
+  function fillNodeDetail(parts, node) {
+    parts.heading.textContent = node.displayName;
+    parts.fingerprint.textContent = node.fingerprint;
+    parts.note.textContent = t("network.fingerprintNote");
+    parts.mutualNote.textContent = t("network.mutualNote");
+    parts.rest.replaceChildren(...nodeDetailRest(node));
+  }
+
+  function nodeDetailRest(node) {
     const rows = [
       [t("identity.nodeId"), node.nodeId],
       [t("pairManual.platform"), node.platform],
@@ -3132,7 +3199,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const grid = element("div", "detailgrid");
     grid.append(...rows);
     return [
-      heading, fingerprint, note, noteWhy, mutualNote, mutualWhy, grid,
+      grid,
       ...addressSection(node),
       element("div", "", ""), revoke, revokeNote,
     ];
