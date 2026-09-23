@@ -35,7 +35,6 @@ export const TEXT = {
   "pair.addressEmpty": "請先填入對方畫面上顯示的位址，格式是 host:port，例如 192.168.1.20:7463。",
   "pair.addressNote": "對方要先在自己的視窗按「與另一台機器配對」。",
   "pair.sent": "配對請求已送出，等對方核准。",
-  "pair.requestsHeading": "配對請求",
   "pair.showDecided": "顯示已結束",
   "pair.requestsEmpty": "目前沒有等待處理的配對請求。",
   "pair.requestsEmptyAll": "沒有任何配對請求。已結束的請求只留十分鐘。",
