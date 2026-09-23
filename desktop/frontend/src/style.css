@@ -1089,6 +1089,14 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 }
 .modal-actions .muted { flex: 1 1 240px; min-width: 0; font-size: 11.5px; line-height: 1.5; }
 
+/* The window's own confirm (askConfirm in app.js). Above the drawers, because
+   the inbox drawer is where one of its questions is asked from; narrower than
+   the other dialogs, because it holds a question and two buttons. The body is
+   pre-line so a question written in two paragraphs is shown in two. */
+.modal.confirm { z-index: 30; }
+.modal.confirm .modal-card { width: min(460px, 88vw); }
+#confirm-body { white-space: pre-line; }
+
 .sectionlabel { font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); margin: 10px 0 8px; }
 
 .options { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }

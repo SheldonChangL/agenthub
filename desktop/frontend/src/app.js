@@ -1439,7 +1439,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // or a dialog standing on top of the list. The periodic tick and the moment a
   // background read lands both ask this — one list of conditions, checked twice,
   // because the state can change while the read is in the air.
-  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "pairing-modal", "mcp-modal", "modal"];
+  const MODAL_IDS = ["audience-modal", "pair-modal", "inbox-modal", "pairing-modal", "mcp-modal", "modal", "confirm-modal"];
   function anyModalOpen({ exceptPairingDrawer = false } = {}) {
     return MODAL_IDS.some((id) => {
       if (exceptPairingDrawer && id === "pairing-modal") return false;
@@ -1641,6 +1641,63 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       ? `${line.displayName} · ${line.platform} · ${line.nodeUrl}${version}`
       : t("app.unreachable", { url: line.nodeUrl, version });
   }
+
+  // askConfirm asks one yes-or-no question in the window's own dialog, and
+  // answers whether the owner said yes.
+  //
+  // Not window.confirm, because in the shipped macOS app window.confirm never
+  // asks anything. Wails v2 makes itself the WKWebView's WKUIDelegate and
+  // implements only the file picker from that protocol (WailsContext.m,
+  // runOpenPanelWithParameters); WebKit treats a delegate without
+  // runJavaScriptConfirmPanelWithMessage as the owner pressing Cancel, so every
+  // destructive button behind a confirm() — clearing an inbox, removing the
+  // service, moving the database — did nothing, silently. The browser mock and
+  // the node checks both answered confirm() themselves, so neither could see it.
+  //
+  // One question at a time: a second one while the first is open answers the
+  // first "no". Esc, 取消 and a click on the backdrop are all "no". The body
+  // keeps its line breaks. A dangerous confirm button is drawn red and does
+  // not start with the keyboard on it, so a stray Enter cancels rather than
+  // deletes.
+  let confirmPending = null;
+  function askConfirm({ title, body = "", confirmLabel = t("common.confirm"), danger = false }) {
+    if (confirmPending) confirmPending(false);
+    const modal = el("confirm-modal");
+    const ok = el("confirm-ok");
+    const cancel = el("confirm-cancel");
+    el("confirm-title").textContent = title;
+    el("confirm-body").textContent = body;
+    el("confirm-body").classList.toggle("hidden", !body);
+    ok.textContent = confirmLabel;
+    ok.className = danger ? "danger" : "primary";
+    const before = document.activeElement;
+    modal.classList.remove("hidden");
+    return new Promise((resolve) => {
+      const finish = (answer) => {
+        if (confirmPending !== finish) return;
+        confirmPending = null;
+        modal.classList.add("hidden");
+        if (before && typeof before.focus === "function") before.focus();
+        resolve(answer);
+      };
+      confirmPending = finish;
+      ok.onclick = () => finish(true);
+      cancel.onclick = () => finish(false);
+      modal.onclick = (event) => {
+        if (event?.target === modal) finish(false);
+      };
+      (danger ? cancel : ok).focus();
+    });
+  }
+  // Esc answers "no" wherever the keyboard is: a click on the question's own
+  // text moves focus out of both buttons, and the dialog must still close.
+  function confirmKey(event) {
+    if (!confirmPending || event?.key !== "Escape") return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    confirmPending(false);
+  }
+  if (typeof document.addEventListener === "function") document.addEventListener("keydown", confirmKey, true);
 
   async function withBusy(label, fn) {
     // Ignored while another one is running. Disabling buttons covers only the
@@ -4089,10 +4146,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(t("service.unpinNeedsDbPath"));
       return false;
     }
-    const ok = confirm(t("service.unpinConfirm", {
-      path: status.dbPath || t("service.nodeDefaultLocation"),
-      pinned: fields.join(t("candidate.flagJoin")),
-    }));
+    const ok = await askConfirm({
+      title: t("service.unpinConfirmTitle"),
+      body: t("service.unpinConfirm", {
+        path: status.dbPath || t("service.nodeDefaultLocation"),
+        pinned: fields.join(t("candidate.flagJoin")),
+      }),
+      confirmLabel: t("service.unpinConfirmAction"),
+    });
     if (!ok) return false;
     const previousPid = state.service?.pid ?? 0;
     await withBusy(t("service.busyReregister"), async () => {
@@ -4174,15 +4235,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Asked without being able to say what the current value is, because the
       // alternative is installing over a running node's database on a guess.
       // The question names that uncertainty rather than hiding it.
-      const ok = confirm(t("service.reinstallUnknownDbConfirm", {
-        wanted: wanted || t("service.nodeDefaultLocation"),
-      }));
+      const ok = await askConfirm({
+        title: t("service.reinstallUnknownDbConfirmTitle", { wanted: wanted || t("service.nodeDefaultLocation") }),
+        body: t("service.reinstallUnknownDbConfirm"),
+        confirmLabel: t("service.reinstallConfirmAction"),
+        danger: true,
+      });
       if (!ok) return;
     } else if (baseline.installed && wanted !== baseline.path) {
-      const ok = confirm(t("service.changeDbConfirm", {
-        current: baseline.path || t("service.nodeDefaultLocation"),
-        wanted: wanted || t("service.nodeDefaultLocation"),
-      }));
+      const ok = await askConfirm({
+        title: t("service.changeDbConfirmTitle", {
+          current: baseline.path || t("service.nodeDefaultLocation"),
+          wanted: wanted || t("service.nodeDefaultLocation"),
+        }),
+        body: t("service.changeDbConfirm"),
+        confirmLabel: t("service.changeDbConfirmAction"),
+        danger: true,
+      });
       if (!ok) return;
     }
     await withBusy(t("service.busyInstall"), async () => {
@@ -4281,7 +4350,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   async function uninstallService() {
-    const ok = confirm(t("service.uninstallConfirm"));
+    const ok = await askConfirm({
+      title: t("service.uninstallConfirmTitle"),
+      body: t("service.uninstallConfirm"),
+      confirmLabel: t("service.uninstallConfirmAction"),
+      danger: true,
+    });
     if (!ok) return;
     await withBusy(t("service.busyUninstall"), async () => {
       const result = await api.UninstallService();
@@ -4493,14 +4567,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("inbox-modal").onclick = (event) => {
     if (event.target === el("inbox-modal")) closeInbox();
   };
-  el("inbox-clear").onclick = () => {
+  el("inbox-clear").onclick = async () => {
     const session = state.inboxSession;
     if (!session) return;
     // Not undoable, so it is asked rather than assumed. The node has no
     // "unclear", and messages that arrive between this dialog and the confirm go
-    // with the rest.
-    if (!confirm(t("inbox.clearConfirm", { session }))) return;
-    withBusy(t("inbox.busyClear"), async () => {
+    // with the rest. The session is the one the question named, captured
+    // before it was asked.
+    const ok = await askConfirm({
+      title: t("inbox.clearConfirmTitle"),
+      body: t("inbox.clearConfirm", { session }),
+      confirmLabel: t("inbox.clearConfirmAction"),
+      danger: true,
+    });
+    if (!ok) return;
+    await withBusy(t("inbox.busyClear"), async () => {
       const cleared = await api.ClearInbox(session);
       // Re-read through openInbox, so the answer is sequence-guarded like every
       // other read and lands on the session it was asked about. The outcome is
@@ -5712,7 +5793,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // What the tests reach for. Nothing here is for main.js: the app is driven
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
-    state, load, loadPairing, render, renderRows, renderInbox, renderPairing,
+    state, load, loadPairing, render, renderRows, renderInbox, renderPairing, askConfirm, confirmKey,
     openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
     syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
