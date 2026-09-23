@@ -444,7 +444,8 @@ export const TEXT = {
   "identity.keyCopyFailed": "無法寫入剪貼簿（{error}），請手動複製上面那一串，注意結尾的 = 也要一起。",
 
   "audience.noNodesYet": "還沒有配對任何機器。",
-  "audience.formerNode": "已不在配對清單的機器",
+  "audience.unlistedNode": "這次沒讀到配對清單中的這台機器",
+  "audience.nodesReadFailed": "配對清單讀取失敗（{error}），所以這裡列不出已配對的機器；這個 session 原有的授權仍會列出並保留。",
   "audience.autoWakeNodeOff": "這台節點沒帶 -auto-wake 啟動，勾了也不會有任何 session 被叫醒；要用 ah service install … --auto-wake 重啟才生效。",
   "audience.autoWakeWillTurnOff": "套用後會關閉喚醒：Claude Code session 不會被叫醒。",
   "audience.autoWakeCodex": "Codex session 會由節點透過 app-server 叫醒（真機驗過）。",
