@@ -4213,9 +4213,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // ahead: an owner who says no to re-registering has not agreed to a write
   // that a unit flag would silently undo a second later.
   //
-  // `fields` names the settings the save that asks is about to write and the
-  // unit pins, so the question says which ones a "no" leaves out.
-  async function reinstallWithoutPinnedSettings(status, fields = status.pinnedSettings ?? []) {
+  // `touched` is the pinned flags the save that asks is about to write. The
+  // question lists every flag the unit pins, not only those: InstallService
+  // re-registers with the database path alone, so a yes unpins all of them —
+  // their values carry over because the node remembers what it was last given
+  // (docs/ui-contract.md §7.8 rule 3), but an owner asked about one setting
+  // should not learn afterwards that four were affected (#194). The ones this
+  // save changes are marked, because those are what a "no" leaves out.
+  async function reinstallWithoutPinnedSettings(status, touched = []) {
     if (status.installed && !status.dbPathKnown) {
       banner(t("service.unpinNeedsDbPath"));
       return false;
@@ -4224,7 +4229,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       title: t("service.unpinConfirmTitle"),
       body: t("service.unpinConfirm", {
         path: status.dbPath || t("service.nodeDefaultLocation"),
-        pinned: fields.join(t("candidate.flagJoin")),
+        pinned: pinnedSettingsList(status.pinnedSettings ?? [], touched),
       }),
       confirmLabel: t("service.unpinConfirmAction"),
     });
@@ -4247,6 +4252,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(up.answering ? t("service.reregistered") : t("service.reregisteredNoAnswer"), up.answering);
     });
     return reregistered;
+  }
+
+  // pinnedSettingsList names each flag the unit pins by the form's own label,
+  // and marks the ones in `touched`.
+  function pinnedSettingsList(pinned, touched) {
+    const changing = new Set(touched);
+    const keyFor = Object.fromEntries(Object.entries(NODE_SETTING_FLAGS).map(([key, flag]) => [flag, key]));
+    return pinned.map((flag) => {
+      const label = keyFor[flag] ? nodeSettingLabel(keyFor[flag]) : flag;
+      return changing.has(flag) ? t("service.pinnedChanging", { label }) : label;
+    }).join(t("candidate.flagJoin"));
   }
 
   async function openServiceForm() {
@@ -5424,7 +5440,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let skippedNote = "";
     if (touched.length > 0) {
       const reregistered = Boolean(state.service.dbPathKnown)
-        && (await reinstallWithoutPinnedSettings(state.service, touched.map(nodeSettingLabel)));
+        && (await reinstallWithoutPinnedSettings(state.service, touched.map((key) => NODE_SETTING_FLAGS[key])));
       if (!reregistered) {
         skippedNote = [
           state.service.dbPathKnown ? "" : t("service.unpinNeedsDbPath"),

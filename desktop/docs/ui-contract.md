@@ -548,7 +548,9 @@
 **規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
 在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；
 使用者取消、或讀不到服務用的資料庫路徑（重新登記可能換掉節點身分）時，被固定的欄位不送、其餘照存，
-banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。
+banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。問句（`askConfirm`）列出單元**全部**固定的欄位
+並標明這次改到哪些（「（這次改到）」／「(this save)」），因為重新登記只帶資料庫路徑、會一次解除全部；
+`InstallService` 失敗時視同沒重新登記（回 false），被固定的欄位同樣不送（#194）。
 
 ## 8. 新需求（2026-09-11，owner 指定）
 
