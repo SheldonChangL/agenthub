@@ -443,9 +443,9 @@ export const TEXT = {
   "identity.keyCopyFailed": "Could not write to the clipboard ({error}). Copy the string above by hand, including the trailing =.",
 
   "audience.noNodesYet": "No node has been paired yet.",
-  "audience.autoWakeNodeOff": "This node has auto-wake off (agenthub-node was started without -auto-wake), so ticking this wakes no session. Reinstall or restart the node with ah service install … --auto-wake for it to take effect.",
+  "audience.autoWakeNodeOff": "This node was started without -auto-wake, so ticking this wakes no session until the node is restarted with it (ah service install … --auto-wake).",
   "audience.autoWakeCodex": "A Codex session is woken by the node through the app-server (verified on real machines).",
-  "audience.autoWakeClaude": "Claude Code also needs that session's agenthub-mcp started with -channel, and Claude Code was measured not to inject pushes of this kind (see docs/channel-push-not-observed.md) — so with this ticked the message still only sits in the inbox.",
+  "audience.autoWakeClaude": "Claude Code does not act on these pushes even with agenthub-mcp started with -channel (docs/channel-push-not-observed.md), so the message stays in the inbox.",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "Reading…",
@@ -616,24 +616,24 @@ export const TEXT = {
   "onboarding.showAgainWhy": "Puts the first-launch steps back at the top of the sessions list.",
 
   "onboarding.service.title": "Run the node as a background service",
-  "onboarding.service.body": "This window only shows you what the node knows. The node is the process that watches your sessions and answers other machines, and as a service it starts with your computer.",
+  "onboarding.service.body": "The node watches your sessions and answers other machines; as a service it starts with your computer.",
   "onboarding.service.action": "Install the service",
   "onboarding.service.bodyChecking": "Checking the background service…",
-  "onboarding.service.bodyNodeDown": "The node is not answering, so nothing on this machine can read your sessions or reach another machine. Start it and the rest of this list can be checked.",
+  "onboarding.service.bodyNodeDown": "The node is not answering, so nothing here can read your sessions or reach another machine.",
   "onboarding.service.titleStart": "Start the node",
-  "onboarding.service.bodyUnsupported": "There is no service manager here that AgentHub can register with, so this window starts and stops the node itself.",
+  "onboarding.service.bodyUnsupported": "There is no service manager here to register with, so this window starts and stops the node itself.",
   "onboarding.service.actionStart": "Start the node",
   "onboarding.service.actionRestart": "Restart the node",
-  "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot find out what is holding the node: {error}",
-  "onboarding.service.bodyNoAhNodeDown": "The node is not answering, and the ah command is not on this machine, so this window cannot find out what was holding it ({error}). It can still start the node that ships with this app; if a service manager was holding the node here, start it that way instead.",
+  "onboarding.service.bodyNoAh": "The ah command is not on this machine, so this window cannot tell what is holding the node: {error}",
+  "onboarding.service.bodyNoAhNodeDown": "The node is not answering and the ah command is not on this machine ({error}). This window can start the node that ships with the app; if a service manager held the node here, start it that way instead.",
 
 
 
   "onboarding.pair.title": "Pair with another machine",
-  "onboarding.pair.body": "Pairing links this machine to another: each of you checks the same fingerprint is on both screens. The drawer's first step makes sure this machine can be reached, the second finds the other one, the third compares the fingerprints. Pairing shares nothing by itself — what each machine publishes stays a separate decision, made per session.",
+  "onboarding.pair.body": "Link this machine to another by checking the same fingerprint is on both screens. Pairing shares nothing by itself.",
   "onboarding.pair.action": "Open pairing",
 
   "onboarding.publish.title": "Publish a session",
-  "onboarding.publish.body": "Nothing leaves this machine until you choose it. Tick a session in the table below and set its audience to say who may see it.",
+  "onboarding.publish.body": "Nothing leaves this machine until you choose it: tick a session below and set who may see it.",
   "onboarding.publish.action": "Take me to the table",
 };

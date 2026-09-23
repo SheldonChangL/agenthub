@@ -226,7 +226,7 @@ export const TEXT = {
   "audience.pairedOnly": "只能授權給已配對節點。",
   "audience.whatHeading": "他們可以做什麼",
   "audience.presetView": "只讓他們看見",
-  "audience.presetViewWhy": "對方看得到這個 session 在、狀態如何，不能對它做任何事。",
+  "audience.presetViewWhy": "對方看得到這個 session 與狀態，不能對它做任何事。",
   "audience.presetMessages": "讓他們能留訊息",
   "audience.presetMessagesWhy": "訊息進收件匣等人處理，不會自己交給 agent。",
   "audience.presetWake": "讓他們能留訊息並喚醒",
@@ -438,9 +438,9 @@ export const TEXT = {
   "identity.keyCopyFailed": "無法寫入剪貼簿（{error}），請手動複製上面那一串，注意結尾的 = 也要一起。",
 
   "audience.noNodesYet": "還沒有配對任何節點。",
-  "audience.autoWakeNodeOff": "這台節點沒有開自動喚醒（agenthub-node 沒帶 -auto-wake），勾了也不會有任何 session 被叫醒。用 ah service install … --auto-wake 重裝或重啟節點才會生效。",
+  "audience.autoWakeNodeOff": "這台節點沒帶 -auto-wake 啟動，勾了也不會有任何 session 被叫醒；要用 ah service install … --auto-wake 重啟才生效。",
   "audience.autoWakeCodex": "Codex session 會由節點透過 app-server 叫醒（真機驗過）。",
-  "audience.autoWakeClaude": "Claude Code 還需要該 session 的 agenthub-mcp 帶 -channel，而且目前量測到 Claude Code 不會注入這類推送（見 docs/channel-push-not-observed.md）——勾了訊息仍只會躺在收件匣。",
+  "audience.autoWakeClaude": "即使 agenthub-mcp 帶 -channel，Claude Code 也不會處理這類推送（見 docs/channel-push-not-observed.md），訊息仍只會留在收件匣。",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "正在讀取…",
@@ -611,24 +611,24 @@ export const TEXT = {
   "onboarding.showAgainWhy": "把第一次啟動的步驟放回 session 列表上方。",
 
   "onboarding.service.title": "把節點跑成背景服務",
-  "onboarding.service.body": "這個視窗只是把節點知道的事顯示給你看。真正在看你的 session、回應其他機器的是節點；裝成服務之後它會跟著電腦一起啟動。",
+  "onboarding.service.body": "節點負責看你的 session、回應其他機器；裝成服務後它會跟著電腦啟動。",
   "onboarding.service.action": "安裝服務",
   "onboarding.service.bodyChecking": "正在確認背景服務…",
-  "onboarding.service.bodyNodeDown": "節點沒有回應，所以這台機器上沒有東西讀得到你的 session，也連不到別台機器。先把它啟動，這張清單剩下的才查得下去。",
+  "onboarding.service.bodyNodeDown": "節點沒有回應，這台機器讀不到你的 session，也連不到別台機器。",
   "onboarding.service.titleStart": "啟動節點",
-  "onboarding.service.bodyUnsupported": "這個平台沒有 AgentHub 可以註冊的服務管理員，所以節點由這個視窗自己啟動和停止。",
+  "onboarding.service.bodyUnsupported": "這個平台沒有 AgentHub 可以註冊的服務管理員，節點由這個視窗自己啟動和停止。",
   "onboarding.service.actionStart": "啟動節點",
   "onboarding.service.actionRestart": "重新啟動節點",
-  "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，所以這個視窗查不出節點是被什麼帶起來的：{error}",
-  "onboarding.service.bodyNoAhNodeDown": "節點沒有回應，而且這台機器上沒有 ah 指令，所以這個視窗查不出節點本來是被什麼帶起來的（{error}）。它還是可以直接啟動隨這個 app 一起安裝的節點；如果這台機器上的節點本來是由服務管理員帶起來的，請改用那邊的方式啟動。",
+  "onboarding.service.bodyNoAh": "這台機器上沒有 ah 指令，這個視窗查不出節點是被什麼帶起來的：{error}",
+  "onboarding.service.bodyNoAhNodeDown": "節點沒有回應，這台機器上也沒有 ah 指令（{error}）。這個視窗可以直接啟動隨 app 附的節點；如果這裡的節點本來由服務管理員帶起來，請改用那邊的方式。",
 
 
 
   "onboarding.pair.title": "和另一台機器配對",
-  "onboarding.pair.body": "配對把兩台機器綁在一起：兩邊各自確認螢幕上的指紋一樣。抽屜裡的第一步會先確認這台機器連得到，第二步找對方，第三步比對指紋。配對本身不分享任何東西——公開哪些 session 是另一個決定，一個一個設。",
+  "onboarding.pair.body": "兩邊確認螢幕上的指紋一樣，就把兩台機器綁在一起。配對本身不分享任何東西。",
   "onboarding.pair.action": "打開配對",
 
   "onboarding.publish.title": "公開一個 session",
-  "onboarding.publish.body": "在你選之前，沒有東西會離開這台機器。在下面的表格勾一個 session，再設定它的對象，決定誰看得到。",
+  "onboarding.publish.body": "在你選之前，沒有東西會離開這台機器：在下面勾一個 session，設定誰看得到。",
   "onboarding.publish.action": "帶我去表格",
 };
