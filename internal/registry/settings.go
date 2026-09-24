@@ -59,6 +59,9 @@ func readNodeSettings(ctx context.Context, db querier) (nodeconfig.Partial, erro
 	}
 	defer rows.Close()
 	var settings nodeconfig.Partial
+	// The list is read aside and judged once every key is in: whether it is
+	// believed depends on the scalar beside it.
+	var peerListens *[]string
 	for rows.Next() {
 		var key, value string
 		if err := rows.Scan(&key, &value); err != nil {
@@ -81,12 +84,48 @@ func readNodeSettings(ctx context.Context, db querier) (nodeconfig.Partial, erro
 					"read node settings: %s is not a list of CIDR blocks: %w", key, err)
 			}
 			settings.TreatAsPrivate = &ranges
+		case nodeconfig.FieldPeerListens:
+			// A list this build cannot read is treated as absent rather than
+			// as an error: the scalar beside it is the value every build
+			// understands, and a node refusing to start over the second
+			// spelling of a setting it can read would be a worse answer.
+			var addresses []string
+			if json.Unmarshal([]byte(value), &addresses) == nil {
+				peerListens = &addresses
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nodeconfig.Partial{}, fmt.Errorf("read node settings: %w", err)
 	}
+	settings.PeerListen, settings.PeerListens = believedPeerListens(settings.PeerListen, peerListens)
 	return settings, nil
+}
+
+// believedPeerListens decides which of the two stored spellings of the peer
+// listener this node obeys (ADR-005 §1).
+//
+// Both are written in one transaction by every build that knows the list, so
+// they disagree only when a build that does not know it wrote the scalar: a
+// downgrade, then an owner changing the address from an older window or `ah`,
+// then an upgrade. That owner's last word is the scalar, and the list is what
+// they said before it. So the list is believed only while its first entry is
+// the scalar; otherwise it is dropped and the scalar is a list of one. Without
+// this rule an older window's "this machine only" would come back from the
+// upgrade serving the LAN addresses the list still held.
+//
+// A list with no scalar beside it is believed: no build writes one alone, but
+// if something did, the list is the only statement there is.
+func believedPeerListens(scalar *string, list *[]string) (*string, *[]string) {
+	if list != nil && len(*list) > 0 && (scalar == nil || (*list)[0] == *scalar) {
+		first := (*list)[0]
+		return &first, list
+	}
+	if scalar != nil {
+		single := []string{*scalar}
+		return scalar, &single
+	}
+	return nil, nil
 }
 
 // SaveNodeSettings records the fields that are present and leaves the rest
@@ -160,9 +199,20 @@ func writeNodeSettings(ctx context.Context, db execer, settings nodeconfig.Parti
 	if settings.Empty() {
 		return nil
 	}
-	writes := make([][2]string, 0, len(nodeconfig.SettingNames))
-	if settings.PeerListen != nil {
-		writes = append(writes, [2]string{nodeconfig.SettingPeerListen, *settings.PeerListen})
+	writes := make([][2]string, 0, len(nodeconfig.SettingNames)+1)
+	// Both spellings, always together, in this one transaction. A scalar
+	// written alone would leave the list beside it naming addresses the
+	// scalar just closed; the read rule above would then drop that list,
+	// which is right, but only because a rule elsewhere cleaned up after a
+	// write that should not have happened.
+	if list, ok := settings.PeerListenList(); ok {
+		encoded, err := json.Marshal(list)
+		if err != nil {
+			return fmt.Errorf("save node settings: %w", err)
+		}
+		writes = append(writes,
+			[2]string{nodeconfig.SettingPeerListen, list[0]},
+			[2]string{nodeconfig.FieldPeerListens, string(encoded)})
 	}
 	for _, pair := range []struct {
 		key   string
