@@ -82,6 +82,17 @@ jobs:
         run: |
           npm ci
           npm run build
+      # wails build regenerates frontend/wailsjs/go on every release build, and
+      # the release refuses a tree that build left modified. Running the same
+      # generator here turns a hand-edited models.ts into a red PR instead of a
+      # failed tag (v0.1.6 failed exactly that way). The version is desktop/go.mod's.
+      - name: wails bindings match the generator
+        working-directory: desktop
+        run: |
+          wails_version=$(go list -m -f '{{.Version}}' github.com/wailsapp/wails/v2)
+          go install "github.com/wailsapp/wails/v2/cmd/wails@${wails_version}"
+          "$(go env GOPATH)/bin/wails" generate module
+          git diff --exit-code -- frontend/wailsjs/go
       - name: confirm node is on PATH for the render check
         run: |
           command -v node
