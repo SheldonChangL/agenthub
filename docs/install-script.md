@@ -41,6 +41,7 @@ than half an install that exits 0.
 | `--cli-only` | Install `ah`, `agenthub-node` and `agenthub-mcp` without the desktop app, from `agenthub_<tag>_<os>_<arch>.tar.gz`. |
 | `--no-service` | Do not register the background node. Nothing starts at login; `ah service install` does it later. |
 | `--no-open` | Do not open the app at the end (macOS). |
+| `--no-modify-path` | Do not add `~/.local/bin` to `PATH` in the shell's startup file; print the `export` line to add instead. |
 | `--prefix DIR` | Install under `DIR` instead of `/Applications` and `~/.local`. Symlinks then go to `DIR/bin`, and nothing outside `DIR` is written. Mostly a test hook. |
 | `--from FILE` | Install from a local `.dmg` or `.tar.gz` instead of downloading. A `SHA256SUMS` beside the file is still checked; if there is none, the script prints a `warning:` line on stderr and continues, because you named the file yourself. |
 | `--dry-run` | Print every command instead of running it. |
@@ -87,7 +88,8 @@ installing half of something.
 | Path | What |
 |---|---|
 | `/Applications/agenthub-desktop.app` | The app, with `ah`, `agenthub-node` and `agenthub-mcp` inside `Contents/MacOS` beside the `desktop` executable. `~/Applications/agenthub-desktop.app` instead when `/Applications` is not writable by this account — never `sudo`. |
-| `~/.local/bin/ah` | A symlink to the `ah` inside the app. The directory is created if it does not exist, and the script prints a hint if it is not on `PATH`. |
+| `~/.local/bin/ah` | A symlink to the `ah` inside the app. The directory is created if it does not exist. |
+| `~/.zshrc` (or `~/.bash_profile`, `~/.profile`) | Two lines appended — a `# added by the AgentHub installer` comment and `export PATH="$HOME/.local/bin:$PATH"` — only when `~/.local/bin` is not already on `PATH`. See "PATH" below. |
 | `~/Library/LaunchAgents/local.agenthub.node.plist` | Written by `ah service install`, not by this script. |
 | `~/Library/Application Support/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
@@ -97,6 +99,7 @@ installing half of something.
 |---|---|
 | `~/.local/share/agenthub/` | The unpacked app directory: `agenthub-desktop`, `ah`, `agenthub-node`, `agenthub-mcp`, `LICENSE`, `README.txt`. `AGENTHUB_HOME` moves it. |
 | `~/.local/bin/ah`, `~/.local/bin/agenthub-desktop` | Symlinks into that directory. With `--cli-only`, `ah`, `agenthub-node` and `agenthub-mcp` instead. |
+| `~/.bashrc` (or `~/.zshrc`, `~/.profile`) | The same two PATH lines as on macOS, under the same condition. |
 | `~/.config/systemd/user/agenthub-node.service` | Written by `ah service install`, not by this script. |
 | `~/.config/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
@@ -104,6 +107,28 @@ Plus a temporary directory under `$TMPDIR`, removed on exit by a trap, including
 when the install fails or is interrupted. Nothing else is touched. In particular
 nothing is written to `/usr/local`, `/opt`, `/etc`, or any systemd path outside
 this user's own.
+
+## PATH
+
+macOS puts no `~/.local/bin` on `PATH`, and neither do some Linux setups, so
+an install that only linked `ah` there would end with `ah: command not found`.
+When that directory is not on `PATH`, the script appends two lines to the
+startup file of the login shell named by `$SHELL`:
+
+| `$SHELL` | File |
+|---|---|
+| zsh, or unset on macOS | `${ZDOTDIR:-~}/.zshrc` |
+| bash on macOS | `~/.bash_profile` (Terminal opens bash as a login shell) |
+| bash on Linux | `~/.bashrc` |
+| fish | `~/.config/fish/conf.d/agenthub.fish` |
+| anything else | `~/.profile` |
+
+It writes them once: a later run that finds the
+`# added by the AgentHub installer` comment in that file adds nothing. New
+terminals find `ah`; the terminal the install ran in does not, because a piped
+script cannot change its parent shell's environment, so the closing lines print
+the `export` for it. With `--prefix` or `--no-modify-path` no file is touched
+and the script prints that `export` line instead.
 
 ## The quarantine flag on macOS
 
