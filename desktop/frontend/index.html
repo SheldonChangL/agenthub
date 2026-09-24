@@ -229,10 +229,20 @@
                      the owner finds out by being refused or by losing an address. -->
                 <div id="node-settings-combination"></div>
                 <div class="fieldgrid">
-                  <label>
+                  <label id="node-peerlisten-field">
                     <span class="fieldlabel"><span data-t="nodeSettings.peerListenLabel"></span><small><span data-t="nodeSettings.peerListenHint"></span><span id="node-peerlisten-source" class="sourcetag"></span></small></span>
                     <select id="node-peerlisten"><option value="" data-t="nodeSettings.loopbackOption"></option></select>
                   </label>
+                  <!-- A node that knows the address list (ADR-005) gets one row per
+                       address instead of the dropdown above; an older node keeps
+                       the dropdown, because it takes one address and nothing else. -->
+                  <div id="node-peerlistens-field" class="listenfield hidden">
+                    <span class="fieldlabel"><span data-t="nodeSettings.peerListensLabel"></span><small><span data-t="nodeSettings.peerListensHint"></span><span id="node-peerlistens-source" class="sourcetag"></span></small></span>
+                    <div class="listenbox">
+                      <div id="node-peerlistens" class="listenlist"></div>
+                      <p id="node-peerlistens-none" class="muted hidden" data-t="nodeSettings.peerListensNone"></p>
+                    </div>
+                  </div>
                   <label>
                     <span class="fieldlabel"><span data-t="nodeSettings.privateLabel"></span><small><span data-t="nodeSettings.privateHint"></span><span id="node-private-source" class="sourcetag"></span></small></span>
                     <input id="node-private" type="text" data-t-placeholder="nodeSettings.privatePlaceholder" autocomplete="off" />
