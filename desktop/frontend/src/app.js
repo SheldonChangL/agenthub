@@ -5812,7 +5812,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const broadcast = broadcastFrom(state.nodeSettings);
     for (const row of peerListenRows) row.mark.textContent = row.address === broadcast ? t("nodeSettings.rowBroadcast") : "";
-    el("node-peerlistens-none").classList.toggle("hidden", lan.length > 0);
+    // Said of the node only when it is the node: the saved set, which is
+    // loopback alone. Over an unsaved draft — including one a refused save
+    // left on screen, while every row still says the node serves it — it is
+    // what saving would do.
+    const none = el("node-peerlistens-none");
+    none.classList.toggle("hidden", lan.length > 0);
+    if (lan.length === 0) none.textContent = t(naming ? "nodeSettings.peerListensNoneDraft" : "nodeSettings.peerListensNone");
 
     if (!allowLan && lan.length > 0 && naming) {
       warning.append(element("div", "stale", t("nodeSettings.warnLanOff", { address: lan.join(", ") })));

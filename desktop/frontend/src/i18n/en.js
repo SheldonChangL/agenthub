@@ -616,6 +616,7 @@ export const TEXT = {
   "nodeSettings.peerListensLabel": "Listen addresses",
   "nodeSettings.peerListensHint": "other machines can connect in on any address checked here",
   "nodeSettings.peerListensNone": "Nothing checked: only this machine can connect.",
+  "nodeSettings.peerListensNoneDraft": "After saving, only this machine can connect.",
   "nodeSettings.peerListensOther": "Other addresses",
   "nodeSettings.otherNeedsRange": "The other machine needs the same range declared.",
   "nodeSettings.rowOpen": "Open",
