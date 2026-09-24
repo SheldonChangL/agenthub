@@ -191,3 +191,99 @@ func TestWithdrawnRangesReachTheNodeAsAnEmptyArray(t *testing.T) {
 		t.Error("a patch that never mentioned the ranges still sent them")
 	}
 }
+
+// A node that knows the list (ADR-005) sends peerListens in both halves and a
+// state per address; one older than it sends neither, and the window has to be
+// able to tell the two apart after the value has been through this struct —
+// the binding re-encodes it, so a field dropped here is one the window never
+// sees, and an empty list encoded as [] or null would make every older node
+// look like a new one listening nowhere.
+func TestNodeSettingsCarriesTheAddressListAndItsStates(t *testing.T) {
+	answer := `{"settings":{"peerListen":"192.168.1.20:7463","peerListens":["192.168.1.20:7463","10.0.0.5:7463"]},
+		"sources":{},"saved":{"peerListen":"192.168.1.20:7463","peerListens":["192.168.1.20:7463","10.0.0.5:7463"]},
+		"peerListeners":[{"address":"192.168.1.20:7463","state":"bound"},
+			{"address":"10.0.0.5:7463","state":"failed","reason":"address_gone","detail":"bind: can't assign requested address","message":"gone"}],
+		"restartRequired":false}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	view := app.NodeSettings()
+	if view.Error != "" {
+		t.Fatalf("NodeSettings: %s", view.Error)
+	}
+	if len(view.Saved.PeerListens) != 2 || view.Saved.PeerListens[1] != "10.0.0.5:7463" {
+		t.Errorf("saved.peerListens = %q, want both addresses", view.Saved.PeerListens)
+	}
+	if len(view.Settings.PeerListens) != 2 {
+		t.Errorf("settings.peerListens = %q, want both addresses", view.Settings.PeerListens)
+	}
+	if len(view.PeerListeners) != 2 || view.PeerListeners[1].Reason != "address_gone" ||
+		view.PeerListeners[1].Message != "gone" || view.PeerListeners[1].Detail == "" {
+		t.Errorf("peerListeners = %+v, want both states with the failure's reason, detail and message", view.PeerListeners)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"peerListens":["192.168.1.20:7463","10.0.0.5:7463"]`) {
+		t.Errorf("the window would not see the list: %s", encoded)
+	}
+
+	// An older node: no list, no states — and none invented on the way out.
+	answer = `{"settings":{"peerListen":"192.168.1.20:7463"},"sources":{},
+		"saved":{"peerListen":"192.168.1.20:7463"},"restartRequired":false}`
+	view = app.NodeSettings()
+	if view.Error != "" {
+		t.Fatalf("NodeSettings: %s", view.Error)
+	}
+	encoded, err = json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"peerListens"`, `"peerListeners"`} {
+		if strings.Contains(string(encoded), key) {
+			t.Errorf("an older node's answer reached the window carrying %s: %s", key, encoded)
+		}
+	}
+}
+
+// The list is sent as a list, and a patch that does not mention it leaves both
+// spellings out: the node replaces the whole list when it is given the scalar,
+// so a stray peerListen would close every other address.
+func TestAddressListReachesTheNodeAsAList(t *testing.T) {
+	var body map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"settings":{},"sources":{},"saved":{},"restartRequired":true}`))
+	}))
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	list := []string{"192.168.1.20:7463", "10.0.0.5:7463"}
+	if view := app.SaveNodeSettings(NodeSettingsPatch{PeerListens: &list}); view.Error != "" {
+		t.Fatalf("SaveNodeSettings: %s", view.Error)
+	}
+	if got := string(body["peerListens"]); got != `["192.168.1.20:7463","10.0.0.5:7463"]` {
+		t.Errorf("peerListens = %s, want the list in order", got)
+	}
+	if _, present := body["peerListen"]; present {
+		t.Error("a list write also sent the scalar, which replaces the list at the node")
+	}
+
+	body = nil
+	on := true
+	if view := app.SaveNodeSettings(NodeSettingsPatch{AllowLAN: &on}); view.Error != "" {
+		t.Fatalf("SaveNodeSettings: %s", view.Error)
+	}
+	for _, key := range []string{"peerListens", "peerListen"} {
+		if _, present := body[key]; present {
+			t.Errorf("a patch that never mentioned the addresses sent %s", key)
+		}
+	}
+}

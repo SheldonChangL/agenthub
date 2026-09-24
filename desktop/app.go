@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -591,6 +592,38 @@ func (a *App) TrustNode(nodeID, displayName, platform, publicKey, confirmedFinge
 func (a *App) SetNodeAddress(nodeID, address string) error {
 	activeClient, _ := a.current()
 	return activeClient.setNodeAddress(a.ctx, nodeID, address)
+}
+
+// NodeAddressesSaved is what SetNodeAddresses did.
+type NodeAddressesSaved struct {
+	// OlderNode is a node that predates address lists, and with them
+	// alternates: it keeps one address per paired node. Only the first
+	// address was recorded, through the one-address endpoint, and the window
+	// has to say that the rest were not.
+	OlderNode bool `json:"olderNode"`
+}
+
+// SetNodeAddresses replaces every address a paired node answers on, as
+// host:port, the first preferred (ADR-005 §4).
+//
+// It is the node detail page's editor: the whole set, so an address the owner
+// removes — a mistyped one, most often — is gone. SetNodeAddress cannot do
+// that, since the node keeps the address it replaces as an alternate. The
+// node validates every address and refuses the list whole, verbatim.
+//
+// On a node too old to take a list, the first address goes through the
+// one-address endpoint instead, and OlderNode says that is all it did.
+func (a *App) SetNodeAddresses(nodeID string, addresses []string) (NodeAddressesSaved, error) {
+	activeClient, _ := a.current()
+	err := activeClient.setNodeAddresses(a.ctx, nodeID, addresses)
+	if !errors.Is(err, errNoAddressList) {
+		return NodeAddressesSaved{}, err
+	}
+	first := ""
+	if len(addresses) > 0 {
+		first = addresses[0]
+	}
+	return NodeAddressesSaved{OlderNode: true}, activeClient.setNodeAddress(a.ctx, nodeID, first)
 }
 
 // RevokeNode withdraws trust and every session grant the node held.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,6 +59,10 @@ type TrustedNode struct {
 	// quietest failure in the system. Delivery skips a peer without one
 	// without a word, and the sender's `ah send` still answers `queued`.
 	Address string `json:"address,omitempty"`
+	// Alternates are the other addresses the same peer answers on, tried in
+	// order after Address fails (ADR-005 §4). Address stays the preferred one.
+	// Absent from a node older than the field, which records one address.
+	Alternates []string `json:"alternateAddresses,omitempty"`
 }
 
 // Peer is what this node currently believes about one paired peer.
@@ -348,6 +353,35 @@ func (c *client) trustNode(ctx context.Context, input map[string]string) (Truste
 func (c *client) setNodeAddress(ctx context.Context, nodeID, address string) error {
 	_, err := c.request(ctx, http.MethodPut, "/v1/nodes/"+url.PathEscape(nodeID)+"/address",
 		map[string]string{"address": address})
+	return err
+}
+
+// errNoAddressList is a node that predates PUT /v1/nodes/{id}/addresses and
+// knows one address per peer.
+var errNoAddressList = errors.New("this node predates address lists and records one address per paired node")
+
+// setNodeAddresses replaces every address a paired peer answers on, the first
+// preferred and the rest its alternates (ADR-005 §4). Unlike setNodeAddress,
+// which keeps the address it replaces as an alternate, this is the whole set:
+// an address left out of it is gone, which is how a mistyped one is removed.
+//
+// An empty list is sent as [] rather than omitted, because the node reads a
+// missing list as a mistake, not as "clear them".
+//
+// A node that has no such route answers 404 with its router's plain-text body,
+// and that — not a 404 in the node's own JSON, which is a node it does not
+// trust — is errNoAddressList.
+func (c *client) setNodeAddresses(ctx context.Context, nodeID string, addresses []string) error {
+	if addresses == nil {
+		addresses = []string{}
+	}
+	_, err := c.request(ctx, http.MethodPut, "/v1/nodes/"+url.PathEscape(nodeID)+"/addresses",
+		map[string][]string{"addresses": addresses})
+	var status *statusError
+	if errors.As(err, &status) &&
+		(status.status == http.StatusNotFound || status.status == http.StatusMethodNotAllowed) {
+		return errNoAddressList
+	}
 	return err
 }
 
@@ -647,9 +681,20 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 		if json.Unmarshal(data, &apiError) == nil && apiError.Error.Message != "" {
 			return nil, fmt.Errorf("%s: %s", apiError.Error.Code, apiError.Error.Message)
 		}
-		return nil, fmt.Errorf("node returned HTTP %d", response.StatusCode)
+		return nil, &statusError{status: response.StatusCode}
 	}
 	return data, nil
+}
+
+// statusError is a failing answer that carried no error of the node's own —
+// what its router says for a route it does not have, which is how an older
+// node is told apart from a refusal.
+type statusError struct {
+	status int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("node returned HTTP %d", e.status)
 }
 
 // OutboundMessage is one message this node has queued for a peer, as the list
@@ -772,6 +817,13 @@ type NodeSettings struct {
 	// exists to break.
 	PeerListenProblem *PeerListenProblem `json:"peerListenProblem,omitempty"`
 
+	// PeerListeners is every configured peer address and what became of it:
+	// bound, failed (with the reason) or pending. Read live by the node, so an
+	// address that appeared after start-up shows as bound. Absent from a node
+	// older than ADR-005, which serves one address and says nothing per
+	// address; the window then stays single-address.
+	PeerListeners []PeerListenerState `json:"peerListeners,omitempty"`
+
 	// Message is the node's own sentence about what a write did, including the
 	// case where turning allowLan off pulled peerListen back to loopback.
 	Message string `json:"message,omitempty"`
@@ -788,9 +840,28 @@ type PeerListenProblem struct {
 	Message   string `json:"message"`
 }
 
+// PeerListenerState is one configured peer address and what became of it
+// (internal/nodeconfig.ListenerState). State is "bound", "failed" or
+// "pending"; Reason is "address_gone", "port_in_use" or "unusable" when it
+// failed, and Message is the same fact as the node's own sentence.
+type PeerListenerState struct {
+	Address string `json:"address"`
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // NodeSettingValues is one set of the five fields the node remembers.
+//
+// PeerListens is the peer listener as a list (ADR-005); PeerListen is always
+// its first entry. Omitted when empty so that a node older than the list —
+// which never sends it — reaches the window as absent, which is how the window
+// tells the two apart: a node that knows the list always sends at least one
+// entry.
 type NodeSettingValues struct {
 	PeerListen     string   `json:"peerListen"`
+	PeerListens    []string `json:"peerListens,omitempty"`
 	AllowLAN       bool     `json:"allowLan"`
 	Discover       bool     `json:"discover"`
 	TreatAsPrivate []string `json:"treatAsPrivate"`
@@ -801,8 +872,13 @@ type NodeSettingValues struct {
 // "leave it alone" and "set it to the zero value" stay different things, which
 // is what the node's own Partial does; an empty (not nil) TreatAsPrivate is how
 // the owner withdraws a declared range.
+//
+// PeerListens and PeerListen are two spellings of one setting: the node
+// replaces the whole list when given the scalar alone, so the window sends the
+// list to a node that reported one and the scalar only to one that did not.
 type NodeSettingsPatch struct {
 	PeerListen     *string   `json:"peerListen,omitempty"`
+	PeerListens    *[]string `json:"peerListens,omitempty"`
 	AllowLAN       *bool     `json:"allowLan,omitempty"`
 	Discover       *bool     `json:"discover,omitempty"`
 	TreatAsPrivate *[]string `json:"treatAsPrivate,omitempty"`

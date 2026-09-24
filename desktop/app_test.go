@@ -795,6 +795,117 @@ func TestSetNodeAddressPassesTheNodesRefusalThrough(t *testing.T) {
 	}
 }
 
+// SetNodeAddresses is the whole set, preferred first: what the owner left out
+// of it is what they removed, so it has to reach the node as a list, and an
+// emptied one as [] — the node reads a missing list as a mistake.
+func TestSetNodeAddressesSendsTheWholeList(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		addresses []string
+		want      string
+	}{
+		"two":   {[]string{"192.168.1.20:7463", "10.0.0.2:7463"}, `{"addresses":["192.168.1.20:7463","10.0.0.2:7463"]}`},
+		"empty": {nil, `{"addresses":[]}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var method, path string
+			var body []byte
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				method, path = r.Method, r.URL.EscapedPath()
+				body, _ = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+			saved, err := app.SetNodeAddresses("a/../b", testCase.addresses)
+			if err != nil {
+				t.Fatalf("SetNodeAddresses: %v", err)
+			}
+			if saved.OlderNode {
+				t.Error("a node that took the list was reported as an older one")
+			}
+			if method != http.MethodPut || path != "/v1/nodes/a%2F..%2Fb/addresses" {
+				t.Errorf("request = %s %s", method, path)
+			}
+			if got := strings.TrimSpace(string(body)); got != testCase.want {
+				t.Errorf("body = %s, want %s", got, testCase.want)
+			}
+		})
+	}
+}
+
+// A node older than address lists has no such route, and its router answers
+// 404 in plain text. The first address goes through the one-address endpoint
+// instead, and the window is told that is all that happened. The fake is a
+// ServeMux holding only the old route, which is what an older node is.
+func TestSetNodeAddressesFallsBackToOneAddressOnAnOlderNode(t *testing.T) {
+	var calls []string
+	var sent struct {
+		Address string `json:"address"`
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /v1/nodes/{id}/address", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.EscapedPath())
+		_ = json.NewDecoder(r.Body).Decode(&sent)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+	saved, err := app.SetNodeAddresses("node_a00000000000000", []string{"192.168.1.20:7463", "10.0.0.2:7463"})
+	if err != nil {
+		t.Fatalf("SetNodeAddresses on an older node: %v", err)
+	}
+	if !saved.OlderNode {
+		t.Error("the fallback was not reported, so the window cannot say the alternates were not saved")
+	}
+	if len(calls) != 1 || calls[0] != "/v1/nodes/node_a00000000000000/address" || sent.Address != "192.168.1.20:7463" {
+		t.Errorf("one-address calls = %q with %q; want the preferred address recorded once", calls, sent.Address)
+	}
+}
+
+// A 404 in the node's own words is not an older node: it is a node id the node
+// does not trust, and falling back would only be told the same thing again.
+// Nor is any other failing status: only a missing route is. The node's refusal
+// of an address reaches the window verbatim, as it does for SetNodeAddress.
+func TestSetNodeAddressesPassesTheNodesRefusalsThrough(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		status int
+		body   string
+		want   string
+	}{
+		"unknown node": {http.StatusNotFound,
+			`{"error":{"code":"NOT_FOUND","message":"node \"node_a00000000000000\" not found"}}`, "not found"},
+		"refused address": {http.StatusBadRequest,
+			`{"error":{"code":"ADDRESS_NOT_ALLOWED","message":"8.8.8.8 is outside the ranges"}}`, "outside the ranges"},
+		"plain failure": {http.StatusInternalServerError, "internal error", "HTTP 500"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer server.Close()
+
+			app := &App{client: newClient(server.URL), url: server.URL, ctx: context.Background()}
+			saved, err := app.SetNodeAddresses("node_a00000000000000", []string{"8.8.8.8:7463"})
+			if err == nil {
+				t.Fatal("SetNodeAddresses returned nil for a list the node refused")
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Errorf("the node's reason did not reach the window: %v", err)
+			}
+			if saved.OlderNode || len(paths) != 1 {
+				t.Errorf("olderNode = %v after %q; a refusal is not an older node", saved.OlderNode, paths)
+			}
+		})
+	}
+}
+
 // The address the node already has must reach the window, or the warning that
 // there is none cannot tell the two apart. An unknown key is dropped in
 // decoding, so this is a fact about the struct, not about the wire.
@@ -806,7 +917,7 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"node_self0000000000","displayName":"self","platform":"darwin","publicKey":"AAAA","fingerprint":"2DCF 9604"}`))
 		case "/v1/nodes":
 			_, _ = w.Write([]byte(`{"nodes":[` +
-				`{"nodeId":"node_with000000000","displayName":"has one","platform":"linux","address":"192.168.1.20:7463"},` +
+				`{"nodeId":"node_with000000000","displayName":"has one","platform":"linux","address":"192.168.1.20:7463","alternateAddresses":["10.0.0.20:7463"]},` +
 				`{"nodeId":"node_without000000","displayName":"has none","platform":"linux"}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"sessions":[],"peers":[],"pagination":{"totalPages":1}}`))
@@ -822,8 +933,14 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 	if overview.Nodes[0].Address != "192.168.1.20:7463" {
 		t.Errorf("recorded address = %q, want 192.168.1.20:7463", overview.Nodes[0].Address)
 	}
+	if len(overview.Nodes[0].Alternates) != 1 || overview.Nodes[0].Alternates[0] != "10.0.0.20:7463" {
+		t.Errorf("alternates = %q, want the backup address the node recorded", overview.Nodes[0].Alternates)
+	}
 	if overview.Nodes[1].Address != "" {
 		t.Errorf("a node with no address reported %q", overview.Nodes[1].Address)
+	}
+	if overview.Nodes[1].Alternates != nil {
+		t.Errorf("a node with no alternates reported %q", overview.Nodes[1].Alternates)
 	}
 	// The local public key is what the peer types into its own dialog, and the
 	// window had no way to show it: main.js never read the field.

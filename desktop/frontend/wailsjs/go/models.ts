@@ -285,6 +285,18 @@ export namespace main {
 	        this.command = source["command"];
 	    }
 	}
+	export class NodeAddressesSaved {
+	    olderNode: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new NodeAddressesSaved(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.olderNode = source["olderNode"];
+	    }
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;
@@ -330,6 +342,7 @@ export namespace main {
 	}
 	export class NodeSettingsPatch {
 	    peerListen?: string;
+	    peerListens?: string[];
 	    allowLan?: boolean;
 	    discover?: boolean;
 	    treatAsPrivate?: string[];
@@ -342,10 +355,31 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.peerListen = source["peerListen"];
+	        this.peerListens = source["peerListens"];
 	        this.allowLan = source["allowLan"];
 	        this.discover = source["discover"];
 	        this.treatAsPrivate = source["treatAsPrivate"];
 	        this.autoWake = source["autoWake"];
+	    }
+	}
+	export class PeerListenerState {
+	    address: string;
+	    state: string;
+	    reason?: string;
+	    detail?: string;
+	    message?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new PeerListenerState(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.address = source["address"];
+	        this.state = source["state"];
+	        this.reason = source["reason"];
+	        this.detail = source["detail"];
+	        this.message = source["message"];
 	    }
 	}
 	export class PeerListenProblem {
@@ -370,6 +404,7 @@ export namespace main {
 	}
 	export class NodeSettingValues {
 	    peerListen: string;
+	    peerListens?: string[];
 	    allowLan: boolean;
 	    discover: boolean;
 	    treatAsPrivate: string[];
@@ -382,6 +417,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.peerListen = source["peerListen"];
+	        this.peerListens = source["peerListens"];
 	        this.allowLan = source["allowLan"];
 	        this.discover = source["discover"];
 	        this.treatAsPrivate = source["treatAsPrivate"];
@@ -398,6 +434,7 @@ export namespace main {
 	    peerListenWithdrawn?: boolean;
 	    // Go type: PeerListenProblem
 	    peerListenProblem?: any;
+	    peerListeners?: PeerListenerState[];
 	    message?: string;
 	    error?: string;
 	
@@ -413,6 +450,7 @@ export namespace main {
 	        this.restartRequired = source["restartRequired"];
 	        this.peerListenWithdrawn = source["peerListenWithdrawn"];
 	        this.peerListenProblem = this.convertValues(source["peerListenProblem"], null);
+	        this.peerListeners = this.convertValues(source["peerListeners"], PeerListenerState);
 	        this.message = source["message"];
 	        this.error = source["error"];
 	    }
@@ -576,6 +614,7 @@ export namespace main {
 	    // Go type: time
 	    lastSeenAt: any;
 	    address?: string;
+	    alternateAddresses?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new TrustedNode(source);
@@ -591,6 +630,7 @@ export namespace main {
 	        this.pairedAt = this.convertValues(source["pairedAt"], null);
 	        this.lastSeenAt = this.convertValues(source["lastSeenAt"], null);
 	        this.address = source["address"];
+	        this.alternateAddresses = source["alternateAddresses"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

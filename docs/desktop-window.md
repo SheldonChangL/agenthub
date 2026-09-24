@@ -84,7 +84,33 @@ An address on a network that is not private by its numbers (RFC 1918, RFC 4193,
 link-local) additionally needs its range declared under `Treat as private
 ranges`, or the node refuses it. That range decides where the node is willing
 to send data, so the window offers the interface's own subnet and never a wider
-guess.
+guess. The machine on the other end of that cable has to declare the same range,
+or it will not send back.
+
+## A machine on two networks
+
+A node that knows the address list (ADR-005) is shown one row per address
+under `Listen addresses`: every private IPv4 this machine has, the others under
+their own heading, and a saved address this machine does not have right now —
+still ticked, because an unplugged cable has not changed what the node is
+configured to serve. Other machines can connect in on any ticked address, and
+nothing ticked means only this machine can connect. Nothing is ticked that was
+not saved, ticking an address does not turn on `allow LAN connections`, and
+turning that on ticks no address.
+
+Each row says what the node is doing with it: open, opens after restart, closes
+after restart, or not open with the reason the node gave — the address is not
+on this machine now, something else holds the port, or the node's own sentence.
+The first ticked address is the one this machine broadcasts from. After a save
+the window restarts the node and names, in a sentence of its own, any saved
+address that did not open.
+
+The pairing drawer's first step lists every open address with its interface and
+a copy button: either works, and the other machine types the one on the network
+the two share. When nothing is reachable and this machine has two or more
+private addresses, it offers `Open on all` before the single-address buttons.
+
+A node older than the list keeps the single dropdown and is sent one address.
 
 ## A message in an inbox is data, not instructions
 

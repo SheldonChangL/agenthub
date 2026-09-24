@@ -85,9 +85,12 @@ const CopyText = async (text) => {
 
 const addressCalls = [];
 let addressFails = null;
-const SetNodeAddress = async (nodeId, address) => {
-  addressCalls.push([nodeId, address]);
+// The detail page saves the whole list (ADR-005 §4); one row filled in is a
+// list of one.
+const SetNodeAddresses = async (nodeId, addresses) => {
+  addressCalls.push([nodeId, addresses]);
   if (addressFails) throw new Error(addressFails);
+  return { olderNode: false };
 };
 
 const trusted = [];
@@ -102,7 +105,7 @@ const Pairing = async () => ({ availability: "unknown", candidates: [] });
 const { configure, boot } = await import("../src/app.js");
 configure({
   Overview, Discover: noop, SetAudience: noop, TrustNode, RevokeNode: noop,
-  SetNodeAddress, Heartbeat: noop, Pairing, OpenPairing: noop, ClosePairing: noop,
+  SetNodeAddress: noop, SetNodeAddresses, Heartbeat: noop, Pairing, OpenPairing: noop, ClosePairing: noop,
   Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText, ServiceStatus: noop,
   InstallService: noop, UninstallService: noop, LocalAddresses: noop,
 });
@@ -319,9 +322,10 @@ if (!field || !button) {
   await button.onclick();
   await settle();
   if (addressCalls.length !== 1) {
-    failures.push(`the button called SetNodeAddress ${addressCalls.length} times, want 1`);
+    failures.push(`the button called SetNodeAddresses ${addressCalls.length} times, want 1`);
   } else {
-    const [calledNode, calledAddress] = addressCalls[0];
+    const [calledNode, calledAddresses] = addressCalls[0];
+    const calledAddress = calledAddresses.length === 1 ? calledAddresses[0] : calledAddresses;
     if (calledNode !== "node_without000000") {
       failures.push(`the button recorded an address against ${calledNode}, not its own row`);
     }
