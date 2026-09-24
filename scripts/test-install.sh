@@ -980,7 +980,8 @@ contains mac-dry "$work/mac-dry.cmds" "rm -f $mac_pfx/bin/ah"
 contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_home/Library/Caches/com.wails.agenthub-desktop"
 lacks mac-dry "$work/mac-dry.cmds" "sudo"
 checks=$((checks + 1))
-[ -d "$mac_pfx/agenthub-desktop.app" ] && [ -L "$mac_pfx/bin/ah" ] || fail "mac-dry: a dry run removed something"
+[ -d "$mac_pfx/agenthub-desktop.app" ] || fail "mac-dry: a dry run removed the app"
+[ -L "$mac_pfx/bin/ah" ] || fail "mac-dry: a dry run removed $mac_pfx/bin/ah"
 # Reading the registration is what a dry run is for; taking it down is not.
 : >>"$work/mac-ah.log"
 lacks mac-dry "$work/mac-ah.log" "service uninstall"
