@@ -878,8 +878,11 @@ func TestNodesRejectsIncoherentInput(t *testing.T) {
 	cases := map[string][]string{
 		"address with no arguments": {"nodes", "address"},
 		"address with no address":   {"nodes", "address", "node_a00000000000000"},
-		"address with a spare word": {"nodes", "address", "node_a00000000000000", "10.0.0.2:7463", "extra"},
-		"an unknown subcommand":     {"nodes", "addr", "node_a00000000000000", "10.0.0.2:7463"},
+		// A second address is an alternate now (ADR-005 §4), so a spare word
+		// is the node's to refuse; a fifth address is arity, refused here.
+		"five addresses": {"nodes", "address", "node_a00000000000000",
+			"10.0.0.1:7463", "10.0.0.2:7463", "10.0.0.3:7463", "10.0.0.4:7463", "10.0.0.5:7463"},
+		"an unknown subcommand": {"nodes", "addr", "node_a00000000000000", "10.0.0.2:7463"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
