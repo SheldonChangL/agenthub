@@ -5575,8 +5575,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const mark = element("span", "listenmark");
       line.append(status, mark);
       body.append(line);
+      // "Gone" is said once: by the node's own state when it tried the
+      // address and found it missing, by this note when it has not said so.
+      const reportedGone = (view.peerListeners ?? [])
+        .some((entry) => entry.address === row.address && entry.reason === "address_gone");
       const note = row.kind === "gone"
-        ? t("nodeSettings.rowGone")
+        ? (reportedGone ? "" : t("nodeSettings.rowGone"))
         : row.kind === "loopback"
           ? t("nodeSettings.optionLoopbackOtherPort")
           : row.private ? "" : t("nodeSettings.optionNotPrivate");

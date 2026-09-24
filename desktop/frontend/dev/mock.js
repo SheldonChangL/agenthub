@@ -28,7 +28,7 @@ const sessions = [
 ];
 const counts = { total: sessions.length, claude: 7, codex: 3, active: 3, idle: 4, inactive: 2, all_paired: 2, selected: 3, none: 5 };
 const nodes = [
-  { nodeId: "node_a91c3e7b2d5f8046c0e1", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B 4C1E 90F2", pairedAt: ago(3 * 86400), lastSeenAt: ago(8), address: "192.168.50.22:7463" },
+  { nodeId: "node_a91c3e7b2d5f8046c0e1", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "2DCF 9604 DBA9 778A 6DDD 035B 4C1E 90F2", pairedAt: ago(3 * 86400), lastSeenAt: ago(8), address: "192.168.50.22:7463", alternateAddresses: ["10.0.0.22:7463"] },
   { nodeId: "node_c30d8e2f4a6b19d571fa", displayName: "win-bench", platform: "windows/amd64", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", pairedAt: ago(3 * 86400), lastSeenAt: null, address: "" },
 ];
 const peers = [
@@ -220,6 +220,32 @@ if (onboarding) {
   nodeSettings.restartRequired = false;
   delete nodeSettings.peerListenProblem;
 }
+// A node that takes the address list (ADR-005): `?listen=multi` — Ethernet and
+// Wi-Fi both private, a saved address whose network is gone, and a direct
+// cable on a non-private range left unticked. With `&pair=loopback` it is the
+// same machine before anything was opened, which is where pairing step 1
+// offers 「全部開放」.
+const listenShape = query.get("listen") ?? "";
+const localAddresses = listenShape === "multi"
+  ? [
+    { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+    { interface: "en7", address: "10.0.0.5", subnet: "10.0.0.0/24", private: true },
+    { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false },
+  ]
+  : [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }, { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }];
+const listenersFor = (list) => list.map((address) => (localAddresses.some((item) => address.startsWith(`${item.address}:`)) || address.startsWith("127.")
+  ? { address, state: "bound" }
+  : { address, state: "failed", reason: "address_gone", detail: `listen tcp ${address}: bind: can't assign requested address`, message: `no interface on this machine holds ${address} any more` }));
+if (listenShape === "multi") {
+  const list = pairShape === "loopback" ? ["127.0.0.1:7463"] : ["192.168.50.10:7463", "10.0.0.5:7463", "192.168.60.3:7463"];
+  const values = { peerListen: list[0], peerListens: list, allowLan: pairShape !== "loopback", discover: true, treatAsPrivate: [], autoWake: false };
+  nodeSettings.settings = { ...values };
+  nodeSettings.saved = { ...values };
+  nodeSettings.sources = { peerListen: "remembered", allowLan: "remembered", discover: "remembered", treatAsPrivate: "default", autoWake: "default" };
+  nodeSettings.restartRequired = false;
+  nodeSettings.peerListeners = listenersFor(list);
+  delete nodeSettings.peerListenProblem;
+}
 const overviewSessions = firstRun ? [] : sessions;
 const overviewNodes = onboarding ? [] : nodes;
 const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
@@ -308,6 +334,24 @@ configure({
   SaveNodeSettings: async (patch) => {
     const next = { ...nodeSettings.settings, ...patch };
     let message = "";
+    // The list and the scalar are one setting: the scalar alone replaces the
+    // list, and the list's first entry is the scalar.
+    if (listenShape === "multi") {
+      if (patch.peerListens) next.peerListen = patch.peerListens[0];
+      else if (patch.peerListen) next.peerListens = [patch.peerListen];
+      if (next.allowLan === false && next.peerListens.some((address) => !address.startsWith("127."))) {
+        next.peerListens = ["127.0.0.1:7463"];
+        next.peerListen = "127.0.0.1:7463";
+        message = "allowLan is off, so peerListen was pulled back to 127.0.0.1:7463";
+      }
+      nodeSettings.settings = { ...next };
+      nodeSettings.saved = { ...next };
+      nodeSettings.peerListeners = listenersFor(next.peerListens);
+      nodeSettings.restartRequired = false;
+      nodeSettings.message = message;
+      log("SaveNodeSettings", patch);
+      return { ...nodeSettings };
+    }
     if (next.allowLan === false && next.peerListen !== "127.0.0.1:7463") {
       next.peerListen = "127.0.0.1:7463";
       nodeSettings.peerListenWithdrawn = true;
@@ -353,7 +397,7 @@ configure({
     : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
   InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
-  LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }, { interface: "en5", address: "122.122.0.7", subnet: "122.122.0.0/16", private: false }],
+  LocalAddresses: async () => localAddresses,
   // The node filters by session (agenthub#132); the fake does the same, so the
   // preview shows what the window will really show.
   Outbound: async (session, limit, after) => {
