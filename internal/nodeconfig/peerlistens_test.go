@@ -117,6 +117,8 @@ func TestValidatePeerListensRefusesWhatCannotBeServedTogether(t *testing.T) {
 		{"loopback beside LAN", []string{"127.0.0.1:7463", "192.168.1.10:7463"}, true},
 		{"LAN beside loopback", []string{"192.168.1.10:7463", "[::1]:7463"}, true},
 		{"kernel-chosen port in a list", []string{"127.0.0.1:0", "[::1]:0"}, false},
+		{"localhost beside its own address", []string{"localhost:7463", "127.0.0.1:7463"}, false},
+		{"localhost after an address", []string{"[::1]:7463", "LocalHost:7463"}, false},
 		{"empty", []string{}, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -147,6 +149,7 @@ func TestValidatePeerListensRefusesWhatCannotBeServedTogether(t *testing.T) {
 		{"four", []string{"192.168.1.10:7463", "192.168.1.11:7463", "10.0.0.5:7463", "172.16.0.1:7463"}, true},
 		{"two loopbacks", []string{"127.0.0.1:7463", "[::1]:7463"}, false},
 		{"one loopback on a kernel port", []string{"127.0.0.1:0"}, false},
+		{"localhost alone, as a single address always was", []string{"localhost:7463"}, false},
 	} {
 		t.Run("accepts "+testCase.name, func(t *testing.T) {
 			if err := ValidatePeerListens(testCase.list, testCase.allowLAN, declared); err != nil {

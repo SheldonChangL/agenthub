@@ -114,8 +114,9 @@ func (s Settings) PeerListenList() []string {
 // Every entry passes ValidatePeerListen on its own — every spelling of the
 // unspecified address, zones, names and addresses outside the private ranges
 // are refused there. Then the list as a whole: at most MaxPeerListens entries,
-// no address twice (::ffff:192.168.1.10 is 192.168.1.10), one port for all of
-// them, and loopback never beside a network address.
+// no name (the "localhost" a single entry may be), no address twice
+// (::ffff:192.168.1.10 is 192.168.1.10), one port for all of them, and
+// loopback never beside a network address.
 //
 // One port, because a peer records one address and a port per address would
 // make "the other address of this machine" a second thing to learn. Loopback
@@ -140,8 +141,21 @@ func ValidatePeerListens(list []string, allowLAN bool, declared PrivateRanges) e
 		if err != nil {
 			return fmt.Errorf("invalid listen address %q: %w", address, err)
 		}
+		ip, err := netip.ParseAddr(host)
+		if err != nil {
+			// Only "localhost" gets here: ValidatePeerListen refuses every other
+			// name. Alone it stays accepted, as it always was. In a list it is
+			// refused, because whether it is 127.0.0.1 or ::1 is the resolver's
+			// answer at bind time, so "localhost" beside "127.0.0.1" may be the
+			// same socket twice, and a check that compares what was written
+			// cannot see it.
+			if len(list) > 1 {
+				return fmt.Errorf("peer listener %q names a host; in a list of addresses give each as "+
+					"an IP address (127.0.0.1 or [::1]), so that no two of them are the same socket", address)
+			}
+		}
 		key := strings.ToLower(host)
-		if ip, err := netip.ParseAddr(host); err == nil {
+		if err == nil {
 			key = ip.Unmap().String()
 		}
 		if earlier, ok := seen[key]; ok {
