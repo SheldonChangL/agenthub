@@ -484,6 +484,7 @@ func TestThePeerSurfaceExposesNothingElse(t *testing.T) {
 		{http.MethodPost, "/v1/nodes"},
 		{http.MethodDelete, "/v1/nodes/node_peer0000000000000"},
 		{http.MethodPut, "/v1/nodes/node_peer0000000000000/address"},
+		{http.MethodPut, "/v1/nodes/node_peer0000000000000/addresses"},
 		{http.MethodGet, "/v1/heartbeat"},
 		{http.MethodGet, "/v1/peers"},
 		{http.MethodPost, "/v1/discover"},

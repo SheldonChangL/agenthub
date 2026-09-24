@@ -65,12 +65,27 @@ type PairRequestPayload struct {
 	// identity — trust says who a node is, the address says where it currently
 	// answers — so a wrong one costs a delivery, never a wrong pairing.
 	Address string `json:"address,omitempty"`
+	// Addresses is every address the requester answers on, Address among
+	// them (ADR-005 §4): only what its peer listener has bound, passing its
+	// own delivery policy, never loopback or zoned, never from a scan of the
+	// machine's interfaces. Optional and a claim exactly as Address is: the
+	// receiver checks each one and keeps at most MaxPairAddresses. A build
+	// that predates the field ignores it and records Address alone.
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 type PairApprovePayload struct {
 	Node      NodeDescriptor `json:"node"`
 	RequestID string         `json:"requestId"`
+	// Addresses is where the approver answers, on the terms
+	// PairRequestPayload.Addresses states. The requester already has the
+	// address it dialled, which stays preferred; these become its alternates.
+	Addresses []string `json:"addresses,omitempty"`
 }
+
+// MaxPairAddresses is how many addresses a pairing payload may carry and how
+// many a receiver keeps, the preferred one included.
+const MaxPairAddresses = 4
 
 type PairRejectPayload struct {
 	RequestID string `json:"requestId"`

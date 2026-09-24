@@ -154,6 +154,11 @@ type Request struct {
 	// this node dialled for an outgoing request, and the one the requester
 	// claimed for an incoming one. Empty when there is none to record.
 	Address string `json:"address,omitempty"`
+	// Alternates are the other addresses the other machine answers on, each
+	// already through this node's delivery policy (ADR-005 §4): what an
+	// incoming request listed beside its address, or what the approval of an
+	// outgoing one listed. Recorded with Address when the pairing is trusted.
+	Alternates []string `json:"alternateAddresses,omitempty"`
 	// SourceHost is the host half of the address an incoming request actually
 	// arrived from, as the listener saw it. Unlike NodeID it is not the
 	// sender's to choose, which is why the flood bound is keyed on it. Empty on

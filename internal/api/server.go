@@ -248,6 +248,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/nodes", s.trustNode)
 	mux.HandleFunc("DELETE /v1/nodes/{id}", s.revokeNode)
 	mux.HandleFunc("PUT /v1/nodes/{id}/address", s.setNodeAddress)
+	mux.HandleFunc("PUT /v1/nodes/{id}/addresses", s.setNodeAddresses)
 	mux.HandleFunc("GET /v1/pairing", s.pairingState)
 	mux.HandleFunc("POST /v1/pairing", s.openPairing)
 	mux.HandleFunc("DELETE /v1/pairing", s.closePairing)

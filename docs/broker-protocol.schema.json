@@ -348,9 +348,22 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 262
+        },
+        "addresses": {
+          "$ref": "#/$defs/pairAddresses"
         }
       },
       "additionalProperties": false
+    },
+    "pairAddresses": {
+      "$comment": "Every address the sender answers on, as host:port, preferred first (ADR-005). Only addresses its peer listener has bound and its own delivery policy passes, never loopback or zoned, never an interface scan. Optional, and a claim like address: the receiver checks each one against its own policy, drops what does not pass, and keeps at most four in all. A receiver that predates the field ignores it.",
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 262
+      }
     },
     "pairApprove": {
       "$comment": "Confirms trust. Approving grants no session access: an audience is a separate, per-session decision.",
@@ -367,6 +380,9 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "addresses": {
+          "$ref": "#/$defs/pairAddresses"
         }
       },
       "additionalProperties": false

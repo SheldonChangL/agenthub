@@ -36,13 +36,13 @@ func TestPairingEnvelopesMatchTheSchema(t *testing.T) {
 
 	build := map[string]func() (protocol.Envelope, error){
 		"request with an address": func() (protocol.Envelope, error) {
-			return builder.BuildPairRequest(now, "192.168.1.42:7463")
+			return builder.BuildPairRequest(now, []string{"192.168.1.42:7463"})
 		},
 		"request without one": func() (protocol.Envelope, error) {
-			return builder.BuildPairRequest(now, "")
+			return builder.BuildPairRequest(now, nil)
 		},
 		"approve": func() (protocol.Envelope, error) {
-			return builder.BuildPairApprove(now, receiverID, "pair_0123456789abcdef")
+			return builder.BuildPairApprove(now, receiverID, "pair_0123456789abcdef", nil)
 		},
 		"reject": func() (protocol.Envelope, error) {
 			return builder.BuildPairReject(now, receiverID, "pair_0123456789abcdef", "declined")
@@ -69,7 +69,7 @@ func TestReadPairRequestRefusesWhatDoesNotHoldTogether(t *testing.T) {
 	key := newTestKeypair(t)
 	other := newTestKeypair(t)
 
-	valid, err := pairBuilder(t, requesterID, key).BuildPairRequest(time.Now(), "")
+	valid, err := pairBuilder(t, requesterID, key).BuildPairRequest(time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestReadPairRequestRefusesWhatDoesNotHoldTogether(t *testing.T) {
 // signature of a node it is already talking to.
 func TestPairApproveIsAddressedToTheRequester(t *testing.T) {
 	key := newTestKeypair(t)
-	envelope, err := pairBuilder(t, receiverID, key).BuildPairApprove(time.Now(), requesterID, "pair_1")
+	envelope, err := pairBuilder(t, receiverID, key).BuildPairApprove(time.Now(), requesterID, "pair_1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
