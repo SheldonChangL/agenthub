@@ -87,7 +87,7 @@ func newPairNode(t *testing.T, name string) *pairNode {
 	server := NewServer(store, nil, heartbeats, node,
 		WithPairing(pairing.NewMode(), nil, nil),
 		WithPairExchange(pairing.NewRequests(), transport.NewPairDialer(transport.LoopbackOnly),
-			peer.Listener.Addr().String()),
+			fixedPeerAddress(peer.Listener.Addr().String())),
 	)
 	peerHandler = server.PeerHandler()
 	return &pairNode{

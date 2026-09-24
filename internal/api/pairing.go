@@ -262,16 +262,21 @@ func (s *Server) writePairingState(w http.ResponseWriter, status int, state pair
 	// cannot announce carries, so an owner whose node announces perfectly well
 	// was never told the one thing the other machine needs when mDNS does not
 	// carry between them.
-	if s.peerAddress != "" {
-		body["peerAddress"] = s.peerAddress
+	peerAddress := s.ownPeerAddress()
+	if peerAddress != "" {
+		body["peerAddress"] = peerAddress
 	}
+	// Every address this node is serving peers on right now, of which
+	// peerAddress is the first. A window that knows the list offers each one;
+	// one that does not reads peerAddress and is told the truth about it.
+	body["peerAddresses"] = s.ownPeerAddresses()
 	// And whether that address is one the other machine could actually be told
 	// to type. A node on loopback — the default — has nowhere another machine
 	// can reach, and a reader that printed the address anyway sent the owner to
 	// type 127.0.0.1 on the far side. Stated as a field rather than left to be
 	// parsed out of the address, so a UI branches on the fact rather than
 	// re-deriving it.
-	problem := pairing.PeerAddressProblem(s.peerAddress)
+	problem := pairing.PeerAddressProblem(peerAddress)
 	body["peerAddressReachable"] = problem == ""
 	if problem != "" {
 		body["peerAddressProblem"] = problem

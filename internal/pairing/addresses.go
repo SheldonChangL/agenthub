@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 )
 
@@ -58,6 +59,88 @@ func PeerEndpoint(policy func(address string) error, peerListen string) (Endpoin
 	}
 	endpoint.Addresses = func() []netip.Addr { return []netip.Addr{address} }
 	return endpoint, nil
+}
+
+// ListenerEndpoint is PeerEndpoint for a node serving several addresses
+// (ADR-005 §2): the configured list decides the port and whether anything here
+// could ever be announced, and bound — asked on every announcement — decides
+// what is announced now.
+//
+// What is announced is one address: the first bound one a peer could be told
+// about. mDNS goes out from that one only (ADR-005 §4), because a receiver
+// drops an announcement whose address is not the one it came from and flags
+// one id arriving from two sources as contested.
+//
+// Read live because the listener set binds a configured address when it
+// appears. A node started at login before Wi-Fi joined announces nothing until
+// Wi-Fi's address is bound, then announces it, with no restart in between.
+func ListenerEndpoint(policy func(address string) error, configured []string,
+	bound func() []string) (Endpoint, error) {
+	if len(configured) == 0 {
+		return Endpoint{}, fmt.Errorf("no peer listener address is configured")
+	}
+	var endpoint Endpoint
+	for index, address := range configured {
+		single, err := PeerEndpoint(policy, address)
+		if err != nil {
+			return Endpoint{}, err
+		}
+		if index == 0 {
+			endpoint = single
+			continue
+		}
+		if single.Port != endpoint.Port {
+			return Endpoint{}, fmt.Errorf("peer listener %q is on port %d and %q on port %d; "+
+				"an announcement carries one port", configured[0], endpoint.Port, address, single.Port)
+		}
+		// The first configured address that could be announced gives the
+		// reason when nothing is bound; one that never could explains nothing.
+		if endpoint.Unannounceable != "" && single.Unannounceable == "" {
+			endpoint.Unannounceable, endpoint.Remedy = "", ""
+		}
+	}
+	if endpoint.Unannounceable == "" {
+		// Configured correctly, and consulted only when nothing announceable is
+		// bound right now: the cause is the machine, not the setting.
+		endpoint.Unannounceable = "none of the addresses this node is configured to serve peers on " +
+			"is bound right now"
+	}
+	endpoint.Addresses = func() []netip.Addr {
+		for _, address := range bound() {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				continue
+			}
+			if reachable, reason, _ := reachableAt(policy, host, endpoint.Port); reason == "" {
+				return []netip.Addr{reachable}
+			}
+		}
+		return nil
+	}
+	return endpoint, nil
+}
+
+// ReachableAddresses is every bound address a peer on another machine could be
+// told to type, as host:port, in order: the same test an announcement applies
+// (not loopback, not IPv6, not zoned, and passing the delivery policy), so the
+// pairing window and the announcer never disagree about what this node offers.
+func ReachableAddresses(policy func(address string) error, bound []string) []string {
+	addresses := []string{}
+	seen := map[string]bool{}
+	for _, address := range bound {
+		endpoint, err := PeerEndpoint(policy, address)
+		if err != nil || endpoint.Unannounceable != "" {
+			continue
+		}
+		for _, reachable := range endpoint.Addresses() {
+			joined := net.JoinHostPort(reachable.String(), strconv.Itoa(endpoint.Port))
+			if !seen[joined] {
+				seen[joined] = true
+				addresses = append(addresses, joined)
+			}
+		}
+	}
+	return addresses
 }
 
 // Endpoint is where a peer could reach this node, and — when nowhere — why.

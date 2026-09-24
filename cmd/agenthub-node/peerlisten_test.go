@@ -26,19 +26,62 @@ func freeLoopback(t *testing.T) string {
 	return address
 }
 
+// served is the one listener a set hands out, for a test that asks about a
+// single address. Closed with the set.
+func served(t *testing.T, set interface{ Serve(func(net.Listener)) }) net.Listener {
+	t.Helper()
+	var listeners []net.Listener
+	set.Serve(func(listener net.Listener) { listeners = append(listeners, listener) })
+	if len(listeners) != 1 {
+		t.Fatalf("the set serves %d listeners, want 1", len(listeners))
+	}
+	return listeners[0]
+}
+
 // The ordinary start: the address binds and nothing is said about it.
 func TestBindPeerListenerBindsWhatItWasAsked(t *testing.T) {
 	address := freeLoopback(t)
-	listener, problem, err := bindPeerListener(address, freeLoopback(t), func(string, ...any) {})
+	set, err := bindPeerListeners([]string{address}, freeLoopback(t), func(string, ...any) {})
 	if err != nil {
-		t.Fatalf("bindPeerListener: %v", err)
+		t.Fatalf("bindPeerListeners: %v", err)
 	}
-	defer listener.Close()
-	if problem != nil {
+	defer set.Close()
+	if problem := set.Problem(); problem != nil {
 		t.Fatalf("a listener that bound reported a problem: %+v", problem)
 	}
-	if got := listener.Addr().String(); got != address {
+	if got := served(t, set).Addr().String(); got != address {
 		t.Errorf("bound %s, want %s", got, address)
+	}
+}
+
+// Two addresses, one of them gone: the node serves the other and does not
+// degrade. This is the start ADR-005 exists for — the cable is unplugged and
+// Wi-Fi is fine — and the loopback fallback here would have taken a reachable
+// node off the network.
+func TestBindPeerListenersServesWhatBindsAndSkipsTheFallback(t *testing.T) {
+	address := freeLoopback(t)
+	fallback := freeLoopback(t)
+	set, err := bindPeerListeners([]string{"203.0.113.1:7463", address}, fallback, func(string, ...any) {})
+	if err != nil {
+		t.Fatalf("bindPeerListeners: %v", err)
+	}
+	defer set.Close()
+	if problem := set.Problem(); problem != nil {
+		t.Fatalf("one address bound and the node degraded: %+v", problem)
+	}
+	if got := served(t, set).Addr().String(); got != address {
+		t.Errorf("serving %s, want %s and nothing else", got, address)
+	}
+	// The fallback port is still free: nothing reached for it.
+	probe, err := net.Listen("tcp", fallback)
+	if err != nil {
+		t.Fatalf("the fallback %s was bound although an address came up: %v", fallback, err)
+	}
+	_ = probe.Close()
+	states := set.States()
+	if len(states) != 2 || states[0].State != nodeconfig.ListenerFailed ||
+		states[0].Reason != nodeconfig.ListenAddressGone || states[1].State != nodeconfig.ListenerBound {
+		t.Errorf("states = %+v", states)
 	}
 }
 
@@ -51,13 +94,15 @@ func TestBindPeerListenerDegradesInsteadOfFailing(t *testing.T) {
 	gone := "203.0.113.1:7463"
 	fallback := freeLoopback(t)
 	var logged []string
-	listener, problem, err := bindPeerListener(gone, fallback, func(format string, args ...any) {
+	set, err := bindPeerListeners([]string{gone}, fallback, func(format string, args ...any) {
 		logged = append(logged, fmt.Sprintf(format, args...))
 	})
 	if err != nil {
 		t.Fatalf("an unbindable address ended the start: %v", err)
 	}
-	defer listener.Close()
+	defer set.Close()
+	listener := served(t, set)
+	problem := set.Problem()
 	if problem == nil {
 		t.Fatal("degraded onto loopback without saying so")
 	}
@@ -99,12 +144,14 @@ func TestBindPeerListenerFallsBackAgainWhenTheDefaultPortIsTaken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	listener, problem, err := bindPeerListener("203.0.113.1:7463", occupied.Addr().String(),
+	set, err := bindPeerListeners([]string{"203.0.113.1:7463"}, occupied.Addr().String(),
 		func(string, ...any) {})
 	if err != nil {
 		t.Fatalf("a busy fallback port ended the start: %v", err)
 	}
-	defer listener.Close()
+	defer set.Close()
+	listener := served(t, set)
+	problem := set.Problem()
 	if problem == nil {
 		t.Fatal("degraded twice over without saying so")
 	}
@@ -136,11 +183,13 @@ func TestBindPeerListenerDegradesWhenTheConfiguredAddressIsTheFallback(t *testin
 	}
 	defer occupied.Close()
 	address := occupied.Addr().String()
-	listener, problem, err := bindPeerListener(address, address, func(string, ...any) {})
+	set, err := bindPeerListeners([]string{address}, address, func(string, ...any) {})
 	if err != nil {
 		t.Fatalf("a taken default port ended the start: %v", err)
 	}
-	defer listener.Close()
+	defer set.Close()
+	listener := served(t, set)
+	problem := set.Problem()
 	if problem == nil {
 		t.Fatal("degraded onto another port without saying so")
 	}
