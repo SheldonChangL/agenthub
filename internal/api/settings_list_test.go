@@ -118,7 +118,9 @@ func TestAPeerListensWriteIsAccepted(t *testing.T) {
 // how a window tells an older node from this one.
 func TestAPeerListensWriteIsRefusedWhereTheNodeWouldRefuseIt(t *testing.T) {
 	for name, body := range map[string]map[string]any{
-		"unknown field": {"peerListenz": []string{cableAddress}},
+		// Beside a field it knows, so the refusal is about the unknown one
+		// and not about a body that says nothing.
+		"unknown field": {"peerListenz": []string{cableAddress}, "discover": true},
 		"unspecified":   {"peerListens": []string{cableAddress, "0.0.0.0:7463"}, "allowLan": true},
 		"unspecified v6": {
 			"peerListens": []string{cableAddress, "[::ffff:0.0.0.0]:7463"}, "allowLan": true,
