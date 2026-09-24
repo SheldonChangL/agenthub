@@ -618,6 +618,7 @@ export const TEXT = {
   "nodeSettings.rowGone": "這台機器現在沒有這個位址",
   "nodeSettings.rowBroadcast": "從這裡廣播",
   "nodeSettings.warnMixLoopback": "「{address}」是 loopback 位址，節點不接受它跟網路位址放在一起：要對外開放就取消勾選它。",
+  "nodeSettings.warnTooMany": "勾了 {count} 個位址，節點最多開放四個：這次儲存會被拒絕。取消勾選對方用不到的那幾個。",
   "nodeSettings.repairAll": "全部開放：{list}",
   "nodeSettings.repairAllAndLan": "全部開放：{list}，並允許區網連線",
   "nodeSettings.savedNotOpen": "重啟後這些已存的位址沒有開放：{addresses}。原因寫在上面各自那一列。",
