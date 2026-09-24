@@ -1373,8 +1373,41 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Asked once while the drawer is open, for the same reason the checklist asks
   // once per window: a read on every render would re-fire on every tick.
   let pairingSettingsAsked = false;
+  // What the node last said about each of its addresses, from whichever read
+  // is newest: the settings form's own, or refreshPairListeners'. Step 1 lists
+  // the open ones, and the node binds an address that appears later (every
+  // 30 s, ADR-005 §2), so the form's read from when the window opened is not
+  // enough — and re-reading into the form would repaint it over the owner's
+  // unsaved edits. This is read for display and never diffed against.
+  let pairListenView = null;
+  let pairListenReadAt = -Infinity;
+  let pairListenSequence = 0;
+
+  // refreshPairListeners re-reads the node's settings for step 1 alone, while
+  // the drawer is open and the node takes the list: at most every ten seconds
+  // from the pairing poll, and at once when the drawer opens.
+  async function refreshPairListeners({ force = false } = {}) {
+    if (!pairingDrawerOpen() || !peerListensSupported()) return;
+    const now = performance.now();
+    if (!force && now - pairListenReadAt < 10000) return;
+    pairListenReadAt = now;
+    const sequence = ++pairListenSequence;
+    let view;
+    try {
+      view = await api.NodeSettings();
+    } catch {
+      return;
+    }
+    if (sequence !== pairListenSequence || !view || view.error || !Array.isArray(view.saved?.peerListens)) return;
+    pairListenView = view;
+    renderPairHere();
+  }
   function ensurePairingNodeSettings() {
-    if (state.nodeSettings || pairingSettingsAsked || !state.nodeReachable) return;
+    if (state.nodeSettings) {
+      refreshPairListeners({ force: true });
+      return;
+    }
+    if (pairingSettingsAsked || !state.nodeReachable) return;
     pairingSettingsAsked = true;
     const done = () => {
       // A read that produced no baseline releases the latch, so the next time
@@ -2489,7 +2522,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // share — something this window cannot know. So every open one is listed,
     // with its interface, and the owner reads out the one on the shared network.
     const open = pairOpenAddresses();
-    const notOpen = peerListensNotOpen(state.nodeSettings);
+    const notOpen = peerListensNotOpen(pairListenView ?? state.nodeSettings);
     const multi = open.length >= 2;
     el("copy-pair-address").classList.toggle("hidden", multi);
     // Rebuilt only when what it says changes, like the unreachable block: the
@@ -2529,7 +2562,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // own order (the preferred first), with the interface this machine has it on.
   // Empty for a node that reports no per-address state.
   function pairOpenAddresses() {
-    const listeners = state.nodeSettings?.peerListeners;
+    const listeners = (pairListenView ?? state.nodeSettings)?.peerListeners;
     if (!Array.isArray(listeners)) return [];
     const local = new Map((state.nodeAddresses?.list ?? []).map((item) => [String(item.address).toLowerCase(), item]));
     return listeners
@@ -4857,6 +4890,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is subtracted against.
     state.pairingReadAt = performance.now();
     if (state.view === "network") renderPairing();
+    refreshPairListeners().catch(() => {});
   }
 
   // loadPairRequests reads the exchange's own rows.
@@ -5093,6 +5127,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     state.nodeSettings = view;
     state.nodeAddresses = addresses;
+    // The form's read is the newest one step 1 has; a refresh still out is older.
+    pairListenView = view;
+    pairListenSequence += 1;
     // The form edits what the NEXT start will use, which is `saved`, not what
     // is running. The node merges a write onto the saved configuration and
     // judges it there — its own comment in internal/api/settings.go says so —
@@ -5111,6 +5148,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-peerlisten-field").classList.toggle("hidden", multi);
     el("node-peerlistens-field").classList.toggle("hidden", !multi);
     peerListenTicks = [];
+    peerListenOrder = null;
     if (multi) fillPeerListenRows(saved.peerListens, addresses.list);
     else {
       el("node-peerlistens").replaceChildren();
@@ -5295,6 +5333,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // next port up) gets its row rather than being dropped.
       const list = option.peerListens ?? (option.peerListen ? [option.peerListen] : []);
       peerListenTicks = [];
+      peerListenOrder = [...list];
       fillPeerListenRows(list, state.nodeAddresses?.list);
       el("node-allow-lan").checked = option.allowLan;
       syncNodeSettingsForm();
@@ -5494,6 +5533,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // suggestion follows the most recent non-private row still ticked, as it
   // followed the dropdown's one choice.
   let peerListenTicks = [];
+  // The order a repair asked for, when one did: its first entry is the
+  // preferred address, and a repair that moves every entry to the next port
+  // must not hand that role to whichever interface this machine lists first.
+  // Otherwise the saved order decides.
+  let peerListenOrder = null;
 
   // listenPort is the one port every network entry shares (nodeconfig
   // refuses a list with two), read from the first one. Without one it is the
@@ -5577,10 +5621,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       body.append(line);
       // "Gone" is said once: by the node's own state when it tried the
       // address and found it missing, by this note when it has not said so.
-      const reportedGone = (view.peerListeners ?? [])
-        .some((entry) => entry.address === row.address && entry.reason === "address_gone");
+      // And not at all over an address the node reports bound: this window
+      // lists IPv4 only, and a bound IPv6 entry is on this machine whatever the
+      // list says.
+      const reported = (view.peerListeners ?? [])
+        .some((entry) => entry.address === row.address && (entry.state === "bound" || entry.reason === "address_gone"));
       const note = row.kind === "gone"
-        ? (reportedGone ? "" : t("nodeSettings.rowGone"))
+        ? (reported ? "" : t("nodeSettings.rowGone"))
         : row.kind === "loopback"
           ? t("nodeSettings.optionLoopbackOtherPort")
           : row.private ? "" : t("nodeSettings.optionNotPrivate");
@@ -5646,10 +5693,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // the address this machine broadcasts from — and unticking and re-ticking a
   // box is not a decision to change that.
   function checkedPeerListens() {
-    const saved = state.nodeSettings?.saved?.peerListens ?? [];
+    const first = peerListenOrder ?? state.nodeSettings?.saved?.peerListens ?? [];
     const on = peerListenRows.filter((row) => row.box.checked).map((row) => row.address);
     const ticked = new Set(on);
-    return [...saved.filter((address) => ticked.has(address)), ...on.filter((address) => !saved.includes(address))];
+    return [...first.filter((address) => ticked.has(address)), ...on.filter((address) => !first.includes(address))];
   }
 
   // peerListensToSend is never empty: nothing ticked is this machine only,
@@ -5685,6 +5732,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale", t("nodeSettings.warnLanOff", { address: lan.join(", ") })));
     } else if (!allowLan && storedLan.length > 0) {
       warning.append(element("div", "stale", t("nodeSettings.warnWithdraw", { stored: storedLan.join(", ") })));
+    }
+    // nodeconfig.MaxPeerListens: said before the save rather than by its refusal.
+    if (list.length > 4) {
+      warning.append(element("div", "stale", t("nodeSettings.warnTooMany", { count: list.length })));
     }
     const loopback = list.filter((address) => isLoopbackListen(address));
     if (lan.length > 0 && loopback.length > 0) {

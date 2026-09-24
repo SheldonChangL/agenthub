@@ -572,7 +572,10 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 對方輸入跟這台機器在同一個網路上的那一個」；saved 裡有但沒開放的位址一行 muted 點名＋「前往節點設定」；
 不可連線且這台機器有 ≥2 個私有位址時，`pairHereRepairs()` 在單一位址按鈕（最多 3 個）前面放
 「全部開放：{清單}[，並允許區網連線]」（最多 4 個位址，子句照規則 4 只在允許區網還關著時出現），
-`applyPeerListenRepair()` 收 `option.peerListens` 整份清單。舊節點不提供「全部開放」。
+`applyPeerListenRepair()` 收 `option.peerListens` 整份清單，並照它的順序送（下一個 port 的修復保留原本的首選）。
+舊節點不提供「全部開放」。抽屜開著時 `refreshPairListeners()` 另讀節點設定給第一步用（開抽屜時一次、之後隨配對輪詢
+最多每 10 秒一次），只更新顯示用的 `pairListenView`，**不重畫設定表單**——節點每 30 秒重試綁定，視窗啟動時讀到的
+狀態會過期，而重畫表單會蓋掉使用者還沒存的勾選。
 
 **規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
 在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；

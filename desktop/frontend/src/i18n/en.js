@@ -623,6 +623,7 @@ export const TEXT = {
   "nodeSettings.rowGone": "this machine does not have this address now",
   "nodeSettings.rowBroadcast": "broadcast from here",
   "nodeSettings.warnMixLoopback": "“{address}” is a loopback address, and the node refuses one beside a network address: untick it to serve the network.",
+  "nodeSettings.warnTooMany": "{count} addresses are ticked and the node serves at most four: it will refuse this save. Untick the ones the other machines do not need.",
   "nodeSettings.repairAll": "Open on all: {list}",
   "nodeSettings.repairAllAndLan": "Open on all: {list}, and allow LAN connections",
   "nodeSettings.savedNotOpen": "After the restart these saved addresses are not open: {addresses}. Each one's row above says why.",

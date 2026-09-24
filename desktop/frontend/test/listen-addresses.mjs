@@ -47,6 +47,7 @@ const addresses = [
 ];
 
 let settingsAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
+let pairingAnswer = () => ({ availability: "unknown", candidates: [] });
 let saveAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
 let saveCalls = [];
 let installCalls = [];
@@ -55,7 +56,7 @@ let serviceStatus = { supported: true, installed: true, running: true, pid: 1, u
 configure({
   Overview: async () => ({ reachable: true, node: {}, sessions: [], nodes: [], peers: [], counts: {} }),
   Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop, SetNodeAddress: noop,
-  Pairing: async () => ({ availability: "unknown", candidates: [] }), OpenPairing: noop, ClosePairing: noop,
+  Pairing: async () => pairingAnswer(), OpenPairing: noop, ClosePairing: noop,
   Inbox: noop, ClearInbox: noop, MCPConfig: noop, CopyText: noop, Outbound: noop, Wakes: noop,
   ServiceStatus: async () => serviceStatus,
   InstallService: async (form) => { installCalls.push(form); return { command: "ah service install", output: "installed" }; },
@@ -338,6 +339,43 @@ if (row(A)?.status.textContent !== ZH["nodeSettings.rowNotOpenGone"] || row(B)?.
   failures.push("the rows under the banner do not say each address is not open");
 }
 
+// A repair that moves every entry to the next port keeps the saved order: the
+// preferred address is the owner's, not the interface list's.
+await load(view([B, A], {
+  settings: { peerListen: "127.0.0.1:7463" },
+  peerListeners: [
+    { address: B, state: "failed", reason: "port_in_use", message: "held" },
+    { address: A, state: "failed", reason: "port_in_use", message: "held" },
+  ],
+  top: { peerListenProblem: { address: B, reason: "port_in_use", detail: "bind: address already in use", runningOn: "127.0.0.1:7463", message: "held" } },
+}));
+const portRepair = app.peerListenRepairs(app.state.nodeSettings.peerListenProblem, { list: addresses }, true)[0];
+if (JSON.stringify(portRepair?.peerListens) !== JSON.stringify(["10.0.0.5:7464", "192.168.50.10:7464"])) {
+  failures.push(`the next-port repair carries ${JSON.stringify(portRepair)}`);
+}
+saveCalls = [];
+saveAnswer = async () => view(["10.0.0.5:7464", "192.168.50.10:7464"], { top: { restartRequired: true } });
+settingsAnswer = async () => view(["10.0.0.5:7464", "192.168.50.10:7464"]);
+await app.applyPeerListenRepair(portRepair);
+await tick();
+if (JSON.stringify(saveCalls[0]?.peerListens) !== JSON.stringify(["10.0.0.5:7464", "192.168.50.10:7464"])) {
+  failures.push(`the next-port repair sent ${JSON.stringify(saveCalls[0])}, want the saved order at the new port`);
+}
+
+// More than the node serves is said before the save.
+await load(view([A]));
+for (const address of [B, P, C, D]) toggle(address, true);
+if (!combination().includes(fill(ZH["nodeSettings.warnTooMany"], { count: 5 }))) {
+  failures.push(`five ticked addresses were not warned about: ${combination()}`);
+}
+// A saved address this window cannot list (IPv6) that the node reports bound
+// is not also called missing.
+await load(view(["[fd12::5]:7463"]));
+if (el("node-peerlistens").serialize().includes(`<span class="why">${ZH["nodeSettings.rowGone"]}</span>`) ||
+    row("[fd12::5]:7463")?.status.textContent !== ZH["nodeSettings.rowOpen"]) {
+  failures.push(`a bound IPv6 address reads ${el("node-peerlistens").serialize()}`);
+}
+
 // 6. A unit that pins peer-listen: saving the list asks first, naming the
 //    list by its own label, and a "no" leaves it out.
 await load(view([A]));
@@ -457,6 +495,33 @@ app.renderPairHere();
 if (value.textContent !== A || el("copy-pair-address").classList.contains("hidden")) {
   failures.push(`one open address is no longer shown as the address: ${value.serialize()}`);
 }
+
+// The drawer reads the node again for step 1 alone: an address that bound
+// after the form was read (Wi-Fi joining after login) is listed without
+// repainting the settings form over the owner's unsaved ticks.
+await load(view([A, B], { peerListeners: [
+  { address: A, state: "bound" }, { address: B, state: "failed", reason: "address_gone", message: "gone" },
+] }));
+toggle(C, true);
+const reachablePairing = { availability: "on", windowAvailable: true, candidates: [],
+  state: { open: true, peerAddress: A, peerAddressReachable: true, notice: "" } };
+pairingAnswer = () => reachablePairing;
+app.state.pairing = reachablePairing;
+settingsAnswer = async () => view([A, B]);
+el("pairing-modal").classList.remove("hidden");
+await app.loadPairing();
+await tick();
+await tick();
+app.renderPairHere();
+if (el("pair-local-address").children.filter((child) => child && child.className === "pairaddr").length !== 2) {
+  failures.push(`step 1 still lists the node's old answer after it bound a second address: ${el("pair-local-address").serialize()}`);
+}
+if (el("pair-here-note").serialize().includes(fill(ZH["pair.hereNotOpen"], { addresses: B }))) {
+  failures.push("step 1 still says an address the node now serves is not open");
+}
+if (!row(C)?.box.checked) failures.push("refreshing step 1 repainted the settings form over an unsaved tick");
+el("pairing-modal").classList.add("hidden");
+pairingAnswer = () => ({ availability: "unknown", candidates: [] });
 
 // 9. A paired machine's detail names the backup addresses after the recorded one.
 const detail = app.nodeDetail({
