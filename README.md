@@ -532,6 +532,24 @@ local network; without it `ah candidates` refuses and says so, while the pairing
 window and `ah pair request <host:port>` still work — that exchange needs only an
 address one owner types, which is the case it exists for.
 
+A machine on a cable and on Wi-Fi at once can serve peers on both: give
+`--peer-listen` once per address (at most four, all on the same port).
+
+```sh
+bin/agenthub-node --db ./data/agenthub.db --allow-lan --discover \
+  --peer-listen 192.168.1.10:7463 --peer-listen 10.0.0.5:7463
+```
+
+Each address is bound on its own, and never `0.0.0.0` or `::`: those bind every
+interface the machine has or later gains, public ones included, so they are
+refused in every spelling. If one address is missing — the cable is unplugged —
+the node serves the others and tries the missing one again every 30 seconds, so
+Wi-Fi that joins after login is picked up without a restart. Only when none of
+them binds does the node fall back to loopback. `ah settings` and
+`GET /v1/node/settings` list each address as `bound`, `failed` (with the reason)
+or `pending`. mDNS announces the first bound IPv4 address only;
+`GET /v1/pairing` lists every bound one in `peerAddresses`.
+
 #### What your machine calls itself
 
 While pairing mode is open, the node announces a display name to everyone on
@@ -580,8 +598,11 @@ and the desktop app can change a setting without reinstalling anything.
 ```sh
 bin/ah settings                                   # what is running, and where each value came from
 bin/ah settings set --allow-lan=true --peer-listen 192.168.1.10:7463
+bin/ah settings set --peer-listen 192.168.1.10:7463 --peer-listen 10.0.0.5:7463
+                                                  # given at all, --peer-listen replaces the whole list;
+                                                  # a node older than the list refuses more than one
 bin/ah settings set --allow-lan=false             # booleans take =false, so a switch can be closed;
-                                                  # a peer listener on a LAN address goes back to 127.0.0.1:7463 with it
+                                                  # every LAN peer address goes back to 127.0.0.1:7463 with it
 bin/ah settings set --treat-as-private 122.122.0.0/16   # replaces the whole declaration
 bin/ah settings set --clear-private-ranges        # withdraws it
 bin/ah service restart                            # settings apply at startup, so this is the step that matters
@@ -1102,8 +1123,8 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
 | `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. `ah nodes address <node-id> <host:port>` is this call |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
-| `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ. Adds `peerListenWithdrawn: true` while this start is running on a peer listener it withdrew |
-| `PUT` | `/v1/node/settings` | Remember some or all of `peerListen`, `allowLan`, `discover`, `treatAsPrivate`, `autoWake`. Validated with the node's own start-up rules; answers `restartRequired: true`, because these are read only at startup |
+| `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ. `peerListens` is the list of peer addresses in both halves (`peerListen` is its first entry; in `settings` it is the address actually served), and `peerListeners` says of each whether it is `bound`, `failed` or `pending`. Adds `peerListenWithdrawn: true` while this start is running on a peer listener it withdrew, and `peerListenProblem` only when every peer address failed and the node fell back to loopback |
+| `PUT` | `/v1/node/settings` | Remember some or all of `peerListen`, `peerListens`, `allowLan`, `discover`, `treatAsPrivate`, `autoWake`. `peerListen` alone replaces the whole list with that one address; both together must agree on the first entry. Validated with the node's own start-up rules; answers `restartRequired: true`, because these are read only at startup |
 | `GET` | `/v1/peers` | Presence: paired nodes, online state, and the sessions each has authorised for this node. `ah peers` renders it, including the address to send to |
 | `POST` | `/v1/messages` | Queue a message for a local session, or — with `from` naming a local session whose owner opened outbound — for a session on a paired node |
 | `GET` | `/v1/inbox/{id}` | Read a local inbox, in pages: `limit` (1–200) and `after` (the `next` value a full page carries) |
