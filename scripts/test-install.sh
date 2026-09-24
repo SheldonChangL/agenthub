@@ -710,6 +710,117 @@ contains trap "$work/trap.txt" "is not a file"
 checks=$((checks + 1))
 [ ! -s "$work/rm.log" ] || fail "the cleanup trap ran rm with an empty TEMP_DIR: $(cat "$work/rm.log")"
 
+# ---- ~/.local/bin ends up on PATH ------------------------------------------
+
+# macOS puts no ~/.local/bin on PATH, so a default install that only printed a
+# hint ended with `ah: command not found`. These runs use a HOME of their own —
+# without --prefix the installer writes under HOME, and the startup file it
+# appends to is the owner's real one otherwise — and a PATH that cannot already
+# hold that HOME's bin directory.
+echo "== a default install puts ~/.local/bin on PATH =="
+bare_path="/usr/bin:/bin:/usr/sbin:/sbin"
+path_home="$work/path-home"
+mkdir -p "$path_home"
+# shellcheck disable=SC2016 # the literal line the installer writes
+export_line='export PATH="$HOME/.local/bin:$PATH"'
+
+path_dry() { # path_dry <output file> <shell> [args...]
+	local out=$1 shell=$2
+	shift 2
+	PATH="$no_service_ah:$(fake_uname Darwin arm64):$bare_path" HOME="$path_home" SHELL="$shell" \
+		sh "$installer" --dry-run --version v0.1.0 "$@" >"$out" 2>&1
+}
+path_dry "$work/path-zsh.txt" /bin/zsh --no-service --no-open
+contains path-zsh "$work/path-zsh.txt" "+ append to $path_home/.zshrc: $export_line"
+contains path-zsh "$work/path-zsh.txt" "PATH: on PATH in new terminals"
+lacks path-zsh "$work/path-zsh.txt" "is not on your PATH"
+checks=$((checks + 1))
+[ ! -e "$path_home/.zshrc" ] || fail "path-zsh: a dry run wrote $path_home/.zshrc"
+path_dry "$work/path-bash-mac.txt" /bin/bash --no-service --no-open
+contains path-bash-mac "$work/path-bash-mac.txt" "+ append to $path_home/.bash_profile: "
+path_dry "$work/path-noshell.txt" "" --no-service --no-open
+contains path-noshell "$work/path-noshell.txt" "+ append to $path_home/.zshrc: "
+path_dry "$work/path-optout.txt" /bin/zsh --no-service --no-open --no-modify-path
+contains path-optout "$work/path-optout.txt" "note: $path_home/.local/bin is not on your PATH"
+lacks path-optout "$work/path-optout.txt" "append to"
+path_dry "$work/path-tcsh.txt" /bin/tcsh --no-service --no-open
+contains path-tcsh "$work/path-tcsh.txt" "is not on your PATH. Add it"
+contains path-tcsh "$work/path-tcsh.txt" "PATH: not on PATH"
+lacks path-tcsh "$work/path-tcsh.txt" "append to"
+# A bash login shell reads only the first of .bash_profile, .bash_login and
+# .profile that exists; a new .bash_profile would switch an existing .profile off.
+profile_home="$work/profile-home"
+mkdir -p "$profile_home"
+echo 'export FROM_PROFILE=1' >"$profile_home/.profile"
+PATH="$no_service_ah:$(fake_uname Darwin arm64):$bare_path" HOME="$profile_home" SHELL=/bin/bash \
+	sh "$installer" --dry-run --version v0.1.0 --no-service --no-open >"$work/path-profile.txt" 2>&1
+contains path-profile "$work/path-profile.txt" "+ append to $profile_home/.profile: "
+lacks path-profile "$work/path-profile.txt" ".bash_profile"
+PATH="$no_service_ah:$(fake_uname Darwin arm64):$path_home/.local/bin:$bare_path" HOME="$path_home" SHELL=/bin/zsh \
+	sh "$installer" --dry-run --version v0.1.0 --no-service --no-open >"$work/path-already.txt" 2>&1
+lacks path-already "$work/path-already.txt" "append to"
+lacks path-already "$work/path-already.txt" "is not on your PATH"
+contains path-already "$work/path-already.txt" "PATH: on PATH"
+
+# A real install without --prefix, into that HOME, run twice. What is asserted
+# is the composition: a new shell that reads the startup file finds the `ah`
+# this install linked — not merely that some line was written.
+echo "== the startup file a real install writes finds ah =="
+linux_shim=$(fake_uname Linux x86_64)
+path_real() { # path_real <output file> <shell> [args...]
+	local out=$1 shell=$2
+	shift 2
+	PATH="$linux_shim:$bare_path" HOME="$path_home" SHELL="$shell" XDG_DATA_HOME="$work/path-xdg" \
+		sh "$installer" --from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+		--no-service "$@" >"$out" 2>&1
+}
+checks=$((checks + 1))
+path_real "$work/path-real.txt" /bin/bash || fail "path-real: the install failed: $(cat "$work/path-real.txt")"
+contains path-real "$work/path-real.txt" "added $path_home/.local/bin to PATH in $path_home/.bashrc"
+checks=$((checks + 1))
+path_real "$work/path-real2.txt" /bin/bash || fail "path-real2: the second install failed"
+contains path-real2 "$work/path-real2.txt" "$path_home/.bashrc already adds"
+checks=$((checks + 1))
+[ "$(grep -cF "$export_line" "$path_home/.bashrc")" -eq 1 ] ||
+	fail "path-real: a second install added the line again: $(cat "$path_home/.bashrc")"
+checks=$((checks + 1))
+# shellcheck disable=SC2016 # expanded by the child shell, with its own HOME
+found=$(env -i HOME="$path_home" PATH="$bare_path" bash -c '. "$HOME/.bashrc"; command -v ah' || true)
+[ "$found" = "$path_home/.local/bin/ah" ] || fail "path-real: a shell reading .bashrc finds ah at \"$found\""
+if command -v zsh >/dev/null 2>&1; then
+	zdot="$work/path-zdot"
+	mkdir -p "$zdot"
+	checks=$((checks + 1))
+	ZDOTDIR="$zdot" path_real "$work/path-real-zsh.txt" /bin/zsh || fail "path-real-zsh: the install failed"
+	contains path-real-zsh "$work/path-real-zsh.txt" "to PATH in $zdot/.zshrc"
+	checks=$((checks + 1))
+	found=$(env -i HOME="$path_home" ZDOTDIR="$zdot" PATH="$bare_path" zsh -i -c 'command -v ah' 2>/dev/null || true)
+	[ "$found" = "$path_home/.local/bin/ah" ] || fail "path-real-zsh: a new zsh finds ah at \"$found\""
+fi
+# A startup file that cannot be written is a warning, not the end of the
+# install: the node still gets registered and the closing lines still print.
+# Root writes through a read-only mode, so the case means nothing there.
+if [ "$(id -u)" -ne 0 ]; then
+	ro_home="$work/ro-home"
+	mkdir -p "$ro_home"
+	: >"$work/ro-bashrc"
+	chmod 444 "$work/ro-bashrc"
+	ln -s "$work/ro-bashrc" "$ro_home/.bashrc"
+	checks=$((checks + 1))
+	PATH="$linux_shim:$bare_path" HOME="$ro_home" SHELL=/bin/bash XDG_DATA_HOME="$work/ro-xdg" \
+		sh "$installer" --from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+		--no-service >"$work/path-ro.txt" 2>&1 || fail "path-ro: a read-only .bashrc stopped the install: $(cat "$work/path-ro.txt")"
+	contains path-ro "$work/path-ro.txt" "warning: could not write $ro_home/.bashrc"
+	contains path-ro "$work/path-ro.txt" "PATH: not on PATH"
+	contains path-ro "$work/path-ro.txt" "skipped the background service"
+	contains path-ro "$work/path-ro.txt" "done. AgentHub"
+fi
+rm -f "$path_home/.profile"
+checks=$((checks + 1))
+path_real "$work/path-real-optout.txt" /bin/sh --no-modify-path || fail "path-real-optout: the install failed"
+checks=$((checks + 1))
+[ ! -e "$path_home/.profile" ] || fail "path-real-optout: --no-modify-path wrote $path_home/.profile"
+
 # ---- what the last lines tell a stranger -----------------------------------
 
 echo "== the closing lines say what to do next =="

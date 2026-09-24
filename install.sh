@@ -28,6 +28,7 @@ VERSION="${AGENTHUB_VERSION:-}"
 CLI_ONLY=0
 NO_SERVICE=0
 NO_OPEN=0
+NO_MODIFY_PATH=0
 DRY_RUN=0
 PREFIX=""
 FROM=""
@@ -43,6 +44,7 @@ MARKER=".agenthub-install"
 
 AH=""
 SERVICE_STATE=""
+PATH_STATE=""
 
 usage() {
 	cat <<'EOF'
@@ -56,6 +58,8 @@ Options:
   --cli-only         install ah, agenthub-node and agenthub-mcp without the app
   --no-service       do not register the background node
   --no-open          do not open the app when the install finishes (macOS)
+  --no-modify-path   do not add ~/.local/bin to PATH in the shell's startup
+                     file; only say what to add
   --prefix DIR       install under DIR instead of /Applications or ~/.local;
                      symlinks then go to DIR/bin
   --from FILE        install from a local .dmg or .tar.gz instead of
@@ -168,6 +172,10 @@ parse_arguments() {
 			;;
 		--no-open)
 			NO_OPEN=1
+			shift
+			;;
+		--no-modify-path)
+			NO_MODIFY_PATH=1
 			shift
 			;;
 		--dry-run)
@@ -325,11 +333,96 @@ link_into() { # link_into <target> <name>
 	say "linked $BIN_DIR/$2 -> $1"
 }
 
-path_hint() {
-	case ":${PATH}:" in
-	*":$BIN_DIR:"*) ;;
-	*) say "note: $BIN_DIR is not on your PATH. Add it: export PATH=\"$BIN_DIR:\$PATH\"" ;;
+# PATH_MARK is the comment above the line this script adds to a shell startup
+# file. A second run looks for it rather than for "a line that mentions
+# .local/bin", which an owner's own file can have for reasons of its own.
+PATH_MARK="# added by the AgentHub installer"
+
+# startup_file names the file a new terminal of this owner's login shell reads,
+# which is where a PATH line has to go to be seen, or prints nothing for a
+# shell whose files this does not know how to write (csh, nu, ...). zsh has
+# been the macOS default since 10.15. Terminal opens a bash as a login shell,
+# which reads only the first of .bash_profile, .bash_login and .profile that
+# exists — so the line goes into that one, because creating a .bash_profile
+# beside an existing .profile would silently switch the .profile off. On Linux
+# a terminal's bash reads .bashrc.
+startup_file() {
+	case "$(basename "${SHELL:-}")" in
+	zsh) echo "${ZDOTDIR:-$HOME}/.zshrc" ;;
+	bash)
+		if [ "$OS_SLUG" = "darwin" ]; then
+			for bash_login_file in .bash_profile .bash_login .profile; do
+				if [ -e "$HOME/$bash_login_file" ]; then
+					echo "$HOME/$bash_login_file"
+					return 0
+				fi
+			done
+			echo "$HOME/.bash_profile"
+		else
+			echo "$HOME/.bashrc"
+		fi
+		;;
+	fish) echo "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/agenthub.fish" ;;
+	"")
+		if [ "$OS_SLUG" = "darwin" ]; then
+			echo "${ZDOTDIR:-$HOME}/.zshrc"
+		else
+			echo "$HOME/.profile"
+		fi
+		;;
+	sh | dash | ash | ksh | mksh | yash) echo "$HOME/.profile" ;;
 	esac
+}
+
+# ensure_path makes `ah` something a new terminal finds. macOS puts no
+# ~/.local/bin on PATH at all, so without this the one-line install ends with
+# a command that is not found. It appends one marked line to the shell's
+# startup file, once; a --prefix install and --no-modify-path only say what to
+# add, because an owner who chose either has chosen to manage PATH themselves.
+ensure_path() {
+	PATH_STATE="on PATH"
+	case ":${PATH}:" in
+	*":$BIN_DIR:"*) return 0 ;;
+	esac
+	PATH_HINT="note: $BIN_DIR is not on your PATH. Add it: export PATH=\"$BIN_DIR:\$PATH\""
+	if [ -n "$PREFIX" ] || [ "$NO_MODIFY_PATH" -eq 1 ]; then
+		say "$PATH_HINT"
+		PATH_STATE="not on PATH; add $BIN_DIR to it"
+		return 0
+	fi
+	PATH_FILE="$(startup_file)"
+	if [ -z "$PATH_FILE" ]; then
+		say "$PATH_HINT (this script does not write $(basename "$SHELL")'s startup files)"
+		PATH_STATE="not on PATH; add $BIN_DIR to it"
+		return 0
+	fi
+	case "$PATH_FILE" in
+	*.fish)
+		# shellcheck disable=SC2016 # written for fish to expand, not this shell
+		path_line='contains -- $HOME/.local/bin $PATH; or set -gx PATH $HOME/.local/bin $PATH'
+		;;
+	*)
+		# shellcheck disable=SC2016 # written for the startup file to expand
+		path_line='export PATH="$HOME/.local/bin:$PATH"'
+		;;
+	esac
+	if [ -f "$PATH_FILE" ] && grep -qF "$PATH_MARK" "$PATH_FILE"; then
+		say "$PATH_FILE already adds $BIN_DIR to PATH"
+	elif [ "$DRY_RUN" -eq 1 ]; then
+		printf '+ append to %s: %s\n' "$(quote "$PATH_FILE")" "$path_line"
+	# The app is already in place when this runs, and the service is not yet
+	# registered, so a startup file that cannot be written (a read-only
+	# symlink, as home-manager makes them) is a warning and not the end of the
+	# install: under set -e a failed append would exit here, leaving the node
+	# unregistered and — on Linux — stopped.
+	elif (mkdir -p "$(dirname "$PATH_FILE")" && printf '\n%s\n%s\n' "$PATH_MARK" "$path_line" >>"$PATH_FILE") 2>/dev/null; then
+		say "added $BIN_DIR to PATH in $PATH_FILE"
+	else
+		warn "could not write $PATH_FILE, so $BIN_DIR is not on your PATH. Add it: export PATH=\"$BIN_DIR:\$PATH\""
+		PATH_STATE="not on PATH; add $BIN_DIR to it"
+		return 0
+	fi
+	PATH_STATE="on PATH in new terminals (this one: export PATH=\"$BIN_DIR:\$PATH\")"
 }
 
 # unpack_tarball extracts into the temp directory and prints nothing; the
@@ -723,6 +816,7 @@ closing_lines() {
 		say "  files: $AGENTHUB_DIR"
 	fi
 	say "  ah:   $BIN_DIR/ah   (\"$AH --version\" says which build)"
+	say "  PATH: $PATH_STATE"
 	say "  node: $SERVICE_STATE"
 	say ""
 	if [ "$CLI_ONLY" -eq 0 ]; then
@@ -948,7 +1042,7 @@ Releases before the desktop builds carry the command line archives only — re-r
 		;;
 	esac
 
-	path_hint
+	ensure_path
 
 	# `ah service install` writes the unit that starts the node at login, and it
 	# writes the absolute path of the agenthub-node beside this ah. Running it on
