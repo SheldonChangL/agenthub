@@ -1168,8 +1168,8 @@ checks=$((checks + 1))
 skill_run "$work/skill-un-linked.txt" "$linked" --uninstall || fail "skill-un-linked: failed: $(cat "$work/skill-un-linked.txt")"
 contains skill-un-linked "$work/skill-un-linked.txt" "left $linked/skills/agenthub-watch alone"
 checks=$((checks + 1))
-[ -L "$linked/skills/agenthub-watch" ] && [ -f "$work/own-skills/agenthub-watch/SKILL.md" ] ||
-	fail "skill-un-linked: --uninstall removed the owner's linked skill"
+[ -L "$linked/skills/agenthub-watch" ] || fail "skill-un-linked: --uninstall removed the owner's link"
+[ -f "$work/own-skills/agenthub-watch/SKILL.md" ] || fail "skill-un-linked: --uninstall removed the owner's skill behind the link"
 checks=$((checks + 1))
 skill_run "$work/skill-un-copied.txt" "$copied" --uninstall || fail "skill-un-copied: failed: $(cat "$work/skill-un-copied.txt")"
 checks=$((checks + 1))
