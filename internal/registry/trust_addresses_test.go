@@ -300,3 +300,26 @@ func TestAnAlternateThatRepeatsThePreferredIsNotReadTwice(t *testing.T) {
 	}
 	wantAddresses(t, store, "10.0.0.2:7463")
 }
+
+// An older build clears a node by writing address alone. The alternates it
+// leaves behind are what the owner cleared, so they are not read, and not
+// revived when an address is set again.
+func TestAnOlderBuildsClearedAddressClearsTheAlternates(t *testing.T) {
+	ctx := context.Background()
+	store := trustedWithAddresses(t)
+	if err := store.SetNodeAddresses(ctx, addressedNode,
+		[]string{"10.0.0.1:7463", "10.0.0.2:7463"}, allowAll); err != nil {
+		t.Fatal(err)
+	}
+	// What an older build's SetNodeAddress(ctx, id, "") does.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE trusted_nodes SET address = '' WHERE node_id = ?`, addressedNode); err != nil {
+		t.Fatal(err)
+	}
+	wantAddresses(t, store, "")
+
+	if err := store.SetNodeAddress(ctx, addressedNode, "192.168.1.9:7463"); err != nil {
+		t.Fatal(err)
+	}
+	wantAddresses(t, store, "192.168.1.9:7463")
+}
