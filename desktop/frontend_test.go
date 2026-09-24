@@ -564,6 +564,14 @@ func TestFrontendListensOnTheAddressesTheOwnerTicks(t *testing.T) {
 	runNodeCheck(t, "listen-addresses.mjs")
 }
 
+// TestFrontendEditsEveryAddressOfAPairedMachine covers the node detail page's
+// address list (ADR-005 §4): the preferred address and every backup edited and
+// removed, saved whole through SetNodeAddresses so a removed typo is gone, and
+// an older node's one-address fallback said rather than reported as saved.
+func TestFrontendEditsEveryAddressOfAPairedMachine(t *testing.T) {
+	runNodeCheck(t, "node-addresses.mjs")
+}
+
 // TestFrontendServicePanelOffersTheRestartWhereItIsSafe covers the background
 // service panel on a platform that has none.
 //

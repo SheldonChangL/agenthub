@@ -285,6 +285,18 @@ export namespace main {
 	        this.command = source["command"];
 	    }
 	}
+	export class NodeAddressesSaved {
+	    olderNode: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new NodeAddressesSaved(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.olderNode = source["olderNode"];
+	    }
+	}
 	export class NodeIdentity {
 	    id: string;
 	    displayName: string;

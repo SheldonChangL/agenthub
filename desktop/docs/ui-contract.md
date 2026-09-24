@@ -76,7 +76,8 @@
 | `NodeSettings()` | 進入設定頁的節點設定區 | 讀回 `settings`（執行中）與 `saved`（存下來的）兩份；規則見 §7.8 |
 | `SaveNodeSettings(patch)` | 節點設定區的「儲存」 | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
 | `RestartService()` | 節點設定區的「重新啟動服務」 | 走 `ah service restart`；三平台都支援——macOS `launchctl kickstart -k`、Linux `systemctl --user restart`、Windows `taskkill` 掉 node 再 `schtasks /Run` 排程工作 |
-| `SetNodeAddress(...)` | 節點詳情的位址欄 | 草稿欄位，`interactionInProgress()` 期間不被背景重畫蓋掉 |
+| `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（banner `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
+| `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
 | `CopyText(text)` | MCP 設定、resume 指令、指紋等所有「複製」 | 寫入剪貼簿；結果顯示在原地（對話框內或列上），不是 banner |
 
@@ -247,6 +248,7 @@
 
 右欄（`nodedetail`）：
 - 節點詳情：名稱、完整指紋、核對說明、節點 ID／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
+- 位址區：記錄中的位址與備援的說明句、位址清單（每列 `addresslabel`「首選」／「備援 n」＋ `addressinput` ＋ `removeaddress`，只剩一列時不給移除）、`addaddress`（滿 4 列隱藏）、`setaddress`「記錄位址」、格式說明。整組經 `SetNodeAddresses` 寫回。
 - 「這個節點公開給我的 session」：四種 presence 狀態 + `sessionsWithheld` + 空 + 表格（SESSION／節點／PROVIDER／狀態／最後活動）。
 
 ### 3.4 設定頁

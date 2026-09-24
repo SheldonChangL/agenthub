@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -355,6 +356,35 @@ func (c *client) setNodeAddress(ctx context.Context, nodeID, address string) err
 	return err
 }
 
+// errNoAddressList is a node that predates PUT /v1/nodes/{id}/addresses and
+// knows one address per peer.
+var errNoAddressList = errors.New("this node predates address lists and records one address per paired node")
+
+// setNodeAddresses replaces every address a paired peer answers on, the first
+// preferred and the rest its alternates (ADR-005 §4). Unlike setNodeAddress,
+// which keeps the address it replaces as an alternate, this is the whole set:
+// an address left out of it is gone, which is how a mistyped one is removed.
+//
+// An empty list is sent as [] rather than omitted, because the node reads a
+// missing list as a mistake, not as "clear them".
+//
+// A node that has no such route answers 404 with its router's plain-text body,
+// and that — not a 404 in the node's own JSON, which is a node it does not
+// trust — is errNoAddressList.
+func (c *client) setNodeAddresses(ctx context.Context, nodeID string, addresses []string) error {
+	if addresses == nil {
+		addresses = []string{}
+	}
+	_, err := c.request(ctx, http.MethodPut, "/v1/nodes/"+url.PathEscape(nodeID)+"/addresses",
+		map[string][]string{"addresses": addresses})
+	var status *statusError
+	if errors.As(err, &status) &&
+		(status.status == http.StatusNotFound || status.status == http.StatusMethodNotAllowed) {
+		return errNoAddressList
+	}
+	return err
+}
+
 func (c *client) revokeNode(ctx context.Context, nodeID string) error {
 	_, err := c.request(ctx, http.MethodDelete, "/v1/nodes/"+url.PathEscape(nodeID), nil)
 	return err
@@ -651,9 +681,20 @@ func (c *client) request(ctx context.Context, method, path string, input any) ([
 		if json.Unmarshal(data, &apiError) == nil && apiError.Error.Message != "" {
 			return nil, fmt.Errorf("%s: %s", apiError.Error.Code, apiError.Error.Message)
 		}
-		return nil, fmt.Errorf("node returned HTTP %d", response.StatusCode)
+		return nil, &statusError{status: response.StatusCode}
 	}
 	return data, nil
+}
+
+// statusError is a failing answer that carried no error of the node's own —
+// what its router says for a route it does not have, which is how an older
+// node is told apart from a refusal.
+type statusError struct {
+	status int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("node returned HTTP %d", e.status)
 }
 
 // OutboundMessage is one message this node has queued for a peer, as the list
