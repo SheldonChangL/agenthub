@@ -55,15 +55,17 @@ func realNode(t *testing.T) (*registry.Registry, *httptest.Server) {
 func TestSettingsSetOnePeerListenReplacesTheWholeList(t *testing.T) {
 	store, server := realNode(t)
 	var stdout, stderr bytes.Buffer
+	// The list's own first entry: the write that only the "a scalar write
+	// replaces the list" rule closes — the stored scalar would still match.
 	if code := Run(context.Background(), []string{"--url", server.URL, "settings", "set",
-		"--peer-listen", "10.0.0.5:7463"}, &stdout, &stderr); code != 0 {
+		"--peer-listen", "192.168.1.10:7463"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
 	}
 	stored, err := store.GetNodeSettings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.PeerListens == nil || !slices.Equal(*stored.PeerListens, []string{"10.0.0.5:7463"}) {
+	if stored.PeerListens == nil || !slices.Equal(*stored.PeerListens, []string{"192.168.1.10:7463"}) {
 		t.Fatalf("the node stored %v; one --peer-listen has to be the whole list", stored.PeerListens)
 	}
 }
