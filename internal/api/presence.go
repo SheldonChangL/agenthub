@@ -269,6 +269,49 @@ func (s *Server) setNodeAddress(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// setNodeAddresses replaces every address a paired peer answers on, the first
+// preferred (ADR-005 §4).
+//
+// The same checks as setNodeAddress, applied to each address, and at most
+// registry.MaxNodeAddresses of them: a list the publisher could not use in
+// full is refused whole rather than cut, so the owner decides which to keep.
+// An empty list clears them all. PUT /v1/nodes/{id}/address is unchanged, for
+// the windows and CLIs that know only one address.
+func (s *Server) setNodeAddresses(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Addresses *[]string `json:"addresses"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	if input.Addresses == nil {
+		// Absent is not empty. Reading a body with no list as "clear
+		// everything" would let a typo in the field name unlocate a peer.
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+			`addresses is required; send "addresses": [] to clear them`)
+		return
+	}
+	for _, address := range *input.Addresses {
+		address = strings.TrimSpace(address)
+		if _, _, err := net.SplitHostPort(address); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
+				fmt.Sprintf("address %q must be host:port", address))
+			return
+		}
+		if err := s.deliveryPolicy(address); err != nil {
+			writeError(w, http.StatusBadRequest, "ADDRESS_NOT_ALLOWED", err.Error())
+			return
+		}
+	}
+	if err := s.store.SetNodeAddresses(r.Context(), r.PathValue("id"), *input.Addresses,
+		s.deliveryPolicy); err != nil {
+		writeRegistryError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // answerChallenge proves this node holds the key its identity advertises.
 //
 // The answer is what lets a sender confirm it is talking to the peer it thinks

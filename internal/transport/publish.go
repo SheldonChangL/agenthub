@@ -31,7 +31,15 @@ import (
 
 // deliveryTimeout bounds one delivery. A peer that has gone away must not hold
 // a publisher's turn open long enough to starve the peers after it.
+//
+// With several addresses for one peer (ADR-005 §4) it is also the budget for
+// finding the one that answers: every attempt shares it, so a peer with four
+// dead addresses costs no more of a round than one with a single dead one.
 const deliveryTimeout = 10 * time.Second
+
+// connectTimeout bounds one connection attempt to one address, so a dead
+// preferred address leaves time inside deliveryTimeout to try the next.
+const connectTimeout = 3 * time.Second
 
 // maxResponseBody bounds what a peer can make this node read in reply. A
 // successful delivery answers 204 with nothing; an error answers with a small
@@ -155,9 +163,22 @@ type Publisher struct {
 	policy    AddressPolicy
 	interval  time.Duration
 	now       func() time.Time
+	// searchBudget and attemptTimeout are deliveryTimeout and connectTimeout,
+	// held here so a test can shrink them rather than wait out the real ones.
+	searchBudget   time.Duration
+	attemptTimeout time.Duration
+	// dialer is what the transport connects with, held so a test can make a
+	// connection slow where a real one is slow: inside the dial.
+	dialer *net.Dialer
 }
 
 func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, localNodeID string, policy AddressPolicy, interval time.Duration) *Publisher {
+	// No Timeout on the dialer. A timeout here would bound every connection
+	// this transport makes — a peer's only address, the heartbeat after the
+	// challenge, every message — to one attempt's share. reach bounds each
+	// attempt but the last with its own context instead, and the rest are
+	// bounded by the delivery as they always were.
+	dialer := &net.Dialer{}
 	return &Publisher{
 		store:       store,
 		builder:     builder,
@@ -171,7 +192,11 @@ func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, 
 			// on another package's env parsing.
 			Proxy:               nil,
 			TLSHandshakeTimeout: deliveryTimeout,
+			DialContext:         dialer.DialContext,
 		},
+		searchBudget:   deliveryTimeout,
+		attemptTimeout: connectTimeout,
+		dialer:         dialer,
 	}
 }
 
@@ -226,21 +251,14 @@ func (p *Publisher) PublishOnce(ctx context.Context) (Result, error) {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
-		if peer.Address == "" {
-			// Paired but not located. Nothing to do, and nothing wrong.
+		addresses := p.deliverable(peer, "a heartbeat")
+		if len(addresses) == 0 {
+			// Paired but not located, or located only at addresses this build
+			// refuses to reach. Nothing to do, and nothing that failed.
 			result.Skipped++
 			continue
 		}
-		if err := p.policy(peer.Address); err != nil {
-			// The address exists but this build refuses to reach it. This is a
-			// boundary refusal, not a delivery failure, so it is counted apart
-			// and said out loud: an owner who set a LAN address needs to know
-			// why nothing is arriving.
-			log.Printf("not delivering to %q at %q: %v", peer.NodeID, peer.Address, err)
-			result.Skipped++
-			continue
-		}
-		if err := p.deliver(ctx, peer); err != nil {
+		if err := p.deliver(ctx, peer, addresses); err != nil {
 			log.Printf("heartbeat to %q failed: %v", peer.NodeID, err)
 			result.Failed++
 			continue
@@ -282,7 +300,7 @@ func (p *Publisher) PublishOnce(ctx context.Context) (Result, error) {
 func (p *Publisher) challenge(ctx context.Context, peer registry.TrustedNode, localNodeID string) error {
 	publicKey, err := identity.DecodePublicKey(peer.PublicKey)
 	if err != nil {
-		return fmt.Errorf("stored key for %q is unusable: %w", peer.NodeID, err)
+		return fmt.Errorf("%w for %q: %w", errUnusableKey, peer.NodeID, err)
 	}
 	nonce, err := protocol.NewChallengeNonce()
 	if err != nil {
@@ -328,7 +346,7 @@ func (p *Publisher) challenge(ctx context.Context, peer registry.TrustedNode, lo
 func (p *Publisher) clientFor(peer registry.TrustedNode) (*http.Client, error) {
 	publicKey, err := identity.DecodePublicKey(peer.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("stored key for %q is unusable: %w", peer.NodeID, err)
+		return nil, fmt.Errorf("%w for %q: %w", errUnusableKey, peer.NodeID, err)
 	}
 	transport := p.transport.Clone()
 	// Each delivery builds its own client, so a pooled connection has nobody to
@@ -360,8 +378,9 @@ func (p *Publisher) clientFor(peer registry.TrustedNode) (*http.Client, error) {
 	}, nil
 }
 
-func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode) error {
-	if err := p.challenge(ctx, peer, p.localNodeID); err != nil {
+func (p *Publisher) deliver(ctx context.Context, peer registry.TrustedNode, addresses []string) error {
+	peer, err := p.reach(ctx, peer, addresses)
+	if err != nil {
 		return err
 	}
 	envelope, err := p.builder.BuildFor(ctx, p.now(), peer.NodeID)
@@ -422,5 +441,104 @@ func (p *Publisher) post(ctx context.Context, peer registry.TrustedNode, path st
 	if response.StatusCode == http.StatusNoContent || response.StatusCode == http.StatusOK {
 		return data, nil
 	}
-	return nil, fmt.Errorf("peer answered HTTP %d: %s", response.StatusCode, bytes.TrimSpace(data))
+	return nil, &peerStatusError{status: response.StatusCode, body: string(bytes.TrimSpace(data))}
+}
+
+// peerStatusError is an HTTP answer from the peer itself. The connection was
+// pinned to the peer's key before any status could be read, so whatever wrote
+// this status holds that key: another address reaches the same machine, and
+// the same answer.
+type peerStatusError struct {
+	status int
+	body   string
+}
+
+func (e *peerStatusError) Error() string {
+	return fmt.Sprintf("peer answered HTTP %d: %s", e.status, e.body)
+}
+
+// errUnusableKey is a stored key that cannot pin anything. No address will do
+// better, so the search stops at the first one.
+var errUnusableKey = errors.New("stored key is unusable")
+
+// deliverable is the peer's addresses in the order they are tried — the
+// preferred one, then the alternates — less any this build refuses to reach.
+//
+// A refusal is a boundary decision, not a delivery failure, so it is said out
+// loud and the address is left out: an owner who set a LAN address needs to
+// know why nothing is arriving.
+func (p *Publisher) deliverable(peer registry.TrustedNode, what string) []string {
+	addresses := make([]string, 0, 1+len(peer.Alternates))
+	for _, address := range append([]string{peer.Address}, peer.Alternates...) {
+		if address == "" {
+			continue
+		}
+		if err := p.policy(address); err != nil {
+			log.Printf("not delivering %s to %q at %q: %v", what, peer.NodeID, address, err)
+			continue
+		}
+		addresses = append(addresses, address)
+	}
+	return addresses
+}
+
+// reach finds the address, of those deliverable returned, at which the peer
+// proves who it is, and returns the peer with that address in Address, so
+// everything else sent this round goes where the proof was given (ADR-005 §4).
+//
+// Addresses are tried one at a time, preferred first. It moves on after
+// anything that says "not the peer, or not here": a connection that fails or
+// times out, a TLS key that is not the pinned one, a challenge answered by a
+// different node or not proven. It does not move on after an HTTP status,
+// because only the pinned key can have written one: that is the peer, and
+// another address would reach the same machine to be told the same thing.
+//
+// Each attempt but the last gets attemptTimeout, from its own context: an
+// address whose interface has gone answers nothing at all, and would otherwise
+// hold the search until the budget ran out. The last attempt gets whatever of
+// the budget is left, so a peer with one address keeps the whole budget it
+// always had — the dialer carries no timeout of its own that would cut it
+// short. An alternate that proves the peer becomes the preferred address.
+func (p *Publisher) reach(ctx context.Context, peer registry.TrustedNode,
+	addresses []string) (registry.TrustedNode, error) {
+	if len(addresses) == 0 {
+		return peer, fmt.Errorf("no address to deliver to %q", peer.NodeID)
+	}
+	search, cancel := context.WithTimeout(ctx, p.searchBudget)
+	defer cancel()
+
+	var failures []error
+	for index, address := range addresses {
+		if err := ctx.Err(); err != nil {
+			return peer, err
+		}
+		if search.Err() != nil {
+			failures = append(failures, fmt.Errorf("%s: not tried, the %s budget ran out", address, p.searchBudget))
+			continue
+		}
+		attempt, stop := search, context.CancelFunc(func() {})
+		if index < len(addresses)-1 {
+			attempt, stop = context.WithTimeout(search, p.attemptTimeout)
+		}
+		candidate := peer
+		candidate.Address = address
+		err := p.challenge(attempt, candidate, p.localNodeID)
+		stop()
+		if err == nil {
+			if address != peer.Address {
+				log.Printf("%q answered at %s rather than its preferred %s; preferring %s from now on",
+					peer.NodeID, address, peer.Address, address)
+				if err := p.store.PromoteNodeAddress(ctx, peer.NodeID, address); err != nil {
+					log.Printf("could not prefer %s for %q: %v", address, peer.NodeID, err)
+				}
+			}
+			return candidate, nil
+		}
+		var status *peerStatusError
+		if errors.As(err, &status) || errors.Is(err, errUnusableKey) {
+			return peer, err
+		}
+		failures = append(failures, err)
+	}
+	return peer, fmt.Errorf("no address of %q answered as it: %w", peer.NodeID, errors.Join(failures...))
 }

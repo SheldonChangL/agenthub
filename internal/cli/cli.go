@@ -168,18 +168,30 @@ func (r runner) command(ctx context.Context, args []string) error {
 		case len(args) == 1:
 			return r.simple(ctx, http.MethodGet, "/v1/nodes", nil)
 		case args[1] == "address":
-			if len(args) != 4 {
-				return errors.New("usage: ah nodes address <node-id> <host:port>")
+			if len(args) < 4 || len(args) > 3+maxNodeAddresses {
+				return errors.New(nodesAddressUsage)
 			}
 			// host:port is validated by the node, which refuses an address
 			// this build would not deliver to and says why. Checking it here
 			// as well would mean two rules that can disagree, and the node's
 			// is the one that decides whether anything is ever sent.
-			return r.simple(ctx, http.MethodPut,
-				"/v1/nodes/"+url.PathEscape(args[2])+"/address",
-				map[string]string{"address": args[3]})
+			nodePath := "/v1/nodes/" + url.PathEscape(args[2])
+			if len(args) == 4 {
+				// One address goes to the route every node has, so this
+				// command keeps working against a node older than alternates.
+				return r.simple(ctx, http.MethodPut, nodePath+"/address",
+					map[string]string{"address": args[3]})
+			}
+			// Several replace the whole set, the first preferred (ADR-005 §4).
+			err := r.simple(ctx, http.MethodPut, nodePath+"/addresses",
+				map[string][]string{"addresses": args[3:]})
+			if routeMissing(err) {
+				return fmt.Errorf("this node is too old for more than one address per peer: it has no "+
+					"PUT /v1/nodes/{id}/addresses. Update agenthub-node, or give one address (%w)", err)
+			}
+			return err
 		default:
-			return fmt.Errorf("ah nodes does not take %q\nusage: ah nodes [address <node-id> <host:port>]", args[1])
+			return fmt.Errorf("ah nodes does not take %q\nusage: ah nodes [address <node-id> <host:port> [<host:port>...]]", args[1])
 		}
 	case "peers":
 		if len(args) != 1 {
@@ -1224,11 +1236,34 @@ func (r runner) request(ctx context.Context, method, path string, input any) ([]
 			} `json:"error"`
 		}
 		if json.Unmarshal(data, &apiError) == nil && apiError.Error.Message != "" {
-			return nil, fmt.Errorf("%s: %s", apiError.Error.Code, apiError.Error.Message)
+			return nil, &nodeAnswerError{status: response.StatusCode, code: apiError.Error.Code,
+				message: fmt.Sprintf("%s: %s", apiError.Error.Code, apiError.Error.Message)}
 		}
-		return nil, fmt.Errorf("node returned HTTP %d", response.StatusCode)
+		return nil, &nodeAnswerError{status: response.StatusCode,
+			message: fmt.Sprintf("node returned HTTP %d", response.StatusCode)}
 	}
 	return data, nil
+}
+
+// nodeAnswerError is a non-2xx answer from the node. The text is what every
+// caller has always printed; the status and the API's error code are kept so
+// a caller can tell a route the node does not have — a bare 404 or 405, no
+// error body — from a refusal the node wrote.
+type nodeAnswerError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *nodeAnswerError) Error() string { return e.message }
+
+// routeMissing reports a node too old to have the route: the mux's own 404 or
+// 405, which carries no API error code. A 404 the node wrote — an unknown node
+// id — has one.
+func routeMissing(err error) bool {
+	var answer *nodeAnswerError
+	return errors.As(err, &answer) && answer.code == "" &&
+		(answer.status == http.StatusNotFound || answer.status == http.StatusMethodNotAllowed)
 }
 
 func writePrettyJSON(output io.Writer, data []byte) error {
@@ -1241,6 +1276,12 @@ func writePrettyJSON(output io.Writer, data []byte) error {
 	return encoder.Encode(value)
 }
 
+const nodesAddressUsage = "usage: ah nodes address <node-id> <host:port> [<host:port>...], at most four"
+
+// maxNodeAddresses is registry.MaxNodeAddresses, which the node enforces; the
+// CLI refuses a longer list as a usage error before contacting it.
+const maxNodeAddresses = 4
+
 func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "usage: ah [--url URL] [--json] <command>")
 	_, _ = fmt.Fprintln(output, "       ah --version")
@@ -1252,8 +1293,9 @@ func printUsage(output io.Writer) {
 	_, _ = fmt.Fprintln(output, "  ah peers                                     what paired nodes have published to this one,")
 	_, _ = fmt.Fprintln(output, "                                               with the address to send to")
 	_, _ = fmt.Fprintln(output, "  ah nodes                                     the nodes this one trusts")
-	_, _ = fmt.Fprintln(output, "  ah nodes address <node-id> <host:port>       record where a paired node answers; without one,")
-	_, _ = fmt.Fprintln(output, "                                               delivery skips it and `ah send` still says queued")
+	_, _ = fmt.Fprintln(output, "  ah nodes address <node-id> <host:port>...    record where a paired node answers, preferred first;")
+	_, _ = fmt.Fprintln(output, "                                               the rest are tried in order when it does not answer.")
+	_, _ = fmt.Fprintln(output, "                                               Without one, delivery skips it and `ah send` still says queued")
 	_, _ = fmt.Fprintln(output, "  ah audience <session-id> [none|all-paired|selected <node-id>...] [--cwd] [--messages] [--outbound] [--auto-wake]")
 	_, _ = fmt.Fprintln(output, "  ah pair request <host:port>                  ask that machine to pair; no key is copied by hand")
 	_, _ = fmt.Fprintln(output, "  ah pair pending [--all]                      requests waiting, with the two fingerprints to compare;")

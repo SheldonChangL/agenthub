@@ -47,6 +47,14 @@ type pairNode struct {
 
 func newPairNode(t *testing.T, name string) *pairNode {
 	t.Helper()
+	return newPairNodeWith(t, name, nil)
+}
+
+// newPairNodeWith is newPairNode with options applied after the defaults, so a
+// test can replace the delivery policy or the addresses the node offers. It is
+// handed the node's own peer listener address, which exists only by then.
+func newPairNodeWith(t *testing.T, name string, extra func(peerAddress string) []Option) *pairNode {
+	t.Helper()
 	ctx := context.Background()
 	directory := t.TempDir()
 	keypair, err := identity.LoadOrCreateKeypair(directory)
@@ -84,11 +92,15 @@ func newPairNode(t *testing.T, name string) *pairNode {
 	t.Cleanup(peer.Close)
 
 	heartbeats := protocol.NewHeartbeatBuilder(store, node, keypair)
-	server := NewServer(store, nil, heartbeats, node,
+	options := []Option{
 		WithPairing(pairing.NewMode(), nil, nil),
 		WithPairExchange(pairing.NewRequests(), transport.NewPairDialer(transport.LoopbackOnly),
 			fixedPeerAddress(peer.Listener.Addr().String())),
-	)
+	}
+	if extra != nil {
+		options = append(options, extra(peer.Listener.Addr().String())...)
+	}
+	server := NewServer(store, nil, heartbeats, node, options...)
 	peerHandler = server.PeerHandler()
 	return &pairNode{
 		t: t, store: store, server: server, owner: server.Handler(),
@@ -672,7 +684,7 @@ func TestAReceivedFingerprintIsNeverTheOneOnTheWire(t *testing.T) {
 		Fingerprint: "0000 0000 0000 0000 0000 0000",
 	}
 	envelope, err := protocol.NewHeartbeatBuilder(receiver.store, lying, liar).
-		BuildPairRequest(time.Now(), "")
+		BuildPairRequest(time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -802,7 +814,7 @@ func TestOneAddressCannotFillTheIncomingList(t *testing.T) {
 			PublicKey: identity.EncodePublicKey(keypair.Public), Fingerprint: keypair.Fingerprint(),
 		}
 		envelope, err := protocol.NewHeartbeatBuilder(receiver.store, node, keypair).
-			BuildPairRequest(time.Now(), "")
+			BuildPairRequest(time.Now(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -852,7 +864,7 @@ func TestAPeerNameCannotForgeAComparisonRow(t *testing.T) {
 			PublicKey: identity.EncodePublicKey(keypair.Public), Fingerprint: keypair.Fingerprint(),
 		}
 		envelope, err := protocol.NewHeartbeatBuilder(receiver.store, node, keypair).
-			BuildPairRequest(time.Now(), "")
+			BuildPairRequest(time.Now(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}

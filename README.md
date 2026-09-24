@@ -412,6 +412,9 @@ go run ./cmd/ah pair <node-id> <display-name> <platform> <public-key> <fingerpri
 # the address is learned from the peer's own announcements and this is
 # unnecessary — see "Two machines" below. Without it, record it by hand:
 go run ./cmd/ah nodes address <node-id> 192.168.1.20:7463
+# A machine on a cable and Wi-Fi at once answers on both. Give every address,
+# preferred first; delivery tries them in order and prefers whichever answered:
+go run ./cmd/ah nodes address <node-id> 192.168.1.20:7463 10.0.0.5:7463
 
 go run ./cmd/ah revoke <node-id>
 go run ./cmd/ah send <session-id> "please review the schema"
@@ -1121,7 +1124,8 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `GET` | `/v1/nodes` | List paired nodes |
 | `POST` | `/v1/nodes` | Manually trust a node whose full fingerprint the owner compared |
 | `DELETE` | `/v1/nodes/{id}` | Revoke trust and every grant that node held |
-| `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. `ah nodes address <node-id> <host:port>` is this call |
+| `PUT` | `/v1/nodes/{id}/address` | Record where a paired node is reachable. Delivery skips a peer without one, silently, while `ah send` still answers `queued`. The address it replaces is kept as the first alternate; `""` clears both. `ah nodes address <node-id> <host:port>` is this call |
+| `PUT` | `/v1/nodes/{id}/addresses` | Replace every address a paired node is known by, `{"addresses": [...]}`, preferred first, at most four, each through the delivery policy; `[]` clears them. Delivery tries the preferred address and then the alternates (`alternateAddresses` in `GET /v1/nodes`), and prefers whichever answered. `ah nodes address <node-id> <a> <b>...` is this call |
 | `GET` | `/v1/node` | This node's own identity and fingerprint |
 | `GET` | `/v1/node/settings` | The start-up settings in effect, where each came from (`flag`, `remembered`, `default`), what the next start will use, and whether those differ. `peerListens` is the list of peer addresses in both halves (`peerListen` is its first entry; in `settings` it is the address actually served), and `peerListeners` says of each whether it is `bound`, `failed` or `pending`. Adds `peerListenWithdrawn: true` while this start is running on a peer listener it withdrew, and `peerListenProblem` only when every peer address failed and the node fell back to loopback |
 | `PUT` | `/v1/node/settings` | Remember some or all of `peerListen`, `peerListens`, `allowLan`, `discover`, `treatAsPrivate`, `autoWake`. `peerListen` alone replaces the whole list with that one address; both together must agree on the first entry. Validated with the node's own start-up rules; answers `restartRequired: true`, because these are read only at startup |

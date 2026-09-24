@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,11 @@ type capture struct {
 	refuseMessages bool
 	// refuseChallenge makes the peer fail the proof while still serving.
 	refuseChallenge bool
+	// challengeStatus, when set, answers the challenge with that status
+	// instead of an answer.
+	challengeStatus int
+	// challenges counts challenges that reached this address.
+	challenges atomic.Int32
 }
 
 func (c *capture) Sign(message []byte) []byte { return ed25519.Sign(c.private, message) }
@@ -70,6 +76,13 @@ func newCapture(t *testing.T, nodeID string) *capture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newCaptureKeyed(t, nodeID, public, private)
+}
+
+// newCaptureKeyed is newCapture holding a given key, so two captures can be
+// one peer answering at two addresses.
+func newCaptureKeyed(t *testing.T, nodeID string, public ed25519.PublicKey, private ed25519.PrivateKey) *capture {
+	t.Helper()
 	c := &capture{status: http.StatusNoContent, nodeID: nodeID, public: public, private: private}
 	c.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -79,6 +92,11 @@ func newCapture(t *testing.T, nodeID string) *capture {
 		}
 		switch r.URL.Path {
 		case "/v1/challenge":
+			c.challenges.Add(1)
+			if c.challengeStatus != 0 {
+				w.WriteHeader(c.challengeStatus)
+				return
+			}
 			var input struct {
 				Nonce            string `json:"nonce"`
 				ChallengerNodeID string `json:"challengerNodeId"`
