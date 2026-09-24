@@ -89,7 +89,7 @@ installing half of something.
 |---|---|
 | `/Applications/agenthub-desktop.app` | The app, with `ah`, `agenthub-node` and `agenthub-mcp` inside `Contents/MacOS` beside the `desktop` executable. `~/Applications/agenthub-desktop.app` instead when `/Applications` is not writable by this account — never `sudo`. |
 | `~/.local/bin/ah` | A symlink to the `ah` inside the app. The directory is created if it does not exist. |
-| `~/.zshrc` (or `~/.bash_profile`, `~/.profile`) | Two lines appended — a `# added by the AgentHub installer` comment and `export PATH="$HOME/.local/bin:$PATH"` — only when `~/.local/bin` is not already on `PATH`. See "PATH" below. |
+| `~/.zshrc`, or another shell startup file | A blank line, a `# added by the AgentHub installer` comment and `export PATH="$HOME/.local/bin:$PATH"`, appended only when `~/.local/bin` is not already on `PATH`. Which file depends on the shell; see "PATH" below. |
 | `~/Library/LaunchAgents/local.agenthub.node.plist` | Written by `ah service install`, not by this script. |
 | `~/Library/Application Support/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
@@ -99,7 +99,7 @@ installing half of something.
 |---|---|
 | `~/.local/share/agenthub/` | The unpacked app directory: `agenthub-desktop`, `ah`, `agenthub-node`, `agenthub-mcp`, `LICENSE`, `README.txt`. `AGENTHUB_HOME` moves it. |
 | `~/.local/bin/ah`, `~/.local/bin/agenthub-desktop` | Symlinks into that directory. With `--cli-only`, `ah`, `agenthub-node` and `agenthub-mcp` instead. |
-| `~/.bashrc` (or `~/.zshrc`, `~/.profile`) | The same two PATH lines as on macOS, under the same condition. |
+| `~/.bashrc`, or another shell startup file | The same PATH lines as on macOS, under the same condition; see "PATH" below. |
 | `~/.config/systemd/user/agenthub-node.service` | Written by `ah service install`, not by this script. |
 | `~/.config/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
@@ -112,23 +112,26 @@ this user's own.
 
 macOS puts no `~/.local/bin` on `PATH`, and neither do some Linux setups, so
 an install that only linked `ah` there would end with `ah: command not found`.
-When that directory is not on `PATH`, the script appends two lines to the
-startup file of the login shell named by `$SHELL`:
+When that directory is not on `PATH`, the script appends a comment and one
+line that adds it to the startup file of the login shell named by `$SHELL`:
 
 | `$SHELL` | File |
 |---|---|
-| zsh, or unset on macOS | `${ZDOTDIR:-~}/.zshrc` |
-| bash on macOS | `~/.bash_profile` (Terminal opens bash as a login shell) |
+| zsh, or unset on macOS | `$ZDOTDIR/.zshrc`, or `~/.zshrc` when `ZDOTDIR` is not set |
+| bash on macOS | the first of `~/.bash_profile`, `~/.bash_login`, `~/.profile` that exists, else a new `~/.bash_profile`. Terminal opens bash as a login shell, which reads only the first of those, so a new `.bash_profile` beside an existing `.profile` would switch the `.profile` off. |
 | bash on Linux | `~/.bashrc` |
-| fish | `~/.config/fish/conf.d/agenthub.fish` |
-| anything else | `~/.profile` |
+| fish | `${XDG_CONFIG_HOME:-~/.config}/fish/conf.d/agenthub.fish` |
+| sh, dash, ash, ksh, mksh, yash; or unset on Linux | `~/.profile` |
+| anything else (csh, nu, ...) | none; the `export` line is printed instead |
 
 It writes them once: a later run that finds the
 `# added by the AgentHub installer` comment in that file adds nothing. New
 terminals find `ah`; the terminal the install ran in does not, because a piped
 script cannot change its parent shell's environment, so the closing lines print
 the `export` for it. With `--prefix` or `--no-modify-path` no file is touched
-and the script prints that `export` line instead.
+and the script prints that `export` line instead. A startup file it cannot
+write — a read-only symlink, as Nix home-manager makes them — is a warning with
+the same `export` line, and the install carries on to register the node.
 
 ## The quarantine flag on macOS
 
