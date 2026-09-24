@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -328,6 +330,78 @@ func TestEveryAddressFailingStaysInsideTheBudget(t *testing.T) {
 	}
 }
 
+// slowConnect makes every TCP connection to these addresses take delay before
+// it is made, the way a far or congested link does. The time is spent inside
+// the dial, where a timeout on the dialer itself would count it.
+func slowConnect(publisher *Publisher, delay time.Duration, slow ...string) {
+	publisher.dialer.ControlContext = func(ctx context.Context, _, address string, _ syscall.RawConn) error {
+		if !slices.Contains(slow, address) {
+			return nil
+		}
+		select {
+		case <-time.After(delay):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// slowLink is how long the slow link in the two tests below takes to connect:
+// longer than one attempt, well inside the whole budget.
+const slowLink = 4 * time.Second
+
+// A peer with one address has nothing to fall back to, so its one connection
+// keeps the whole budget, as it did before there were alternates: a link that
+// takes four seconds to connect still gets the heartbeat through. The same
+// holds for the heartbeat's own connection after the challenge.
+func TestAPeerWithOneSlowAddressKeepsTheWholeBudget(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	peer := newCapture(t, multiPeerID)
+	trustAt(t, store, peer.public, peer.address(t))
+	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
+
+	publisher := publisherFor(t, store)
+	slowConnect(publisher, slowLink, peer.address(t))
+	started := time.Now()
+	result, err := publisher.PublishOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Delivered != 1 || len(peer.envelopes) != 1 {
+		t.Fatalf("result = %+v, peer received %d after %s; a %s connection to a peer's only address should get through",
+			result, len(peer.envelopes), time.Since(started), slowLink)
+	}
+}
+
+// With an alternate behind it, the preferred address still gives up after one
+// attempt, not after the slow link finally connects.
+func TestASlowPreferredAddressGivesUpAfterOneAttempt(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	slow, fast := twoAddressesOfOnePeer(t)
+	trustAt(t, store, slow.public, slow.address(t), fast.address(t))
+	publish(t, store, "claude:shared", model.Audience{Mode: model.AudienceAllPaired})
+
+	publisher := publisherFor(t, store)
+	slowConnect(publisher, slowLink, slow.address(t))
+	started := time.Now()
+	result, err := publisher.PublishOnce(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	if result.Delivered != 1 || len(fast.envelopes) != 1 || slow.challenges.Load() != 0 {
+		t.Fatalf("result = %+v, alternate received %d, slow address challenged %d times; want the alternate used",
+			result, len(fast.envelopes), slow.challenges.Load())
+	}
+	if elapsed < publisher.attemptTimeout || elapsed >= slowLink {
+		t.Fatalf("the round took %s; want the slow address abandoned at %s, before its %s connection completed",
+			elapsed, publisher.attemptTimeout, slowLink)
+	}
+}
+
 // The production numbers are the ADR's: 3 s a connection, 10 s in all.
 func TestTheDialBudgetIsTheADRs(t *testing.T) {
 	publisher := publisherFor(t, openStore(t))
@@ -335,8 +409,11 @@ func TestTheDialBudgetIsTheADRs(t *testing.T) {
 		t.Fatalf("attempt %s, budget %s; ADR-005 §4 says 3s inside the existing 10s",
 			publisher.attemptTimeout, publisher.searchBudget)
 	}
-	if publisher.transport.DialContext == nil {
-		t.Fatal("the transport dials without a connect timeout")
+	// The attempt's context is what cuts one address short; a timeout on the
+	// dialer would cut short a peer's only address too.
+	if publisher.dialer.Timeout != 0 {
+		t.Fatalf("the dialer times out after %s; the attempt context bounds a connection, not the dialer",
+			publisher.dialer.Timeout)
 	}
 }
 
