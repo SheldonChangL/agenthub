@@ -287,11 +287,11 @@ export namespace main {
 	}
 	export class NodeAddressesSaved {
 	    olderNode: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new NodeAddressesSaved(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.olderNode = source["olderNode"];
@@ -368,11 +368,11 @@ export namespace main {
 	    reason?: string;
 	    detail?: string;
 	    message?: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new PeerListenerState(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.address = source["address"];
