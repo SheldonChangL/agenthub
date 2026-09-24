@@ -1186,7 +1186,15 @@ func (s *Server) acceptablePeerAddress(address string) string {
 // dropped, and what is left is cut so preferred and alternates together are at
 // most MaxPairAddresses — the sender was asked for no more, and a sender that
 // sends more does not get to make this node dial them.
+//
+// Only the first MaxPairAddresses entries of the list are looked at, as the
+// schema allows no more (pairAddresses, maxItems 4). Past them the list is not
+// a longer claim but a malformed one: reading on would let a sender pad it
+// with what this node refuses and have the entries behind the padding kept.
 func (s *Server) acceptableAlternates(preferred string, claimed []string) []string {
+	if len(claimed) > protocol.MaxPairAddresses {
+		claimed = claimed[:protocol.MaxPairAddresses]
+	}
 	preferred = strings.TrimSpace(preferred)
 	room := protocol.MaxPairAddresses
 	if s.acceptablePeerAddress(preferred) != "" {

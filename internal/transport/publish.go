@@ -167,9 +167,18 @@ type Publisher struct {
 	// held here so a test can shrink them rather than wait out the real ones.
 	searchBudget   time.Duration
 	attemptTimeout time.Duration
+	// dialer is what the transport connects with, held so a test can make a
+	// connection slow where a real one is slow: inside the dial.
+	dialer *net.Dialer
 }
 
 func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, localNodeID string, policy AddressPolicy, interval time.Duration) *Publisher {
+	// No Timeout on the dialer. A timeout here would bound every connection
+	// this transport makes — a peer's only address, the heartbeat after the
+	// challenge, every message — to one attempt's share. reach bounds each
+	// attempt but the last with its own context instead, and the rest are
+	// bounded by the delivery as they always were.
+	dialer := &net.Dialer{}
 	return &Publisher{
 		store:       store,
 		builder:     builder,
@@ -183,12 +192,11 @@ func NewPublisher(store *registry.Registry, builder *protocol.HeartbeatBuilder, 
 			// on another package's env parsing.
 			Proxy:               nil,
 			TLSHandshakeTimeout: deliveryTimeout,
-			// An address whose interface has gone answers nothing at all, and
-			// the default dialer would wait out the whole delivery on it.
-			DialContext: (&net.Dialer{Timeout: connectTimeout}).DialContext,
+			DialContext:         dialer.DialContext,
 		},
 		searchBudget:   deliveryTimeout,
 		attemptTimeout: connectTimeout,
+		dialer:         dialer,
 	}
 }
 
@@ -485,9 +493,12 @@ func (p *Publisher) deliverable(peer registry.TrustedNode, what string) []string
 // because only the pinned key can have written one: that is the peer, and
 // another address would reach the same machine to be told the same thing.
 //
-// Each attempt but the last gets attemptTimeout; the last gets whatever of the
-// budget is left, so a peer with one address keeps the whole budget it always
-// had. An alternate that proves the peer becomes the preferred address.
+// Each attempt but the last gets attemptTimeout, from its own context: an
+// address whose interface has gone answers nothing at all, and would otherwise
+// hold the search until the budget ran out. The last attempt gets whatever of
+// the budget is left, so a peer with one address keeps the whole budget it
+// always had — the dialer carries no timeout of its own that would cut it
+// short. An alternate that proves the peer becomes the preferred address.
 func (p *Publisher) reach(ctx context.Context, peer registry.TrustedNode,
 	addresses []string) (registry.TrustedNode, error) {
 	if len(addresses) == 0 {
