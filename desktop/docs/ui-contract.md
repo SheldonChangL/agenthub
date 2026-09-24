@@ -257,7 +257,12 @@
   （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
   第二份設定來源。安裝說明；輸出區 `<pre>`。節點沒在跑且未安裝時表單自動展開一次。
 - **節點設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。存的是節點**下次啟動**才讀的值，
-  規則見 §7.8。
+  規則見 §7.8。節點回 `saved.peerListens`（ADR-005）時，對外位址是勾選清單（`#node-peerlistens`，每列一個
+  `<input type=checkbox>`）：這台機器每個私有 IPv4、「其他位址」小標下的非私有位址、saved 裡有但機器現在沒有
+  的位址（保留勾著）、非預設的 loopback；首選列標「從這裡廣播」，都沒勾顯示「都沒勾：只有這台機器自己連得到」。
+  每列狀態比 `peerListeners` 與 `saved`／`settings.peerListens`：已開放／重啟後開放／重啟後關閉／沒開放＋原因
+  （`address_gone`、`port_in_use`、其餘附節點的 message）。舊節點（沒有 `peerListens`）保留單選下拉
+  `#node-peerlisten`，只送 `peerListen`。測試：`frontend/test/listen-addresses.mjs`。
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9。
 
 ### 3.5 覆蓋層（7 個：2 個抽屜 + 5 個對話框）
@@ -531,6 +536,19 @@
    自己的事件上，結果它根本關不掉——節點最主要的行為從視窗裡無法觸發。表單只預測節點會怎麼做，
    不改使用者控制的欄位。
 
+**清單版（ADR-005，節點回 `saved.peerListens` 時）。** 四條規則照舊，但以集合比較：
+(1) 基準是 `saved.peerListens`，`samePeerListens()` 以集合比較（空清單＝`127.0.0.1:7463`），集合相同不送；
+`checkedPeerListens()` 保留 saved 的順序、新勾的接在後面，所以取消再勾回首選不會換掉廣播位址。送出一律是
+`peerListens`（都沒勾送 `["127.0.0.1:7463"]`），絕不送 `peerListen`。
+(2) loopback 逐項看主機（`isLoopbackListen`），`127.0.0.1:9999` 保留一列、勾著、不觸發撤回警告；loopback 與網路位址
+同時勾會先警告（節點會拒絕）。
+(3) `didNotStick` 對 `peerListens` 做集合比較；重啟後 saved 裡有、`peerListeners` 沒說 bound 的網路位址，
+在 banner 另外用一句（`nodeSettings.savedNotOpen`）說出，banner 不再標成單純成功。`NODE_SETTING_FLAGS.peerListens`
+是 `peer-listen`，所以固定該旗標的服務單元一樣會先 `askConfirm`，問句用清單自己的標籤「對外位址」／Listen addresses。
+(4) 勾位址不勾允許區網、勾允許區網不勾位址、取消允許區網不取消位址（沿用 `warnWithdraw`）；非私有列勾選時
+`suggestPrivateRange` 以最近勾選、仍勾著的非私有列為來源，說明多一句「對方機器也要宣告同一個網段」。
+render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反證）。
+
 **規則 4 與配對抽屜的第一步。** 那一步要做的事正是「一鍵讓這台機器連得到」，而那一鍵在允許區網是
 關著的時候一定會把它打開。規則 4 管的是**表單不因為另一個欄位的值自己動手**；它不禁止一顆使用者親手
 按下、而且標籤上寫明會動到哪些開關的按鈕——程式碼裡本來就有這個模式，連理由都寫在
@@ -549,6 +567,12 @@
 `applyPeerListenRepair` 填的是真正的表單——所以 `ensurePairingNodeSettings()` 在抽屜打開且
 `state.nodeSettings` 還是 null 時呼叫一次 `loadNodeSettings()`（一個視窗生命週期只問一次；讀取失敗、
 沒拿到基準時才放開，下次開抽屜再問）。
+
+清單版節點多三件事：可連線時 `peerListeners` 裡每個 bound 的網路位址一列（介面＋各自的「複製」），附「哪一個都能用；
+對方輸入跟這台機器在同一個網路上的那一個」；saved 裡有但沒開放的位址一行 muted 點名＋「前往節點設定」；
+不可連線且這台機器有 ≥2 個私有位址時，`pairHereRepairs()` 在單一位址按鈕（最多 3 個）前面放
+「全部開放：{清單}[，並允許區網連線]」（最多 4 個位址，子句照規則 4 只在允許區網還關著時出現），
+`applyPeerListenRepair()` 收 `option.peerListens` 整份清單。舊節點不提供「全部開放」。
 
 **規則 3 與服務單元固定的旗標。** 服務單元每次啟動都帶的旗標（`ServiceStatus().pinnedSettings`）會
 在重啟後蓋掉這次存的值。存檔時**只有這次改動碰到被固定的欄位**才問要不要用同一個資料庫重新登記服務；
@@ -617,6 +641,13 @@ banner 列出沒存的欄位（`frontend/test/service-recovery.mjs` §6b）。�
   3. `sources.peerListen === "default"` 不代表「尚未設定」（撤回後是 default，下次啟動變 remembered）。
 - 已知待修（#135，不擋前端）：同一 process 內 owner 又把 LAN 寫回去時，GET 的 `message` 說明字串會過期。
   **顯示 `message` 時以 `saved` 欄位為準**，不要單看字串。
+- **ADR-005（多位址，PR #196）**：`settings`／`saved` 另帶 `peerListens`（清單，第一項＝`peerListen`，新節點
+  至少一項）；新增 `peerListeners: [{address, state: bound|failed|pending, reason?, detail?, message?}]`（即時讀）；
+  `peerListenProblem` 只在**全部**失敗、退回 loopback 時出現；`restartRequired` 比設定的清單、不比綁上的位址。
+  PUT 收 `peerListens`；**只送 `peerListen` 會把整份清單換成一個**，所以視窗對新節點只送清單、對舊節點只送單值。
+  owner API 拒絕未知欄位，視窗靠回應有沒有 `peerListens` 判斷。`desktop/client.go` 的 `NodeSettingValues.PeerListens`
+  是 `omitempty`，舊節點經過 binding 後仍然是「沒有這個欄位」。已配對節點另有 `alternateAddresses`
+  （`TrustedNode.Alternates`），節點詳情顯示成「備援位址」。
 - `--listen` 不進設定，UI 不給欄位。重啟用 `ah service restart`，尚無 API；需要時開 issue。
 - **已實作**（`feat/116-settings-page`）：`App.NodeSettings()` / `App.SaveNodeSettings(patch)` 接 GET/PUT，
   `App.RestartService()` 跑 `ah service restart`。設定頁新增「節點設定」區，主按鈕是「儲存並重啟服務」。
