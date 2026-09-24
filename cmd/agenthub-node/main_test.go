@@ -303,7 +303,8 @@ func TestFlagSettingsCollectsOnlyWhatTheCommandLineGave(t *testing.T) {
 	parse := func(args ...string) nodeconfig.Partial {
 		t.Helper()
 		flags := flag.NewFlagSet("agenthub-node", flag.ContinueOnError)
-		peerListen := flags.String("peer-listen", nodeconfig.DefaultPeerListen, "")
+		var peerListens nodeconfig.StringList
+		flags.Var(&peerListens, "peer-listen", "")
 		allowLAN := flags.Bool("allow-lan", false, "")
 		discover := flags.Bool("discover", false, "")
 		autoWake := flags.Bool("auto-wake", false, "")
@@ -313,7 +314,7 @@ func TestFlagSettingsCollectsOnlyWhatTheCommandLineGave(t *testing.T) {
 		if err := flags.Parse(args); err != nil {
 			t.Fatal(err)
 		}
-		return flagSettings(flags, peerListen, allowLAN, discover, autoWake, declaredPrivate)
+		return flagSettings(flags, peerListens, allowLAN, discover, autoWake, declaredPrivate)
 	}
 
 	if given := parse("-db", "/tmp/x.db"); !given.Empty() {
@@ -334,6 +335,18 @@ func TestFlagSettingsCollectsOnlyWhatTheCommandLineGave(t *testing.T) {
 	if both.TreatAsPrivate == nil || len(*both.TreatAsPrivate) != 2 {
 		t.Fatalf("treatAsPrivate = %v", both.TreatAsPrivate)
 	}
+	// -peer-listen is repeatable and, given at all, is the whole list; given
+	// once it is a list of one, which is how a pinned unit shrinks whatever a
+	// window saved.
+	two := parse("-peer-listen", "192.168.1.10:7463", "-peer-listen", "10.0.0.5:7463")
+	if two.PeerListens == nil || len(*two.PeerListens) != 2 || *two.PeerListen != "192.168.1.10:7463" {
+		t.Fatalf("two -peer-listen collected %v / %v", two.PeerListen, two.PeerListens)
+	}
+	one := parse("-peer-listen", "10.0.0.5:7463")
+	if one.PeerListens == nil || len(*one.PeerListens) != 1 || *one.PeerListen != "10.0.0.5:7463" {
+		t.Fatalf("one -peer-listen collected %v / %v", one.PeerListen, one.PeerListens)
+	}
+
 	settings, sources := nodeconfig.Resolve(both, nodeconfig.Partial{
 		TreatAsPrivate: func() *[]string { old := []string{"172.20.0.0/16"}; return &old }(),
 	}, nodeconfig.DefaultSettings())
@@ -734,5 +747,63 @@ func TestTheOwnerAPIAndTheNodeItselfWithdrawTheSameListener(t *testing.T) {
 					viaAPI.AllowLAN, viaStart.AllowLAN)
 			}
 		})
+	}
+}
+
+// A unit that pins one -peer-listen serves that one address, whatever list a
+// window saved since: given at all, the flag is the whole list, and it is what
+// the next start remembers.
+func TestAPinnedPeerListenShrinksTheRememberedList(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen:  stringFlag("192.168.1.10:7463"),
+		PeerListens: &[]string{"192.168.1.10:7463", "10.0.0.5:7463"},
+		AllowLAN:    boolFlag(true),
+	}}
+	pinned := []string{"10.0.0.5:7463"}
+	startup, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{PeerListen: stringFlag(pinned[0]), PeerListens: &pinned}, func(string, ...any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := startup.settings.PeerListenList(); len(got) != 1 || got[0] != "10.0.0.5:7463" {
+		t.Fatalf("this start serves %v; a pinned -peer-listen is the whole list", got)
+	}
+	if startup.sources[nodeconfig.SettingPeerListen] != nodeconfig.SourceFlag {
+		t.Errorf("source = %q", startup.sources[nodeconfig.SettingPeerListen])
+	}
+	if got := *store.stored.PeerListens; len(got) != 1 || got[0] != "10.0.0.5:7463" {
+		t.Fatalf("remembered %v; the next start without the flag would serve the cable again", got)
+	}
+}
+
+// -allow-lan=false withdraws every LAN address of a remembered list, not just
+// the first, and lands on loopback.
+func TestClosingAllowLANWithdrawsTheWholeRememberedList(t *testing.T) {
+	store := &rememberingStore{stored: nodeconfig.Partial{
+		PeerListen:  stringFlag("192.168.1.10:7463"),
+		PeerListens: &[]string{"192.168.1.10:7463", "10.0.0.5:7463"},
+		AllowLAN:    boolFlag(true),
+	}}
+	var lines []string
+	startup, err := applyStartupSettings(context.Background(), store,
+		nodeconfig.Partial{AllowLAN: boolFlag(false)},
+		func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+	if err != nil {
+		t.Fatalf("-allow-lan=false refused to start over a remembered list: %v", err)
+	}
+	if got := startup.settings.PeerListenList(); len(got) != 1 || got[0] != nodeconfig.DefaultPeerListen {
+		t.Fatalf("this start serves %v", got)
+	}
+	if !startup.peerListenWithdrawn {
+		t.Error("the withdrawal was not reported")
+	}
+	if got := *store.stored.PeerListens; len(got) != 1 || got[0] != nodeconfig.DefaultPeerListen {
+		t.Fatalf("remembered %v after the withdrawal", got)
+	}
+	logged := strings.Join(lines, "\n")
+	for _, address := range []string{"192.168.1.10:7463", "10.0.0.5:7463"} {
+		if !strings.Contains(logged, address) {
+			t.Errorf("the log does not name the withdrawn %s:\n%s", address, logged)
+		}
 	}
 }

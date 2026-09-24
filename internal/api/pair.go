@@ -379,7 +379,7 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envelope, err := s.heartbeats.BuildPairRequest(time.Now(), s.peerAddress)
+	envelope, err := s.heartbeats.BuildPairRequest(time.Now(), s.ownPeerAddress())
 	if err != nil {
 		writeInternalError(w, "PAIRING_FAILED", "could not sign the pairing request", err)
 		return

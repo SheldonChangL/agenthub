@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -59,7 +60,18 @@ type settingsResponse struct {
 	//
 	// Absent unless it happened. A reader that does not know this field sees a
 	// node whose running peerListen is a default, which is true.
+	//
+	// With several addresses configured it appears only when every one of them
+	// failed and the node fell back to loopback: one address bound is a node
+	// that peers can reach, and an older window reading this field would
+	// otherwise tell its owner "only this machine" about a node that is on the
+	// network. What became of each address is in PeerListeners.
 	PeerListenProblem *PeerListenProblem `json:"peerListenProblem,omitempty"`
+	// PeerListeners is every configured peer address and whether it is bound,
+	// failed (with the reason) or pending. Read live: an address that failed
+	// at start-up is retried, and binds when it appears. Absent from a node
+	// built without a listener set.
+	PeerListeners []nodeconfig.ListenerState `json:"peerListeners,omitempty"`
 	// Message is the human sentence a GUI can show verbatim: what a write did,
 	// or why the running configuration is not the one that was remembered.
 	Message string `json:"message,omitempty"`
@@ -76,10 +88,32 @@ type effectiveSettings struct {
 // Given by main rather than read from the database, because the two can
 // disagree: a flag on this start overrides what was stored, and an owner
 // looking at a settings page has to be told which of the two they are seeing.
+//
+// These are the configured values. The peer address actually being served is
+// the listener set's to say (WithPeerListeners), because it can change while
+// the process runs.
 func WithNodeSettings(settings nodeconfig.Settings, sources map[string]string) Option {
 	return func(s *Server) {
+		settings.PeerListens = settings.PeerListenList()
 		s.settings = &effectiveSettings{settings: settings, sources: sources}
 	}
+}
+
+// PeerListeners is what the API reads from the node's peer listener set.
+// nodeconfig.ListenerSet is the implementation; an interface so a test can
+// state a set's answers without opening sockets.
+type PeerListeners interface {
+	// States is every configured address and what became of it.
+	States() []nodeconfig.ListenerState
+	// Problem is the degradation in effect, or nil when an address is bound.
+	Problem() *nodeconfig.ListenProblem
+	// Running is the one address an older reader is told is being served.
+	Running() string
+}
+
+// WithPeerListeners gives the API the live listener set.
+func WithPeerListeners(listeners PeerListeners) Option {
+	return func(s *Server) { s.peerListeners = listeners }
 }
 
 // WithPeerListenWithdrawn records that this start withdrew the peer listener it
@@ -103,17 +137,15 @@ func WithPeerListenWithdrawn() Option {
 // not recognise the code still has something true to show. Detail is the
 // system's own words, kept because "can't assign requested address" is what an
 // owner will search for.
-type PeerListenProblem struct {
-	Address   string `json:"address"`
-	Reason    string `json:"reason"`
-	Detail    string `json:"detail,omitempty"`
-	RunningOn string `json:"runningOn"`
-	Message   string `json:"message"`
-}
+//
+// The type is nodeconfig's, because the listener set that decides it lives
+// there; the name stays here because this is the API's field.
+type PeerListenProblem = nodeconfig.ListenProblem
 
 // WithPeerListenProblem records that this start could not bind its peer
 // listener, so the answers can say why the address on the settings page is not
-// the address being served.
+// the address being served. A node with a listener set (WithPeerListeners)
+// reports the set's live answer instead.
 func WithPeerListenProblem(problem PeerListenProblem) Option {
 	return func(s *Server) {
 		s.peerListenProblem = &problem
@@ -155,7 +187,18 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if requested.Empty() {
 		writeError(w, http.StatusBadRequest, "INVALID_REQUEST",
-			"no settings given; send at least one of peerListen, allowLan, discover, treatAsPrivate, autoWake")
+			"no settings given; send at least one of peerListen, peerListens, allowLan, discover, "+
+				"treatAsPrivate, autoWake")
+		return
+	}
+	// The two spellings of the peer listener made one before anything else
+	// looks at them. A request carrying only peerListen — every window and
+	// `ah` written before the list — replaces the whole list with that one
+	// address: "this machine only" from an older window has to close every
+	// LAN address, not the first of them (ADR-005 §1).
+	requested, err := nodeconfig.NormalizePeerListen(requested)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
 	// Read, validated and written inside one transaction, so what was
@@ -281,10 +324,23 @@ func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings)
 // refusal still carries the node's own words, which are the only ones that
 // describe it.
 func explainRefusal(requested nodeconfig.Partial, effective nodeconfig.Settings, err error) string {
-	if !effective.AllowLAN && requested.PeerListen != nil &&
-		nodeconfig.ValidateLoopback(*requested.PeerListen) != nil {
-		return "allowLan is off, so peerListen has to be a loopback address, and it was sent as " +
-			*requested.PeerListen + "; to serve that address, send allowLan true in the same write"
+	if effective.AllowLAN {
+		return err.Error()
+	}
+	list, named := requested.PeerListenList()
+	if !named {
+		return err.Error()
+	}
+	for _, address := range list {
+		if nodeconfig.ValidateLoopback(address) == nil {
+			continue
+		}
+		if len(list) == 1 {
+			return "allowLan is off, so peerListen has to be a loopback address, and it was sent as " +
+				address + "; to serve that address, send allowLan true in the same write"
+		}
+		return "allowLan is off, so every entry of peerListens has to be a loopback address, and " +
+			address + " is not; to serve it, send allowLan true in the same write"
 	}
 	return err.Error()
 }
@@ -315,7 +371,8 @@ func explainRefusal(requested nodeconfig.Partial, effective nodeconfig.Settings,
 // included — the owner has then said where this node listens, and it is no
 // longer reading as a default nobody chose.
 func (s *Server) withdrawalStands(next nodeconfig.Settings) bool {
-	return s.peerListenWithdrawn && next.PeerListen == nodeconfig.DefaultPeerListen
+	return s.peerListenWithdrawn &&
+		slices.Equal(next.PeerListenList(), []string{nodeconfig.DefaultPeerListen})
 }
 
 // withdrawnAtStart is the sentence a reader gets when nothing else was said.
@@ -343,33 +400,66 @@ func (s *Server) settingsView(saved nodeconfig.Partial, message string) settings
 	// then the defaults. The same rule the node applies, so this is a
 	// prediction of the node's own behaviour rather than a second opinion.
 	next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, saved, nodeconfig.DefaultSettings())
-	running := s.settings.settings
+	configured := s.settings.settings
+	running := configured
+	sources := s.settings.sources
+	problem := s.peerListenProblem
+	var listeners []nodeconfig.ListenerState
+	if s.peerListeners != nil {
+		// peerListens stays what this process was configured with; peerListen
+		// is what an older reader takes to be served, so it is the first bound
+		// address, or the fallback when nothing configured is bound.
+		running.PeerListen = s.peerListeners.Running()
+		problem = s.peerListeners.Problem()
+		listeners = s.peerListeners.States()
+		if problem != nil {
+			// Of the three provenances, the value being served is the default:
+			// nobody chose the fallback. Decided here rather than once at
+			// start-up, because a retry can end the degradation.
+			sources = maps.Clone(sources)
+			sources[nodeconfig.SettingPeerListen] = nodeconfig.SourceDefault
+		}
+	}
 	withdrawn := s.withdrawalStands(next)
 	if message == "" && withdrawn {
 		message = withdrawnAtStart(next.AllowLAN)
 	}
 	return settingsResponse{
-		Settings:            withRanges(running),
-		Sources:             s.settings.sources,
-		Saved:               withRanges(next),
-		RestartRequired:     !sameSettings(running, next),
+		Settings: withRanges(running),
+		Sources:  sources,
+		Saved:    withRanges(next),
+		// The configured list against the saved one, never the address that
+		// happens to be bound: a restart re-reads the configuration, and it
+		// cannot bring back a cable. Comparing against what bound would ask
+		// for a restart that changes nothing whenever an address is missing.
+		RestartRequired:     !sameSettings(configured, next),
 		PeerListenWithdrawn: withdrawn,
-		PeerListenProblem:   s.peerListenProblem,
+		PeerListenProblem:   problem,
+		PeerListeners:       listeners,
 		Message:             message,
 	}
 }
 
 // withRanges makes an empty declaration serialise as [] rather than null, so a
 // reader never has to treat "no ranges" as two different values.
+//
+// The peer list is always present for the same reason: a window detects that
+// this node knows the list by finding peerListens in the reply.
 func withRanges(settings nodeconfig.Settings) nodeconfig.Settings {
 	if settings.TreatAsPrivate == nil {
 		settings.TreatAsPrivate = []string{}
 	}
+	if len(settings.PeerListens) == 0 {
+		settings.PeerListens = []string{settings.PeerListen}
+	}
 	return settings
 }
 
+// sameSettings compares two configurations. The peer listener is compared as
+// its list: the scalar is the list's first entry in a configuration, and in a
+// running view it is the address being served, which is not configuration.
 func sameSettings(a, b nodeconfig.Settings) bool {
-	return a.PeerListen == b.PeerListen && a.AllowLAN == b.AllowLAN &&
+	return slices.Equal(a.PeerListenList(), b.PeerListenList()) && a.AllowLAN == b.AllowLAN &&
 		a.Discover == b.Discover && a.AutoWake == b.AutoWake &&
 		slices.Equal(a.TreatAsPrivate, b.TreatAsPrivate)
 }
