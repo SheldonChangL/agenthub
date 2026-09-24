@@ -679,18 +679,19 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	// contradict each other, and guessing which half they meant is not this
 	// function's decision to make: that start is still refused.
 	withdrew := false
-	if address, withdrawn := nodeconfig.WithdrawPeerListen(
-		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
+	if kept, withdrawn, dropped := nodeconfig.WithdrawPeerListens(settings.AllowLAN,
+		given.PeerListen != nil || given.PeerListens != nil, settings.PeerListenList()); withdrawn {
 		// The reason itself comes from nodeconfig, because the owner's API says
 		// the same thing about the same withdrawal: two copies of this sentence
 		// is how a log and a settings page come to describe one event
 		// differently. Only the spelling of the switch differs — a log is read
 		// beside a command line, so it names the flag.
 		logf("withdrawing peer-listen: %s; it was not bound, and %s is used instead",
-			nodeconfig.WithdrawalReason(nodeconfig.FlagName(nodeconfig.SettingAllowLAN), settings.PeerListen),
-			address)
-		settings.PeerListen = address
-		given.PeerListen = &address
+			nodeconfig.WithdrawalReason(nodeconfig.FlagName(nodeconfig.SettingAllowLAN), dropped...),
+			strings.Join(kept, ", "))
+		first := kept[0]
+		settings.PeerListen, settings.PeerListens = first, kept
+		given.PeerListen, given.PeerListens = &first, &kept
 		withdrew = true
 		// Not "remembered": the remembered address is the one just withdrawn.
 		// Of the three provenances this map can carry, the value now in effect

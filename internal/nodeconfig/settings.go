@@ -50,8 +50,15 @@ const DefaultPeerListen = "127.0.0.1:7463"
 const DefaultOwnerListen = "127.0.0.1:7462"
 
 // Settings is one complete configuration: every field has a value.
+//
+// The peer listener is spelled twice. PeerListens is the list of addresses the
+// node serves peers on; PeerListen is its first entry, kept because every
+// reader written before the list existed — an older window, an older `ah`, a
+// script — reads that one field and nothing else. They are one setting, and
+// every function in this package moves them together (ADR-005 §1).
 type Settings struct {
 	PeerListen     string   `json:"peerListen"`
+	PeerListens    []string `json:"peerListens"`
 	AllowLAN       bool     `json:"allowLan"`
 	Discover       bool     `json:"discover"`
 	TreatAsPrivate []string `json:"treatAsPrivate"`
@@ -62,7 +69,9 @@ type Settings struct {
 // every build before these settings existed did: loopback only, no discovery,
 // no waking, nothing declared private.
 func DefaultSettings() Settings {
-	return Settings{PeerListen: DefaultPeerListen, TreatAsPrivate: nil}
+	return Settings{
+		PeerListen: DefaultPeerListen, PeerListens: []string{DefaultPeerListen}, TreatAsPrivate: nil,
+	}
 }
 
 // Partial is a configuration where each field may be absent.
@@ -72,8 +81,12 @@ func DefaultSettings() Settings {
 // all means the default applies. Pointers say that; a plain bool cannot.
 type Partial struct {
 	PeerListen *string `json:"peerListen,omitempty"`
-	AllowLAN   *bool   `json:"allowLan,omitempty"`
-	Discover   *bool   `json:"discover,omitempty"`
+	// PeerListens is the whole list of peer addresses, replaced as a whole like
+	// TreatAsPrivate. PeerListen alone means a list of one — see
+	// NormalizePeerListen for why that is the rule and not a convenience.
+	PeerListens *[]string `json:"peerListens,omitempty"`
+	AllowLAN    *bool     `json:"allowLan,omitempty"`
+	Discover    *bool     `json:"discover,omitempty"`
 	// TreatAsPrivate is replaced as a whole when present, never appended to:
 	// a declaration says which networks the owner believes are private, and
 	// half a declaration is not a smaller belief, it is a different one.
@@ -83,14 +96,14 @@ type Partial struct {
 
 // Empty reports whether nothing at all was given.
 func (p Partial) Empty() bool {
-	return p.PeerListen == nil && p.AllowLAN == nil && p.Discover == nil &&
+	return p.PeerListen == nil && p.PeerListens == nil && p.AllowLAN == nil && p.Discover == nil &&
 		p.TreatAsPrivate == nil && p.AutoWake == nil
 }
 
 // Apply overlays the fields that are present onto a complete configuration.
 func (p Partial) Apply(base Settings) Settings {
-	if p.PeerListen != nil {
-		base.PeerListen = *p.PeerListen
+	if list, ok := p.PeerListenList(); ok {
+		base.PeerListen, base.PeerListens = list[0], list
 	}
 	if p.AllowLAN != nil {
 		base.AllowLAN = *p.AllowLAN
@@ -109,8 +122,11 @@ func (p Partial) Apply(base Settings) Settings {
 
 // Overlay returns the fields of p, with those of newer replacing them.
 func (p Partial) Overlay(newer Partial) Partial {
-	if newer.PeerListen != nil {
-		p.PeerListen = newer.PeerListen
+	// Both halves from newer, never one from each: a newer scalar laid over an
+	// older list would leave the list naming addresses the scalar just closed.
+	if list, ok := newer.PeerListenList(); ok {
+		first := list[0]
+		p.PeerListen, p.PeerListens = &first, &list
 	}
 	if newer.AllowLAN != nil {
 		p.AllowLAN = newer.AllowLAN
@@ -157,7 +173,7 @@ func Resolve(given, remembered Partial, defaults Settings) (Settings, map[string
 func givenHas(p Partial, field string) bool {
 	switch field {
 	case SettingPeerListen:
-		return p.PeerListen != nil
+		return p.PeerListen != nil || p.PeerListens != nil
 	case SettingAllowLAN:
 		return p.AllowLAN != nil
 	case SettingDiscover:
@@ -182,7 +198,17 @@ func (s Settings) Validate() (PrivateRanges, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidatePeerListen(s.PeerListen, s.AllowLAN, ranges); err != nil {
+	list := s.PeerListens
+	if len(list) == 0 {
+		// A configuration built before the list existed, or by a caller that
+		// only knows the scalar: a list of one, which is what it always meant.
+		list = []string{s.PeerListen}
+	}
+	if list[0] != s.PeerListen {
+		return nil, fmt.Errorf("peer listener: peerListen %q is not the first of peerListens %q; "+
+			"they are one setting, and peerListen is always the first entry", s.PeerListen, list)
+	}
+	if err := ValidatePeerListens(list, s.AllowLAN, ranges); err != nil {
 		return nil, fmt.Errorf("peer listener: %w", err)
 	}
 	return ranges, nil
@@ -196,7 +222,7 @@ func (s Settings) Validate() (PrivateRanges, error) {
 // one is otherwise invisible: nothing on the command line would mention it.
 func Describe(settings Settings, sources map[string]string) []string {
 	values := map[string]string{
-		SettingPeerListen:     settings.PeerListen,
+		SettingPeerListen:     strings.Join(settings.peerListenList(), ", "),
 		SettingAllowLAN:       fmt.Sprintf("%t", settings.AllowLAN),
 		SettingDiscover:       fmt.Sprintf("%t", settings.Discover),
 		SettingTreatAsPrivate: strings.Join(settings.TreatAsPrivate, ", "),
@@ -231,11 +257,14 @@ func FlagName(field string) string {
 	return out.String()
 }
 
-// WithdrawPeerListen decides whether a peer listener has to come off the
-// network because allowLan is off, and says which address it falls back to.
+// WithdrawPeerListens decides whether peer listeners have to come off the
+// network because allowLan is off, and says which addresses are left.
 //
-// peerListen is the listener that would otherwise be in effect; peerListenNamed
+// peerListens is the list that would otherwise be in effect; peerListenNamed
 // says whether this request or this command line said anything about it.
+// Every entry that is not loopback is dropped; what is left is kept in order,
+// and a list left empty is the loopback default. The second result says
+// whether anything was dropped, and the third names what was.
 //
 // The two fields are one decision, and Validate refuses a configuration that
 // serves a LAN address with allowLan off. That refusal is right when the owner
@@ -254,16 +283,28 @@ func FlagName(field string) string {
 // answer this identically. The API predicting one thing and the node doing
 // another is how a desktop comes to show a setting that does not survive a
 // restart.
-func WithdrawPeerListen(allowLAN, peerListenNamed bool, peerListen string) (string, bool) {
+func WithdrawPeerListens(allowLAN, peerListenNamed bool, peerListens []string) ([]string, bool, []string) {
 	if allowLAN || peerListenNamed {
-		return "", false
+		return nil, false, nil
 	}
-	// A loopback listener is already off the network, whatever its port, and an
-	// owner who chose that port did not ask for it to move.
-	if ValidateLoopback(peerListen) == nil {
-		return "", false
+	kept := make([]string, 0, len(peerListens))
+	var dropped []string
+	for _, address := range peerListens {
+		// A loopback listener is already off the network, whatever its port,
+		// and an owner who chose that port did not ask for it to move.
+		if ValidateLoopback(address) == nil {
+			kept = append(kept, address)
+			continue
+		}
+		dropped = append(dropped, address)
 	}
-	return DefaultPeerListen, true
+	if len(dropped) == 0 {
+		return nil, false, nil
+	}
+	if len(kept) == 0 {
+		kept = []string{DefaultPeerListen}
+	}
+	return kept, true, dropped
 }
 
 // WithdrawalReason says why a remembered peer listener was not kept, spelled
@@ -278,7 +319,15 @@ func WithdrawPeerListen(allowLAN, peerListenNamed bool, peerListen string) (stri
 // allowLANName is how the switch is spelled to this reader: the flag
 // (allow-lan) in a log read beside a command line, the JSON field (allowLan)
 // in an API answer. The rest is one string, in one place.
-func WithdrawalReason(allowLANName, peerListen string) string {
-	return fmt.Sprintf("%s is off, so the remembered peer listener %q is not one this node can serve",
-		allowLANName, peerListen)
+func WithdrawalReason(allowLANName string, withdrawn ...string) string {
+	if len(withdrawn) == 1 {
+		return fmt.Sprintf("%s is off, so the remembered peer listener %q is not one this node can serve",
+			allowLANName, withdrawn[0])
+	}
+	quoted := make([]string, len(withdrawn))
+	for index, address := range withdrawn {
+		quoted[index] = fmt.Sprintf("%q", address)
+	}
+	return fmt.Sprintf("%s is off, so the remembered peer listeners %s are not ones this node can serve",
+		allowLANName, strings.Join(quoted, ", "))
 }
