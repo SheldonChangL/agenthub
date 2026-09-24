@@ -419,7 +419,15 @@ func run() error {
 		go announcer.Run(publishCtx)
 	}
 	log.Printf("listening on http://%s", *listenAddress)
-	log.Printf("peer listener on https://%s", peerListeners.Running())
+	// Every address being served, or the fallback: a log line naming only the
+	// first would read as a node that serves one network.
+	serving := peerListeners.Bound()
+	if len(serving) == 0 {
+		serving = []string{peerListeners.Running()}
+	}
+	for _, address := range serving {
+		log.Printf("peer listener on https://%s", address)
+	}
 
 	select {
 	case err := <-serveError:
