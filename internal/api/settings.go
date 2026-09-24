@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"slices"
+	"strings"
 
 	"agenthub.local/agenthub/internal/nodeconfig"
 )
@@ -165,7 +166,7 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 	// the owner asked about allowLan and the listener moved, and a sentence
 	// that does not say which address was given up leaves them to guess what
 	// this node was serving.
-	var withdrawnFrom string
+	var withdrawnFrom []string
 	// What this write leaves in effect, which is what a refusal has to be
 	// explained in terms of — see explainRefusal.
 	var effective nodeconfig.Settings
@@ -185,14 +186,11 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 			// LAN address while allowLan stays false.
 			next, _ := nodeconfig.Resolve(nodeconfig.Partial{}, stored, nodeconfig.DefaultSettings())
 			writing, closed := withdrawLANListener(requested, next)
+			withdrawnFrom = closed
 			effective = writing.Apply(next)
 			if _, err := effective.Validate(); err != nil {
 				invalid = err
 				return nodeconfig.Partial{}, err
-			}
-			withdrawnFrom = ""
-			if closed {
-				withdrawnFrom = next.PeerListen
 			}
 			return writing, nil
 		})
@@ -205,12 +203,12 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	message := "saved; these take effect when the node next starts (ah service restart)"
-	if withdrawnFrom != "" {
+	if len(withdrawnFrom) > 0 {
 		// The same reason the node's own start-up log gives for the same
 		// withdrawal, from the same function, with both addresses named: the
 		// one given up and the one now in its place.
-		message = "saved; " + nodeconfig.WithdrawalReason(nodeconfig.SettingAllowLAN, withdrawnFrom) +
-			"; peerListen went back to " + nodeconfig.DefaultPeerListen +
+		message = "saved; " + nodeconfig.WithdrawalReason(nodeconfig.SettingAllowLAN, withdrawnFrom...) +
+			"; peerListen went back to " + strings.Join(effective.PeerListenList(), ", ") +
 			". These take effect when the node next starts (ah service restart)"
 	}
 	writeJSON(w, http.StatusOK, s.settingsView(saved, message))
@@ -229,7 +227,9 @@ func (s *Server) setNodeSettings(w http.ResponseWriter, r *http.Request) {
 //
 // Both fields are written in the same transaction, so no start can see the
 // half of this that serves a network address with allowLan off.
-func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, bool) {
+//
+// The second result names the addresses withdrawn, empty when none was.
+func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings) (nodeconfig.Partial, []string) {
 	// The switch this decision is about is the one that will be in effect after
 	// this write, not the one this write happens to mention. A request that
 	// says nothing about allowLan inherits the saved answer, and if that answer
@@ -243,17 +243,18 @@ func withdrawLANListener(requested nodeconfig.Partial, next nodeconfig.Settings)
 		allowLAN = *requested.AllowLAN
 	}
 	if allowLAN {
-		return requested, false
+		return requested, nil
 	}
 	// The rule itself lives in nodeconfig, because the node's own start-up
-	// applies the same one: see nodeconfig.WithdrawPeerListen.
-	address, withdrawn := nodeconfig.WithdrawPeerListen(
-		allowLAN, requested.PeerListen != nil, next.PeerListen)
+	// applies the same one: see nodeconfig.WithdrawPeerListens.
+	kept, withdrawn, dropped := nodeconfig.WithdrawPeerListens(
+		allowLAN, requested.PeerListen != nil || requested.PeerListens != nil, next.PeerListenList())
 	if !withdrawn {
-		return requested, false
+		return requested, nil
 	}
-	requested.PeerListen = &address
-	return requested, true
+	first := kept[0]
+	requested.PeerListen, requested.PeerListens = &first, &kept
+	return requested, dropped
 }
 
 // explainRefusal answers the caller in the terms of the configuration this
