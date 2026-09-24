@@ -234,3 +234,55 @@ func TestPeerAddressProblemClassifiesEverySpelling(t *testing.T) {
 		})
 	}
 }
+
+// A node serving a cable and Wi-Fi announces one of them — the first bound
+// address a peer could be told — and reads which ones are bound on every
+// announcement, so an address the listener set binds after start-up is
+// announced without a restart.
+func TestAListenerEndpointAnnouncesTheFirstBoundAddress(t *testing.T) {
+	lan := transport.PrivateNetworks(nil)
+	var bound []string
+	endpoint, err := ListenerEndpoint(lan, []string{"[fd00::5]:7463", "192.168.1.10:7463", "10.0.0.5:7463"},
+		func() []string { return bound })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if endpoint.Port != 7463 {
+		t.Fatalf("port = %d", endpoint.Port)
+	}
+	if got := endpoint.Addresses(); len(got) != 0 {
+		t.Fatalf("nothing bound, and it announces %v", got)
+	}
+	if !strings.Contains(endpoint.Unannounceable, "bound right now") {
+		t.Errorf("with nothing bound the reason is %q; the configuration is fine, the machine is not", endpoint.Unannounceable)
+	}
+	bound = []string{"10.0.0.5:7463"}
+	if got := endpoint.Addresses(); len(got) != 1 || got[0] != netip.MustParseAddr("10.0.0.5") {
+		t.Fatalf("with Wi-Fi bound it announces %v", got)
+	}
+	// IPv6 cannot be announced on the v4 group, so the first IPv4 wins.
+	bound = []string{"[fd00::5]:7463", "192.168.1.10:7463", "10.0.0.5:7463"}
+	if got := endpoint.Addresses(); len(got) != 1 || got[0] != netip.MustParseAddr("192.168.1.10") {
+		t.Fatalf("with all bound it announces %v, want the first bound IPv4", got)
+	}
+	if got := ReachableAddresses(lan, bound); len(got) != 2 || got[0] != "192.168.1.10:7463" || got[1] != "10.0.0.5:7463" {
+		t.Fatalf("reachable = %v", got)
+	}
+	if got := ReachableAddresses(lan, []string{"127.0.0.1:7463"}); len(got) != 0 {
+		t.Fatalf("loopback offered to another machine: %v", got)
+	}
+
+	// A list that could never be announced says why, the way one address did.
+	loopback, err := ListenerEndpoint(lan, []string{"127.0.0.1:7463", "[::1]:7463"},
+		func() []string { return []string{"127.0.0.1:7463", "[::1]:7463"} })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(loopback.Unannounceable, "loopback") || loopback.Remedy == "" {
+		t.Errorf("a loopback list: reason %q, remedy %q", loopback.Unannounceable, loopback.Remedy)
+	}
+	if _, err := ListenerEndpoint(lan, []string{"192.168.1.10:7463", "10.0.0.5:7464"},
+		func() []string { return nil }); err == nil {
+		t.Error("two ports were accepted for one announcement")
+	}
+}
