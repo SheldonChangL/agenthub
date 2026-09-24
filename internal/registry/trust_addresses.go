@@ -26,7 +26,16 @@ const MaxNodeAddresses = 4
 // A value that does not decode reads as no alternates rather than as an
 // error: the preferred address is still good, and refusing to list the node
 // would stop delivery over a column that only ever adds a second chance.
+//
+// No preferred address reads as no alternates at all, whatever the column
+// holds. updateAddresses never writes alternates without a preferred address,
+// but an older build clears address alone: an owner who cleared a node there
+// meant "I no longer know where this peer is", and after an upgrade the
+// alternates it left behind must not be dialled in its place.
 func readAlternates(preferred, stored string) []string {
+	if preferred == "" {
+		return nil
+	}
 	var decoded []string
 	if err := json.Unmarshal([]byte(stored), &decoded); err != nil {
 		return nil
