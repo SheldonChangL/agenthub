@@ -116,28 +116,41 @@ func signedPairRequest(t *testing.T, address string, addresses []string) protoco
 	return envelope
 }
 
-// A receiver checks every address it is offered and keeps four at most. What
-// it would not deliver to, loopback (another machine's loopback is this one),
-// repeats and anything past the fourth are dropped, and the pairing still
-// goes ahead: an address is never a reason to refuse one.
-func TestAReceiverKeepsOnlyFourAddressesItWouldDeliverTo(t *testing.T) {
+// An address the receiver would not deliver to is dropped — the preferred one
+// again, public, loopback (another machine's loopback is this one), a name for
+// loopback, zoned, not host:port, a repeat — and the pairing still goes ahead:
+// an address is never a reason to refuse one.
+func TestAReceiverKeepsOnlyAddressesItWouldDeliverTo(t *testing.T) {
+	receiver := newPairNodeWith(t, "decides", func(string) []Option {
+		return []Option{WithDeliveryPolicy(transport.PrivateNetworks(nil))}
+	})
+	for _, claimed := range [][]string{
+		{"10.0.0.1:7463", "203.0.113.5:7463", "127.0.0.1:7463", "10.0.0.2:7463"},
+		{"localhost:7463", "[fe80::1%en0]:7463", "10.0.0.2", "10.0.0.2:7463"},
+		{"10.0.0.2:7463", "10.0.0.2:7463"},
+	} {
+		got := receiver.server.acceptableAlternates("10.0.0.1:7463", claimed)
+		if !reflect.DeepEqual(got, []string{"10.0.0.2:7463"}) {
+			t.Errorf("acceptableAlternates(%q) = %q; want only 10.0.0.2:7463", claimed, got)
+		}
+	}
+}
+
+// The schema allows four addresses in a pairing payload. A list longer than
+// that is read no further than its fourth entry, so padding it with what the
+// receiver refuses does not get the entries behind the padding kept.
+func TestAReceiverReadsNoFurtherThanTheFourthAddress(t *testing.T) {
 	receiver := newPairNodeWith(t, "decides", func(string) []Option {
 		return []Option{WithDeliveryPolicy(transport.PrivateNetworks(nil))}
 	})
 	receiver.openWindow()
 	envelope := signedPairRequest(t, "10.0.0.1:7463", []string{
-		"10.0.0.1:7463",      // the preferred again
-		"203.0.113.5:7463",   // public
-		"127.0.0.1:7463",     // loopback
-		"localhost:7463",     // a name, and loopback
-		"[fe80::1%en0]:7463", // zoned
-		"10.0.0.2",           // not host:port
+		"10.0.0.1:7463",    // the preferred again
+		"203.0.113.5:7463", // public
 		"10.0.0.2:7463",
-		"10.0.0.2:7463", // repeat
-		"192.168.1.3:7463",
-		"10.0.0.4:7463",
-		"10.0.0.5:7463", // a fifth
-		"10.0.0.6:7463",
+		"10.0.0.3:7463",
+		"10.0.0.4:7463", // a fifth, past what the schema allows
+		"10.0.0.5:7463",
 	})
 	posted := perform(t, receiver.server.PeerHandler(), http.MethodPost, "/v1/pair/requests", envelope)
 	if posted.Code != http.StatusAccepted {
@@ -147,7 +160,7 @@ func TestAReceiverKeepsOnlyFourAddressesItWouldDeliverTo(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("rows = %v", rows)
 	}
-	want := []string{"10.0.0.2:7463", "192.168.1.3:7463", "10.0.0.4:7463"}
+	want := []string{"10.0.0.2:7463", "10.0.0.3:7463"}
 	if rows[0].Address != "10.0.0.1:7463" || !reflect.DeepEqual(rows[0].Alternates, want) {
 		t.Fatalf("request recorded %q %q; want 10.0.0.1:7463 and %q", rows[0].Address, rows[0].Alternates, want)
 	}
@@ -165,8 +178,10 @@ func TestARefusedPreferredLeavesTheAlternatesToStandIn(t *testing.T) {
 		return []Option{WithDeliveryPolicy(transport.PrivateNetworks(nil))}
 	})
 	receiver.openWindow()
+	// Four addresses, as many as the schema allows, none of them the refused
+	// preferred one.
 	envelope := signedPairRequest(t, "203.0.113.5:7463",
-		[]string{"203.0.113.5:7463", "10.0.0.2:7463", "10.0.0.3:7463", "10.0.0.4:7463", "10.0.0.5:7463"})
+		[]string{"10.0.0.2:7463", "10.0.0.3:7463", "10.0.0.4:7463", "10.0.0.5:7463"})
 	if posted := perform(t, receiver.server.PeerHandler(), http.MethodPost, "/v1/pair/requests",
 		envelope); posted.Code != http.StatusAccepted {
 		t.Fatalf("pair request = %d %s", posted.Code, posted.Body.String())

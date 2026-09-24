@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,30 +99,43 @@ func (n *e2eNode) servePeers(t *testing.T, addresses []string) func() {
 	return stop
 }
 
-// twoLoopbacksOnOnePort is 127.0.0.1:P and 127.0.0.2:P, both free: two
-// addresses of one machine sharing the port, as ADR-005 §1 requires. Linux
-// routes all of 127/8 to lo; macOS has 127.0.0.2 only after an alias is added
-// (`sudo ifconfig lo0 alias 127.0.0.2`), and the test is skipped without it.
+// twoLoopbacksOnOnePort is 127.0.0.1:P and a second loopback address on the
+// same port P, both free: two addresses of one machine sharing the port, as
+// ADR-005 §1 requires. The second is 127.0.0.2 where it exists — Linux routes
+// all of 127/8 to lo — and otherwise [::1], which macOS has without the
+// `sudo ifconfig lo0 alias 127.0.0.2` that 127.0.0.2 needs there.
+//
+// With neither, the test cannot run: a skip on a developer's machine, a
+// failure in CI, where a skip would pass the check without running it.
 func twoLoopbacksOnOnePort(t *testing.T) (string, string) {
 	t.Helper()
-	probe, err := net.Listen("tcp", "127.0.0.2:0")
-	if err != nil {
-		t.Skipf("127.0.0.2 is not usable here (%v); on macOS add it with `sudo ifconfig lo0 alias 127.0.0.2`", err)
-	}
-	_ = probe.Close()
-	for range 20 {
-		first := freeLoopback(t)
-		_, port, err := net.SplitHostPort(first)
+	var unusable []string
+	for _, host := range []string{"127.0.0.2", "::1"} {
+		probe, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 		if err != nil {
-			t.Fatal(err)
+			unusable = append(unusable, fmt.Sprintf("%s: %v", host, err))
+			continue
 		}
-		second := net.JoinHostPort("127.0.0.2", port)
-		if listener, err := net.Listen("tcp", second); err == nil {
-			_ = listener.Close()
-			return first, second
+		_ = probe.Close()
+		for range 20 {
+			first := freeLoopback(t)
+			_, port, err := net.SplitHostPort(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			second := net.JoinHostPort(host, port)
+			if listener, err := net.Listen("tcp", second); err == nil {
+				_ = listener.Close()
+				return first, second
+			}
 		}
+		unusable = append(unusable, fmt.Sprintf("%s: no port free on both it and 127.0.0.1", host))
 	}
-	t.Fatal("found no port free on both 127.0.0.1 and 127.0.0.2")
+	reason := fmt.Sprintf("no second loopback address shares a port with 127.0.0.1 (%s)", strings.Join(unusable, "; "))
+	if os.Getenv("CI") != "" {
+		t.Fatal(reason)
+	}
+	t.Skip(reason + "; on macOS `sudo ifconfig lo0 alias 127.0.0.2` adds one")
 	return "", ""
 }
 
