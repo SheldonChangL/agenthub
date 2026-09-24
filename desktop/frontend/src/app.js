@@ -5778,6 +5778,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return (view.saved?.peerListens ?? []).filter((address) => !isLoopbackListen(address) && !bound.has(address));
   }
 
+  // broadcastFrom is the address this node's announcements go out from, judged
+  // as the node judges it (pairing.ListenerEndpoint in cmd/agenthub-node): none
+  // unless the running node was started with -discover, and then the first
+  // network address it reports bound, in its own order — not the first one
+  // ticked, which may be an address the node failed to bind or has not been
+  // restarted onto. IPv4 only, because announcements go out on the IPv4 group.
+  function broadcastFrom(view) {
+    if (!view?.settings?.discover || !Array.isArray(view.peerListeners)) return "";
+    const entry = view.peerListeners.find((listener) => listener.state === "bound" &&
+      !isLoopbackListen(listener.address) && !String(listener.address).trim().startsWith("["));
+    return entry ? entry.address : "";
+  }
+
   // syncPeerListensForm is syncNodeSettingsForm for the list: the same four
   // warnings, judged over every ticked address, plus the two things only a
   // list has — which row is broadcast from, and loopback beside a network
@@ -5789,7 +5802,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const storedLan = stored.filter((address) => !isLoopbackListen(address));
     const naming = !samePeerListens(peerListensToSend(), stored);
 
-    for (const row of peerListenRows) row.mark.textContent = row.address === lan[0] ? t("nodeSettings.rowBroadcast") : "";
+    const broadcast = broadcastFrom(state.nodeSettings);
+    for (const row of peerListenRows) row.mark.textContent = row.address === broadcast ? t("nodeSettings.rowBroadcast") : "";
     el("node-peerlistens-none").classList.toggle("hidden", lan.length > 0);
 
     if (!allowLan && lan.length > 0 && naming) {
