@@ -67,6 +67,14 @@ when the script arrives through a pipe:
 curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh -s -- --no-service
 ```
 
+To remove it again — service, app, links, the PATH line, caches — the same
+script takes `--uninstall`; the node's identity and database stay unless you add
+`--purge` (see `docs/install-script.md`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh -s -- --uninstall
+```
+
 When it finishes it prints what it installed and where, whether the node is
 running, and the one thing to do next: open `agenthub-desktop` from
 Applications, which starts on a setup checklist. Uneasy about piping a script

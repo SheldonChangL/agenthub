@@ -42,6 +42,8 @@ than half an install that exits 0.
 | `--no-service` | Do not register the background node. Nothing starts at login; `ah service install` does it later. |
 | `--no-open` | Do not open the app at the end (macOS). |
 | `--no-modify-path` | Do not add `~/.local/bin` to `PATH` in the shell's startup file; print the `export` line to add instead. |
+| `--uninstall` | Remove what the script installed instead of installing; see "Uninstall" below. |
+| `--purge` | With `--uninstall`, also delete the node's identity, database and logs. |
 | `--prefix DIR` | Install under `DIR` instead of `/Applications` and `~/.local`. Symlinks then go to `DIR/bin`, and nothing outside `DIR` is written. Mostly a test hook. |
 | `--from FILE` | Install from a local `.dmg` or `.tar.gz` instead of downloading. A `SHA256SUMS` beside the file is still checked; if there is none, the script prints a `warning:` line on stderr and continues, because you named the file yourself. |
 | `--dry-run` | Print every command instead of running it. |
@@ -132,6 +134,47 @@ the `export` for it. With `--prefix` or `--no-modify-path` no file is touched
 and the script prints that `export` line instead. A startup file it cannot
 write — a read-only symlink, as Nix home-manager makes them — is a warning with
 the same `export` line, and the install carries on to register the node.
+
+## Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh -s -- --uninstall
+```
+
+In this order, and each only when it is this install's:
+
+1. The background service: `ah service uninstall`, with the installed `ah`
+   (or the one on `PATH`). If that fails nothing else is removed — an app
+   deleted under a registered service fails at every login. With no `ah`
+   anywhere, the launchd plist or systemd unit `ah service install` wrote is
+   taken down directly.
+2. On macOS, a running `agenthub-desktop` is asked to quit; a node the window
+   started on its own is stopped, matched by the full path of this install's
+   `agenthub-node`.
+3. The links in `~/.local/bin` (`ah`, `agenthub-node`, `agenthub-mcp`,
+   `agenthub-desktop`) — only those that point into this install; a link to
+   some other `ah` is left and named.
+4. The app: `/Applications/agenthub-desktop.app` (or `~/Applications`) on
+   macOS, `~/.local/share/agenthub/` on Linux, and the Linux menu entry.
+5. The PATH lines: the `# added by the AgentHub installer` comment, the
+   `export` under it and the blank line above them, from every startup file in
+   the "PATH" table. The rest of each file is left byte for byte.
+6. On macOS, the app's caches and preferences under `~/Library` (`Caches`,
+   `WebKit`, `HTTPStorages`, `Preferences`, `Saved Application State`, each by
+   the bundle id).
+
+It keeps the node's identity and database —
+`~/Library/Application Support/agenthub/` on macOS, `~/.config/agenthub/` on
+Linux, or beside the database the service unit names — and its logs, so
+installing again brings the same node back with its pairings. `--purge`
+deletes them as well: the default directory whole, and for a database kept
+anywhere else only `node.key` and the database's own files, so a checkout the
+database lived in is not taken with it. After `--purge` a reinstall is a new
+node. Either way the machines paired with this one still list it until they
+revoke it (`ah revoke <node-id>`, or from their app).
+
+With `--prefix`, the same run removes that prefix's app, links and marker.
+`--dry-run` prints all of it and removes nothing.
 
 ## The quarantine flag on macOS
 
