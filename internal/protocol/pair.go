@@ -43,12 +43,35 @@ func (b *HeartbeatBuilder) Descriptor() NodeDescriptor {
 // signed thing this node produces names a recipient; this one cannot, and that
 // is exactly why an approval must be directed: see BuildPairApprove.
 //
-// address is where this node answers, so the far side can record it when it
-// approves. It is a claim, checked by the receiver against its own address
-// policy, and an empty one simply means there is nothing to record.
-func (b *HeartbeatBuilder) BuildPairRequest(sentAt time.Time, address string) (Envelope, error) {
-	return NewEnvelope(b.node.ID, TypePairRequest, At(sentAt),
-		PairRequestPayload{Node: b.Descriptor(), Address: address}, b.signer)
+// addresses is where this node answers, preferred first, so the far side can
+// record them when it approves. They are claims, checked by the receiver
+// against its own address policy, and none simply means there is nothing to
+// record. The first also goes in address, which is all an older receiver reads.
+func (b *HeartbeatBuilder) BuildPairRequest(sentAt time.Time, addresses []string) (Envelope, error) {
+	addresses = firstPairAddresses(addresses)
+	payload := PairRequestPayload{Node: b.Descriptor(), Addresses: addresses}
+	if len(addresses) > 0 {
+		payload.Address = addresses[0]
+	}
+	return NewEnvelope(b.node.ID, TypePairRequest, At(sentAt), payload, b.signer)
+}
+
+// firstPairAddresses drops empties and repeats and keeps MaxPairAddresses.
+// Nil when nothing is left, so the field is omitted rather than sent empty.
+func firstPairAddresses(addresses []string) []string {
+	var kept []string
+	seen := map[string]bool{"": true}
+	for _, address := range addresses {
+		if seen[address] {
+			continue
+		}
+		seen[address] = true
+		kept = append(kept, address)
+		if len(kept) == MaxPairAddresses {
+			break
+		}
+	}
+	return kept
 }
 
 // BuildPairApprove signs an approval for one request.
@@ -56,9 +79,13 @@ func (b *HeartbeatBuilder) BuildPairRequest(sentAt time.Time, address string) (E
 // Directed at the requester. The recipient is covered by the signature, so an
 // approval handed to a different node is not a valid approval there: without
 // that, an approval polled off one exchange could be replayed into another.
-func (b *HeartbeatBuilder) BuildPairApprove(sentAt time.Time, recipientNodeID, requestID string) (Envelope, error) {
+//
+// addresses is where this node answers, on the terms BuildPairRequest states.
+func (b *HeartbeatBuilder) BuildPairApprove(sentAt time.Time, recipientNodeID, requestID string,
+	addresses []string) (Envelope, error) {
 	return NewDirectedEnvelope(b.node.ID, recipientNodeID, TypePairApprove, At(sentAt),
-		PairApprovePayload{Node: b.Descriptor(), RequestID: requestID}, b.signer)
+		PairApprovePayload{Node: b.Descriptor(), RequestID: requestID, Addresses: firstPairAddresses(addresses)},
+		b.signer)
 }
 
 // BuildPairReject signs a refusal, with the reason the requester is shown.
@@ -114,4 +141,15 @@ func PairAddress(envelope Envelope) string {
 		return ""
 	}
 	return payload.Address
+}
+
+// PairAddresses is every address a pair.request claimed, unchecked: the
+// preferred one, and the rest as sent. An older requester sends no list, and
+// then the rest is empty.
+func PairAddresses(envelope Envelope) (string, []string) {
+	payload, err := DecodePayload[PairRequestPayload](envelope)
+	if err != nil {
+		return "", nil
+	}
+	return payload.Address, payload.Addresses
 }

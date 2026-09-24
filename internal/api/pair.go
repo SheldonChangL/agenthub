@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -258,6 +259,9 @@ func (s *Server) receivePairRequest(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, "PAIRING_FAILED", "could not start a pairing request", err)
 		return
 	}
+	claimed, claimedAlternates := protocol.PairAddresses(envelope)
+	preferred := s.acceptablePeerAddress(claimed)
+	alternates := s.acceptableAlternates(preferred, claimedAlternates)
 	now := s.pairRequests.Now()
 	// The request cannot outlive the window that consented to it, and it cannot
 	// outlive its own five minutes either. Whichever ends first ends it.
@@ -276,7 +280,8 @@ func (s *Server) receivePairRequest(w http.ResponseWriter, r *http.Request) {
 		// requester wrote into its own descriptor is not read at all.
 		Fingerprint:      identity.Fingerprint(public),
 		LocalFingerprint: s.node.Fingerprint,
-		Address:          s.acceptablePeerAddress(protocol.PairAddress(envelope)),
+		Address:          preferred,
+		Alternates:       alternates,
 		SourceHost:       sourceHost(r),
 		State:            pairing.StatePending,
 		CreatedAt:        now.UTC(),
@@ -331,7 +336,8 @@ func (s *Server) pollPairRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	switch request.State {
 	case pairing.StateApproved:
-		envelope, err := s.heartbeats.BuildPairApprove(time.Now(), request.NodeID, request.ID)
+		envelope, err := s.heartbeats.BuildPairApprove(time.Now(), request.NodeID, request.ID,
+			s.ownPeerAddresses())
 		if err != nil {
 			writeInternalError(w, "PAIRING_FAILED", "could not sign the approval", err)
 			return
@@ -379,7 +385,7 @@ func (s *Server) startPairRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	envelope, err := s.heartbeats.BuildPairRequest(time.Now(), s.ownPeerAddress())
+	envelope, err := s.heartbeats.BuildPairRequest(time.Now(), s.ownPeerAddresses())
 	if err != nil {
 		writeInternalError(w, "PAIRING_FAILED", "could not sign the pairing request", err)
 		return
@@ -593,7 +599,14 @@ func (s *Server) refreshOutgoing(ctx context.Context, request pairing.Request) {
 			log.Printf("pairing request %s: discarding an approval from %s: %s", request.ID, request.Address, err)
 			return
 		}
-		_, _ = s.pairRequests.Settle(request.ID, pairing.StatePending, pairing.StateAwaitingConfirm, "")
+		// The approval says where else the far side answers. The address this
+		// node dialled stays preferred: it is the one known to work.
+		var alternates []string
+		if approval, err := protocol.DecodePayload[protocol.PairApprovePayload](answer.Envelope); err == nil {
+			alternates = s.acceptableAlternates(request.Address, approval.Addresses)
+		}
+		_, _, _ = s.pairRequests.SettleFrom(request.ID, []pairing.RequestState{pairing.StatePending},
+			pairing.StateAwaitingConfirm, "", func(row *pairing.Request) { row.Alternates = alternates })
 	case string(pairing.StateRejected), string(pairing.StateExpired):
 		if err := s.checkPairAnswer(answer.Envelope, protocol.TypePairReject, request, public); err != nil {
 			log.Printf("pairing request %s: discarding a refusal from %s: %s", request.ID, request.Address, err)
@@ -1118,8 +1131,20 @@ func (s *Server) trustFromRequest(ctx context.Context, request pairing.Request) 
 	if err := s.store.TrustNode(ctx, node); err != nil {
 		return err
 	}
+	// Checked again here rather than trusted from the row: the policy is the
+	// one that decides what is dialled, and the row was filled minutes ago.
+	addresses := []string{}
 	if address := s.acceptablePeerAddress(request.Address); address != "" {
-		if err := s.store.SetNodeAddress(ctx, request.NodeID, address); err != nil {
+		addresses = append(addresses, address)
+	}
+	addresses = append(addresses, s.acceptableAlternates(request.Address, request.Alternates)...)
+	if len(addresses) > registry.MaxNodeAddresses {
+		addresses = addresses[:registry.MaxNodeAddresses]
+	}
+	// Nothing claimed leaves whatever is recorded alone, as it always has: a
+	// re-pairing that offered no address is not a decision that there is none.
+	if len(addresses) > 0 {
+		if err := s.store.SetNodeAddresses(ctx, request.NodeID, addresses, s.deliveryPolicy); err != nil {
 			return err
 		}
 	}
@@ -1150,6 +1175,51 @@ func (s *Server) acceptablePeerAddress(address string) string {
 		return ""
 	}
 	return address
+}
+
+// acceptableAlternates is the addresses a pairing payload listed that this node
+// would deliver to, beside preferred (ADR-005 §4).
+//
+// Each is checked as acceptablePeerAddress checks one, and loopback is dropped
+// as well: another machine's loopback is this machine's, so an alternate there
+// could only ever reach this node itself. The preferred address and repeats are
+// dropped, and what is left is cut so preferred and alternates together are at
+// most MaxPairAddresses — the sender was asked for no more, and a sender that
+// sends more does not get to make this node dial them.
+func (s *Server) acceptableAlternates(preferred string, claimed []string) []string {
+	preferred = strings.TrimSpace(preferred)
+	room := protocol.MaxPairAddresses
+	if s.acceptablePeerAddress(preferred) != "" {
+		room--
+	}
+	seen := map[string]bool{preferred: true}
+	var kept []string
+	for _, address := range claimed {
+		if len(kept) == room {
+			break
+		}
+		address = s.acceptablePeerAddress(address)
+		if address == "" || seen[address] || isLoopbackAddress(address) {
+			continue
+		}
+		seen[address] = true
+		kept = append(kept, address)
+	}
+	return kept
+}
+
+// isLoopbackAddress reports a host:port whose host is a loopback literal or
+// the name localhost.
+func isLoopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	parsed, err := netip.ParseAddr(host)
+	return err == nil && parsed.Unmap().IsLoopback()
 }
 
 // writePairStateError says, in one sentence, what this request is and what the

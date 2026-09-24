@@ -144,6 +144,24 @@ where it was.
    created. Two machines that have paired can see nothing of each other until
    somebody sets an audience per session.
 
+8. **Each side learns where the other answers, every address of it.** A
+   `pair.request` carries `address`, where the requester answers, and — since
+   ADR-005 §4 — `addresses`, every address it answers on with `address` first.
+   A `pair.approve` carries `addresses` for the approver. Both lists hold only
+   what the sender's listener set has bound and its own delivery policy passes,
+   never loopback or zoned, never a scan of the machine's interfaces, and at
+   most four. They are claims like every other field: the receiver checks each
+   against its own delivery policy, drops loopback, repeats and anything that
+   does not pass, and keeps four at most, preferred included. A dropped address
+   is never a reason to refuse the pairing.
+
+   What each side records when it trusts: the requester keeps the address its
+   owner typed as preferred — the one known to work — and the approval's
+   addresses as alternates; the receiver keeps the request's `address` as
+   preferred and its `addresses` as alternates. A build that predates the list
+   ignores it and records the one address, as before, and a sender that
+   predates it sends no list, which a newer receiver reads as no alternates.
+
 ## Consequences
 
 - `ah pair <five args>` stays. It is what still works when the two machines
