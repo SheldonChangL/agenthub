@@ -235,6 +235,9 @@ if (JSON.stringify(patch) !== JSON.stringify({ peerListens: ["127.0.0.1:7463"] }
   failures.push(`nothing ticked sent ${JSON.stringify(patch)}, want peerListens [127.0.0.1:7463]`);
 }
 if (el("node-peerlistens-none").classList.contains("hidden")) failures.push("nothing ticked does not say only this machine can connect");
+if (el("node-peerlistens-none").textContent !== ZH["nodeSettings.peerListensNoneDraft"]) {
+  failures.push(`nothing ticked over a saved network address reads "${el("node-peerlistens-none").textContent}", want what saving would do`);
+}
 if (rows().some((entry) => entry.mark.textContent !== "")) failures.push("a row claims to be broadcast from with nothing ticked");
 
 // 3. Rule 2 — loopback by the host. A saved 127.0.0.1:9999 with allowLan off
@@ -249,6 +252,9 @@ if (combination().includes(ZH["nodeSettings.warnWithdraw"].slice(0, 6)) || combi
   failures.push(`a loopback address was judged by its port: ${combination()}`);
 }
 if (el("node-peerlistens-none").classList.contains("hidden")) failures.push("a loopback-only list does not say only this machine can connect");
+if (el("node-peerlistens-none").textContent !== ZH["nodeSettings.peerListensNone"]) {
+  failures.push(`a saved loopback-only list reads "${el("node-peerlistens-none").textContent}", want the present tense`);
+}
 if (Object.keys(app.readNodeSettingsPatch()).length !== 0) failures.push("a loopback list with nothing changed was sent");
 // Beside a network address the node refuses it, and the form says so first.
 toggle(A, true);
@@ -415,6 +421,28 @@ if (confirmations.length !== 1) {
 if (saveCalls.length !== 0 || installCalls.length !== 0) {
   failures.push(`a refused question still wrote ${JSON.stringify(saveCalls)} / re-registered ${installCalls.length}`);
 }
+// Unticking everything and refusing the question: nothing was sent, every
+// row still says the node serves it, so the note says what saving would do —
+// in both languages — rather than that only this machine can connect now.
+await load(view([A]));
+toggle(A, false);
+confirmations = [];
+saveCalls = [];
+await app.saveNodeSettings();
+await tick();
+if (confirmations.length !== 1 || saveCalls.length !== 0) {
+  failures.push(`unticking everything under the pinned unit asked ${confirmations.length} / wrote ${saveCalls.length}`);
+}
+if (row(A)?.status.textContent !== ZH["nodeSettings.rowOpen"]) failures.push(`after the refused save A reads "${row(A)?.status.textContent}"`);
+if (el("node-peerlistens-none").classList.contains("hidden") ||
+    el("node-peerlistens-none").textContent !== ZH["nodeSettings.peerListensNoneDraft"]) {
+  failures.push(`after the refused save the note reads "${el("node-peerlistens-none").textContent}", want what saving would do`);
+}
+app.setUILanguage("en");
+if (el("node-peerlistens-none").textContent !== EN["nodeSettings.peerListensNoneDraft"]) {
+  failures.push(`in English after the refused save the note reads "${el("node-peerlistens-none").textContent}"`);
+}
+app.setUILanguage("zh-Hant");
 app.state.service = serviceStatus;
 
 // 7. An older node: no `peerListens`, so the dropdown, and only the scalar.

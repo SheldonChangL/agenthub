@@ -611,6 +611,7 @@ export const TEXT = {
   "nodeSettings.peerListensLabel": "對外位址",
   "nodeSettings.peerListensHint": "其他機器可以從勾選的任一個位址連進來",
   "nodeSettings.peerListensNone": "都沒勾：只有這台機器自己連得到。",
+  "nodeSettings.peerListensNoneDraft": "儲存後只有這台機器自己連得到。",
   "nodeSettings.peerListensOther": "其他位址",
   "nodeSettings.otherNeedsRange": "對方機器也要宣告同一個網段。",
   "nodeSettings.rowOpen": "已開放",
