@@ -54,7 +54,9 @@ It downloads the one release asset for your machine, checks it against that
 release's own `SHA256SUMS` before unpacking anything, puts the app in
 `/Applications` (or `~/Applications`) or `~/.local/share/agenthub`, links `ah`
 into `~/.local/bin` — adding that to `PATH` in your shell's startup file when it
-is not there yet — and registers the background node. When a node is already
+is not there yet — puts the `agenthub-watch` skill into Claude Code
+(`~/.claude/skills/agenthub-watch`, loaded by sessions started afterwards) so an
+agent on that machine knows to use `ah`, and registers the background node. When a node is already
 registered it reads the unit first and keeps that node's `--db`, so an upgrade
 is an upgrade and not a new, empty database — it says `keeping the node's
 database at <path>` when it does. It never uses `sudo` and never asks for a
@@ -272,7 +274,8 @@ Agents get four MCP tools from `agenthub-mcp`: `agent_list`, `agent_status`,
 agent should do with a message is written down rather than re-typed each time:
 [AGENTS.md](AGENTS.md) for Codex and
 [.claude/skills/agenthub-watch](.claude/skills/agenthub-watch/SKILL.md) for
-Claude Code.
+Claude Code. `install.sh` puts that skill into Claude Code on each machine it
+installs on (`--no-skill` opts out), so a new session there already knows `ah`.
 
 ## How it stays private
 

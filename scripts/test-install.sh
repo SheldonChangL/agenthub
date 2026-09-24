@@ -27,6 +27,12 @@ installer="$repository/install.sh"
 work=$(mktemp -d "${TMPDIR:-/tmp}/agenthub-install-test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
+# install.sh puts a Claude Code skill under ${CLAUDE_CONFIG_DIR:-$HOME/.claude},
+# and several runs below install for real without a HOME of their own. Pointed
+# here for the whole suite, so no run can write into the developer's own
+# ~/.claude; the skill cases set their own.
+export CLAUDE_CONFIG_DIR="$work/claude"
+
 failures=0
 checks=0
 
@@ -420,6 +426,7 @@ echo "== --help and a bad flag =="
 checks=$((checks + 1))
 sh "$installer" --help >"$work/help.txt" 2>&1 || fail "--help exited non-zero"
 contains help "$work/help.txt" "--cli-only"
+contains help "$work/help.txt" "--no-skill"
 contains help "$work/help.txt" "It never uses sudo."
 checks=$((checks + 1))
 if sh "$installer" --nonsense >"$work/bad.txt" 2>&1; then
@@ -993,6 +1000,180 @@ contains purge-alone "$work/purge-alone.txt" "--purge only goes with --uninstall
 checks=$((checks + 1))
 if sh "$installer" --uninstall --version v0.1.0 >"$work/un-version.txt" 2>&1; then fail "--uninstall --version was accepted"; fi
 contains un-version "$work/un-version.txt" "do not go with it"
+
+# ---- the Claude Code skill ---------------------------------------------------
+
+# The skill is what tells an agent on this machine that `ah` exists. It travels
+# inside the release asset, so the digest check covers it; the dry runs assert
+# it is copied from what was unpacked, and the real installs below assert what
+# lands, what is replaced, and what is never touched.
+echo "== a dry run prints the skill install and writes nothing =="
+# Without --prefix, into a HOME of the suite's own: a default install is the
+# one that writes the skill.
+skill_dry_home="$work/skill-dry-home"
+mkdir -p "$skill_dry_home"
+LDCONFIG_SHIM=$(fake_ldconfig 4.1)
+HOME="$skill_dry_home" dry_run Linux x86_64 "$work/skill-dry-linux.txt" --version v0.1.0 --no-service
+unset LDCONFIG_SHIM
+commands_only "$work/skill-dry-linux.txt" "$work/skill-dry-linux.cmds"
+contains skill-dry "$work/skill-dry-linux.cmds" "cp -R $skill_dry_home/.local/share/agenthub/skills/agenthub-watch"
+contains skill-dry "$work/skill-dry-linux.cmds" "mv "
+contains skill-dry "$work/skill-dry-linux.cmds" "$CLAUDE_CONFIG_DIR/skills/agenthub-watch"
+contains skill-dry "$work/skill-dry-linux.txt" "installed the Claude Code skill $CLAUDE_CONFIG_DIR/skills/agenthub-watch"
+contains skill-dry "$work/skill-dry-linux.txt" "skill: $CLAUDE_CONFIG_DIR/skills/agenthub-watch (Claude Code sessions started from now on load it"
+HOME="$skill_dry_home" dry_run Darwin arm64 "$work/skill-dry-mac.txt" --version v0.1.0 --no-service --no-open
+commands_only "$work/skill-dry-mac.txt" "$work/skill-dry-mac.cmds"
+contains skill-dry "$work/skill-dry-mac.cmds" "/mnt/.skills/agenthub-watch"
+contains skill-dry "$work/skill-dry-mac.cmds" "$CLAUDE_CONFIG_DIR/skills/agenthub-watch"
+# The skill is copied out of the image before it is detached.
+checks=$((checks + 1))
+if [ "$(grep -n '/mnt/.skills/agenthub-watch' "$work/skill-dry-mac.txt" | cut -d: -f1 | head -n1)" -gt \
+	"$(grep -n 'hdiutil detach' "$work/skill-dry-mac.txt" | cut -d: -f1 | head -n1)" ]; then
+	fail "skill-dry: the skill is copied from the image after it is detached"
+fi
+# Nothing is fetched on its own: a skill from raw.githubusercontent would be a
+# file no SHA256SUMS ever vouched for.
+lacks skill-dry "$work/skill-dry-linux.txt" "raw.githubusercontent.com/SheldonChangL/agenthub/main/.claude"
+lacks skill-dry "$work/skill-dry-mac.txt" "raw.githubusercontent.com/SheldonChangL/agenthub/main/.claude"
+checks=$((checks + 1))
+! exists_path "$CLAUDE_CONFIG_DIR/skills/agenthub-watch" || fail "skill-dry: a dry run installed the skill"
+HOME="$skill_dry_home" dry_run Darwin arm64 "$work/skill-dry-no.txt" --version v0.1.0 --no-service --no-open --no-skill
+commands_only "$work/skill-dry-no.txt" "$work/skill-dry-no.cmds"
+lacks skill-dry-no "$work/skill-dry-no.cmds" "skills/agenthub-watch"
+contains skill-dry-no "$work/skill-dry-no.txt" "skipped the Claude Code skill (--no-skill)"
+# --prefix writes nothing outside the prefix, and ~/.claude is outside it.
+commands_only "$work/linux.txt" "$work/linux.cmds"
+lacks skill-prefix "$work/linux.cmds" "$CLAUDE_CONFIG_DIR"
+lacks skill-prefix "$work/darwin.cmds" "$CLAUDE_CONFIG_DIR"
+contains skill-prefix "$work/linux.txt" "skipped the Claude Code skill: a --prefix install writes nothing outside $work/pfx"
+
+skill_stage="$work/stage-skill/agenthub-desktop_v0.1.0_linux_amd64"
+mkdir -p "$skill_stage/skills/agenthub-watch"
+for binary in ah agenthub-node agenthub-mcp agenthub-desktop; do
+	printf '#!/bin/sh\necho "%s v0.1.0 (fake)"\n' "$binary" >"$skill_stage/$binary"
+	chmod +x "$skill_stage/$binary"
+done
+skill_md="$repository/.claude/skills/agenthub-watch/SKILL.md"
+cp "$skill_md" "$skill_stage/skills/agenthub-watch/"
+skilled="$work/skilled"
+mkdir -p "$skilled"
+tar -C "$work/stage-skill" -czf "$skilled/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+	agenthub-desktop_v0.1.0_linux_amd64
+(
+	cd "$skilled"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum agenthub-desktop_v0.1.0_linux_amd64.tar.gz >SHA256SUMS
+	else
+		shasum -a 256 agenthub-desktop_v0.1.0_linux_amd64.tar.gz >SHA256SUMS
+	fi
+)
+skill_home="$work/skill-home"
+mkdir -p "$skill_home"
+skill_run() { # skill_run <output file> <claude config dir> [args...]
+	local out=$1 cfg=$2
+	shift 2
+	PATH="$linux_shim:$bare_path" SHELL=/bin/bash CLAUDE_CONFIG_DIR="$cfg" \
+		isolated "$skill_home" sh "$installer" "$@" >"$out" 2>&1
+}
+skill_install() { # skill_install <output file> <claude config dir> [archive] [args...]
+	local out=$1 cfg=$2 archive=${3:-$skilled/agenthub-desktop_v0.1.0_linux_amd64.tar.gz}
+	shift 3 || shift $#
+	skill_run "$out" "$cfg" --from "$archive" --no-service --no-modify-path "$@"
+}
+
+echo "== a fresh install puts the skill where Claude Code reads it =="
+ours="$work/skill-ours"
+checks=$((checks + 1))
+skill_install "$work/skill-fresh.txt" "$ours" || fail "skill-fresh: the install failed: $(cat "$work/skill-fresh.txt")"
+contains skill-fresh "$work/skill-fresh.txt" "verified agenthub-desktop_v0.1.0_linux_amd64.tar.gz against SHA256SUMS"
+contains skill-fresh "$work/skill-fresh.txt" "installed the Claude Code skill $ours/skills/agenthub-watch"
+contains skill-fresh "$work/skill-fresh.txt" "skill: $ours/skills/agenthub-watch (Claude Code sessions started from now on load it"
+checks=$((checks + 1))
+cmp -s "$ours/skills/agenthub-watch/SKILL.md" "$skill_md" || fail "skill-fresh: SKILL.md is not the one in the archive"
+checks=$((checks + 1))
+[ -f "$ours/skills/agenthub-watch/.agenthub-install" ] || fail "skill-fresh: the installed skill carries no marker"
+
+echo "== an upgrade replaces the copy it installed =="
+echo "stale" >"$ours/skills/agenthub-watch/stale.txt"
+echo "an old version" >"$ours/skills/agenthub-watch/SKILL.md"
+checks=$((checks + 1))
+skill_install "$work/skill-upgrade.txt" "$ours" || fail "skill-upgrade: the install failed: $(cat "$work/skill-upgrade.txt")"
+contains skill-upgrade "$work/skill-upgrade.txt" "installed the Claude Code skill $ours/skills/agenthub-watch"
+checks=$((checks + 1))
+cmp -s "$ours/skills/agenthub-watch/SKILL.md" "$skill_md" || fail "skill-upgrade: SKILL.md was not replaced"
+checks=$((checks + 1))
+[ ! -e "$ours/skills/agenthub-watch/stale.txt" ] || fail "skill-upgrade: a file of the old copy survived"
+checks=$((checks + 1))
+[ -f "$ours/skills/agenthub-watch/.agenthub-install" ] || fail "skill-upgrade: the upgraded skill carries no marker"
+
+echo "== a skill that is not ours is left alone =="
+# The owner's own arrangement: skills kept elsewhere and linked in, with the
+# same relative link this machine's owner uses.
+linked="$work/skill-linked"
+mkdir -p "$linked/skills" "$work/own-skills/agenthub-watch"
+echo "mine" >"$work/own-skills/agenthub-watch/SKILL.md"
+ln -s ../../own-skills/agenthub-watch "$linked/skills/agenthub-watch"
+checks=$((checks + 1))
+skill_install "$work/skill-linked.txt" "$linked" || fail "skill-linked: the install failed: $(cat "$work/skill-linked.txt")"
+contains skill-linked "$work/skill-linked.txt" "left $linked/skills/agenthub-watch alone"
+checks=$((checks + 1))
+[ -L "$linked/skills/agenthub-watch" ] || fail "skill-linked: the owner's link was replaced"
+checks=$((checks + 1))
+[ "$(cat "$work/own-skills/agenthub-watch/SKILL.md")" = "mine" ] || fail "skill-linked: the owner's skill was written through the link"
+checks=$((checks + 1))
+[ ! -e "$work/own-skills/agenthub-watch/.agenthub-install" ] || fail "skill-linked: a marker was written through the link"
+# A real directory without the marker is the owner's too.
+copied="$work/skill-copied"
+mkdir -p "$copied/skills/agenthub-watch"
+echo "mine" >"$copied/skills/agenthub-watch/SKILL.md"
+checks=$((checks + 1))
+skill_install "$work/skill-copied.txt" "$copied" || fail "skill-copied: the install failed: $(cat "$work/skill-copied.txt")"
+contains skill-copied "$work/skill-copied.txt" "left $copied/skills/agenthub-watch alone"
+checks=$((checks + 1))
+[ "$(cat "$copied/skills/agenthub-watch/SKILL.md")" = "mine" ] || fail "skill-copied: the owner's copy was replaced"
+
+echo "== --no-skill installs everything but the skill =="
+declined="$work/skill-declined"
+checks=$((checks + 1))
+skill_install "$work/skill-no.txt" "$declined" "" --no-skill || fail "skill-no: the install failed: $(cat "$work/skill-no.txt")"
+contains skill-no "$work/skill-no.txt" "skipped the Claude Code skill (--no-skill)"
+contains skill-no "$work/skill-no.txt" "skill: not installed (--no-skill)"
+checks=$((checks + 1))
+! exists_path "$declined/skills/agenthub-watch" || fail "skill-no: --no-skill installed the skill"
+checks=$((checks + 1))
+[ -x "$skill_home/.local/share/agenthub/ah" ] || fail "skill-no: --no-skill left no ah"
+
+echo "== a release without the skill warns and installs the rest =="
+older="$work/skill-older"
+checks=$((checks + 1))
+skill_install "$work/skill-old.txt" "$older" "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" ||
+	fail "skill-old: an archive without the skill failed the install: $(cat "$work/skill-old.txt")"
+contains skill-old "$work/skill-old.txt" "warning: this release does not carry the agenthub-watch skill"
+contains skill-old "$work/skill-old.txt" "skill: not installed (this release does not carry it)"
+contains skill-old "$work/skill-old.txt" "done. AgentHub"
+checks=$((checks + 1))
+! exists_path "$older/skills/agenthub-watch" || fail "skill-old: a skill appeared from an archive without one"
+
+echo "== --uninstall removes only the skill it installed =="
+checks=$((checks + 1))
+skill_run "$work/skill-un-keep.txt" "$ours" --uninstall --no-skill || fail "skill-un-keep: failed: $(cat "$work/skill-un-keep.txt")"
+checks=$((checks + 1))
+[ -f "$ours/skills/agenthub-watch/SKILL.md" ] || fail "skill-un-keep: --uninstall --no-skill removed the skill"
+checks=$((checks + 1))
+skill_run "$work/skill-un.txt" "$ours" --uninstall || fail "skill-un: failed: $(cat "$work/skill-un.txt")"
+contains skill-un "$work/skill-un.txt" "removed $ours/skills/agenthub-watch"
+checks=$((checks + 1))
+! exists_path "$ours/skills/agenthub-watch" || fail "skill-un: the installed skill is still there"
+checks=$((checks + 1))
+skill_run "$work/skill-un-linked.txt" "$linked" --uninstall || fail "skill-un-linked: failed: $(cat "$work/skill-un-linked.txt")"
+contains skill-un-linked "$work/skill-un-linked.txt" "left $linked/skills/agenthub-watch alone"
+checks=$((checks + 1))
+[ -L "$linked/skills/agenthub-watch" ] || fail "skill-un-linked: --uninstall removed the owner's link"
+[ -f "$work/own-skills/agenthub-watch/SKILL.md" ] || fail "skill-un-linked: --uninstall removed the owner's skill behind the link"
+checks=$((checks + 1))
+skill_run "$work/skill-un-copied.txt" "$copied" --uninstall || fail "skill-un-copied: failed: $(cat "$work/skill-un-copied.txt")"
+checks=$((checks + 1))
+[ -f "$copied/skills/agenthub-watch/SKILL.md" ] || fail "skill-un-copied: --uninstall removed the owner's copy"
 
 # ---- what the last lines tell a stranger -----------------------------------
 
