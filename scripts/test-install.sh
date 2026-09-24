@@ -743,6 +743,19 @@ contains path-noshell "$work/path-noshell.txt" "+ append to $path_home/.zshrc: "
 path_dry "$work/path-optout.txt" /bin/zsh --no-service --no-open --no-modify-path
 contains path-optout "$work/path-optout.txt" "note: $path_home/.local/bin is not on your PATH"
 lacks path-optout "$work/path-optout.txt" "append to"
+path_dry "$work/path-tcsh.txt" /bin/tcsh --no-service --no-open
+contains path-tcsh "$work/path-tcsh.txt" "is not on your PATH. Add it"
+contains path-tcsh "$work/path-tcsh.txt" "PATH: not on PATH"
+lacks path-tcsh "$work/path-tcsh.txt" "append to"
+# A bash login shell reads only the first of .bash_profile, .bash_login and
+# .profile that exists; a new .bash_profile would switch an existing .profile off.
+profile_home="$work/profile-home"
+mkdir -p "$profile_home"
+echo 'export FROM_PROFILE=1' >"$profile_home/.profile"
+PATH="$no_service_ah:$(fake_uname Darwin arm64):$bare_path" HOME="$profile_home" SHELL=/bin/bash \
+	sh "$installer" --dry-run --version v0.1.0 --no-service --no-open >"$work/path-profile.txt" 2>&1
+contains path-profile "$work/path-profile.txt" "+ append to $profile_home/.profile: "
+lacks path-profile "$work/path-profile.txt" ".bash_profile"
 PATH="$no_service_ah:$(fake_uname Darwin arm64):$path_home/.local/bin:$bare_path" HOME="$path_home" SHELL=/bin/zsh \
 	sh "$installer" --dry-run --version v0.1.0 --no-service --no-open >"$work/path-already.txt" 2>&1
 lacks path-already "$work/path-already.txt" "append to"
@@ -783,6 +796,24 @@ if command -v zsh >/dev/null 2>&1; then
 	checks=$((checks + 1))
 	found=$(env -i HOME="$path_home" ZDOTDIR="$zdot" PATH="$bare_path" zsh -i -c 'command -v ah' 2>/dev/null || true)
 	[ "$found" = "$path_home/.local/bin/ah" ] || fail "path-real-zsh: a new zsh finds ah at \"$found\""
+fi
+# A startup file that cannot be written is a warning, not the end of the
+# install: the node still gets registered and the closing lines still print.
+# Root writes through a read-only mode, so the case means nothing there.
+if [ "$(id -u)" -ne 0 ]; then
+	ro_home="$work/ro-home"
+	mkdir -p "$ro_home"
+	: >"$work/ro-bashrc"
+	chmod 444 "$work/ro-bashrc"
+	ln -s "$work/ro-bashrc" "$ro_home/.bashrc"
+	checks=$((checks + 1))
+	PATH="$linux_shim:$bare_path" HOME="$ro_home" SHELL=/bin/bash XDG_DATA_HOME="$work/ro-xdg" \
+		sh "$installer" --from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" \
+		--no-service >"$work/path-ro.txt" 2>&1 || fail "path-ro: a read-only .bashrc stopped the install: $(cat "$work/path-ro.txt")"
+	contains path-ro "$work/path-ro.txt" "warning: could not write $ro_home/.bashrc"
+	contains path-ro "$work/path-ro.txt" "PATH: not on PATH"
+	contains path-ro "$work/path-ro.txt" "skipped the background service"
+	contains path-ro "$work/path-ro.txt" "done. AgentHub"
 fi
 rm -f "$path_home/.profile"
 checks=$((checks + 1))
