@@ -175,7 +175,7 @@ func TestTheWindowAnswerNamesTheAddressToTypeElsewhere(t *testing.T) {
 	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
 		WithPairing(pairing.NewMode(), nil, nil),
-		WithPairExchange(pairing.NewRequests(), nil, "192.168.1.42:7463"))
+		WithPairExchange(pairing.NewRequests(), nil, fixedPeerAddress("192.168.1.42:7463")))
 
 	for _, call := range []struct {
 		name   string
@@ -234,7 +234,7 @@ func TestTheWindowAnswerSaysWhetherThatAddressIsReachable(t *testing.T) {
 			node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
 			server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
 				WithPairing(pairing.NewMode(), nil, nil),
-				WithPairExchange(pairing.NewRequests(), nil, test.address))
+				WithPairExchange(pairing.NewRequests(), nil, fixedPeerAddress(test.address)))
 
 			response := perform(t, server.Handler(), http.MethodGet, "/v1/pairing", nil)
 			if response.Code != http.StatusOK {
@@ -722,5 +722,53 @@ func TestPairingWithACandidateTakesItOffTheList(t *testing.T) {
 
 	if rows := candidates.List(); len(rows) != 0 {
 		t.Errorf("a node the owner has just paired with is still offered as a candidate: %+v", rows)
+	}
+}
+
+// fixedPeerAddress is a peer address that never changes, for a test that is
+// not about the listener set binding addresses as they appear.
+func fixedPeerAddress(address string) func() []string {
+	return func() []string { return []string{address} }
+}
+
+// The window answer is read from the listener set on every request: an address
+// bound after start-up (Wi-Fi joining after login) appears without a restart,
+// and every bound address is listed with peerAddress as the first.
+func TestTheWindowAnswerListsTheAddressesBoundNow(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "addresses.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var mu sync.Mutex
+	bound := []string{"192.168.1.10:7463"}
+	node := model.NodeIdentity{ID: testNodeID, DisplayName: "test", Platform: "test"}
+	server := NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, apiTestSigner{}), node,
+		WithPairing(pairing.NewMode(), nil, nil),
+		WithPairExchange(pairing.NewRequests(), nil, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), bound...)
+		}))
+	read := func() map[string]any {
+		t.Helper()
+		response := perform(t, server.Handler(), http.MethodGet, "/v1/pairing", nil)
+		var body map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if body := read(); body["peerAddress"] != "192.168.1.10:7463" || len(body["peerAddresses"].([]any)) != 1 {
+		t.Fatalf("before: %v / %v", body["peerAddress"], body["peerAddresses"])
+	}
+	mu.Lock()
+	bound = append(bound, "10.0.0.5:7463")
+	mu.Unlock()
+	body := read()
+	addresses, _ := body["peerAddresses"].([]any)
+	if body["peerAddress"] != "192.168.1.10:7463" || len(addresses) != 2 || addresses[1] != "10.0.0.5:7463" {
+		t.Fatalf("after a second address bound: %v / %v", body["peerAddress"], body["peerAddresses"])
 	}
 }
