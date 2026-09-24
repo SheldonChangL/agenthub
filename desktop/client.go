@@ -58,6 +58,10 @@ type TrustedNode struct {
 	// quietest failure in the system. Delivery skips a peer without one
 	// without a word, and the sender's `ah send` still answers `queued`.
 	Address string `json:"address,omitempty"`
+	// Alternates are the other addresses the same peer answers on, tried in
+	// order after Address fails (ADR-005 §4). Address stays the preferred one.
+	// Absent from a node older than the field, which records one address.
+	Alternates []string `json:"alternateAddresses,omitempty"`
 }
 
 // Peer is what this node currently believes about one paired peer.
@@ -772,6 +776,13 @@ type NodeSettings struct {
 	// exists to break.
 	PeerListenProblem *PeerListenProblem `json:"peerListenProblem,omitempty"`
 
+	// PeerListeners is every configured peer address and what became of it:
+	// bound, failed (with the reason) or pending. Read live by the node, so an
+	// address that appeared after start-up shows as bound. Absent from a node
+	// older than ADR-005, which serves one address and says nothing per
+	// address; the window then stays single-address.
+	PeerListeners []PeerListenerState `json:"peerListeners,omitempty"`
+
 	// Message is the node's own sentence about what a write did, including the
 	// case where turning allowLan off pulled peerListen back to loopback.
 	Message string `json:"message,omitempty"`
@@ -788,9 +799,28 @@ type PeerListenProblem struct {
 	Message   string `json:"message"`
 }
 
+// PeerListenerState is one configured peer address and what became of it
+// (internal/nodeconfig.ListenerState). State is "bound", "failed" or
+// "pending"; Reason is "address_gone", "port_in_use" or "unusable" when it
+// failed, and Message is the same fact as the node's own sentence.
+type PeerListenerState struct {
+	Address string `json:"address"`
+	State   string `json:"state"`
+	Reason  string `json:"reason,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // NodeSettingValues is one set of the five fields the node remembers.
+//
+// PeerListens is the peer listener as a list (ADR-005); PeerListen is always
+// its first entry. Omitted when empty so that a node older than the list —
+// which never sends it — reaches the window as absent, which is how the window
+// tells the two apart: a node that knows the list always sends at least one
+// entry.
 type NodeSettingValues struct {
 	PeerListen     string   `json:"peerListen"`
+	PeerListens    []string `json:"peerListens,omitempty"`
 	AllowLAN       bool     `json:"allowLan"`
 	Discover       bool     `json:"discover"`
 	TreatAsPrivate []string `json:"treatAsPrivate"`
@@ -801,8 +831,13 @@ type NodeSettingValues struct {
 // "leave it alone" and "set it to the zero value" stay different things, which
 // is what the node's own Partial does; an empty (not nil) TreatAsPrivate is how
 // the owner withdraws a declared range.
+//
+// PeerListens and PeerListen are two spellings of one setting: the node
+// replaces the whole list when given the scalar alone, so the window sends the
+// list to a node that reported one and the scalar only to one that did not.
 type NodeSettingsPatch struct {
 	PeerListen     *string   `json:"peerListen,omitempty"`
+	PeerListens    *[]string `json:"peerListens,omitempty"`
 	AllowLAN       *bool     `json:"allowLan,omitempty"`
 	Discover       *bool     `json:"discover,omitempty"`
 	TreatAsPrivate *[]string `json:"treatAsPrivate,omitempty"`

@@ -806,7 +806,7 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"node_self0000000000","displayName":"self","platform":"darwin","publicKey":"AAAA","fingerprint":"2DCF 9604"}`))
 		case "/v1/nodes":
 			_, _ = w.Write([]byte(`{"nodes":[` +
-				`{"nodeId":"node_with000000000","displayName":"has one","platform":"linux","address":"192.168.1.20:7463"},` +
+				`{"nodeId":"node_with000000000","displayName":"has one","platform":"linux","address":"192.168.1.20:7463","alternateAddresses":["10.0.0.20:7463"]},` +
 				`{"nodeId":"node_without000000","displayName":"has none","platform":"linux"}]}`))
 		default:
 			_, _ = w.Write([]byte(`{"sessions":[],"peers":[],"pagination":{"totalPages":1}}`))
@@ -822,8 +822,14 @@ func TestOverviewCarriesEachNodesRecordedAddress(t *testing.T) {
 	if overview.Nodes[0].Address != "192.168.1.20:7463" {
 		t.Errorf("recorded address = %q, want 192.168.1.20:7463", overview.Nodes[0].Address)
 	}
+	if len(overview.Nodes[0].Alternates) != 1 || overview.Nodes[0].Alternates[0] != "10.0.0.20:7463" {
+		t.Errorf("alternates = %q, want the backup address the node recorded", overview.Nodes[0].Alternates)
+	}
 	if overview.Nodes[1].Address != "" {
 		t.Errorf("a node with no address reported %q", overview.Nodes[1].Address)
+	}
+	if overview.Nodes[1].Alternates != nil {
+		t.Errorf("a node with no alternates reported %q", overview.Nodes[1].Alternates)
 	}
 	// The local public key is what the peer types into its own dialog, and the
 	// window had no way to show it: main.js never read the field.
