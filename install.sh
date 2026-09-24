@@ -29,6 +29,8 @@ CLI_ONLY=0
 NO_SERVICE=0
 NO_OPEN=0
 NO_MODIFY_PATH=0
+UNINSTALL=0
+PURGE=0
 DRY_RUN=0
 PREFIX=""
 FROM=""
@@ -64,6 +66,12 @@ Options:
                      symlinks then go to DIR/bin
   --from FILE        install from a local .dmg or .tar.gz instead of
                      downloading; a SHA256SUMS beside it is still checked
+  --uninstall        remove what this script installed: the background
+                     service, the app, the links, the menu entry, the PATH
+                     line and the app's caches; the node's identity and
+                     database stay, so a reinstall is the same node
+  --purge            with --uninstall: also delete the node's identity,
+                     database and logs (a reinstall is then a new node)
   --dry-run          print every command instead of running it
   -h, --help         this text
 
@@ -176,6 +184,14 @@ parse_arguments() {
 			;;
 		--no-modify-path)
 			NO_MODIFY_PATH=1
+			shift
+			;;
+		--uninstall)
+			UNINSTALL=1
+			shift
+			;;
+		--purge)
+			PURGE=1
 			shift
 			;;
 		--dry-run)
@@ -469,7 +485,7 @@ quit_running_app() {
 	if ! pgrep -f "$APP_PATH/Contents/MacOS/desktop" >/dev/null 2>&1; then
 		return 0
 	fi
-	say "agenthub-desktop is running; asking it to quit before its bundle is replaced"
+	say "agenthub-desktop is running; asking it to quit before its bundle is removed"
 	run osascript -e 'quit app "agenthub-desktop"'
 	if [ "$DRY_RUN" -eq 1 ]; then
 		return 0
@@ -483,7 +499,7 @@ quit_running_app() {
 		sleep 1
 		quit_waited=$((quit_waited + 1))
 	done
-	die "agenthub-desktop is still running after 10 seconds, and replacing a running app's bundle breaks it.
+	die "agenthub-desktop is still running after 10 seconds, and removing a running app's bundle breaks it.
 Quit it yourself (right-click its Dock icon, Quit) and run this again, or re-run with --no-open after quitting."
 }
 
@@ -832,10 +848,282 @@ closing_lines() {
 	say "  curl -fsSL $RAW_SELF | sh -s -- --no-service"
 }
 
+# --- uninstall -------------------------------------------------------------------
+
+# Everything below removes only what this script (or `ah service install`, or
+# the app) put in place, and each removal checks that the thing is ours first:
+# a symlink is removed only when it points into the install, a directory only
+# when it holds one. The owner's own files are never the collateral of a
+# pattern that happened to match.
+
+# BUNDLE_ID is the app's CFBundleIdentifier, which names its caches and
+# preferences under ~/Library. Read from the installed bundle when there is one.
+BUNDLE_ID="com.wails.agenthub-desktop"
+
+# remove_path deletes one file or directory when it exists, and says so.
+remove_path() { # remove_path <path>
+	if exists "$1"; then
+		run rm -rf "$1"
+		say "removed $1"
+	fi
+}
+
+# remove_link deletes BIN_DIR/<name> when it is a symlink into this install. A
+# real file, or a link to some other ah (a source build, say), is left alone.
+remove_link() { # remove_link <name>
+	link_path="$BIN_DIR/$1"
+	[ -L "$link_path" ] || return 0
+	link_target="$(readlink "$link_path" 2>/dev/null || true)"
+	case "$link_target" in
+	"") ;;
+	"${APP_PATH:-/nonexistent-app-path}"/* | "$AGENTHUB_DIR"/*)
+		run rm -f "$link_path"
+		say "removed $link_path"
+		;;
+	*) say "left $link_path alone: it points at $link_target, not at this install" ;;
+	esac
+}
+
+# uninstall_ah names an ah that can take the service down: the installed one,
+# then whatever is on PATH.
+uninstall_ah() {
+	for uninstall_candidate in "${APP_PATH:+$APP_PATH/Contents/MacOS/ah}" "$AGENTHUB_DIR/ah"; do
+		[ -n "$uninstall_candidate" ] || continue
+		if [ -x "$uninstall_candidate" ]; then
+			printf '%s' "$uninstall_candidate"
+			return 0
+		fi
+	done
+	command -v ah 2>/dev/null || true
+}
+
+# remove_service stops the node and removes its registration, before any file
+# it runs from is deleted: launchd and systemd both restart a node that exits,
+# and one pointed at a binary that is gone fails in a loop at every login.
+remove_service() {
+	if [ -n "$AH" ]; then
+		if ! run "$AH" service uninstall; then
+			die "\"$AH\" service uninstall failed, so nothing else was removed: deleting the app under a registered service leaves it failing at every login. Fix that first, then run this again."
+		fi
+		return 0
+	fi
+	# No ah anywhere, which is an install half-removed by hand. The unit is
+	# still where `ah service install` wrote it; take it down the same way.
+	case "$OS_SLUG" in
+	darwin)
+		uninstall_unit="$HOME/Library/LaunchAgents/local.agenthub.node.plist"
+		if exists "$uninstall_unit"; then
+			run launchctl bootout "gui/$(id -u)/local.agenthub.node" || true
+			remove_path "$uninstall_unit"
+		fi
+		;;
+	linux)
+		uninstall_unit="$HOME/.config/systemd/user/agenthub-node.service"
+		if exists "$uninstall_unit"; then
+			run systemctl --user disable --now agenthub-node.service || true
+			remove_path "$uninstall_unit"
+			run systemctl --user daemon-reload || true
+		fi
+		;;
+	esac
+}
+
+# stop_window_node stops a node the desktop window started on its own (it does
+# that when no service is running) — a detached process the service manager
+# knows nothing about, still holding the database open. Matched by the full
+# path of this install's binary, so no other agenthub-node is touched.
+stop_window_node() {
+	command -v pkill >/dev/null 2>&1 || return 0
+	for window_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
+		[ -n "$window_node" ] || continue
+		if pgrep -f "$window_node" >/dev/null 2>&1; then
+			run pkill -f "$window_node" || true
+			say "stopped the node started from $window_node"
+		fi
+	done
+}
+
+# unpath_file takes the lines ensure_path appended back out of one startup
+# file: the marker, the line under it when it is the one this script wrote,
+# and the blank line it put above them. The rest of the file is rewritten
+# byte for byte, in place — through `cat >`, so a symlinked file stays a link.
+unpath_file() { # unpath_file <file>
+	[ -f "$1" ] || return 0
+	grep -qF "$PATH_MARK" "$1" 2>/dev/null || return 0
+	case "$1" in
+	*/fish/conf.d/agenthub.fish)
+		# The whole file is this script's.
+		remove_path "$1"
+		return 0
+		;;
+	esac
+	if [ "$DRY_RUN" -eq 1 ]; then
+		say "+ remove the AgentHub PATH lines from $(quote "$1")"
+		return 0
+	fi
+	# shellcheck disable=SC2016 # the literal line ensure_path writes
+	unpath_line='export PATH="$HOME/.local/bin:$PATH"'
+	unpath_tmp="$TEMP_DIR/startup-file"
+	awk -v mark="$PATH_MARK" -v line="$unpath_line" '
+		skip { skip = 0; if ($0 == line) next }
+		$0 == mark { held = 0; skip = 1; next }
+		{
+			if (held) print ""
+			held = 0
+			if ($0 == "") { held = 1; next }
+			print
+		}
+		END { if (held) print "" }' "$1" >"$unpath_tmp"
+	if (cat "$unpath_tmp" >"$1") 2>/dev/null; then
+		say "removed the AgentHub PATH lines from $1"
+	else
+		warn "could not write $1; remove the \"$PATH_MARK\" line and the one under it yourself"
+	fi
+}
+
+# default_data_directory is where the node keeps node.key and its database
+# when nothing says otherwise (cmd/agenthub-node: os.UserConfigDir()/agenthub).
+default_data_directory() {
+	if [ "$OS_SLUG" = "darwin" ]; then
+		printf '%s' "$HOME/Library/Application Support/agenthub"
+	else
+		printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/agenthub"
+	fi
+}
+
+# data_directory is the directory beside the database the registered unit
+# names — node.key lives beside the database — or the default.
+data_directory() {
+	if [ -n "$SERVICE_DB" ]; then
+		dirname "$SERVICE_DB"
+	else
+		default_data_directory
+	fi
+}
+
+log_directory() {
+	if [ "$OS_SLUG" = "darwin" ]; then
+		printf '%s' "$HOME/Library/Logs/agenthub"
+	else
+		printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/agenthub"
+	fi
+}
+
+# purge_data deletes the node's identity and history. The default directory
+# is the node's own and goes whole. A database the owner put anywhere else —
+# ./data in a checkout, or a checkout itself, which is also a directory called
+# agenthub — takes only its own files with it.
+purge_data() {
+	purge_dir="$(data_directory)"
+	if [ "$SERVICE_READ" -eq 0 ]; then
+		warn "the registered service could not be read, so a database kept somewhere other than $(default_data_directory) was not looked for"
+	fi
+	if [ "$(absolute_path "$purge_dir")" = "$(absolute_path "$(default_data_directory)")" ]; then
+		remove_path "$purge_dir"
+	else
+		purge_db="${SERVICE_DB:-$purge_dir/agenthub.db}"
+		for purge_file in "$purge_dir/node.key" "$purge_db" "$purge_db-wal" "$purge_db-shm"; do
+			remove_path "$purge_file"
+		done
+	fi
+	remove_path "$(log_directory)"
+}
+
+uninstall() {
+	TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agenthub-uninstall.XXXXXX")"
+	trap cleanup EXIT INT TERM HUP
+
+	# A .app bundle is a macOS install and nothing else. On Linux APP_PATH
+	# still names /Applications/agenthub-desktop.app (it is computed for both),
+	# and every step below that looks there would reach a directory this
+	# uninstall has no business in — on a mac whose uname says Linux, which is
+	# how the tests run, that is the developer's own app. Emptied here, it
+	# matches nothing: no ah is taken from it, no link counts as pointing into
+	# it, no process is matched by it and nothing under it is removed.
+	if [ "$OS_SLUG" != "darwin" ]; then
+		APP_PATH=""
+	fi
+
+	AH="$(uninstall_ah)"
+	# Read before the service goes: the unit is the only record of a database
+	# kept somewhere other than the default, and --purge needs to know where.
+	read_service_registration
+	if [ -n "$APP_PATH" ] && [ -f "$APP_PATH/Contents/Info.plist" ]; then
+		uninstall_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
+		[ -z "$uninstall_bundle_id" ] || BUNDLE_ID="$uninstall_bundle_id"
+	fi
+
+	remove_service
+	if [ "$OS_SLUG" = "darwin" ]; then
+		quit_running_app
+	fi
+	stop_window_node
+
+	for uninstall_name in ah agenthub-node agenthub-mcp agenthub-desktop; do
+		remove_link "$uninstall_name"
+	done
+	if [ -z "$APP_PATH" ]; then
+		:
+	elif exists "$APP_PATH/Contents/MacOS/ah" || exists "$APP_PATH/Contents/MacOS/desktop"; then
+		remove_path "$APP_PATH"
+	elif exists "$APP_PATH"; then
+		say "left $APP_PATH alone: it does not look like the AgentHub app"
+	fi
+	if [ -d "$AGENTHUB_DIR" ]; then
+		if holds_agenthub "$AGENTHUB_DIR" && [ "$(absolute_path "$AGENTHUB_DIR")" != "$(absolute_path "$HOME")" ]; then
+			remove_path "$AGENTHUB_DIR"
+		else
+			say "left $AGENTHUB_DIR alone: it holds no AgentHub install"
+		fi
+	fi
+	if [ -n "$PREFIX" ]; then
+		remove_path "$PREFIX/$MARKER"
+	fi
+
+	uninstall_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/agenthub.desktop"
+	if [ -f "$uninstall_entry" ] && grep -q '^StartupWMClass=agenthub-desktop$' "$uninstall_entry" 2>/dev/null; then
+		remove_path "$uninstall_entry"
+	fi
+
+	for uninstall_rc in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bash_profile" "$HOME/.bash_login" \
+		"$HOME/.profile" "$HOME/.bashrc" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/agenthub.fish"; do
+		unpath_file "$uninstall_rc"
+	done
+
+	if [ "$OS_SLUG" = "darwin" ]; then
+		for uninstall_cache in "Caches/$BUNDLE_ID" "WebKit/$BUNDLE_ID" "HTTPStorages/$BUNDLE_ID" \
+			"Preferences/$BUNDLE_ID.plist" "Saved Application State/$BUNDLE_ID.savedState"; do
+			remove_path "$HOME/Library/$uninstall_cache"
+		done
+	fi
+
+	if [ "$PURGE" -eq 1 ]; then
+		purge_data
+	fi
+
+	say ""
+	say "done. AgentHub is uninstalled."
+	if [ "$PURGE" -eq 1 ]; then
+		say "The node's identity and database are deleted too; installing again makes a new node,"
+		say "so machines paired with this one need to pair again."
+	else
+		say "Kept: the node's identity and database in $(data_directory), and its logs."
+		say "Installing again brings the same node back with its pairings. To delete them as well:"
+		say "  curl -fsSL $RAW_SELF | sh -s -- --uninstall --purge"
+	fi
+	say "Machines paired with this one still list it; remove it there with \`ah revoke <node-id>\` or from their app."
+}
+
 # --- main ----------------------------------------------------------------------
 
 main() {
 	parse_arguments "$@"
+	if [ "$PURGE" -eq 1 ] && [ "$UNINSTALL" -eq 0 ]; then
+		die "--purge only goes with --uninstall"
+	fi
+	if [ "$UNINSTALL" -eq 1 ] && { [ -n "$FROM" ] || [ -n "$VERSION" ] || [ "$CLI_ONLY" -eq 1 ]; }; then
+		die "--uninstall removes whatever is installed; --from, --version and --cli-only do not go with it"
+	fi
 
 	# Everything below builds a path out of HOME. Unset, it would reach `rm -rf`
 	# as an empty string and the shell would say "HOME: unbound variable" from
@@ -858,7 +1146,7 @@ main() {
 	# The desktop app ships for darwin as one universal .dmg and for linux as an
 	# amd64 tarball only. A linux arm64 machine gets the command line archive,
 	# and is told so rather than left wondering where the window is.
-	if [ "$OS_SLUG" = "linux" ] && [ "$ARCH_SLUG" = "arm64" ] && [ "$CLI_ONLY" -eq 0 ]; then
+	if [ "$UNINSTALL" -eq 0 ] && [ "$OS_SLUG" = "linux" ] && [ "$ARCH_SLUG" = "arm64" ] && [ "$CLI_ONLY" -eq 0 ]; then
 		say "no desktop build exists for linux arm64; installing the command line tools only"
 		CLI_ONLY=1
 	fi
@@ -870,7 +1158,7 @@ main() {
 	WEBKIT_ABI=""
 	WEBKIT_PROBED=0
 	DESKTOP_SUFFIX=""
-	if [ "$OS_SLUG" = "linux" ] && [ "$CLI_ONLY" -eq 0 ]; then
+	if [ "$UNINSTALL" -eq 0 ] && [ "$OS_SLUG" = "linux" ] && [ "$CLI_ONLY" -eq 0 ]; then
 		detect_webkit_abi
 		case "$WEBKIT_ABI" in
 		4.0) DESKTOP_SUFFIX="_webkit40" ;;
@@ -922,8 +1210,13 @@ main() {
 		# otherwise. Never sudo: an installer that asks for the administrator
 		# password to put a per-user background service in place is asking for
 		# more than it needs.
-		if [ -w /Applications ]; then
-			APP_PARENT="/Applications"
+		# AGENTHUB_APPLICATIONS exists for the tests, like AGENTHUB_LDCONFIG_PATHS:
+		# a run that fakes uname still sees this machine's real /Applications,
+		# and a test of what --uninstall leaves alone needs an app there that is
+		# not the developer's own.
+		applications="${AGENTHUB_APPLICATIONS:-/Applications}"
+		if [ -w "$applications" ]; then
+			APP_PARENT="$applications"
 		else
 			APP_PARENT="$HOME/Applications"
 		fi
@@ -931,6 +1224,11 @@ main() {
 	APP_PATH="$APP_PARENT/agenthub-desktop.app"
 	INSTALLED_APP=0
 	INSTALLED_TREE=0
+
+	if [ "$UNINSTALL" -eq 1 ]; then
+		uninstall
+		return 0
+	fi
 
 	# --- the tools this needs --------------------------------------------------
 
