@@ -114,6 +114,10 @@ export function SetNodeAddress(arg1, arg2) {
   return window['go']['main']['App']['SetNodeAddress'](arg1, arg2);
 }
 
+export function SetNodeAddresses(arg1, arg2) {
+  return window['go']['main']['App']['SetNodeAddresses'](arg1, arg2);
+}
+
 export function SetNodeURL(arg1) {
   return window['go']['main']['App']['SetNodeURL'](arg1);
 }

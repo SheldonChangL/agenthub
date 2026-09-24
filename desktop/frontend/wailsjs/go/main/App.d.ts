@@ -58,6 +58,8 @@ export function SetAudience(arg1:Array<string>,arg2:main.Audience):Promise<main.
 
 export function SetNodeAddress(arg1:string,arg2:string):Promise<void>;
 
+export function SetNodeAddresses(arg1:string,arg2:Array<string>):Promise<main.NodeAddressesSaved>;
+
 export function SetNodeURL(arg1:string):Promise<void>;
 
 export function SetVisibility(arg1:Array<string>,arg2:string):Promise<main.VisibilityResult>;

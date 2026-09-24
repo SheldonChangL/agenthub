@@ -1373,8 +1373,41 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Asked once while the drawer is open, for the same reason the checklist asks
   // once per window: a read on every render would re-fire on every tick.
   let pairingSettingsAsked = false;
+  // What the node last said about each of its addresses, from whichever read
+  // is newest: the settings form's own, or refreshPairListeners'. Step 1 lists
+  // the open ones, and the node binds an address that appears later (every
+  // 30 s, ADR-005 §2), so the form's read from when the window opened is not
+  // enough — and re-reading into the form would repaint it over the owner's
+  // unsaved edits. This is read for display and never diffed against.
+  let pairListenView = null;
+  let pairListenReadAt = -Infinity;
+  let pairListenSequence = 0;
+
+  // refreshPairListeners re-reads the node's settings for step 1 alone, while
+  // the drawer is open and the node takes the list: at most every ten seconds
+  // from the pairing poll, and at once when the drawer opens.
+  async function refreshPairListeners({ force = false } = {}) {
+    if (!pairingDrawerOpen() || !peerListensSupported()) return;
+    const now = performance.now();
+    if (!force && now - pairListenReadAt < 10000) return;
+    pairListenReadAt = now;
+    const sequence = ++pairListenSequence;
+    let view;
+    try {
+      view = await api.NodeSettings();
+    } catch {
+      return;
+    }
+    if (sequence !== pairListenSequence || !view || view.error || !Array.isArray(view.saved?.peerListens)) return;
+    pairListenView = view;
+    renderPairHere();
+  }
   function ensurePairingNodeSettings() {
-    if (state.nodeSettings || pairingSettingsAsked || !state.nodeReachable) return;
+    if (state.nodeSettings) {
+      refreshPairListeners({ force: true });
+      return;
+    }
+    if (pairingSettingsAsked || !state.nodeReachable) return;
     pairingSettingsAsked = true;
     const done = () => {
       // A read that produced no baseline releases the latch, so the next time
@@ -2422,6 +2455,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     box.classList.remove("hidden");
+    // Only the list of open addresses hides it, each of its rows carrying its
+    // own; every other state has the one address and the one button.
+    el("copy-pair-address").classList.remove("hidden");
     // An address nobody can reach — or no address at all — is not shown as the
     // address to type. What goes here instead is what is wrong and the button
     // that fixes it.
@@ -2476,13 +2512,62 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     el("copy-pair-address").disabled = false;
-    note.pairHereSignature = null;
-    value.textContent = here.address;
     // Two sentences, because the two situations have different remedies: on a
     // node that announces nothing this address is the only way in, and on one
     // that announces it is what to fall back on when the other machine's list
     // stays empty anyway.
-    note.textContent = window_.notice ? PAIR_TEXT.hereNote : PAIR_TEXT.hereNoteAnnouncing;
+    const lead = window_.notice ? PAIR_TEXT.hereNote : PAIR_TEXT.hereNoteAnnouncing;
+    // A node serving several addresses (ADR-005) is reachable on each of them,
+    // and which one the other machine can use depends on which network the two
+    // share — something this window cannot know. So every open one is listed,
+    // with its interface, and the owner reads out the one on the shared network.
+    const open = pairOpenAddresses();
+    const notOpen = peerListensNotOpen(pairListenView ?? state.nodeSettings);
+    const multi = open.length >= 2;
+    el("copy-pair-address").classList.toggle("hidden", multi);
+    // Rebuilt only when what it says changes, like the unreachable block: the
+    // five-second reload would otherwise take the keyboard off a copy button.
+    const signature = JSON.stringify(["reachable", here.address, open, notOpen, lead,
+      t("pair.hereEither"), t("common.copy"), t("pair.hereGoSettings")]);
+    if (note.pairHereSignature === signature) return;
+    note.pairHereSignature = signature;
+    if (multi) {
+      value.replaceChildren(...open.map((entry) => {
+        const line = element("div", "pairaddr");
+        const copy = element("button", "ghost", t("common.copy"));
+        copy.onclick = () => copyPairAddress(entry.address);
+        line.append(element("span", "pairaddr-value", entry.address),
+          element("span", "muted", entry.interface), copy);
+        return line;
+      }));
+      note.replaceChildren(element("div", "", t("pair.hereEither")), element("div", "", lead));
+    } else {
+      value.textContent = here.address;
+      note.replaceChildren();
+      note.textContent = lead;
+    }
+    // Configured and not open is said here too, in one line, because it is the
+    // address the owner may be about to read out: which ones, and the way to
+    // the rows that say why.
+    if (notOpen.length > 0) {
+      const actions = element("div", "repairactions");
+      const fix = element("button", "ghost", t("pair.hereGoSettings"));
+      fix.onclick = () => goToNodeSettings();
+      actions.append(fix);
+      note.append(element("div", "muted", t("pair.hereNotOpen", { addresses: notOpen.join(", ") })), actions);
+    }
+  }
+
+  // pairOpenAddresses is every network address the node reports bound, in its
+  // own order (the preferred first), with the interface this machine has it on.
+  // Empty for a node that reports no per-address state.
+  function pairOpenAddresses() {
+    const listeners = (pairListenView ?? state.nodeSettings)?.peerListeners;
+    if (!Array.isArray(listeners)) return [];
+    const local = new Map((state.nodeAddresses?.list ?? []).map((item) => [String(item.address).toLowerCase(), item]));
+    return listeners
+      .filter((entry) => entry.state === "bound" && !isLoopbackListen(entry.address))
+      .map((entry) => ({ address: entry.address, interface: local.get(hostOf(entry.address))?.interface ?? "" }));
   }
 
   // pairHereRepairs is peerListenRepairs' list, minus its last entry.
@@ -2497,22 +2582,50 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const current = state.nodeSettings.saved?.peerListen
       || state.nodeSettings.settings?.peerListen
       || LOOPBACK_LISTEN;
-    return peerListenRepairs(
-      { reason: "loopback", address: current },
+    const allowLanOn = Boolean(state.nodeSettings.saved?.allowLan);
+    // The node's own reason when it gave one. Every saved address failing
+    // with the port held is not fixed by another address on the same port —
+    // that is the same failure again — and the repair for it, the next port
+    // up, is only offered for that reason.
+    const problem = state.nodeSettings.peerListenProblem;
+    const repairs = peerListenRepairs(
+      problem?.reason && problem?.address ? problem : { reason: "loopback", address: current },
       state.nodeAddresses ?? { list: [], failure: "" },
       // The node's SAVED answer, never the settings form's live checkbox: that
       // form is two tabs away and editable, and an unsaved tick over there
       // would drop the clause from a label whose click still turns it on.
-      Boolean(state.nodeSettings.saved?.allowLan),
+      allowLanOn,
     ).filter((option) => option.peerListen !== "");
+    // 「全部開放」 first, when the node takes a list and this machine has two
+    // private networks: the owner does not have to know which one the other
+    // machine is on. Every address is named on the button, and so is the
+    // switch, exactly when pressing it turns that on (§7.8 rule 4). At most
+    // four, which is what the node accepts. Not when that is the set already
+    // saved with the switch already on: pressing it would save nothing and
+    // answer "no change" to an owner whose node still cannot be reached.
+    const privateAddresses = (state.nodeAddresses?.list ?? []).filter((item) => item.private);
+    const port = peerListenPort(current);
+    const list = privateAddresses.slice(0, 4).map((item) => `${item.address}:${port}`);
+    const alreadySaved = allowLanOn && samePeerListens(list, state.nodeSettings.saved?.peerListens);
+    if (peerListensSupported() && privateAddresses.length >= 2 && !alreadySaved) {
+      for (const option of repairs) option.primary = false;
+      repairs.unshift({
+        label: t(allowLanOn ? "nodeSettings.repairAll" : "nodeSettings.repairAllAndLan", { list: list.join(", ") }),
+        peerListens: list,
+        peerListen: list[0],
+        allowLan: true,
+        primary: true,
+      });
+    }
+    return repairs;
   }
 
   // copyPairAddress hands that address to the clipboard, and says so when the
   // clipboard refuses: the address is on screen either way, and a copy silently
   // reported as done is a string typed wrong on the other machine.
-  async function copyPairAddress() {
+  async function copyPairAddress(chosen = "") {
     const status = el("copy-pair-address-status");
-    const address = state.pairing?.state?.peerAddress || "";
+    const address = chosen || state.pairing?.state?.peerAddress || "";
     if (!address) {
       status.textContent = PAIR_TEXT.hereNoAddress;
       return;
@@ -3229,6 +3342,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         node.lastSeenAt ? relative(node.lastSeenAt) : t("network.neverInContact")],
       [t("network.detailVisibleSessions"), plural(grantedCount(node.nodeId), "network.sessionCount")],
       [t("network.detailAddress"), node.address ? node.address : t("network.detailNoAddress")],
+      // What delivery tries after the recorded address, in order (ADR-005 §4).
+      ...(node.address && (node.alternateAddresses ?? []).length > 0
+        ? [[t("network.detailAlternates"), node.alternateAddresses.join(", ")]]
+        : []),
     ].map(([label, value]) => {
       const row = element("div", "detailrow");
       row.append(element("span", "muted", label), element("span", "mono", value));
@@ -3260,54 +3377,121 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // `--discover` running the address is learned from the peer's announcements; on
   // a segment with no broadcast — a direct cable, a network that drops multicast
   // — it has to be typed, and until now that meant a hand-written `curl -X PUT`.
+  // As many as the node keeps for one paired machine, preferred and backups
+  // together (registry.MaxNodeAddresses); it refuses a longer list whole.
+  const MAX_NODE_ADDRESSES = 4;
+
   function addressSection(node) {
     const parts = [];
     if (node.address) {
       parts.push(element("p", "muted", t("network.addressRecorded", { address: node.address })));
+      if ((node.alternateAddresses ?? []).length > 0) {
+        parts.push(element("p", "muted", t("network.addressAlternates", { list: node.alternateAddresses.join(", ") })));
+      }
     } else {
       parts.push(element("p", "noaddress", t("network.addressMissing")));
     }
 
-    const input = element("input", "addressinput");
-    input.type = "text";
-    input.placeholder = "192.168.1.20:7463";
+    // Every address the node delivers to, preferred first, each one editable
+    // and removable (ADR-005 §4). The list is saved whole: an address left out
+    // of it is gone, which is how a mistyped one is taken back — the
+    // one-address endpoint kept whatever it replaced as a backup, so a
+    // corrected typo stayed behind it with no way to remove it here.
+    const recorded = node.address ? [node.address, ...(node.alternateAddresses ?? [])] : [];
     // What is half-typed survives a re-render. This page is rebuilt from scratch
-    // every fifteen seconds by the background refresh; a refresh while the field
+    // every fifteen seconds by the background refresh; a refresh while a field
     // has focus is now held off entirely (interactionInProgress), so this is the
     // second line of defence — it covers a re-render the owner caused themselves,
     // and a refresh landing after they clicked away from a field they had not
     // finished. Without it an address being entered is deleted under the owner's
     // hands and the field silently reverts to the value they are replacing.
-    const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.value : null;
-    input.value = draft ?? node.address ?? "";
-    input.oninput = (event) => {
-      state.addressDraft = { nodeId: node.nodeId, value: event.target.value };
+    const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.values : null;
+    let values = (draft ?? (recorded.length > 0 ? recorded : [""])).slice(0, MAX_NODE_ADDRESSES);
+    if (values.length === 0) values = [""];
+    let inputs = [];
+    const remember = () => {
+      state.addressDraft = { nodeId: node.nodeId, values: values.slice() };
+    };
+    // Adding or removing a row keeps what the other rows hold as typed.
+    const reshape = (change) => {
+      values = inputs.map((input) => input.value);
+      change();
+      if (values.length === 0) values = [""];
+      remember();
+      fill();
     };
 
-    const submit = element("button", "btn setaddress", t("network.recordAddress"));
-    submit.onclick = () => recordAddress(node, input.value);
+    const list = element("div", "addresslist");
+    const fill = () => {
+      inputs = values.map((value, index) => {
+        const input = element("input", "addressinput");
+        input.type = "text";
+        input.placeholder = index === 0 ? "192.168.1.20:7463" : "10.0.0.2:7463";
+        input.value = value;
+        input.oninput = (event) => {
+          values[index] = event.target.value;
+          remember();
+        };
+        return input;
+      });
+      list.replaceChildren(...inputs.map((input, index) => {
+        // The label wraps its field, so the name a screen reader gives the
+        // field is the row's role in the list.
+        const label = element("label", "addressfield");
+        label.append(element("span", "addresslabel muted", index === 0
+          ? t("network.addressPreferred")
+          : t("network.addressBackup", { n: index })), input);
+        const row = element("div", "addressform");
+        row.append(label);
+        if (values.length > 1) {
+          const remove = element("button", "btn removeaddress", t("network.removeAddress"));
+          remove.onclick = () => reshape(() => values.splice(index, 1));
+          row.append(remove);
+        }
+        return row;
+      }));
+      add.classList.toggle("hidden", values.length >= MAX_NODE_ADDRESSES);
+    };
 
-    const form = element("div", "addressform");
-    form.append(input, submit);
-    parts.push(form);
+    const add = element("button", "btn addaddress", t("network.addAddress"));
+    add.onclick = () => reshape(() => values.push(""));
+    const submit = element("button", "btn setaddress", t("network.recordAddress"));
+    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value));
+    fill();
+
+    const actions = element("div", "addressactions");
+    actions.append(add, submit);
+    parts.push(list, actions);
     parts.push(element("p", "muted", t("network.addressFormat")));
     return parts;
   }
 
-  async function recordAddress(node, raw) {
-    const address = String(raw ?? "").trim();
-    if (address === "") {
+  async function recordAddresses(node, raw) {
+    // Trimmed, and an emptied row is a row the owner did not fill rather than
+    // an address: a stray space typed into a field reaches the node as a
+    // refusal otherwise.
+    const addresses = raw.map((value) => String(value ?? "").trim()).filter((value) => value !== "");
+    if (addresses.length === 0) {
+      // Nothing to send. The node reads an empty list as "forget every address
+      // you had", which is the opposite of what the button says.
       banner(t("network.addressEmpty"));
       return;
     }
     await withBusy(t("network.recordAddress"), async () => {
-      await api.SetNodeAddress(node.nodeId, address);
+      const saved = await api.SetNodeAddresses(node.nodeId, addresses);
       // Only once the node has it. A draft cleared before the call would leave a
       // refused address nowhere, with the field back to the value the owner was
       // replacing and nothing to correct.
       state.addressDraft = null;
       await load();
-      banner(t("network.addressSaved", { name: node.displayName, address }), true);
+      if (saved?.olderNode) {
+        // This machine's node predates backup addresses and keeps one per
+        // paired machine: only the first was recorded. Saying "saved" would
+        // promise a list it never received.
+        banner(t("network.addressSavedOlderNode", { name: node.displayName, address: addresses[0] }));
+        return;
+      }
+      banner(t("network.addressSaved", { name: node.displayName, address: addresses.join(", ") }), true);
     });
   }
 
@@ -4416,7 +4600,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // and marks the ones in `touched`.
   function pinnedSettingsList(pinned, touched) {
     const changing = new Set(touched);
-    const keyFor = Object.fromEntries(Object.entries(NODE_SETTING_FLAGS).map(([key, flag]) => [flag, key]));
+    // peer-listen is pinned under one flag and has two spellings here; the
+    // one the form shows is the one it is named by.
+    const other = peerListensSupported() ? "peerListen" : "peerListens";
+    const keyFor = Object.fromEntries(Object.entries(NODE_SETTING_FLAGS)
+      .filter(([key]) => key !== other).map(([key, flag]) => [flag, key]));
     return pinned.map((flag) => {
       const label = keyFor[flag] ? nodeSettingLabel(keyFor[flag]) : flag;
       return changing.has(flag) ? t("service.pinnedChanging", { label }) : label;
@@ -4774,6 +4962,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is subtracted against.
     state.pairingReadAt = performance.now();
     if (state.view === "network") renderPairing();
+    refreshPairListeners().catch(() => {});
   }
 
   // loadPairRequests reads the exchange's own rows.
@@ -5010,6 +5199,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     state.nodeSettings = view;
     state.nodeAddresses = addresses;
+    // The form's read is the newest one step 1 has; a refresh still out is older.
+    pairListenView = view;
+    pairListenSequence += 1;
     // The form edits what the NEXT start will use, which is `saved`, not what
     // is running. The node merges a write onto the saved configuration and
     // judges it there — its own comment in internal/api/settings.go says so —
@@ -5024,6 +5216,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-settings-state").textContent = "";
 
     fillPeerListenOptions(saved.peerListen ?? "", addresses.list);
+    const multi = peerListensSupported(view);
+    el("node-peerlisten-field").classList.toggle("hidden", multi);
+    el("node-peerlistens-field").classList.toggle("hidden", !multi);
+    peerListenTicks = [];
+    peerListenOrder = null;
+    if (multi) fillPeerListenRows(saved.peerListens, addresses.list);
+    else {
+      el("node-peerlistens").replaceChildren();
+      peerListenRows = [];
+    }
     el("node-allow-lan").checked = Boolean(saved.allowLan);
     el("node-discover").checked = Boolean(saved.discover);
     el("node-autowake").checked = Boolean(saved.autoWake);
@@ -5040,6 +5242,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     ]) {
       el(id).textContent = describeSource(sources[key], running[key], saved[key]);
     }
+    // The list's tag: the node keeps one provenance for both spellings.
+    el("node-peerlistens-source").textContent = peerListensSupported(view)
+      ? describeSource(sources.peerListen, running.peerListens, saved.peerListens)
+      : "";
 
     // The node's own sentence about what the write did, verbatim: it names the
     // address it pulled back and what to send to keep it.
@@ -5126,9 +5332,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // port answers yes for a process that still cannot have 443 — and the
       // next port up is just as privileged, so the button would land on the
       // identical failure.
+      // With the list every entry shares the port, so the next one up moves
+      // them all; the button names each address it will ask for.
+      const moved = peerListensSupported()
+        ? (state.nodeSettings?.saved?.peerListens ?? [])
+          .filter((address) => !isLoopbackListen(address))
+          .map((address) => `${address.slice(0, address.lastIndexOf(":"))}:${next}`)
+        : [];
       if (Number.isFinite(next) && next < 65536 && Number(port) >= 1024) {
         repairs.push({
-          label: t("nodeSettings.repairPort", { address: `${host}:${next}` }),
+          label: t("nodeSettings.repairPort", { address: moved.length > 1 ? moved.join(", ") : `${host}:${next}` }),
+          ...(moved.length > 1 ? { peerListens: moved } : {}),
           peerListen: `${host}:${next}`,
           // Carried, not set. A port number is not a decision about whether
           // anything may leave this machine, and turning that switch on here
@@ -5184,6 +5398,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // what was asked for survived. A shortcut here would be a second way to
   // change this setting, with its own bugs, reporting success on its own terms.
   async function applyPeerListenRepair(option) {
+    if (peerListensSupported()) {
+      // A repair names the whole set it stands for: every address for 「全部開放」,
+      // one for a single address, none for 「就先只在本機」. The rows are rebuilt
+      // with exactly those ticked, so an address the list did not carry (the
+      // next port up) gets its row rather than being dropped.
+      const list = option.peerListens ?? (option.peerListen ? [option.peerListen] : []);
+      peerListenTicks = [];
+      peerListenOrder = [...list];
+      fillPeerListenRows(list, state.nodeAddresses?.list);
+      el("node-allow-lan").checked = option.allowLan;
+      syncNodeSettingsForm();
+      await saveNodeSettings();
+      return;
+    }
     const select = el("node-peerlisten");
     // The option has to exist before it can be selected. The list is built from
     // this machine's addresses at the node's default port, so any repair that
@@ -5221,7 +5449,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Every field the save would send, minus the two this button is here to
     // set. Anything left is an edit that belongs to the owner, not to us.
     const carried = Object.keys(readNodeSettingsPatch())
-      .filter((field) => field !== "peerListen" && field !== "allowLan");
+      .filter((field) => field !== "peerListen" && field !== "peerListens" && field !== "allowLan");
     if (carried.length > 0) {
       // Named, not just counted. "There are unsaved changes" over a form the
       // owner does not remember editing is a dead end; the field's own label is
@@ -5245,6 +5473,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   const NODE_SETTINGS_FIELD_LABELS = {
     peerListen: "nodeSettings.peerListenLabel",
+    peerListens: "nodeSettings.peerListensLabel",
     allowLan: "nodeSettings.allowLan",
     discover: "nodeSettings.discover",
     autoWake: "nodeSettings.autoWake",
@@ -5355,6 +5584,266 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     select.value = isDefault ? "" : value;
   }
 
+  // ---- The address list (ADR-005 §5) ----
+  //
+  // A node that knows the list sends `peerListens` in `saved` (always at least
+  // one entry — [127.0.0.1:7463] when it is on this machine only). One that
+  // does not sends nothing, and it takes one address: a list sent to it is a
+  // field it refuses, and the scalar it does take REPLACES a new node's whole
+  // list. So the mode is decided by the node's own answer, per paint, and the
+  // dropdown above is what an older node keeps.
+  function peerListensSupported(view = state.nodeSettings) {
+    const list = view?.saved?.peerListens;
+    return Array.isArray(list) && list.length > 0;
+  }
+
+  // The rows on screen, each with its checkbox, rebuilt by fillPeerListenRows.
+  // Kept here rather than queried back out of the DOM: the address is the
+  // row's identity, and a label's text is not something to parse it from.
+  let peerListenRows = [];
+  // The order the owner ticked rows in since the last paint. The private-range
+  // suggestion follows the most recent non-private row still ticked, as it
+  // followed the dropdown's one choice.
+  let peerListenTicks = [];
+  // The order a repair asked for, when one did: its first entry is the
+  // preferred address, and a repair that moves every entry to the next port
+  // must not hand that role to whichever interface this machine lists first.
+  // Otherwise the saved order decides.
+  let peerListenOrder = null;
+
+  // listenPort is the one port every network entry shares (nodeconfig
+  // refuses a list with two), read from the first one. Without one it is the
+  // default, as the dropdown offered: a loopback entry on another port is off
+  // the network, and its port says nothing about where a LAN listener goes.
+  function listenPort(list) {
+    const lan = (list ?? []).filter(Boolean).find((address) => !isLoopbackListen(address));
+    return lan ? peerListenPort(lan) : peerListenPort(LOOPBACK_LISTEN);
+  }
+
+  // samePeerListens compares two lists as the node does: as sets, with an
+  // empty list meaning the default. Rule 1 of §7.8 is "the same set is not
+  // sent", and the preferred entry cannot differ between two equal sets from
+  // this form, because checkedPeerListens keeps the saved order.
+  function samePeerListens(asked, held) {
+    const norm = (list) => {
+      const values = (list ?? []).map((value) => String(value).trim()).filter(Boolean);
+      return (values.length > 0 ? values : [LOOPBACK_LISTEN]).sort();
+    };
+    const left = norm(asked);
+    const right = norm(held);
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  }
+
+  // fillPeerListenRows builds one row per address the owner could mean, with
+  // exactly the entries of `checked` ticked.
+  //
+  // Every IPv4 this machine has (private ones first, the rest under their own
+  // heading), every saved entry this machine does not have now — still ticked,
+  // because a cable unplugged right now has not changed what the node is
+  // configured to serve — and a loopback entry that is not the default. The
+  // default loopback has no row: nothing ticked IS that address.
+  function fillPeerListenRows(checked, addresses) {
+    const view = state.nodeSettings ?? {};
+    const saved = view.saved?.peerListens ?? [];
+    const ticked = new Set((checked ?? []).map(String));
+    const port = listenPort([...(checked ?? []), ...saved]);
+    const local = new Map((addresses ?? []).map((item) => [String(item.address).toLowerCase(), item]));
+    const main = [];
+    const other = [];
+    const seen = new Set();
+    const add = (row) => {
+      if (seen.has(row.address)) return;
+      seen.add(row.address);
+      (row.private ? main : other).push(row);
+    };
+    for (const item of addresses ?? []) {
+      add({ address: `${item.address}:${port}`, interface: item.interface, subnet: item.subnet,
+        private: Boolean(item.private), kind: "local" });
+    }
+    for (const address of [...saved, ...(checked ?? [])]) {
+      const value = String(address ?? "").trim();
+      if (value === "" || value === LOOPBACK_LISTEN) continue;
+      if (isLoopbackListen(value)) {
+        add({ address: value, interface: "", subnet: "", private: true, kind: "loopback" });
+        continue;
+      }
+      // Same host at another port is still this machine's address, not a
+      // missing one: a port repair moves every entry at once.
+      const item = local.get(hostOf(value));
+      add(item
+        ? { address: value, interface: item.interface, subnet: item.subnet, private: Boolean(item.private), kind: "local" }
+        : { address: value, interface: "", subnet: "", private: isPrivateByDefinition(value), kind: "gone" });
+    }
+
+    const list = el("node-peerlistens");
+    list.replaceChildren();
+    peerListenRows = [];
+    const build = (row) => {
+      const label = element("label", "listenrow");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = ticked.has(row.address);
+      const body = element("span", "listenbody");
+      const line = element("span", "listenline");
+      line.append(element("span", "listenaddr", row.address));
+      if (row.interface) line.append(element("span", "listenmeta", `${row.interface} · ${row.subnet}`));
+      const status = element("span", "listenstate");
+      const mark = element("span", "listenmark");
+      line.append(status, mark);
+      body.append(line);
+      // "Gone" is said once: by the node's own state when it tried the
+      // address and found it missing, by this note when it has not said so.
+      // And not at all over an address the node reports bound: this window
+      // lists IPv4 only, and a bound IPv6 entry is on this machine whatever the
+      // list says.
+      const reported = (view.peerListeners ?? [])
+        .some((entry) => entry.address === row.address && (entry.state === "bound" || entry.reason === "address_gone"));
+      const note = row.kind === "gone"
+        ? (reported ? "" : t("nodeSettings.rowGone"))
+        : row.kind === "loopback"
+          ? t("nodeSettings.optionLoopbackOtherPort")
+          : row.private ? "" : t("nodeSettings.optionNotPrivate");
+      if (note) body.append(element("span", "why", note));
+      label.append(box, body);
+      const entry = { ...row, box, status, mark };
+      box.onchange = () => {
+        peerListenTicks = peerListenTicks.filter((address) => address !== row.address);
+        if (box.checked) peerListenTicks.push(row.address);
+        suggestPrivateRange();
+        syncNodeSettingsForm();
+      };
+      peerListenRows.push(entry);
+      paintPeerListenRowState(entry, view);
+      return label;
+    };
+    for (const row of main) list.append(build(row));
+    if (other.length > 0) {
+      list.append(element("div", "listenhead", t("nodeSettings.peerListensOther")));
+      for (const row of other) list.append(build(row));
+      list.append(element("p", "why", t("nodeSettings.otherNeedsRange")));
+    }
+  }
+
+  // The classes a row's state may carry: a fixed set, never the node's string.
+  const LISTEN_STATE_CLASSES = { open: "listenstate ok", pending: "listenstate", failed: "listenstate warn" };
+
+  // peerListenRowState says what the node is doing with one address, against
+  // what is saved — never against the boxes on screen, which are an unsaved
+  // intention rather than a fact about the node.
+  //
+  // Observed where it can be: "Open" only from a listener the node reports
+  // bound, and a failure in the node's own terms. A node that reports no
+  // listeners gets no claim about the addresses it is running.
+  function peerListenRowState(address, view) {
+    const saved = view.saved?.peerListens ?? [];
+    const configured = view.settings?.peerListens ?? [];
+    const listeners = Array.isArray(view.peerListeners) ? view.peerListeners : null;
+    const listener = listeners?.find((entry) => entry.address === address);
+    if (saved.includes(address)) {
+      if (!configured.includes(address)) return { text: t("nodeSettings.rowOpensAfterRestart"), kind: "pending" };
+      if (!listener) return null;
+      if (listener.state === "bound") return { text: t("nodeSettings.rowOpen"), kind: "open" };
+      if (listener.state === "pending") return { text: t("nodeSettings.rowPending"), kind: "pending" };
+      if (listener.reason === "address_gone") return { text: t("nodeSettings.rowNotOpenGone"), kind: "failed" };
+      if (listener.reason === "port_in_use") return { text: t("nodeSettings.rowNotOpenPort"), kind: "failed" };
+      return { text: t("nodeSettings.rowNotOpenOther",
+        { message: String(listener.message || listener.detail || listener.reason || "").trim() }), kind: "failed" };
+    }
+    if (listener?.state === "bound") return { text: t("nodeSettings.rowClosesAfterRestart"), kind: "pending" };
+    return null;
+  }
+
+  function paintPeerListenRowState(row, view) {
+    const said = peerListenRowState(row.address, view);
+    row.status.textContent = said ? said.text : "";
+    row.status.className = said ? LISTEN_STATE_CLASSES[said.kind] : "listenstate";
+  }
+
+  // checkedPeerListens is the list the boxes on screen describe: the saved
+  // entries still ticked, in their saved order, then the newly ticked ones.
+  // The saved order is kept because its first entry is the preferred one —
+  // the address this machine broadcasts from — and unticking and re-ticking a
+  // box is not a decision to change that.
+  function checkedPeerListens() {
+    const first = peerListenOrder ?? state.nodeSettings?.saved?.peerListens ?? [];
+    const on = peerListenRows.filter((row) => row.box.checked).map((row) => row.address);
+    const ticked = new Set(on);
+    return [...first.filter((address) => ticked.has(address)), ...on.filter((address) => !first.includes(address))];
+  }
+
+  // peerListensToSend is never empty: nothing ticked is this machine only,
+  // which the node spells as its default loopback address.
+  function peerListensToSend() {
+    const list = checkedPeerListens();
+    return list.length > 0 ? list : [LOOPBACK_LISTEN];
+  }
+
+  // peerListensNotOpen names the saved network addresses the node is not
+  // serving, from its own per-address answer. Nothing when it gave none.
+  function peerListensNotOpen(view) {
+    if (!Array.isArray(view?.peerListeners)) return [];
+    const bound = new Set(view.peerListeners.filter((entry) => entry.state === "bound").map((entry) => entry.address));
+    return (view.saved?.peerListens ?? []).filter((address) => !isLoopbackListen(address) && !bound.has(address));
+  }
+
+  // broadcastFrom is the address this node's announcements go out from, judged
+  // as the node judges it (pairing.ListenerEndpoint in cmd/agenthub-node): none
+  // unless the running node was started with -discover, and then the first
+  // network address it reports bound, in its own order — not the first one
+  // ticked, which may be an address the node failed to bind or has not been
+  // restarted onto. IPv4 only, because announcements go out on the IPv4 group.
+  function broadcastFrom(view) {
+    if (!view?.settings?.discover || !Array.isArray(view.peerListeners)) return "";
+    const entry = view.peerListeners.find((listener) => listener.state === "bound" &&
+      !isLoopbackListen(listener.address) && !String(listener.address).trim().startsWith("["));
+    return entry ? entry.address : "";
+  }
+
+  // syncPeerListensForm is syncNodeSettingsForm for the list: the same four
+  // warnings, judged over every ticked address, plus the two things only a
+  // list has — which row is broadcast from, and loopback beside a network
+  // address, which the node refuses.
+  function syncPeerListensForm(warning, allowLan) {
+    const list = checkedPeerListens();
+    const lan = list.filter((address) => !isLoopbackListen(address));
+    const stored = state.nodeSettings?.saved?.peerListens ?? [];
+    const storedLan = stored.filter((address) => !isLoopbackListen(address));
+    const naming = !samePeerListens(peerListensToSend(), stored);
+
+    const broadcast = broadcastFrom(state.nodeSettings);
+    for (const row of peerListenRows) row.mark.textContent = row.address === broadcast ? t("nodeSettings.rowBroadcast") : "";
+    // Said of the node only when it is the node: the saved set, which is
+    // loopback alone. Over an unsaved draft — including one a refused save
+    // left on screen, while every row still says the node serves it — it is
+    // what saving would do.
+    const none = el("node-peerlistens-none");
+    none.classList.toggle("hidden", lan.length > 0);
+    if (lan.length === 0) none.textContent = t(naming ? "nodeSettings.peerListensNoneDraft" : "nodeSettings.peerListensNone");
+
+    if (!allowLan && lan.length > 0 && naming) {
+      warning.append(element("div", "stale", t("nodeSettings.warnLanOff", { address: lan.join(", ") })));
+    } else if (!allowLan && storedLan.length > 0) {
+      warning.append(element("div", "stale", t("nodeSettings.warnWithdraw", { stored: storedLan.join(", ") })));
+    }
+    // nodeconfig.MaxPeerListens: said before the save rather than by its refusal.
+    if (list.length > 4) {
+      warning.append(element("div", "stale", t("nodeSettings.warnTooMany", { count: list.length })));
+    }
+    const loopback = list.filter((address) => isLoopbackListen(address));
+    if (lan.length > 0 && loopback.length > 0) {
+      warning.append(element("div", "stale", t("nodeSettings.warnMixLoopback", { address: loopback.join(", ") })));
+    }
+    const declared = el("node-private").value.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean);
+    for (const address of lan) {
+      if (!canJudgePrivacy(address, declared) || isPrivateByDefinition(address) ||
+          declared.some((range) => coversAddress(range, address))) continue;
+      const subnet = peerListenRows.find((row) => row.address === address)?.subnet ?? "";
+      warning.append(element("div", "stale",
+        t("nodeSettings.warnNotPrivate", { address }) +
+        (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
+    }
+  }
+
   // relabelNodeSettings puts this form back into the language in use without
   // reading the node again and without touching a single thing the owner
   // typed.
@@ -5380,6 +5869,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // loopback option and never "the form has not been filled in yet".
     const chosen = select.value;
     fillPeerListenOptions(chosen, state.nodeAddresses?.list);
+    // The boxes as they stand on screen, for the same reason.
+    if (peerListensSupported(view)) fillPeerListenRows(checkedPeerListens(), state.nodeAddresses?.list);
     const running = view.settings ?? {};
     const sources = view.sources ?? {};
     const saved = view.saved ?? {};
@@ -5392,6 +5883,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     ]) {
       el(id).textContent = describeSource(sources[key], running[key], saved[key]);
     }
+    // The list's tag: the node keeps one provenance for both spellings.
+    el("node-peerlistens-source").textContent = peerListensSupported(view)
+      ? describeSource(sources.peerListen, running.peerListens, saved.peerListens)
+      : "";
     el("node-settings-hint").textContent = view.restartRequired
       ? t("nodeSettings.hintRestart")
       : t("nodeSettings.hint");
@@ -5416,6 +5911,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const allowLan = el("node-allow-lan").checked;
 
     el("node-lan-note").classList.toggle("hidden", !allowLan);
+    if (peerListensSupported()) {
+      const warning = el("node-settings-combination");
+      warning.replaceChildren();
+      syncPeerListensForm(warning, allowLan);
+      syncPrivateNote();
+      return;
+    }
 
     // What the node will do with this combination, before the owner finds out
     // by being refused or by losing an address.
@@ -5456,14 +5958,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
     }
 
-    // The note explains the field's current contents, so it is shown whenever
-    // those contents are the suggestion — never left behind after the address
-    // that justified it is gone.
+    syncPrivateNote();
+  }
+
+  // The note explains the field's current contents, so it is shown whenever
+  // those contents are the suggestion — never left behind after the address
+  // that justified it is gone.
+  function syncPrivateNote() {
     const note = el("node-private-note");
     const showing = state.nodePrivateSuggested !== "" &&
       el("node-private").value.trim() === state.nodePrivateSuggested;
+    // A declared range is one half of a connection across it: the machine on
+    // the other end of that cable has to declare the same range, or it will not
+    // send back. Said only with the list, whose rows put the non-private
+    // addresses in front of the owner.
     note.textContent = showing
-      ? t("nodeSettings.privateSuggested", { subnet: state.nodePrivateSuggested })
+      ? t("nodeSettings.privateSuggested", { subnet: state.nodePrivateSuggested }) +
+        (peerListensSupported() ? ` ${t("nodeSettings.otherNeedsRange")}` : "")
       : "";
     note.classList.toggle("hidden", !showing);
   }
@@ -5477,9 +5988,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // alone, and an empty field stays empty: clearing it is how a declared range
   // is withdrawn, and a form that refills it has taken that away.
   function suggestPrivateRange() {
-    const select = el("node-peerlisten");
-    const option = select.options[select.selectedIndex];
-    const suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
+    let suggestion = "";
+    if (peerListensSupported()) {
+      // The most recently ticked non-private row that is still ticked.
+      const source = [...peerListenTicks].reverse()
+        .map((address) => peerListenRows.find((row) => row.address === address))
+        .find((row) => row && row.box.checked && !row.private && row.subnet);
+      suggestion = source ? source.subnet : "";
+    } else {
+      const select = el("node-peerlisten");
+      const option = select.options[select.selectedIndex];
+      suggestion = option && option.value && option.dataset.private === "" ? option.dataset.subnet : "";
+    }
     const field = el("node-private");
     const previous = state.nodePrivateSuggested;
     const holdsPrevious = previous !== "" && field.value.trim() === previous;
@@ -5537,6 +6057,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // ServiceStatus reports in pinnedSettings (desktop/service.go).
   const NODE_SETTING_FLAGS = {
     peerListen: "peer-listen",
+    // The list is the same setting, and a unit pins it with the same flag.
+    peerListens: "peer-listen",
     allowLan: "allow-lan",
     discover: "discover",
     treatAsPrivate: "treat-as-private",
@@ -5548,8 +6070,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // onto — see applyNodeSettings.
     const before = state.nodeSettings?.saved ?? {};
     const patch = {};
-    const peerListen = el("node-peerlisten").value || LOOPBACK_LISTEN;
-    if (peerListen !== (before.peerListen || LOOPBACK_LISTEN)) patch.peerListen = peerListen;
+    if (peerListensSupported()) {
+      // The list, never the scalar: the scalar replaces the node's whole list.
+      // Compared as a set against the saved one (§7.8 rule 1).
+      const list = peerListensToSend();
+      if (!samePeerListens(list, before.peerListens)) patch.peerListens = list;
+    } else {
+      const peerListen = el("node-peerlisten").value || LOOPBACK_LISTEN;
+      if (peerListen !== (before.peerListen || LOOPBACK_LISTEN)) patch.peerListen = peerListen;
+    }
     if (el("node-allow-lan").checked !== Boolean(before.allowLan)) patch.allowLan = el("node-allow-lan").checked;
     if (el("node-discover").checked !== Boolean(before.discover)) patch.discover = el("node-discover").checked;
     if (el("node-autowake").checked !== Boolean(before.autoWake)) patch.autoWake = el("node-autowake").checked;
@@ -5701,8 +6230,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         // The tags beside each field name what is RUNNING, and after a restart
         // this window could not read, that is a process that no longer exists.
         // Cleared rather than left to describe the dead one.
-        for (const id of ["node-peerlisten-source", "node-allowlan-source", "node-discover-source",
-          "node-private-source", "node-autowake-source"]) {
+        for (const id of ["node-peerlisten-source", "node-peerlistens-source", "node-allowlan-source",
+          "node-discover-source", "node-private-source", "node-autowake-source"]) {
           el(id).textContent = "";
         }
         el("node-settings-hint").textContent = t("nodeSettings.hint");
@@ -5731,6 +6260,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         return;
       }
 
+      // Saved and read back is not the same as open. An address the node holds
+      // and could not bind — the cable is out, something else has the port —
+      // is said in a sentence of its own, from the node's per-address answer,
+      // after whatever the restart itself came to: every outcome below is
+      // true, and none of them says it.
+      const notOpen = peerListensNotOpen(after.view);
+      const notOpenNote = notOpen.length > 0
+        ? t("nodeSettings.savedNotOpen", { addresses: notOpen.join(", ") })
+        : "";
+      const say = (text, ok = false) => banner([text, notOpenNote].filter(Boolean).join(" "), ok && notOpenNote === "");
+
       // What `ah service status` says afterwards, not what was sent.
       //
       // This is the moment a node is most likely not to come back: the values
@@ -5739,7 +6279,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Announcing "restarted" because the restart command returned would be a
       // claim about the one thing this window can actually check and did not.
       if (live.unknown) {
-        banner(
+        say(
           t("nodeSettings.savedStatusUnknown", { reason: live.reason }),
         );
         return;
@@ -5751,21 +6291,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // would report every successful restart on Windows as a failure.
       if (!live.installed) {
         if (back.nodeAnswering) {
-          banner(t("nodeSettings.savedNodeAnswering"), true);
+          say(t("nodeSettings.savedNodeAnswering"), true);
           return;
         }
-        banner(
+        say(
           t("nodeSettings.savedNodeSilent"),
         );
         return;
       }
       if (back.running && back.nodeAnswering) {
-        banner(t("nodeSettings.savedServiceAnswering"), true);
+        say(t("nodeSettings.savedServiceAnswering"), true);
         return;
       }
       // Not marked successful, so it stays on screen: the settings just saved
       // are the first thing to suspect, and they are still on the form above.
-      banner(
+      say(
         back.running
           ? t("nodeSettings.savedServiceUpNodeSilent",
             { log: back.logHint || t("nodeSettings.noLogPath") })
@@ -5836,6 +6376,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function nodeSettingLabel(key) {
     const labels = {
       peerListen: t("nodeSettings.peerListenLabel"),
+      peerListens: t("nodeSettings.peerListensLabel"),
       allowLan: t("nodeSettings.allowLan"),
       discover: t("nodeSettings.discoverShort"),
       treatAsPrivate: t("nodeSettings.privateLabel"),
@@ -5856,6 +6397,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (key === "peerListen") {
       return (asked || LOOPBACK_LISTEN) === (held || LOOPBACK_LISTEN);
     }
+    if (key === "peerListens") return samePeerListens(asked, held);
     return Boolean(asked) === Boolean(held);
   }
 
@@ -6078,6 +6620,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs, savePrefs,
     t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
+    peerListensSupported, checkedPeerListens, samePeerListens, peerListenRowState, pairOpenAddresses, peerListensNotOpen,
+    peerListenRows: () => peerListenRows,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
