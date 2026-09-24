@@ -364,18 +364,7 @@ func run() error {
 	// the handshake's CPU and the connection's descriptor are already spent by
 	// the time anything is counted. A listener a retry binds later arrives here
 	// too.
-	peerListeners.Serve(func(listener net.Listener) {
-		go func() {
-			// The certificate and key are already in TLSConfig.
-			err := peerServer.ServeTLS(listener, "", "")
-			// A fallback the set closed because a configured address came up
-			// is not a failure of this node.
-			if errors.Is(err, http.ErrServerClosed) || peerListeners.Retired(listener) {
-				return
-			}
-			reportServeError(fmt.Errorf("peer listener %s: %w", listener.Addr(), err))
-		}()
-	})
+	servePeerListeners(peerListeners, peerServer, reportServeError)
 	go discoveryLoop(service, *scanInterval)
 	go pruneLoop(store, *outboundRetention)
 
@@ -571,6 +560,25 @@ func nameProvenance(chosen bool) string {
 type settingsStore interface {
 	GetNodeSettings(ctx context.Context) (nodeconfig.Partial, error)
 	SaveNodeSettings(ctx context.Context, settings nodeconfig.Partial) error
+}
+
+// servePeerListeners serves every listener the set hands out, now and after a
+// retry, on the one peer server, and reports a listener that stopped for any
+// reason but two: the server was shut down, or the set closed that listener on
+// purpose — a fallback retired because a configured address came up is not a
+// failure of this node, and reporting it would end run() at the moment the
+// node became reachable.
+func servePeerListeners(set *nodeconfig.ListenerSet, server *http.Server, report func(error)) {
+	set.Serve(func(listener net.Listener) {
+		go func() {
+			// The certificate and key are already in TLSConfig.
+			err := server.ServeTLS(listener, "", "")
+			if errors.Is(err, http.ErrServerClosed) || set.Retired(listener) {
+				return
+			}
+			report(fmt.Errorf("peer listener %s: %w", listener.Addr(), err))
+		}()
+	})
 }
 
 // bindPeerListeners opens one listener per configured peer address, and when
