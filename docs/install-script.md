@@ -42,6 +42,7 @@ than half an install that exits 0.
 | `--no-service` | Do not register the background node. Nothing starts at login; `ah service install` does it later. |
 | `--no-open` | Do not open the app at the end (macOS). |
 | `--no-modify-path` | Do not add `~/.local/bin` to `PATH` in the shell's startup file; print the `export` line to add instead. |
+| `--no-skill` | Do not install the `agenthub-watch` skill for Claude Code (see "The Claude Code skill" below). With `--uninstall`, leave an installed one in place. A `--prefix` install skips the skill anyway. |
 | `--uninstall` | Remove what the script installed instead of installing; see "Uninstall" below. |
 | `--purge` | With `--uninstall`, also delete the node's identity, database and logs. |
 | `--prefix DIR` | Install under `DIR` instead of `/Applications` and `~/.local`. Symlinks then go to `DIR/bin`, and nothing outside `DIR` is written. Mostly a test hook. |
@@ -93,16 +94,18 @@ installing half of something.
 | `~/.local/bin/ah` | A symlink to the `ah` inside the app. The directory is created if it does not exist. |
 | `~/.zshrc`, or another shell startup file | A blank line, a `# added by the AgentHub installer` comment and `export PATH="$HOME/.local/bin:$PATH"`, appended only when `~/.local/bin` is not already on `PATH`. Which file depends on the shell; see "PATH" below. |
 | `~/Library/LaunchAgents/local.agenthub.node.plist` | Written by `ah service install`, not by this script. |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/agenthub-watch/` | The Claude Code skill that teaches an agent to use `ah`, copied from the verified archive, with a `.agenthub-install` marker file inside. Skipped with `--no-skill`, and left alone when something that is not this script's copy is already there. See "The Claude Code skill" below. |
 | `~/Library/Application Support/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
 **Linux**
 
 | Path | What |
 |---|---|
-| `~/.local/share/agenthub/` | The unpacked app directory: `agenthub-desktop`, `ah`, `agenthub-node`, `agenthub-mcp`, `LICENSE`, `README.txt`. `AGENTHUB_HOME` moves it. |
+| `~/.local/share/agenthub/` | The unpacked app directory: `agenthub-desktop`, `ah`, `agenthub-node`, `agenthub-mcp`, `LICENSE`, `README.txt`, and `skills/agenthub-watch/` from releases that carry it. `AGENTHUB_HOME` moves it. |
 | `~/.local/bin/ah`, `~/.local/bin/agenthub-desktop` | Symlinks into that directory. With `--cli-only`, `ah`, `agenthub-node` and `agenthub-mcp` instead. |
 | `~/.bashrc`, or another shell startup file | The same PATH lines as on macOS, under the same condition; see "PATH" below. |
 | `~/.config/systemd/user/agenthub-node.service` | Written by `ah service install`, not by this script. |
+| `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/agenthub-watch/` | The Claude Code skill that teaches an agent to use `ah`, copied from the verified archive, with a `.agenthub-install` marker file inside. Skipped with `--no-skill`, and left alone when something that is not this script's copy is already there. See "The Claude Code skill" below. |
 | `~/.config/agenthub/` | The node's own database, created by the node on first start — **unless a service is already registered**, in which case that unit's `--db` is kept. See "An already-registered service" below. |
 
 Plus a temporary directory under `$TMPDIR`, removed on exit by a trap, including
@@ -162,6 +165,10 @@ In this order, and each only when it is this install's:
 6. On macOS, the app's caches and preferences under `~/Library` (`Caches`,
    `WebKit`, `HTTPStorages`, `Preferences`, `Saved Application State`, each by
    the bundle id).
+7. The Claude Code skill in `${CLAUDE_CONFIG_DIR:-~/.claude}/skills/agenthub-watch/`,
+   only when it is a real directory holding this script's `.agenthub-install`
+   marker. A symlink or a copy of your own is left and named. `--no-skill`
+   leaves it in any case.
 
 It keeps the node's identity and database —
 `~/Library/Application Support/agenthub/` on macOS, `~/.config/agenthub/` on
@@ -175,6 +182,29 @@ revoke it (`ah revoke <node-id>`, or from their app).
 
 With `--prefix`, the same run removes that prefix's app, links and marker.
 `--dry-run` prints all of it and removes nothing.
+
+## The Claude Code skill
+
+An agent on this machine cannot use `ah` if nothing tells it `ah` exists. So
+the install also puts the `agenthub-watch` skill — the repository's
+`.claude/skills/agenthub-watch/` — where Claude Code reads user-level skills:
+`$CLAUDE_CONFIG_DIR/skills/agenthub-watch/`, or `~/.claude/skills/agenthub-watch/`
+when `CLAUDE_CONFIG_DIR` is not set. Claude Code sessions started after the
+install load it; sessions already running do not.
+
+It is never downloaded on its own. It travels inside the release asset — under
+`skills/` in each `.tar.gz` and `.zip`, and in a hidden `.skills/` folder beside
+the app in the `.dmg`, outside the bundle so its signature is untouched — so the
+same `SHA256SUMS` check that covers the binaries covers it.
+
+The copy it installs carries a `.agenthub-install` marker file. An upgrade
+replaces a directory with that marker; anything else at that path — a symlink
+to skills you keep elsewhere, or a copy you made yourself — is left as it is,
+and the script says so in one line. A `--prefix` install writes nothing outside
+its prefix, so it skips the skill (and a `--prefix` uninstall does not look for
+one). A release from before the skill shipped
+(say, with `--version` pointing at an older tag) installs everything else and
+prints a `warning:` that no skill was installed.
 
 ## The quarantine flag on macOS
 
@@ -277,3 +307,9 @@ directory above `$HOME` and at a directory of someone else's files, and
 requires a refusal with no `rm` in the transcript; and it shims `mktemp` to
 succeed while printing nothing, with `rm` replaced by a recorder, to prove the
 cleanup trap never reaches `rm -rf` with an empty path.
+
+The Claude Code skill is checked with `CLAUDE_CONFIG_DIR` pointed into the
+suite's own directory, so the developer's `~/.claude` is never written: a fresh
+install, an upgrade that replaces the marked copy, a symlink and an unmarked
+copy that are both left alone (by install and by `--uninstall`), `--no-skill`,
+and an archive without the skill that warns and still installs.
