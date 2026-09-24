@@ -29,6 +29,7 @@ CLI_ONLY=0
 NO_SERVICE=0
 NO_OPEN=0
 NO_MODIFY_PATH=0
+NO_SKILL=0
 UNINSTALL=0
 PURGE=0
 DRY_RUN=0
@@ -44,9 +45,23 @@ MOUNT_POINT=""
 # would be a delete.
 MARKER=".agenthub-install"
 
+# The Claude Code skill that teaches an agent to use `ah` (`ah inbox`,
+# `ah send`, ...). It travels inside the release asset, so the SHA256SUMS check
+# above covers it like every binary; it is never fetched on its own. The copy
+# this script puts in place carries SKILL_MARKER, which is how an upgrade or an
+# uninstall tells it from a link or a copy the owner made themselves.
+SKILL_NAME="agenthub-watch"
+SKILL_MARKER="$MARKER"
+# Where the .dmg keeps it: beside the app, hidden, so the drag-to-install
+# window still shows only the app and Applications, and outside the bundle, so
+# the bundle's signature is not touched.
+DMG_SKILL_DIR=".skills"
+SKILL_SOURCE=""
+
 AH=""
 SERVICE_STATE=""
 PATH_STATE=""
+SKILL_STATE=""
 
 usage() {
 	cat <<'EOF'
@@ -62,6 +77,8 @@ Options:
   --no-open          do not open the app when the install finishes (macOS)
   --no-modify-path   do not add ~/.local/bin to PATH in the shell's startup
                      file; only say what to add
+  --no-skill         do not install the agenthub-watch skill for Claude Code
+                     (with --uninstall: leave it in place)
   --prefix DIR       install under DIR instead of /Applications or ~/.local;
                      symlinks then go to DIR/bin
   --from FILE        install from a local .dmg or .tar.gz instead of
@@ -184,6 +201,10 @@ parse_arguments() {
 			;;
 		--no-modify-path)
 			NO_MODIFY_PATH=1
+			shift
+			;;
+		--no-skill)
+			NO_SKILL=1
 			shift
 			;;
 		--uninstall)
@@ -511,6 +532,14 @@ install_macos_app() {
 	quit_running_app
 	run rm -rf "$APP_PATH"
 	run ditto "$MOUNT_POINT/agenthub-desktop.app" "$APP_PATH"
+	# The skill is copied out before the image is detached; installing it waits
+	# for install_claude_skill, like the tarball's. Under --dry-run nothing is
+	# mounted, so the copy is printed as if the image carried one.
+	if [ "$NO_SKILL" -eq 0 ] && { [ "$DRY_RUN" -eq 1 ] || [ -f "$MOUNT_POINT/$DMG_SKILL_DIR/$SKILL_NAME/SKILL.md" ]; }; then
+		run mkdir -p "$TEMP_DIR/dmg-skill"
+		run cp -R "$MOUNT_POINT/$DMG_SKILL_DIR/$SKILL_NAME" "$TEMP_DIR/dmg-skill/$SKILL_NAME"
+		SKILL_SOURCE="$TEMP_DIR/dmg-skill/$SKILL_NAME"
+	fi
 	run hdiutil detach "$MOUNT_POINT" -quiet
 	MOUNT_POINT=""
 	say "installed $APP_PATH"
@@ -537,6 +566,7 @@ install_tarball_tree() {
 	say "installed $AGENTHUB_DIR"
 	AH="$AGENTHUB_DIR/ah"
 	link_into "$AH" "ah"
+	SKILL_SOURCE="$AGENTHUB_DIR/skills/$SKILL_NAME"
 	if [ "$CLI_ONLY" -eq 1 ]; then
 		link_into "$AGENTHUB_DIR/agenthub-node" "agenthub-node"
 		link_into "$AGENTHUB_DIR/agenthub-mcp" "agenthub-mcp"
@@ -727,6 +757,68 @@ stop_linux_node() {
 	run systemctl --user stop agenthub-node.service
 }
 
+# --- the Claude Code skill ------------------------------------------------------
+
+# skill_directory is where Claude Code looks for a user-level skill.
+skill_directory() {
+	printf '%s' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$SKILL_NAME"
+}
+
+# skill_is_ours says yes only to a real directory holding the marker this
+# script writes. A symlink is never ours, whatever it points at: it is how an
+# owner who keeps skills elsewhere wires them in.
+skill_is_ours() { # skill_is_ours <directory>
+	[ -d "$1" ] && [ ! -L "$1" ] && [ -f "$1/$SKILL_MARKER" ]
+}
+
+# install_claude_skill puts the agenthub-watch skill where Claude Code finds it,
+# so an agent on this machine knows `ah` is there to be used. It copies from the
+# asset that was just verified and unpacked — never from the network — and
+# replaces only a copy this script put there before. Nothing about it is worth
+# failing an install over: the app is in place, and a skill that could not be
+# written is a warning with the path to fix.
+install_claude_skill() {
+	if [ "$NO_SKILL" -eq 1 ]; then
+		say "skipped the Claude Code skill (--no-skill)"
+		SKILL_STATE="not installed (--no-skill)"
+		return 0
+	fi
+	skill_dest="$(skill_directory)"
+	# Under --dry-run nothing was unpacked, so the source cannot be looked at;
+	# print what a release that carries the skill would get.
+	if [ -z "$SKILL_SOURCE" ] || { [ "$DRY_RUN" -eq 0 ] && [ ! -f "$SKILL_SOURCE/SKILL.md" ]; }; then
+		warn "this release does not carry the $SKILL_NAME skill for Claude Code (releases before it do not), so none was installed; everything else was"
+		SKILL_STATE="not installed (this release does not carry it)"
+		return 0
+	fi
+	# A --prefix install writes nothing outside the prefix, for the same reason
+	# it leaves the shell's startup files alone: an owner who chose where
+	# everything goes has chosen to wire it up themselves.
+	if [ -n "$PREFIX" ]; then
+		say "skipped the Claude Code skill: a --prefix install writes nothing outside $PREFIX"
+		SKILL_STATE="not installed (--prefix writes nothing outside $PREFIX)"
+		return 0
+	fi
+	if exists "$skill_dest" && ! skill_is_ours "$skill_dest"; then
+		say "left $skill_dest alone: it is not a copy this script installed (a link or a copy of your own)"
+		SKILL_STATE="$skill_dest is your own; left as it is"
+		return 0
+	fi
+	skill_stage="$TEMP_DIR/skill-stage/$SKILL_NAME"
+	if run mkdir -p "$TEMP_DIR/skill-stage" &&
+		run cp -R "$SKILL_SOURCE" "$skill_stage" &&
+		run touch "$skill_stage/$SKILL_MARKER" &&
+		run mkdir -p "$(dirname "$skill_dest")" &&
+		run rm -rf "$skill_dest" &&
+		run mv "$skill_stage" "$skill_dest"; then
+		say "installed the Claude Code skill $skill_dest"
+		SKILL_STATE="$skill_dest (Claude Code sessions started from now on load it; running ones do not)"
+	else
+		warn "could not install the Claude Code skill into $skill_dest; everything else was installed"
+		SKILL_STATE="not installed (could not write $skill_dest)"
+	fi
+}
+
 # --- the background service ---------------------------------------------------
 
 # status_ah names the ah to ask about the current registration: the one just
@@ -834,6 +926,7 @@ closing_lines() {
 	say "  ah:   $BIN_DIR/ah   (\"$AH --version\" says which build)"
 	say "  PATH: $PATH_STATE"
 	say "  node: $SERVICE_STATE"
+	say "  skill: $SKILL_STATE"
 	say ""
 	if [ "$CLI_ONLY" -eq 0 ]; then
 		if [ "$OS_SLUG" = "darwin" ] && [ "$INSTALLED_APP" -eq 1 ] && [ -z "$PREFIX" ]; then
@@ -1078,6 +1171,17 @@ uninstall() {
 	fi
 	if [ -n "$PREFIX" ]; then
 		remove_path "$PREFIX/$MARKER"
+	fi
+
+	uninstall_skill="$(skill_directory)"
+	# A --prefix install never put one there, so a --prefix uninstall does not
+	# go looking.
+	if [ "$NO_SKILL" -eq 1 ] || [ -n "$PREFIX" ]; then
+		:
+	elif skill_is_ours "$uninstall_skill"; then
+		remove_path "$uninstall_skill"
+	elif exists "$uninstall_skill"; then
+		say "left $uninstall_skill alone: it is not a copy this script installed"
 	fi
 
 	uninstall_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/agenthub.desktop"
@@ -1341,6 +1445,7 @@ Releases before the desktop builds carry the command line archives only — re-r
 	esac
 
 	ensure_path
+	install_claude_skill
 
 	# `ah service install` writes the unit that starts the node at login, and it
 	# writes the absolute path of the agenthub-node beside this ah. Running it on
