@@ -199,6 +199,11 @@ dry_run_fails() { # dry_run_fails <label> <system> <machine> <output file> [args
 	fi
 }
 
+# exists_path is -e that also says yes to a dangling symlink.
+exists_path() {
+	[ -e "$1" ] || [ -L "$1" ]
+}
+
 # The commands a dry run would actually execute are the lines it prefixes with
 # "+". Advice it prints (the WebKit hint names an apt command) is not one of
 # them, and asserting over the whole transcript would confuse the two.
@@ -820,6 +825,174 @@ checks=$((checks + 1))
 path_real "$work/path-real-optout.txt" /bin/sh --no-modify-path || fail "path-real-optout: the install failed"
 checks=$((checks + 1))
 [ ! -e "$path_home/.profile" ] || fail "path-real-optout: --no-modify-path wrote $path_home/.profile"
+
+# ---- --uninstall -------------------------------------------------------------
+
+# Every uninstall below runs with a HOME of its own: it deletes things under
+# HOME, and the one running these tests is the developer's. HOME is not the
+# only way out, either: XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME and
+# ZDOTDIR name directories on their own, so each run clears them, and a
+# faked uname does not fake the disk — a Linux-shaped run on a mac still sees
+# the real /Applications. That is not hypothetical: an earlier draft of these
+# tests deleted the developer's /Applications/agenthub-desktop.app.
+isolated() { # isolated <home> <command...>
+	local home=$1
+	shift
+	env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u ZDOTDIR HOME="$home" \
+		AGENTHUB_APPLICATIONS="$fake_applications" "$@"
+}
+# An /Applications of the tests' own, holding an app a Linux uninstall must not
+# touch: a .app is a macOS install, whatever directory it is in.
+fake_applications="$work/Applications"
+mkdir -p "$fake_applications/agenthub-desktop.app/Contents/MacOS"
+printf '#!/bin/sh\necho "$*" >>"%s"\n' "$work/fake-app-ah.log" >"$fake_applications/agenthub-desktop.app/Contents/MacOS/ah"
+chmod +x "$fake_applications/agenthub-desktop.app/Contents/MacOS/ah"
+
+# uninstall_ah_script writes an ah that records what it was asked and answers
+# `--json service status` with a registered unit using <db>. <status> is the
+# exit code for `service uninstall`.
+uninstall_ah_script() { # uninstall_ah_script <file> <log> <db> <status>
+	cat >"$1" <<EOF
+#!/bin/sh
+echo "\$*" >>"$2"
+case "\$*" in
+*"service status"*)
+	printf '%s\n' '{"service":{"Installed":true,"Supported":true,"Arguments":["--db","$3"]}}'
+	;;
+*"service uninstall"*) exit $4 ;;
+esac
+EOF
+	chmod +x "$1"
+}
+
+echo "== --uninstall takes back what a real install put in place =="
+un_home="$work/un-home"
+mkdir -p "$un_home/.local/bin"
+printf 'alias keep=1\n\n# the owner'"'"'s own\n' >"$un_home/.bashrc"
+cp "$un_home/.bashrc" "$work/un-bashrc.before"
+ln -s /usr/bin/true "$un_home/.local/bin/agenthub-mcp"
+un_run() { # un_run <output file> [args...]
+	local out=$1
+	shift
+	PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+		isolated "$un_home" sh "$installer" "$@" >"$out" 2>&1
+}
+checks=$((checks + 1))
+un_run "$work/un-install.txt" --from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" --no-service ||
+	fail "un: the install failed: $(cat "$work/un-install.txt")"
+uninstall_ah_script "$un_home/.local/share/agenthub/ah" "$work/un-ah.log" "$un_home/.config/agenthub/agenthub.db" 0
+mkdir -p "$un_home/.config/agenthub" "$un_home/.local/state/agenthub"
+echo key >"$un_home/.config/agenthub/node.key"
+echo db >"$un_home/.config/agenthub/agenthub.db"
+echo log >"$un_home/.local/state/agenthub/node.log"
+checks=$((checks + 1))
+[ -f "$un_home/.local/share/applications/agenthub.desktop" ] || fail "un: the install wrote no menu entry to take back"
+checks=$((checks + 1))
+un_run "$work/un.txt" --uninstall || fail "un: --uninstall failed: $(cat "$work/un.txt")"
+contains un "$work/un-ah.log" "service uninstall"
+lacks un "$work/un.txt" "/Applications"
+for gone in .local/share/agenthub .local/bin/ah .local/bin/agenthub-desktop .local/share/applications/agenthub.desktop; do
+	checks=$((checks + 1))
+	! exists_path "$un_home/$gone" || fail "un: $gone is still there"
+done
+checks=$((checks + 1))
+[ -L "$un_home/.local/bin/agenthub-mcp" ] || fail "un: a link that points elsewhere was removed"
+contains un "$work/un.txt" "left $un_home/.local/bin/agenthub-mcp alone"
+checks=$((checks + 1))
+cmp -s "$un_home/.bashrc" "$work/un-bashrc.before" ||
+	fail "un: .bashrc is not what it was before the install: $(od -c "$un_home/.bashrc" | head -5)"
+checks=$((checks + 1))
+[ -f "$un_home/.config/agenthub/node.key" ] || fail "un: --uninstall without --purge deleted node.key"
+contains un "$work/un.txt" "--uninstall --purge"
+contains un "$work/un.txt" "ah revoke"
+checks=$((checks + 1))
+un_run "$work/un-purge.txt" --uninstall --purge || fail "un-purge: failed: $(cat "$work/un-purge.txt")"
+for gone in .config/agenthub .local/state/agenthub; do
+	checks=$((checks + 1))
+	! exists_path "$un_home/$gone" || fail "un-purge: $gone is still there"
+done
+contains un-purge "$work/un-purge.txt" "installing again makes a new node"
+lacks un-purge "$work/un-purge.txt" "/Applications"
+
+checks=$((checks + 1))
+[ -x "$fake_applications/agenthub-desktop.app/Contents/MacOS/ah" ] || fail "un: a Linux uninstall removed a macOS app bundle"
+checks=$((checks + 1))
+[ ! -e "$work/fake-app-ah.log" ] || fail "un: a Linux uninstall ran the ah inside a macOS app bundle: $(cat "$work/fake-app-ah.log")"
+
+echo "== --purge of a database outside the default takes only its files =="
+checkout="$work/checkout/agenthub"
+mkdir -p "$checkout" "$work/purge-home" "$work/purge-shim"
+echo key >"$checkout/node.key"
+echo db >"$checkout/agenthub.db"
+echo db >"$checkout/agenthub.db-wal"
+echo mine >"$checkout/README.md"
+uninstall_ah_script "$work/purge-shim/ah" "$work/purge-ah.log" "$checkout/agenthub.db" 0
+checks=$((checks + 1))
+PATH="$work/purge-shim:$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$work/purge-home" sh "$installer" --uninstall --purge >"$work/purge.txt" 2>&1 || fail "purge: failed: $(cat "$work/purge.txt")"
+for gone in node.key agenthub.db agenthub.db-wal; do
+	checks=$((checks + 1))
+	[ ! -e "$checkout/$gone" ] || fail "purge: $gone is still there"
+done
+checks=$((checks + 1))
+[ -f "$checkout/README.md" ] || fail "purge: a file of the owner's beside the database was deleted"
+
+echo "== a service that will not come down stops the uninstall =="
+refuse_home="$work/refuse-home"
+mkdir -p "$refuse_home/.local/share/agenthub" "$work/refuse-shim"
+uninstall_ah_script "$refuse_home/.local/share/agenthub/ah" "$work/refuse-ah.log" "" 1
+checks=$((checks + 1))
+if PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$refuse_home" sh "$installer" --uninstall >"$work/refuse.txt" 2>&1; then
+	fail "refuse: a failed service uninstall was carried past"
+fi
+contains refuse "$work/refuse.txt" "nothing else was removed"
+checks=$((checks + 1))
+[ -x "$refuse_home/.local/share/agenthub/ah" ] || fail "refuse: the install was deleted under a registered service"
+
+echo "== --uninstall on macOS: the app, its links and its caches =="
+mac_home="$work/mac-home"
+mac_pfx="$work/mac-pfx"
+mkdir -p "$mac_pfx/agenthub-desktop.app/Contents/MacOS" "$mac_pfx/bin" \
+	"$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences"
+touch "$mac_pfx/.agenthub-install" "$mac_home/Library/Preferences/com.wails.agenthub-desktop.plist"
+uninstall_ah_script "$mac_pfx/agenthub-desktop.app/Contents/MacOS/ah" "$work/mac-ah.log" "" 0
+ln -s "$mac_pfx/agenthub-desktop.app/Contents/MacOS/ah" "$mac_pfx/bin/ah"
+mac_un() { # mac_un <output file> [args...]
+	local out=$1
+	shift
+	PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+		isolated "$mac_home" sh "$installer" --uninstall --prefix "$mac_pfx" "$@" >"$out" 2>&1
+}
+checks=$((checks + 1))
+mac_un "$work/mac-dry.txt" --dry-run || fail "mac-dry: failed: $(cat "$work/mac-dry.txt")"
+commands_only "$work/mac-dry.txt" "$work/mac-dry.cmds"
+contains mac-dry "$work/mac-dry.cmds" "service uninstall"
+contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_pfx/agenthub-desktop.app"
+contains mac-dry "$work/mac-dry.cmds" "rm -f $mac_pfx/bin/ah"
+contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_home/Library/Caches/com.wails.agenthub-desktop"
+lacks mac-dry "$work/mac-dry.cmds" "sudo"
+checks=$((checks + 1))
+[ -d "$mac_pfx/agenthub-desktop.app" ] || fail "mac-dry: a dry run removed the app"
+[ -L "$mac_pfx/bin/ah" ] || fail "mac-dry: a dry run removed $mac_pfx/bin/ah"
+# Reading the registration is what a dry run is for; taking it down is not.
+: >>"$work/mac-ah.log"
+lacks mac-dry "$work/mac-ah.log" "service uninstall"
+checks=$((checks + 1))
+mac_un "$work/mac.txt" || fail "mac: failed: $(cat "$work/mac.txt")"
+for gone in "$mac_pfx/agenthub-desktop.app" "$mac_pfx/bin/ah" "$mac_pfx/.agenthub-install" \
+	"$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences/com.wails.agenthub-desktop.plist"; do
+	checks=$((checks + 1))
+	! exists_path "$gone" || fail "mac: $gone is still there"
+done
+
+echo "== --uninstall refuses the flags that do not go with it =="
+checks=$((checks + 1))
+if sh "$installer" --purge >"$work/purge-alone.txt" 2>&1; then fail "--purge alone was accepted"; fi
+contains purge-alone "$work/purge-alone.txt" "--purge only goes with --uninstall"
+checks=$((checks + 1))
+if sh "$installer" --uninstall --version v0.1.0 >"$work/un-version.txt" 2>&1; then fail "--uninstall --version was accepted"; fi
+contains un-version "$work/un-version.txt" "do not go with it"
 
 # ---- what the last lines tell a stranger -----------------------------------
 
