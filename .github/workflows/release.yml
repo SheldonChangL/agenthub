@@ -146,6 +146,11 @@ jobs:
               -o "stage/${bundle}/${command}${suffix}" "./cmd/${command}"
           done
           cp README.md LICENSE "stage/${bundle}/"
+          # The Claude Code skill that teaches an agent to use ah. It rides in
+          # the archive so SHA256SUMS covers it; install.sh copies it from
+          # here and never downloads it on its own.
+          mkdir -p "stage/${bundle}/skills"
+          cp -R .claude/skills/agenthub-watch "stage/${bundle}/skills/"
           echo "bundle=$bundle" >> "$GITHUB_ENV"
 
       # The tag has to be what the binary says, or the release is mislabelled in
@@ -555,6 +560,12 @@ jobs:
           mkdir -p ../dist dmg-root
           cp -R "$app" dmg-root/
           ln -s /Applications dmg-root/Applications
+          # The Claude Code skill install.sh puts in place, beside the app and
+          # not inside it: adding files to the bundle after it is sealed breaks
+          # the signature checked above. Hidden, so the drag-to-install window
+          # still shows only the app and Applications.
+          mkdir -p dmg-root/.skills
+          cp -R ../.claude/skills/agenthub-watch dmg-root/.skills/
           hdiutil create -volname "AgentHub" -srcfolder dmg-root \
             -fs HFS+ -format UDZO -ov \
             "../dist/agenthub-desktop_${TAG}_${SLUG}.dmg"
@@ -581,6 +592,8 @@ jobs:
             build/bin/agenthub-node.exe build/bin/agenthub-mcp.exe \
             "build/zip/${staging}/"
           cp ../README.md ../LICENSE "build/zip/${staging}/"
+          mkdir -p "build/zip/${staging}/skills"
+          cp -R ../.claude/skills/agenthub-watch "build/zip/${staging}/skills/"
           (cd build/zip && 7z a -tzip -bso0 "../../../dist/${staging}.zip" "$staging")
 
       # No Linux desktop packaging format is produced: .deb and .AppImage each
@@ -604,6 +617,10 @@ jobs:
             build/bin/agenthub-node build/bin/agenthub-mcp \
             "build/tar/${staging}/"
           cp ../README.md ../LICENSE "build/tar/${staging}/"
+          # The Claude Code skill install.sh copies into ~/.claude/skills, in
+          # the archive so SHA256SUMS covers it.
+          mkdir -p "build/tar/${staging}/skills"
+          cp -R ../.claude/skills/agenthub-watch "build/tar/${staging}/skills/"
           # The icon travels with the binaries because install.sh writes a
           # .desktop entry pointing Icon= at this file where it lands. Without
           # it the app installs and runs but has no entry in the applications
