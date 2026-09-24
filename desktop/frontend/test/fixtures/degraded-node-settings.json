@@ -1,6 +1,9 @@
 {
   "settings": {
-    "peerListen": "127.0.0.1:61837",
+    "peerListen": "127.0.0.1:7463",
+    "peerListens": [
+      "203.0.113.1:7563"
+    ],
     "allowLan": true,
     "discover": false,
     "treatAsPrivate": [
@@ -16,7 +19,10 @@
     "treatAsPrivate": "flag"
   },
   "saved": {
-    "peerListen": "203.0.113.1:7463",
+    "peerListen": "203.0.113.1:7563",
+    "peerListens": [
+      "203.0.113.1:7563"
+    ],
     "allowLan": true,
     "discover": false,
     "treatAsPrivate": [
@@ -24,12 +30,21 @@
     ],
     "autoWake": false
   },
-  "restartRequired": true,
+  "restartRequired": false,
   "peerListenProblem": {
-    "address": "203.0.113.1:7463",
+    "address": "203.0.113.1:7563",
     "reason": "address_gone",
-    "detail": "listen tcp 203.0.113.1:7463: bind: can't assign requested address",
-    "runningOn": "127.0.0.1:61837",
-    "message": "no interface on this machine holds 203.0.113.1:7463 any more, so the peer listener could not be bound; this node is serving 127.0.0.1:61837 until that address comes back or another one is chosen"
-  }
+    "detail": "listen tcp 203.0.113.1:7563: bind: can't assign requested address",
+    "runningOn": "127.0.0.1:7463",
+    "message": "no interface on this machine holds 203.0.113.1:7563 any more, so the peer listener could not be bound; this node is serving 127.0.0.1:7463 until that address comes back or another one is chosen"
+  },
+  "peerListeners": [
+    {
+      "address": "203.0.113.1:7563",
+      "state": "failed",
+      "reason": "address_gone",
+      "detail": "listen tcp 203.0.113.1:7563: bind: can't assign requested address",
+      "message": "no interface on this machine holds 203.0.113.1:7563 any more, so the peer listener could not be bound; this node is serving 127.0.0.1:7463 until that address comes back or another one is chosen"
+    }
+  ]
 }

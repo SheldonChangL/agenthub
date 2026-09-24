@@ -406,6 +406,16 @@ if (el("node-peerlisten").value !== real.saved.peerListen) {
 if (app.peerListenRepairs(real.peerListenProblem, addresses, true).length < 2) {
   failures.push("the real payload produced no way out");
 }
+// A node that could not bind retries on its own, and what it is configured
+// with is what it has saved, so it answers restartRequired:false. The hint has
+// to follow: a restart would bind the same missing address, and telling the
+// owner one is needed sends them round the loop the retry exists to end.
+if (real.restartRequired !== false) {
+  failures.push(`the captured payload says restartRequired ${real.restartRequired}; recapture it from a current node`);
+}
+if (text("node-settings-hint").includes("重新啟動")) {
+  failures.push(`a degraded node with nothing saved-but-unapplied asked for a restart: ${text("node-settings-hint")}`);
+}
 
 // 12. A repair whose address is not already one of the dropdown's options must
 //     still be what gets saved.
