@@ -43,20 +43,17 @@ func (p *Publisher) DeliverMessages(ctx context.Context) (Result, error) {
 		if len(pending) == 0 {
 			continue
 		}
-		if peer.Address == "" {
-			result.Skipped += len(pending)
-			continue
-		}
-		if err := p.policy(peer.Address); err != nil {
-			log.Printf("not delivering %d message(s) to %q at %q: %v",
-				len(pending), peer.NodeID, peer.Address, err)
+		addresses := p.deliverable(peer, fmt.Sprintf("%d message(s)", len(pending)))
+		if len(addresses) == 0 {
 			result.Skipped += len(pending)
 			continue
 		}
 		// The peer proves who it is once per round rather than once per message.
 		// The connection is per request, but the proof is about the peer, and
 		// nothing between two messages in one round can change who holds the key.
-		if err := p.challenge(ctx, peer, p.localNodeID); err != nil {
+		// Every message goes to the address that proof was given at.
+		peer, err := p.reach(ctx, peer, addresses)
+		if err != nil {
 			log.Printf("not delivering to %q: %v", peer.NodeID, err)
 			result.Failed += len(pending)
 			continue
