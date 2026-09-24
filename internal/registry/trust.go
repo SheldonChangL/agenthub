@@ -29,6 +29,12 @@ type TrustedNode struct {
 	// the address says where it currently answers, which is the part that
 	// changes when a laptop moves between networks.
 	Address string `json:"address,omitempty"`
+	// Alternates are other addresses the same peer answers on, tried in order
+	// after Address fails (ADR-005 §4). Address stays the preferred one — the
+	// last address that worked — so a node downgraded to a build that knows
+	// only the one column reads the last good address, not a stale one.
+	// Together with Address there are at most MaxNodeAddresses.
+	Alternates []string `json:"alternateAddresses,omitempty"`
 }
 
 func (r *Registry) migrateTrust(ctx context.Context) error {
@@ -46,34 +52,54 @@ CREATE TABLE IF NOT EXISTS trusted_nodes (
 	if _, err := r.db.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("migrate trust store: %w", err)
 	}
-	return r.addTrustAddressColumn(ctx)
+	return r.addTrustAddressColumns(ctx)
 }
 
-// addTrustAddressColumn brings a database paired by an earlier build up to
-// holding peer addresses. The default is empty, which delivers to nobody: an
+// addTrustAddressColumns brings a database paired by an earlier build up to
+// holding peer addresses. The defaults are empty, which delivers to nobody: an
 // upgrade must not invent a destination for a node the owner paired when no
 // address existed.
-func (r *Registry) addTrustAddressColumn(ctx context.Context) error {
+//
+// alternate_addresses came later (ADR-005 §4) and is added the same way. An
+// older build reading the table ignores the column, and one writing address
+// alone leaves it behind; readAlternates drops whatever of it repeats the
+// preferred address, so that leftover never reads as a second copy.
+func (r *Registry) addTrustAddressColumns(ctx context.Context) error {
 	rows, err := r.db.QueryContext(ctx, `SELECT name FROM pragma_table_info('trusted_nodes')`)
 	if err != nil {
 		return fmt.Errorf("read trusted_nodes columns: %w", err)
 	}
-	defer rows.Close()
+	present := map[string]bool{}
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
 			return fmt.Errorf("scan trusted_nodes column: %w", err)
 		}
-		if name == "address" {
-			return nil
-		}
+		present[name] = true
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
 		return fmt.Errorf("read trusted_nodes columns: %w", err)
 	}
-	if _, err := r.db.ExecContext(ctx,
-		`ALTER TABLE trusted_nodes ADD COLUMN address TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("add trusted_nodes address column: %w", err)
+	// Closed before the ALTERs: the registry holds one connection, and an open
+	// result set would keep it.
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("read trusted_nodes columns: %w", err)
+	}
+	columns := []struct{ name, definition string }{
+		{"address", `TEXT NOT NULL DEFAULT ''`},
+		{"alternate_addresses", `TEXT NOT NULL DEFAULT '[]'`},
+	}
+	for _, column := range columns {
+		if present[column.name] {
+			continue
+		}
+		// #nosec G202 -- both halves are the constants above, not input.
+		if _, err := r.db.ExecContext(ctx,
+			`ALTER TABLE trusted_nodes ADD COLUMN `+column.name+` `+column.definition); err != nil {
+			return fmt.Errorf("add trusted_nodes %s column: %w", column.name, err)
+		}
 	}
 	return nil
 }
@@ -198,17 +224,20 @@ func (r *Registry) IsPaired(ctx context.Context, nodeID string) (bool, error) {
 func (r *Registry) TrustedNode(ctx context.Context, nodeID string) (TrustedNode, error) {
 	var node TrustedNode
 	var pairedMS, lastSeenMS int64
+	var alternates string
 	err := r.db.QueryRowContext(ctx, `
-SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address
+SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address,
+       alternate_addresses
 FROM trusted_nodes WHERE node_id = ?`, nodeID).
 		Scan(&node.NodeID, &node.DisplayName, &node.Platform, &node.PublicKey, &node.Fingerprint,
-			&pairedMS, &lastSeenMS, &node.Address)
+			&pairedMS, &lastSeenMS, &node.Address, &alternates)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TrustedNode{}, fmt.Errorf("node %q: %w", nodeID, ErrNotFound)
 	}
 	if err != nil {
 		return TrustedNode{}, fmt.Errorf("get trusted node %q: %w", nodeID, err)
 	}
+	node.Alternates = readAlternates(node.Address, alternates)
 	node.PairedAt = time.UnixMilli(pairedMS).UTC()
 	if lastSeenMS > 0 {
 		node.LastSeenAt = time.UnixMilli(lastSeenMS).UTC()
@@ -218,7 +247,8 @@ FROM trusted_nodes WHERE node_id = ?`, nodeID).
 
 func (r *Registry) TrustedNodes(ctx context.Context) ([]TrustedNode, error) {
 	rows, err := r.db.QueryContext(ctx, `
-SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address
+SELECT node_id, display_name, platform, public_key, fingerprint, paired_at_ms, last_seen_at_ms, address,
+       alternate_addresses
 FROM trusted_nodes ORDER BY display_name, node_id`)
 	if err != nil {
 		return nil, fmt.Errorf("list trusted nodes: %w", err)
@@ -229,10 +259,12 @@ FROM trusted_nodes ORDER BY display_name, node_id`)
 	for rows.Next() {
 		var node TrustedNode
 		var pairedMS, lastSeenMS int64
+		var alternates string
 		if err := rows.Scan(&node.NodeID, &node.DisplayName, &node.Platform, &node.PublicKey,
-			&node.Fingerprint, &pairedMS, &lastSeenMS, &node.Address); err != nil {
+			&node.Fingerprint, &pairedMS, &lastSeenMS, &node.Address, &alternates); err != nil {
 			return nil, fmt.Errorf("scan trusted node: %w", err)
 		}
+		node.Alternates = readAlternates(node.Address, alternates)
 		node.PairedAt = time.UnixMilli(pairedMS).UTC()
 		if lastSeenMS > 0 {
 			node.LastSeenAt = time.UnixMilli(lastSeenMS).UTC()
@@ -243,32 +275,6 @@ FROM trusted_nodes ORDER BY display_name, node_id`)
 		return nil, fmt.Errorf("read trusted nodes: %w", err)
 	}
 	return nodes, nil
-}
-
-// SetNodeAddress records where a trusted peer currently answers.
-//
-// It never creates a row, for the same reason MarkNodeSeen does not: learning
-// an address is not a trust decision. Anything that discovers addresses —
-// an owner typing one, or mDNS filling it in — is an untrusted input source, and a
-// discovery that could add rows here would let whatever is shouting on the
-// network decide who this node believes in.
-//
-// An empty address is allowed and means "I no longer know where this peer is",
-// which stops delivery without touching trust.
-func (r *Registry) SetNodeAddress(ctx context.Context, nodeID, address string) error {
-	result, err := r.db.ExecContext(ctx,
-		`UPDATE trusted_nodes SET address = ? WHERE node_id = ?`, address, nodeID)
-	if err != nil {
-		return fmt.Errorf("set address for %q: %w", nodeID, err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read address update for %q: %w", nodeID, err)
-	}
-	if count == 0 {
-		return fmt.Errorf("node %q: %w", nodeID, ErrNotFound)
-	}
-	return nil
 }
 
 // TrustedNodeIDs returns just the ids of paired nodes.
