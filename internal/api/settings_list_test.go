@@ -60,6 +60,23 @@ func TestAPeerListenWriteReplacesTheWholeList(t *testing.T) {
 		t.Fatalf("the database holds %v; the next start would still serve the cable address", stored.PeerListens)
 	}
 
+	// The same address as the list's first entry is the case no other rule
+	// catches: the stored scalar would still match the list, so the read-side
+	// downgrade rule would believe a list this write meant to close.
+	storeSettings(t, store, nodeconfig.Partial{PeerListens: &[]string{cableAddress, wifiAddress}})
+	response = perform(t, handler, http.MethodPut, "/v1/node/settings",
+		map[string]any{"peerListen": cableAddress})
+	if response.Code != http.StatusOK {
+		t.Fatalf("PUT = %d %s", response.Code, response.Body.String())
+	}
+	stored, err = store.GetNodeSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(*stored.PeerListens, []string{cableAddress}) {
+		t.Fatalf("peerListen = the first entry left the list %v; Wi-Fi is still open", *stored.PeerListens)
+	}
+
 	// And "this machine only", which is the write that matters most.
 	response = perform(t, handler, http.MethodPut, "/v1/node/settings",
 		map[string]any{"peerListen": nodeconfig.DefaultPeerListen, "allowLan": false})
