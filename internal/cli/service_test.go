@@ -71,7 +71,8 @@ func TestServiceInstallCarriesTheNodesFlagsByTheNodesNames(t *testing.T) {
 	args := []string{"--url", server.URL, "service", "install",
 		"--node-binary", node,
 		"--db", "data/agenthub.db", // relative on purpose
-		"--peer-listen", "122.122.122.1:7463", "--allow-lan", "--discover",
+		"--peer-listen", "122.122.122.1:7463", "--peer-listen", "192.168.1.10:7463",
+		"--allow-lan", "--discover",
 		"--treat-as-private", "122.122.0.0/16", "--treat-as-private", "10.9.0.0/16",
 		"--auto-wake"}
 	if code := Run(context.Background(), args, &stdout, &stderr); code != 0 {
@@ -86,7 +87,7 @@ func TestServiceInstallCarriesTheNodesFlagsByTheNodesNames(t *testing.T) {
 	wantArgs := []string{
 		node,
 		"--db", filepath.Join(wd, "data", "agenthub.db"),
-		"--peer-listen", "122.122.122.1:7463",
+		"--peer-listen", "122.122.122.1:7463", "--peer-listen", "192.168.1.10:7463",
 		"--allow-lan=true", "--discover=true",
 		"--treat-as-private", "122.122.0.0/16", "--treat-as-private", "10.9.0.0/16",
 		"--auto-wake=true",
@@ -189,6 +190,10 @@ func TestServiceInstallRefusesWhatTheNodeWouldRefuse(t *testing.T) {
 		{"lan address without --allow-lan", []string{"--peer-listen", "192.168.1.10:7463"}, "allow-lan"},
 		{"public address without declaring it private", []string{"--peer-listen", "122.122.122.1:7463", "--allow-lan"}, "private"},
 		{"unknown flag", []string{"--peer-listne", "x"}, "peer-listne"},
+		{"every interface in a list", []string{"--allow-lan",
+			"--peer-listen", "192.168.1.10:7463", "--peer-listen", "0.0.0.0:7463"}, "every interface"},
+		{"two ports", []string{"--allow-lan",
+			"--peer-listen", "192.168.1.10:7463", "--peer-listen", "10.0.0.5:7464"}, "same port"},
 		{"owner API off loopback", []string{"--listen", "0.0.0.0:7462"}, "loopback"},
 		{"display name belongs to the node, not the unit", []string{"--display-name", "x"}, "display-name"},
 		{"stray argument", []string{"extra"}, "extra"},
