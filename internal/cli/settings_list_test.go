@@ -88,7 +88,7 @@ func TestSettingsSetSeveralPeerListensSendsTheList(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 	if code := Run(context.Background(), []string{"--url", server.URL, "settings", "set",
-		"--peer-listen", "0.0.0.0:7463", "--peer-listen", "192.168.1.10:7463"}, &stdout, &stderr); code == 0 {
+		"--peer-listen", "192.168.1.10:7463", "--peer-listen", "0.0.0.0:7463"}, &stdout, &stderr); code == 0 {
 		t.Fatalf("the unspecified address was accepted: %s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "every interface") {
