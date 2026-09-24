@@ -1356,3 +1356,35 @@ details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
 #service-repair:not(:empty) {
   margin: 10px 0 2px;
 }
+
+/* The listen address list (ADR-005 §5): one row per address, with what the
+   node is doing with it. The field takes the grid's second column like the
+   dropdown it replaces, and its label sits at the top of a list that is taller
+   than one line. */
+.serviceform .fieldgrid > .listenfield { display: contents; }
+.serviceform .fieldgrid > .listenfield > .fieldlabel { align-self: start; padding-top: 2px; }
+.listenbox { min-width: 0; }
+.listenbox > p { margin: 6px 0 0; font-size: 11.5px; }
+.listenlist { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.listenlist .listenhead { margin-top: 4px; font-size: 11px; font-weight: 500; color: var(--muted); }
+.listenlist > .why { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+.listenrow { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; min-width: 0; }
+.listenrow input { margin-top: 3px; flex: none; }
+.listenrow .listenbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.listenrow .listenline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.listenrow .listenaddr { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.listenrow .listenmeta { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+.listenrow .listenstate { font-size: 11.5px; color: var(--muted); }
+.listenrow .listenstate.ok { color: var(--green); }
+.listenrow .listenstate.warn { color: var(--amber); }
+.listenrow .listenmark { font-size: 11px; color: var(--accent); }
+.listenrow .why { font-size: 11.5px; color: var(--muted); line-height: 1.55; }
+
+/* Pairing step 1 with several open addresses: one per line, each with its own
+   copy button, because which one the other machine can use depends on the
+   network the two share. */
+.pairaddr { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.pairaddr + .pairaddr { margin-top: 4px; }
+.pairaddr .pairaddr-value { overflow-wrap: anywhere; }
+.pairaddr .muted { font-family: inherit; font-size: 11.5px; }
+.pairaddr button { margin-left: auto; flex: none; }

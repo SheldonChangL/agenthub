@@ -557,6 +557,13 @@ func TestFrontendNodeSettingsFormSpeaksTheNodesRules(t *testing.T) {
 	runNodeCheck(t, "node-settings.mjs")
 }
 
+// TestFrontendListensOnTheAddressesTheOwnerTicks covers the address list
+// (ADR-005 §5): the four node-settings rules over a set, the row states, an
+// older node kept on the dropdown, and pairing step 1's list and 全部開放.
+func TestFrontendListensOnTheAddressesTheOwnerTicks(t *testing.T) {
+	runNodeCheck(t, "listen-addresses.mjs")
+}
+
 // TestFrontendServicePanelOffersTheRestartWhereItIsSafe covers the background
 // service panel on a platform that has none.
 //
