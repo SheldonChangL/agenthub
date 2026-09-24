@@ -179,7 +179,14 @@ func (r runner) renderSettings(body []byte) error {
 		return fmt.Errorf("decode response JSON: %w", err)
 	}
 	running := settingValues(view.Settings)
-	if bound := boundPeerAddresses(view.PeerListeners); len(bound) > 0 {
+	// What this process was configured to serve: the list on a node that
+	// knows one, the scalar on one that does not. NEXT START is compared with
+	// this rather than with what bound, the same rule as restartRequired: a
+	// restart re-reads the configuration and cannot bring back a cable, so an
+	// address that is configured and missing is not waiting for a restart.
+	configuredPeers := running[nodeconfig.SettingPeerListen]
+	bound := boundPeerAddresses(view.PeerListeners)
+	if len(bound) > 0 {
 		// What is being served, which on a node with several addresses is not
 		// always all of them; the ones that are not are listed below.
 		running[nodeconfig.SettingPeerListen] = strings.Join(bound, ", ")
@@ -193,10 +200,19 @@ func (r runner) renderSettings(body []byte) error {
 	fmt.Fprintln(writer, "SETTING\tIN EFFECT\tFROM\tNEXT START")
 	for _, field := range nodeconfig.SettingNames {
 		next := saved[field]
-		if next == running[field] {
+		against := running[field]
+		if field == nodeconfig.SettingPeerListen {
+			against = configuredPeers
+		}
+		if next == against {
 			next = ""
 		}
 		from := view.Sources[field]
+		if field == nodeconfig.SettingPeerListen && len(bound) > 0 && len(bound) < len(view.PeerListeners) {
+			// Some configured addresses bound and some did not: IN EFFECT is the
+			// bound ones, and each of the others is named below with the reason.
+			from += fmt.Sprintf(" (%d of %d bound)", len(bound), len(view.PeerListeners))
+		}
 		if field == nodeconfig.SettingPeerListen && view.PeerListenWithdrawn {
 			// Marked rather than given a fourth source name: "withdrawn" is not
 			// a place a value comes from, and the three names are what the API
@@ -205,8 +221,8 @@ func (r runner) renderSettings(body []byte) error {
 		}
 		if field == nodeconfig.SettingPeerListen && view.PeerListenProblem != nil {
 			// Marked for the same reason, and distinctly: a reader who sees
-			// "not bound" beside a default learns that the address in NEXT
-			// START is not waiting for a restart, it is waiting for a machine.
+			// "not bound" beside a default learns that the value in effect is a
+			// fallback, and the address it stands in for is named just below.
 			from += " (not bound)"
 		}
 		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", nodeconfig.FlagName(field), running[field], from, next)
@@ -238,9 +254,21 @@ func (r runner) renderSettings(body []byte) error {
 		if view.PeerListenProblem.Detail != "" {
 			fmt.Fprintf(r.stdout, "  %s\n", view.PeerListenProblem.Detail)
 		}
-		fmt.Fprintln(r.stdout,
-			"choose an address this machine holds with `ah settings set --peer-listen ADDR`, "+
-				"or keep this one and restart once the network is back")
+		if len(view.PeerListeners) > 0 {
+			// A node that reports its listeners retries them (ADR-005 §3):
+			// keeping the address needs no restart. Choosing another one does,
+			// because the retry only ever binds what this process was started with.
+			fmt.Fprintf(r.stdout,
+				"this node tries the configured addresses again every %s and serves one as soon as it binds, "+
+					"without a restart; to serve a different address instead, save it with "+
+					"`ah settings set --peer-listen ADDR` and restart\n",
+				nodeconfig.PeerListenRetryInterval)
+		} else {
+			// An older node binds once, at start-up.
+			fmt.Fprintln(r.stdout,
+				"choose an address this machine holds with `ah settings set --peer-listen ADDR`, "+
+					"or keep this one and restart once the network is back")
+		}
 	}
 	if view.Message != "" {
 		fmt.Fprintln(r.stdout, view.Message)

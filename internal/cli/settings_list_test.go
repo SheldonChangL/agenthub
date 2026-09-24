@@ -158,7 +158,7 @@ func TestSettingsShowsEachPeerAddress(t *testing.T) {
 	out := stdout.String()
 	for _, want := range []string{
 		"peer listener 10.0.0.5:7463 is failed: no interface on this machine holds 10.0.0.5:7463",
-		"192.168.1.10:7463, 10.0.0.5:7463", // NEXT START differs from what is bound
+		"remembered (1 of 2 bound)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
@@ -166,5 +166,90 @@ func TestSettingsShowsEachPeerAddress(t *testing.T) {
 	}
 	if strings.Contains(out, "degraded") || strings.Contains(out, "(not bound)") {
 		t.Errorf("one address of two bound was presented as a degraded node:\n%s", out)
+	}
+	// IN EFFECT is the bound address alone, and NEXT START is empty: the saved
+	// list is the configured one, restartRequired is false, and a column that
+	// printed the list there would ask for a restart that brings back nothing.
+	if got := peerListenRow(t, out); !slices.Equal(got, []string{
+		"peer-listen", "192.168.1.10:7463", "remembered", "(1", "of", "2", "bound)",
+	}) {
+		t.Errorf("peer-listen row = %q:\n%s", got, out)
+	}
+	if strings.Contains(out, "ah service restart") {
+		t.Errorf("a node with nothing to restart for was told to restart:\n%s", out)
+	}
+}
+
+// peerListenRow is the peer-listen row of `ah settings`, split on spaces.
+func peerListenRow(t *testing.T, out string) []string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "peer-listen ") {
+			return strings.Fields(line)
+		}
+	}
+	t.Fatalf("no peer-listen row:\n%s", out)
+	return nil
+}
+
+// A node on this branch that bound nothing retries its addresses, so the
+// sentence under the problem says the address will be served when it binds,
+// not that the owner has to restart once the network is back. An older node,
+// which reports no listeners, binds once, and keeps the older sentence.
+func TestSettingsSaysADegradedNodeRetries(t *testing.T) {
+	const problem = `"peerListenProblem": {
+    "address": "192.168.77.9:7463", "reason": "address_gone",
+    "detail": "listen tcp 192.168.77.9:7463: bind: can't assign requested address",
+    "runningOn": "127.0.0.1:7463",
+    "message": "no interface on this machine holds 192.168.77.9:7463 any more"
+  }`
+	current := `{
+  "settings": {"peerListen":"127.0.0.1:7463","peerListens":["192.168.77.9:7463"],"allowLan":true,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "sources": {"peerListen":"default","allowLan":"remembered","discover":"default","treatAsPrivate":"default","autoWake":"default"},
+  "saved": {"peerListen":"192.168.77.9:7463","peerListens":["192.168.77.9:7463"],"allowLan":true,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "restartRequired": false,
+  ` + problem + `,
+  "peerListeners": [{"address":"192.168.77.9:7463","state":"failed","reason":"address_gone","message":"no interface on this machine holds 192.168.77.9:7463 any more"}]
+}`
+	older := `{
+  "settings": {"peerListen":"127.0.0.1:7463","allowLan":true,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "sources": {"peerListen":"default","allowLan":"remembered","discover":"default","treatAsPrivate":"default","autoWake":"default"},
+  "saved": {"peerListen":"192.168.77.9:7463","allowLan":true,"discover":false,"treatAsPrivate":[],"autoWake":false},
+  "restartRequired": true,
+  ` + problem + `
+}`
+	for _, testCase := range []struct {
+		name, answer, want, refused string
+		row                         []string
+	}{
+		{"a node that retries", current, "tries the configured addresses again every 30s", "restart once the network is back",
+			[]string{"peer-listen", "127.0.0.1:7463", "default", "(not", "bound)"}},
+		{"an older node", older, "restart once the network is back", "tries the configured addresses again",
+			[]string{"peer-listen", "127.0.0.1:7463", "default", "(not", "bound)", "192.168.77.9:7463"}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, testCase.answer)
+			}))
+			defer server.Close()
+			var stdout, stderr bytes.Buffer
+			if code := Run(context.Background(), []string{"--url", server.URL, "settings"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("exit = %d, %s", code, stderr.String())
+			}
+			out := stdout.String()
+			if !strings.Contains(out, testCase.want) {
+				t.Errorf("output lacks %q:\n%s", testCase.want, out)
+			}
+			if strings.Contains(out, testCase.refused) {
+				t.Errorf("output says %q:\n%s", testCase.refused, out)
+			}
+			if !strings.Contains(out, "no interface on this machine holds 192.168.77.9:7463") {
+				t.Errorf("the configured address is named nowhere:\n%s", out)
+			}
+			if got := peerListenRow(t, out); !slices.Equal(got, testCase.row) {
+				t.Errorf("peer-listen row = %q, want %q:\n%s", got, testCase.row, out)
+			}
+		})
 	}
 }
