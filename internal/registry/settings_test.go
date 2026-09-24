@@ -268,3 +268,92 @@ func TestUpdateNodeSettingsCannotStoreAnUnvalidatedCombination(t *testing.T) {
 		t.Fatalf("stored %+v, which no writer validated and no start accepts: %v", settings, err)
 	}
 }
+
+// The list and its scalar are written together, and a scalar written alone —
+// by a caller that knows only the old spelling — still replaces the list.
+func TestNodeSettingsStoreThePeerListAndItsScalarTogether(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	both := []string{"192.168.1.10:7463", "10.0.0.5:7463"}
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{PeerListens: &both}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedValue(t, store, nodeconfig.SettingPeerListen); got != "192.168.1.10:7463" {
+		t.Fatalf("a list write stored the scalar %q; an older build reads that one", got)
+	}
+	stored, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PeerListens == nil || len(*stored.PeerListens) != 2 || *stored.PeerListen != both[0] {
+		t.Fatalf("read back %v / %v", stored.PeerListen, stored.PeerListens)
+	}
+
+	only := "127.0.0.1:7463"
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{PeerListen: &only}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedValue(t, store, nodeconfig.FieldPeerListens); got != `["127.0.0.1:7463"]` {
+		t.Fatalf("a scalar write left the stored list %s; it has to be replaced", got)
+	}
+}
+
+// The downgrade rule (ADR-005 §1): an older build writes the scalar and never
+// touches the list, so a list whose first entry is not the scalar is what the
+// owner said before their last word, and is dropped. Unknown keys — what a
+// newer build remembers — are never deleted.
+func TestADowngradedScalarWinsOverTheListBesideIt(t *testing.T) {
+	ctx := context.Background()
+	store := openTestRegistry(t)
+	both := []string{"192.168.1.10:7463", "10.0.0.5:7463"}
+	on := true
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{PeerListens: &both, AllowLAN: &on}); err != nil {
+		t.Fatal(err)
+	}
+	// What an older build's "this machine only" leaves behind: the scalar
+	// rewritten, the list it does not know about untouched, and a key from
+	// some newer build it does not know either.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE node_settings SET value = '127.0.0.1:7463' WHERE key = ?`, nodeconfig.SettingPeerListen); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx,
+		`INSERT INTO node_settings (key, value, updated_at_ms) VALUES ('fromTheFuture', 'kept', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := store.GetNodeSettings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *stored.PeerListen != "127.0.0.1:7463" || len(*stored.PeerListens) != 1 ||
+		(*stored.PeerListens)[0] != "127.0.0.1:7463" {
+		t.Fatalf("after a downgraded write the node reads %q / %v; the LAN list came back",
+			*stored.PeerListen, *stored.PeerListens)
+	}
+	// An unreadable list is absent, not an error: the scalar is enough.
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE node_settings SET value = 'not json' WHERE key = ?`, nodeconfig.FieldPeerListens); err != nil {
+		t.Fatal(err)
+	}
+	unreadable, err := store.GetNodeSettings(ctx)
+	if err != nil || *unreadable.PeerListen != "127.0.0.1:7463" || len(*unreadable.PeerListens) != 1 {
+		t.Fatalf("an unreadable list: %v / %v, %v", unreadable.PeerListen, unreadable.PeerListens, err)
+	}
+	// And writing anything leaves the unknown key where it was.
+	if err := store.SaveNodeSettings(ctx, nodeconfig.Partial{PeerListens: &both}); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedValue(t, store, "fromTheFuture"); got != "kept" {
+		t.Fatalf("an unknown key was %q after a write; a downgrade must not lose it", got)
+	}
+}
+
+func storedValue(t *testing.T, store *Registry, key string) string {
+	t.Helper()
+	var value string
+	if err := store.db.QueryRowContext(context.Background(),
+		`SELECT value FROM node_settings WHERE key = ?`, key).Scan(&value); err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	return value
+}

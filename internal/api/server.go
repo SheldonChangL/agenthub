@@ -66,11 +66,12 @@ type Server struct {
 	// this one, where the row still says this request trusted nobody and the
 	// trust row is already in the store.
 	afterApproveTrustWrite func()
-	// peerAddress is where this node's peer listener answers, as host:port, so
-	// a pairing request can tell the far side where to deliver to. Empty when
-	// there is no address worth claiming, which records nothing rather than
-	// sending a claim that would be dropped anyway.
-	peerAddress string
+	// peerAddresses is where this node's peer listener answers, as host:port,
+	// asked on every read because the listener set binds addresses as they
+	// appear. The first is what a pairing request tells the far side to
+	// deliver to. Empty when there is no address worth claiming, which records
+	// nothing rather than sending a claim that would be dropped anyway.
+	peerAddresses func() []string
 	// refused remembers which stored snapshot was last reported as unservable,
 	// per peer, so a reader that polls /v1/peers — every agent_list call does —
 	// does not write the same line again for as long as the row sits there.
@@ -91,6 +92,11 @@ type Server struct {
 	// configured to serve and is running on loopback instead. Nil when it bound
 	// what it was asked for.
 	peerListenProblem *PeerListenProblem
+	// peerListeners is the live listener set, when main built one. Its answers
+	// replace peerListenProblem and the running peerListen, because a set
+	// retries: the address that failed at start-up can be bound a minute later
+	// and a settings page must not go on saying it is not.
+	peerListeners PeerListeners
 	// autoWake is the node's own -auto-wake flag, published on the owner
 	// surface. A session's own autoWake does nothing while this is closed, and
 	// the owner has to be able to see that before ticking the session's box.
@@ -148,18 +154,45 @@ func WithPairing(mode *pairing.Mode, candidates *discovery.Candidates, announcer
 
 // WithPairExchange gives the API the fingerprint-confirmed pairing exchange:
 // the requests in flight, the dialer that reaches a node this one has not
-// paired with, and the address this node claims as its own.
+// paired with, and the addresses this node claims as its own.
 //
 // Separate from WithPairing because the two answer different questions. That
 // one is about discovery — who is advertising nearby. This one is the handshake
 // that carries the keys, and it works between machines that never saw each
 // other's announcements, which is the case it exists for.
-func WithPairExchange(requests *pairing.Requests, dialer *transport.PairDialer, peerAddress string) Option {
+//
+// peerAddresses is asked on every read rather than given once: the listener
+// set binds a configured address when it appears, and the address a pairing
+// request carries has to be one that is bound now. Nil claims nothing.
+func WithPairExchange(requests *pairing.Requests, dialer *transport.PairDialer, peerAddresses func() []string) Option {
 	return func(s *Server) {
 		s.pairRequests = requests
 		s.pairDialer = dialer
-		s.peerAddress = peerAddress
+		s.peerAddresses = peerAddresses
 	}
+}
+
+// ownPeerAddresses is where this node claims to answer peer traffic right now,
+// empty strings dropped.
+func (s *Server) ownPeerAddresses() []string {
+	if s.peerAddresses == nil {
+		return []string{}
+	}
+	addresses := []string{}
+	for _, address := range s.peerAddresses() {
+		if address != "" {
+			addresses = append(addresses, address)
+		}
+	}
+	return addresses
+}
+
+// ownPeerAddress is the first of ownPeerAddresses, or "".
+func (s *Server) ownPeerAddress() string {
+	if addresses := s.ownPeerAddresses(); len(addresses) > 0 {
+		return addresses[0]
+	}
+	return ""
 }
 
 // WithDeliveryPolicy makes the API accept exactly the addresses the publisher

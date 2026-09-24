@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,8 +54,10 @@ func run() error {
 	codexRoot := flag.String("codex-root", defaults.codex, "Codex data root")
 	scanInterval := flag.Duration("scan-interval", 30*time.Second, "provider discovery interval")
 	publishInterval := flag.Duration("publish-interval", 15*time.Second, "heartbeat publishing interval")
-	peerListenAddress := flag.String("peer-listen", nodeconfig.DefaultPeerListen,
-		"TLS listen address for peer traffic. Remembered: given once, it applies on every later start")
+	var peerListenAddresses nodeconfig.StringList
+	flag.Var(&peerListenAddresses, "peer-listen",
+		"TLS listen address for peer traffic, repeatable: one per address to serve peers on (default "+
+			nodeconfig.DefaultPeerListen+"). Remembered, and given at all it replaces the whole remembered list")
 	displayName := flag.String("display-name", "",
 		"what this node calls itself to other machines, and it is announced to everyone on "+
 			"the segment while pairing mode is open. Pinned once given: without this flag the "+
@@ -102,7 +103,7 @@ func run() error {
 	// given now wins and is recorded; a flag left off means whatever was said
 	// last time. This is why `ah service install` needs only --db: the unit
 	// file stopped being a second copy of the configuration.
-	given := flagSettings(flag.CommandLine, peerListenAddress, allowLAN, discover, autoWake, declaredPrivate)
+	given := flagSettings(flag.CommandLine, peerListenAddresses, allowLAN, discover, autoWake, declaredPrivate)
 	startup, err := applyStartupSettings(ctx, store, given, log.Printf)
 	if err != nil {
 		return err
@@ -127,18 +128,17 @@ func run() error {
 	// the database: a cable unplugged has not changed what this node is
 	// configured to serve, and the owner's remembered address is theirs to keep
 	// until they say otherwise.
-	peerListener, listenProblem, err := bindPeerListener(settings.PeerListen, nodeconfig.DefaultPeerListen, log.Printf)
+	//
+	// One listener per configured address (ADR-005 §2). If any of them binds
+	// there is no loopback fallback; the ones that did not are retried every
+	// 30 seconds, because launchd starts this node before Wi-Fi has an
+	// address. Everything below that needs "where is this node reachable"
+	// asks the set, not this start's snapshot of it.
+	peerListeners, err := bindPeerListeners(settings.PeerListenList(), nodeconfig.DefaultPeerListen, log.Printf)
 	if err != nil {
 		return err
 	}
-	defer peerListener.Close()
-	if listenProblem != nil {
-		settings.PeerListen = listenProblem.RunningOn
-		// Of the three provenances this map can carry, the running value is
-		// now the default — nobody chose it. The problem itself is what says
-		// so, exactly as peerListenWithdrawn does for the other fallback.
-		sources[nodeconfig.SettingPeerListen] = nodeconfig.SourceDefault
-	}
+	defer func() { _ = peerListeners.Close() }()
 
 	node, err := identity.LoadOrCreate(ctx, store, *displayName, wasSet(flag.CommandLine, "display-name"))
 	if err != nil {
@@ -194,7 +194,7 @@ func run() error {
 		// API answers with what this announcer is actually managing to do: an
 		// open window on a node with no announceable address is the one failure
 		// an owner cannot see from the other machine.
-		endpoint, err := pairing.PeerEndpoint(deliveryPolicy, settings.PeerListen)
+		endpoint, err := pairing.ListenerEndpoint(deliveryPolicy, settings.PeerListenList(), peerListeners.Bound)
 		if err != nil {
 			// Stopping the node rather than starting one that cannot pair: the
 			// owner asked for -discover, and a peer listener an announcement
@@ -240,7 +240,7 @@ func run() error {
 				remedy = "; " + remedy
 			}
 			log.Printf("pairing mode will announce nothing with -peer-listen %s: %s%s",
-				settings.PeerListen, reason, remedy)
+				strings.Join(settings.PeerListenList(), ", "), reason, remedy)
 		}
 	}
 	// A typed nil put into the interface would not compare equal to nil there,
@@ -259,7 +259,9 @@ func run() error {
 	options = append(options, api.WithPairExchange(
 		pairing.NewRequests(),
 		transport.NewPairDialer(deliveryPolicy),
-		announceablePeerAddress(deliveryPolicy, settings.PeerListen),
+		// Asked on every read: the set binds a configured address when it
+		// appears, and a pairing request must carry one that is bound now.
+		func() []string { return pairing.ReachableAddresses(deliveryPolicy, peerListeners.Bound()) },
 	))
 	// Waking is off at the node as well as at the session, and both have to be
 	// open. A per-session switch alone would mean an owner who set one months
@@ -303,13 +305,11 @@ func run() error {
 		// one nobody ever chose.
 		options = append(options, api.WithPeerListenWithdrawn())
 	}
-	if listenProblem != nil {
-		// Published because this is the one state the owner cannot diagnose
-		// from anywhere else: the node is up, the settings page reads fine, and
-		// the address on it is not the address being served. Without this the
-		// panel would show a healthy node that no peer can reach.
-		options = append(options, api.WithPeerListenProblem(*listenProblem))
-	}
+	// Published because a degraded listener is the one state the owner cannot
+	// diagnose from anywhere else: the node is up, the settings page reads
+	// fine, and the address on it is not the address being served. Live,
+	// because the set retries: the problem ends when an address binds.
+	options = append(options, api.WithPeerListeners(peerListeners))
 	apiServer := api.NewServer(store, service, heartbeats, node, options...)
 	server := ownerServer(*listenAddress, apiServer.Handler())
 
@@ -330,6 +330,7 @@ func run() error {
 		return fmt.Errorf("build node certificate: %w", err)
 	}
 	peerServer := &http.Server{
+		// Informational only: every listener is handed to Serve by the set.
 		Addr:              settings.PeerListen,
 		Handler:           apiServer.PeerHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -347,20 +348,23 @@ func run() error {
 	signal.Notify(stop, nodeconfig.ShutdownSignals()...)
 	defer signal.Stop(stop)
 	serveError := make(chan error, 1)
-	go func() { serveError <- server.ListenAndServe() }()
-	go func() {
-		// The listener is already open — bound at the top of run() so that
-		// failing to bind it degrades this node instead of ending it. The cap
-		// still wraps it here: the request rate limiter cannot bound this,
-		// because it runs after the TLS handshake, so the handshake's CPU and
-		// the connection's descriptor are already spent by the time anything is
-		// counted.
-		capped := nodeconfig.LimitConnections(peerListener, nodeconfig.MaxPeerConnections)
-		// The certificate and key are already in TLSConfig.
-		if err := peerServer.ServeTLS(capped, "", ""); !errors.Is(err, http.ErrServerClosed) {
-			serveError <- fmt.Errorf("peer listener: %w", err)
+	// The first failure ends run(); later ones are dropped rather than left
+	// blocking a goroutine on a channel nobody reads any more.
+	reportServeError := func(err error) {
+		select {
+		case serveError <- err:
+		default:
 		}
-	}()
+	}
+	go func() { reportServeError(server.ListenAndServe()) }()
+	// One server for every peer listener, each already open — bound at the top
+	// of run() so that failing to bind degrades this node instead of ending it
+	// — and each already under the set's one connection cap: the request rate
+	// limiter cannot bound this, because it runs after the TLS handshake, so
+	// the handshake's CPU and the connection's descriptor are already spent by
+	// the time anything is counted. A listener a retry binds later arrives here
+	// too.
+	servePeerListeners(peerListeners, peerServer, reportServeError)
 	go discoveryLoop(service, *scanInterval)
 	go pruneLoop(store, *outboundRetention)
 
@@ -374,6 +378,11 @@ func run() error {
 	publishCtx, stopPublishing := context.WithCancel(context.Background())
 	defer stopPublishing()
 	go publisher.Run(publishCtx)
+	// Configured addresses that did not bind are tried again for the process's
+	// life. Nothing that is not configured is ever tried.
+	retry := time.NewTicker(nodeconfig.PeerListenRetryInterval)
+	defer retry.Stop()
+	go peerListeners.Run(publishCtx, retry.C)
 
 	// Discovery only fills in addresses for nodes already paired, and only
 	// addresses this build would deliver to. It cannot create trust, and a
@@ -399,7 +408,15 @@ func run() error {
 		go announcer.Run(publishCtx)
 	}
 	log.Printf("listening on http://%s", *listenAddress)
-	log.Printf("peer listener on https://%s", settings.PeerListen)
+	// Every address being served, or the fallback: a log line naming only the
+	// first would read as a node that serves one network.
+	serving := peerListeners.Bound()
+	if len(serving) == 0 {
+		serving = []string{peerListeners.Running()}
+	}
+	for _, address := range serving {
+		log.Printf("peer listener on https://%s", address)
+	}
 
 	select {
 	case err := <-serveError:
@@ -545,94 +562,46 @@ type settingsStore interface {
 	SaveNodeSettings(ctx context.Context, settings nodeconfig.Partial) error
 }
 
-// bindPeerListener opens the peer listener, and when it cannot, opens the
-// loopback default instead and says why rather than ending the start.
+// servePeerListeners serves every listener the set hands out, now and after a
+// retry, on the one peer server, and reports a listener that stopped for any
+// reason but two: the server was shut down, or the set closed that listener on
+// purpose — a fallback retired because a configured address came up is not a
+// failure of this node, and reporting it would end run() at the moment the
+// node became reachable.
+func servePeerListeners(set *nodeconfig.ListenerSet, server *http.Server, report func(error)) {
+	set.Serve(func(listener net.Listener) {
+		go func() {
+			// The certificate and key are already in TLSConfig.
+			err := server.ServeTLS(listener, "", "")
+			if errors.Is(err, http.ErrServerClosed) || set.Retired(listener) {
+				return
+			}
+			report(fmt.Errorf("peer listener %s: %w", listener.Addr(), err))
+		}()
+	})
+}
+
+// bindPeerListeners opens one listener per configured peer address, and when
+// none of them opens, the loopback fallback instead; it says why rather than
+// ending the start (nodeconfig.ListenerSet has the rules).
 //
 // The fallback is loopback and only loopback. Widening is never done here for
-// the same reason WithdrawPeerListen never widens: an address that reaches the
+// the same reason WithdrawPeerListens never widens: an address that reaches the
 // network has to be asked for, and a node that quietly picked a different one
 // after a failure would be serving the owner's sessions somewhere they never
 // agreed to.
 //
-// Loopback's own port being taken is not the end of it either. A machine
-// running a second node holds that port, and the first node's owner still has to
-// be able to open their settings page — so the last resort is loopback on any
-// free port, which serves nobody and is exactly what a degraded node needs: a
-// listener that exists, and a process that lives. The address it landed on is
-// reported, because "127.0.0.1:53418" on screen is what tells an owner they are
-// looking at a node that is not being reached by anyone.
-//
-// Only if that fails too does the start end, and then something is wrong with
-// this machine's networking that no button on a settings page can fix.
-//
 // fallback is passed rather than read from nodeconfig so a test can degrade
 // onto a port the machine it runs on is not already serving. run() gives the
 // default, and there is no other caller.
-func bindPeerListener(address, fallback string, logf func(string, ...any)) (net.Listener, *api.PeerListenProblem, error) {
-	listener, err := net.Listen("tcp", address)
-	if err == nil {
-		return listener, nil, nil
+func bindPeerListeners(configured []string, fallback string, logf func(string, ...any)) (*nodeconfig.ListenerSet, error) {
+	set := nodeconfig.NewListenerSet(configured, nodeconfig.ListenerSetOptions{
+		Fallback: fallback, Limit: nodeconfig.MaxPeerConnections, Logf: logf,
+	})
+	if err := set.Bind(); err != nil {
+		return nil, err
 	}
-	reason := nodeconfig.ListenUnusable
-	// An enumeration failure is not a reason: it would make every address read
-	// as gone. The generic reason is the honest one when this process cannot
-	// see its own interfaces.
-	if interfaces, addressErr := nodeconfig.InterfaceAddresses(); addressErr == nil {
-		reason = nodeconfig.ClassifyListenFailure(address, interfaces, probeListen)
-	}
-	// The fallback is skipped when it is the address that just failed: trying it
-	// again would fail again, and a degradation naming its own failure as the
-	// remedy is a loop with a reassuring message on it. The last resort below
-	// still applies, and has to — "the default loopback port is taken" is the
-	// ordinary way a second node on one machine cannot start, and that node's
-	// owner needs the settings page as much as anyone.
-	fallbackListener, fallbackErr := net.Listener(nil), err
-	if address != fallback {
-		fallbackListener, fallbackErr = net.Listen("tcp", fallback)
-	}
-	if fallbackErr != nil {
-		lastResort, lastResortErr := net.Listen("tcp", anyLoopbackPort)
-		if lastResortErr != nil {
-			// All three named: the last failure alone would send the owner
-			// looking at a port nobody chose, which is not the address they
-			// configured and not the one they would recognise.
-			return nil, nil, fmt.Errorf("peer listener %s: %w; the loopback default %s: %v; "+
-				"and loopback on any free port: %v", address, err, fallback, fallbackErr, lastResortErr)
-		}
-		fallbackListener = lastResort
-	}
-	// The listener's own address rather than the string asked for: they differ
-	// wherever the fallback names a port the machine chose, and an owner told
-	// which address is being served has to be told the real one.
-	runningOn := fallbackListener.Addr().String()
-	message := nodeconfig.ListenFailureReason(reason, address, runningOn)
-	logf("%s", message)
-	// The owner's own surface is the point of staying up, so it is named here
-	// rather than left for them to discover.
-	logf("this node is running with its outward half degraded; the settings page and `ah settings set` " +
-		"can change the address without restarting into the same failure")
-	return fallbackListener, &api.PeerListenProblem{
-		Address:   address,
-		Reason:    reason,
-		Detail:    err.Error(),
-		RunningOn: runningOn,
-		Message:   message,
-	}, nil
-}
-
-// anyLoopbackPort is the last resort: a listener that exists so the process
-// does, on an address no peer was ever told about.
-const anyLoopbackPort = "127.0.0.1:0"
-
-// probeListen asks whether this machine will serve an address at all, by taking
-// one and giving it straight back. Separated so a test can classify without
-// opening a socket.
-func probeListen(network, address string) error {
-	listener, err := net.Listen(network, address)
-	if err != nil {
-		return err
-	}
-	return listener.Close()
+	return set, nil
 }
 
 // startupSettings is what this start will run with.
@@ -667,6 +636,15 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	if err != nil {
 		return startupSettings{}, err
 	}
+	// Both spellings of the peer listener made one before anything is
+	// resolved (ADR-005 §1). flagSettings already gives both, so this refuses
+	// nothing a command line can say; it is here so the rule has one route.
+	if given, err = nodeconfig.NormalizePeerListen(given); err != nil {
+		return startupSettings{}, err
+	}
+	if remembered, err = nodeconfig.NormalizePeerListen(remembered); err != nil {
+		return startupSettings{}, err
+	}
 	settings, sources := nodeconfig.Resolve(given, remembered, nodeconfig.DefaultSettings())
 	// The same rule the owner's PUT applies, applied here before anything is
 	// validated: a remembered LAN listener plus -allow-lan=false is a refusal
@@ -679,18 +657,19 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 	// contradict each other, and guessing which half they meant is not this
 	// function's decision to make: that start is still refused.
 	withdrew := false
-	if address, withdrawn := nodeconfig.WithdrawPeerListen(
-		settings.AllowLAN, given.PeerListen != nil, settings.PeerListen); withdrawn {
+	if kept, withdrawn, dropped := nodeconfig.WithdrawPeerListens(settings.AllowLAN,
+		given.PeerListen != nil || given.PeerListens != nil, settings.PeerListenList()); withdrawn {
 		// The reason itself comes from nodeconfig, because the owner's API says
 		// the same thing about the same withdrawal: two copies of this sentence
 		// is how a log and a settings page come to describe one event
 		// differently. Only the spelling of the switch differs — a log is read
 		// beside a command line, so it names the flag.
 		logf("withdrawing peer-listen: %s; it was not bound, and %s is used instead",
-			nodeconfig.WithdrawalReason(nodeconfig.FlagName(nodeconfig.SettingAllowLAN), settings.PeerListen),
-			address)
-		settings.PeerListen = address
-		given.PeerListen = &address
+			nodeconfig.WithdrawalReason(nodeconfig.FlagName(nodeconfig.SettingAllowLAN), dropped...),
+			strings.Join(kept, ", "))
+		first := kept[0]
+		settings.PeerListen, settings.PeerListens = first, kept
+		given.PeerListen, given.PeerListens = &first, &kept
 		withdrew = true
 		// Not "remembered": the remembered address is the one just withdrawn.
 		// Of the three provenances this map can carry, the value now in effect
@@ -742,11 +721,16 @@ func applyStartupSettings(ctx context.Context, store settingsStore, given nodeco
 // cannot tell that apart from the flag being absent. Without the distinction,
 // a node would forget an answer every time it started without the flag —
 // which is the whole failure these settings exist to end.
-func flagSettings(flags *flag.FlagSet, peerListen *string, allowLAN, discover, autoWake *bool,
+func flagSettings(flags *flag.FlagSet, peerListens nodeconfig.StringList, allowLAN, discover, autoWake *bool,
 	declaredPrivate nodeconfig.StringList) nodeconfig.Partial {
 	var given nodeconfig.Partial
-	if wasSet(flags, "peer-listen") {
-		given.PeerListen = peerListen
+	// Given at all, it replaces the whole remembered list, like
+	// -treat-as-private: a unit that pins one -peer-listen serves that one
+	// address, whatever a window saved since.
+	if wasSet(flags, "peer-listen") && len(peerListens) > 0 {
+		list := []string(peerListens)
+		first := list[0]
+		given.PeerListen, given.PeerListens = &first, &list
 	}
 	if wasSet(flags, "allow-lan") {
 		given.AllowLAN = allowLAN
@@ -861,23 +845,4 @@ func shutDown(ctx context.Context, apiServer drainable, owner, peers *http.Serve
 		return fmt.Errorf("shutdown peer listener: %w", peerErr)
 	}
 	return nil
-}
-
-// announceablePeerAddress is where a peer could reach this node, as host:port,
-// or empty when there is no address worth claiming.
-//
-// A pairing request carries it so the approving machine has somewhere to
-// deliver to without its owner typing an address in a second step. Empty is a
-// perfectly good answer: the far side then records no address, which means
-// "nothing to deliver to" rather than a destination somebody invented.
-func announceablePeerAddress(policy func(string) error, peerListen string) string {
-	endpoint, err := pairing.PeerEndpoint(policy, peerListen)
-	if err != nil || endpoint.Unannounceable != "" {
-		return ""
-	}
-	addresses := endpoint.Addresses()
-	if len(addresses) == 0 {
-		return ""
-	}
-	return net.JoinHostPort(addresses[0].String(), strconv.Itoa(endpoint.Port))
 }

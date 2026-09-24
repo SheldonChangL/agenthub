@@ -21,10 +21,10 @@ const AnnounceInterval = 20 * time.Second
 // Addresses reports where this node answers peer traffic, for the announcement
 // to carry.
 //
-// A function rather than a value because the announce loop asks on every tick
-// and a test needs to change the answer between two of them. What PeerEndpoint
-// returns is in fact constant for the process's life — it is the peer
-// listener's own bound address — so nothing in production varies here.
+// A function rather than a value because the announce loop asks on every tick.
+// What PeerEndpoint returns is constant — one configured address — but what
+// ListenerEndpoint returns follows the listener set, which binds a configured
+// address when it appears (ADR-005 §2).
 type Addresses func() []netip.Addr
 
 // Status is what actually happened, as opposed to what was asked for.

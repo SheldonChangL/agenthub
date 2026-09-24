@@ -139,7 +139,8 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	// carried, so the node's own defaults apply to the rest.
 	dbPath := flags.String("db", "", "SQLite database path (relative paths are made absolute)")
 	listen := flags.String("listen", "", "local HTTP listen address")
-	peerListen := flags.String("peer-listen", "", "TLS listen address for peer traffic")
+	var peerListens nodeconfig.StringList
+	flags.Var(&peerListens, "peer-listen", "TLS listen address for peer traffic, repeatable")
 	allowLAN := flags.Bool("allow-lan", false, "permit a non-loopback peer listener")
 	discover := flags.Bool("discover", false, "learn paired peers' addresses from the local network")
 	autoWake := flags.Bool("auto-wake", false, "let an arriving message start a turn")
@@ -176,11 +177,13 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	if err != nil {
 		return err
 	}
-	peerAddress := *peerListen
-	if peerAddress == "" {
-		peerAddress = "127.0.0.1:7463"
+	// The list's own rules as well as each address's: a unit pinning two
+	// addresses on different ports is a unit that fails every start.
+	peerAddresses := []string(peerListens)
+	if len(peerAddresses) == 0 {
+		peerAddresses = []string{nodeconfig.DefaultPeerListen}
 	}
-	if err := nodeconfig.ValidatePeerListen(peerAddress, *allowLAN, ranges); err != nil {
+	if err := nodeconfig.ValidatePeerListens(peerAddresses, *allowLAN, ranges); err != nil {
 		return err
 	}
 
@@ -197,9 +200,20 @@ func (r runner) serviceInstall(ctx context.Context, manager service.Manager, arg
 	for _, pair := range []struct {
 		name  string
 		value *string
-	}{{"listen", listen}, {"peer-listen", peerListen}, {"claude-root", claudeRoot}, {"codex-root", codexRoot}} {
-		if *pair.value != "" {
+		many  []string
+	}{
+		{name: "listen", value: listen},
+		// Each one, in the order given. Pinned in the unit, the list replaces
+		// whatever a window saves later — the note below says so.
+		{name: "peer-listen", many: peerListens},
+		{name: "claude-root", value: claudeRoot},
+		{name: "codex-root", value: codexRoot},
+	} {
+		if pair.value != nil && *pair.value != "" {
 			nodeArgs = append(nodeArgs, "--"+pair.name, *pair.value)
+		}
+		for _, value := range pair.many {
+			nodeArgs = append(nodeArgs, "--"+pair.name, value)
 		}
 	}
 	// Written in the --flag=value form whenever the flag was given, false
