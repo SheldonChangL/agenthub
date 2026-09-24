@@ -914,8 +914,12 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   font-size: 12.5px;
   line-height: 1.6;
 }
-.addressform { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.addresslist { margin: 10px 0 0; }
+.addressform { display: flex; gap: 8px; align-items: center; margin: 6px 0; }
+.addressform .addressfield { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; }
+.addressform .addresslabel { flex: none; width: 72px; font-size: 11.5px; }
 .addressform .addressinput { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
+.addressactions { display: flex; gap: 8px; justify-content: flex-end; margin: 6px 0 10px; }
 
 /* ---------- settings view ---------- */
 

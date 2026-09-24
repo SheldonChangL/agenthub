@@ -3369,6 +3369,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // `--discover` running the address is learned from the peer's announcements; on
   // a segment with no broadcast — a direct cable, a network that drops multicast
   // — it has to be typed, and until now that meant a hand-written `curl -X PUT`.
+  // As many as the node keeps for one paired machine, preferred and backups
+  // together (registry.MaxNodeAddresses); it refuses a longer list whole.
+  const MAX_NODE_ADDRESSES = 4;
+
   function addressSection(node) {
     const parts = [];
     if (node.address) {
@@ -3380,46 +3384,106 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       parts.push(element("p", "noaddress", t("network.addressMissing")));
     }
 
-    const input = element("input", "addressinput");
-    input.type = "text";
-    input.placeholder = "192.168.1.20:7463";
+    // Every address the node delivers to, preferred first, each one editable
+    // and removable (ADR-005 §4). The list is saved whole: an address left out
+    // of it is gone, which is how a mistyped one is taken back — the
+    // one-address endpoint kept whatever it replaced as a backup, so a
+    // corrected typo stayed behind it with no way to remove it here.
+    const recorded = node.address ? [node.address, ...(node.alternateAddresses ?? [])] : [];
     // What is half-typed survives a re-render. This page is rebuilt from scratch
-    // every fifteen seconds by the background refresh; a refresh while the field
+    // every fifteen seconds by the background refresh; a refresh while a field
     // has focus is now held off entirely (interactionInProgress), so this is the
     // second line of defence — it covers a re-render the owner caused themselves,
     // and a refresh landing after they clicked away from a field they had not
     // finished. Without it an address being entered is deleted under the owner's
     // hands and the field silently reverts to the value they are replacing.
-    const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.value : null;
-    input.value = draft ?? node.address ?? "";
-    input.oninput = (event) => {
-      state.addressDraft = { nodeId: node.nodeId, value: event.target.value };
+    const draft = state.addressDraft?.nodeId === node.nodeId ? state.addressDraft.values : null;
+    let values = (draft ?? (recorded.length > 0 ? recorded : [""])).slice(0, MAX_NODE_ADDRESSES);
+    if (values.length === 0) values = [""];
+    let inputs = [];
+    const remember = () => {
+      state.addressDraft = { nodeId: node.nodeId, values: values.slice() };
+    };
+    // Adding or removing a row keeps what the other rows hold as typed.
+    const reshape = (change) => {
+      values = inputs.map((input) => input.value);
+      change();
+      if (values.length === 0) values = [""];
+      remember();
+      fill();
     };
 
-    const submit = element("button", "btn setaddress", t("network.recordAddress"));
-    submit.onclick = () => recordAddress(node, input.value);
+    const list = element("div", "addresslist");
+    const fill = () => {
+      inputs = values.map((value, index) => {
+        const input = element("input", "addressinput");
+        input.type = "text";
+        input.placeholder = index === 0 ? "192.168.1.20:7463" : "10.0.0.2:7463";
+        input.value = value;
+        input.oninput = (event) => {
+          values[index] = event.target.value;
+          remember();
+        };
+        return input;
+      });
+      list.replaceChildren(...inputs.map((input, index) => {
+        // The label wraps its field, so the name a screen reader gives the
+        // field is the row's role in the list.
+        const label = element("label", "addressfield");
+        label.append(element("span", "addresslabel muted", index === 0
+          ? t("network.addressPreferred")
+          : t("network.addressBackup", { n: index })), input);
+        const row = element("div", "addressform");
+        row.append(label);
+        if (values.length > 1) {
+          const remove = element("button", "btn removeaddress", t("network.removeAddress"));
+          remove.onclick = () => reshape(() => values.splice(index, 1));
+          row.append(remove);
+        }
+        return row;
+      }));
+      add.classList.toggle("hidden", values.length >= MAX_NODE_ADDRESSES);
+    };
 
-    const form = element("div", "addressform");
-    form.append(input, submit);
-    parts.push(form);
+    const add = element("button", "btn addaddress", t("network.addAddress"));
+    add.onclick = () => reshape(() => values.push(""));
+    const submit = element("button", "btn setaddress", t("network.recordAddress"));
+    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value));
+    fill();
+
+    const actions = element("div", "addressactions");
+    actions.append(add, submit);
+    parts.push(list, actions);
     parts.push(element("p", "muted", t("network.addressFormat")));
     return parts;
   }
 
-  async function recordAddress(node, raw) {
-    const address = String(raw ?? "").trim();
-    if (address === "") {
+  async function recordAddresses(node, raw) {
+    // Trimmed, and an emptied row is a row the owner did not fill rather than
+    // an address: a stray space typed into a field reaches the node as a
+    // refusal otherwise.
+    const addresses = raw.map((value) => String(value ?? "").trim()).filter((value) => value !== "");
+    if (addresses.length === 0) {
+      // Nothing to send. The node reads an empty list as "forget every address
+      // you had", which is the opposite of what the button says.
       banner(t("network.addressEmpty"));
       return;
     }
     await withBusy(t("network.recordAddress"), async () => {
-      await api.SetNodeAddress(node.nodeId, address);
+      const saved = await api.SetNodeAddresses(node.nodeId, addresses);
       // Only once the node has it. A draft cleared before the call would leave a
       // refused address nowhere, with the field back to the value the owner was
       // replacing and nothing to correct.
       state.addressDraft = null;
       await load();
-      banner(t("network.addressSaved", { name: node.displayName, address }), true);
+      if (saved?.olderNode) {
+        // This machine's node predates backup addresses and keeps one per
+        // paired machine: only the first was recorded. Saying "saved" would
+        // promise a list it never received.
+        banner(t("network.addressSavedOlderNode", { name: node.displayName, address: addresses[0] }));
+        return;
+      }
+      banner(t("network.addressSaved", { name: node.displayName, address: addresses.join(", ") }), true);
     });
   }
 

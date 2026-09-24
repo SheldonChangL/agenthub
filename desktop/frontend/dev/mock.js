@@ -264,6 +264,13 @@ configure({
   TrustNode: async (id, name) => ({ nodeId: id, displayName: name || id }),
   RevokeNode: async () => {},
   SetNodeAddress: async (id, addr) => { log("SetNodeAddress", id, addr); nodes.find((n) => n.nodeId === id).address = addr; },
+  SetNodeAddresses: async (id, list) => {
+    log("SetNodeAddresses", id, list);
+    const node = nodes.find((n) => n.nodeId === id);
+    node.address = list[0] ?? "";
+    node.alternateAddresses = list.slice(1);
+    return { olderNode: false };
+  },
   Heartbeat: async () => JSON.stringify({ type: "heartbeat", node: "node_7f2e…", sessions: 3 }, null, 2),
   Pairing: async () => pairing(),
   OpenPairing: async () => { pairingOpen = true; return pairing().state; },
