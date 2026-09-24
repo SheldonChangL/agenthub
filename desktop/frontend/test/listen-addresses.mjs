@@ -105,7 +105,7 @@ const load = async (answer) => {
 //    Six states: open, opens after restart, closes after restart, and three
 //    kinds of not open.
 await load({
-  settings: { peerListen: A, peerListens: [A, G, P, C], allowLan: true, discover: false, treatAsPrivate: ["122.122.0.0/16"], autoWake: false },
+  settings: { peerListen: A, peerListens: [A, G, P, C], allowLan: true, discover: true, treatAsPrivate: ["122.122.0.0/16"], autoWake: false },
   sources: { peerListen: "remembered", allowLan: "remembered", discover: "default", treatAsPrivate: "remembered", autoWake: "default" },
   saved: { peerListen: A, peerListens: [A, B, G, P], allowLan: true, discover: false, treatAsPrivate: ["122.122.0.0/16"], autoWake: false },
   restartRequired: true,
@@ -157,6 +157,26 @@ if (Object.keys(app.readNodeSettingsPatch()).length !== 0) {
 }
 if (!el("node-allow-lan").checked) failures.push("a read changed allowLan");
 if (el("node-private").value !== "122.122.0.0/16") failures.push(`a read changed the ranges to ${el("node-private").value}`);
+
+// "Broadcast from here" is the node's fact, as pairing.ListenerEndpoint makes
+// it: the first network address the running node reports bound, and only on a
+// node running with -discover. Not the first ticked one.
+await load(view([A, B], {
+  settings: { discover: true },
+  peerListeners: [
+    { address: A, state: "failed", reason: "address_gone", message: "gone" },
+    { address: B, state: "bound" },
+  ],
+}));
+if (row(B)?.mark.textContent !== ZH["nodeSettings.rowBroadcast"] || row(A)?.mark.textContent !== "") {
+  failures.push(`with the first saved address failed, the mark reads A="${row(A)?.mark.textContent}" B="${row(B)?.mark.textContent}", want it on B, the first bound`);
+}
+await load(view([A, B], { settings: { discover: true }, peerListeners: [
+  { address: A, state: "pending" }, { address: B, state: "failed", reason: "port_in_use", message: "held" },
+] }));
+if (rows().some((entry) => entry.mark.textContent !== "")) failures.push("a row claims to be broadcast from while nothing is bound");
+await load(view([A, B], { settings: { discover: false }, saved: { discover: true } }));
+if (rows().some((entry) => entry.mark.textContent !== "")) failures.push("a row claims to be broadcast from on a node running without -discover");
 
 // The third kind of not open carries the node's own sentence.
 await load(view([A, B], { peerListeners: [
