@@ -2583,8 +2583,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       || state.nodeSettings.settings?.peerListen
       || LOOPBACK_LISTEN;
     const allowLanOn = Boolean(state.nodeSettings.saved?.allowLan);
+    // The node's own reason when it gave one. Every saved address failing
+    // with the port held is not fixed by another address on the same port —
+    // that is the same failure again — and the repair for it, the next port
+    // up, is only offered for that reason.
+    const problem = state.nodeSettings.peerListenProblem;
     const repairs = peerListenRepairs(
-      { reason: "loopback", address: current },
+      problem?.reason && problem?.address ? problem : { reason: "loopback", address: current },
       state.nodeAddresses ?? { list: [], failure: "" },
       // The node's SAVED answer, never the settings form's live checkbox: that
       // form is two tabs away and editable, and an unsaved tick over there
@@ -2595,11 +2600,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // private networks: the owner does not have to know which one the other
     // machine is on. Every address is named on the button, and so is the
     // switch, exactly when pressing it turns that on (§7.8 rule 4). At most
-    // four, which is what the node accepts.
+    // four, which is what the node accepts. Not when that is the set already
+    // saved with the switch already on: pressing it would save nothing and
+    // answer "no change" to an owner whose node still cannot be reached.
     const privateAddresses = (state.nodeAddresses?.list ?? []).filter((item) => item.private);
-    if (peerListensSupported() && privateAddresses.length >= 2) {
-      const port = peerListenPort(current);
-      const list = privateAddresses.slice(0, 4).map((item) => `${item.address}:${port}`);
+    const port = peerListenPort(current);
+    const list = privateAddresses.slice(0, 4).map((item) => `${item.address}:${port}`);
+    const alreadySaved = allowLanOn && samePeerListens(list, state.nodeSettings.saved?.peerListens);
+    if (peerListensSupported() && privateAddresses.length >= 2 && !alreadySaved) {
       for (const option of repairs) option.primary = false;
       repairs.unshift({
         label: t(allowLanOn ? "nodeSettings.repairAll" : "nodeSettings.repairAllAndLan", { list: list.join(", ") }),

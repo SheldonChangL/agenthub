@@ -480,6 +480,31 @@ await load(view(["127.0.0.1:7463"], { saved: { allowLan: true }, settings: { all
 if (app.pairHereRepairs()[0]?.label !== fill(ZH["nodeSettings.repairAll"], { list: all })) {
   failures.push(`with allowLan on the first repair is "${app.pairHereRepairs()[0]?.label}"`);
 }
+// The set already saved, the switch on, and every address failing with the
+// port held: 全部開放 would save nothing and answer "no change". What is
+// offered is the node's own reason's repair, the next port up for them all.
+await load(view([A, B, P], {
+  settings: { peerListen: "127.0.0.1:7463" },
+  peerListeners: [A, B, P].map((address) => ({ address, state: "failed", reason: "port_in_use", message: "held" })),
+  top: { peerListenProblem: { address: A, reason: "port_in_use", detail: "bind: address already in use", runningOn: "127.0.0.1:7463", message: "held" } },
+}));
+options = app.pairHereRepairs();
+const moved = ["192.168.50.10:7464", "10.0.0.5:7464", "172.16.0.9:7464"];
+if (options.some((option) => option.label === fill(ZH["nodeSettings.repairAll"], { list: all }))) {
+  failures.push("step 1 offered 全部開放 for the very set already saved with the switch on");
+}
+if (options[0]?.label !== fill(ZH["nodeSettings.repairPort"], { address: moved.join(", ") }) ||
+    JSON.stringify(options[0]?.peerListens) !== JSON.stringify(moved) || !options[0]?.primary) {
+  failures.push(`with the port held step 1 first offers ${JSON.stringify(options[0])}, want the next port for every address`);
+}
+// The same set with the switch off is still a change: it turns the switch on.
+await load(view([A, B, P], {
+  saved: { allowLan: false }, settings: { peerListen: "127.0.0.1:7463", allowLan: false },
+  peerListeners: [A, B, P].map((address) => ({ address, state: "failed", reason: "port_in_use", message: "held" })),
+}));
+if (app.pairHereRepairs()[0]?.label !== fill(ZH["nodeSettings.repairAllAndLan"], { list: all })) {
+  failures.push(`with the switch off the saved set is not offered with it: "${app.pairHereRepairs()[0]?.label}"`);
+}
 // An older node gets no 全部開放: it cannot be sent a list.
 await load({
   settings: { peerListen: "127.0.0.1:7463", allowLan: false }, sources: {},
