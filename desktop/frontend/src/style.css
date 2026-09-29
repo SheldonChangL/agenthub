@@ -563,7 +563,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
    6px cell padding below): all four flag chips, both row buttons and every
-   audience pill the table uses fit. They add up to 652px, and SESSION and
+   audience pill the table uses fit. They add up to 660px, and SESSION and
    WORKING DIRECTORY carry no width, so they split what is left and clip with
    an ellipsis — the full title and path stay in the cells' titles. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }

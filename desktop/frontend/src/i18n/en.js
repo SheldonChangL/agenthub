@@ -754,6 +754,7 @@ export const TEXT = {
   "popover.appliedNoneBody": "Other machines no longer see it.",
   "popover.undo": "Undo",
   "popover.undone": "Undone: the audience is back to what it was.",
+  "popover.undoBusy": "Something else was still being changed, so this was not undone; once it finishes, set it back from that row’s audience button.",
   "attention.service.startAction": "Start the background service",
   "attention.service.installAction": "Install as a background service",
   "service.openSettings": "Open settings",

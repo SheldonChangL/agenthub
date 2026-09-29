@@ -863,7 +863,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // goToService is the way into the service panel, for the same reason
   // goToNodeSettings exists: the remedy is two tabs away, and an owner who has
   // just been told to install a service should not also have to find it.
-  function goToService() {
+  //
+  // keepForm is for a caller that has just used the form: the one-press
+  // install's failure toast. Opening the form again would reset the database
+  // field and hide the output that says why the install failed.
+  function goToService({ keepForm = false } = {}) {
     state.view = "settings";
     state.settingsSection = "settings-service";
     render();
@@ -871,7 +875,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const status = state.service ?? {};
     // Opened for them when there is nothing installed yet: that form is the
     // whole of this step, and leaving it closed means one more thing to find.
-    if (status.supported && !status.installed) {
+    if (!keepForm && status.supported && !status.installed) {
       openServiceForm().catch((error) =>
         banner(t("busy.failed", { action: t("service.busyOpenForm"), error })));
     }
@@ -2443,6 +2447,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   async function undoAudience(before) {
     const action = t("popover.undo");
+    // withBusy drops a call made while another write is out, and the toast
+    // this came from is already gone: say so rather than doing nothing.
+    if (state.busy) {
+      notify("warn", t("popover.undoBusy"));
+      return;
+    }
     await withBusy(action, async () => {
       const result = await writeAudiences(before);
       await load();
@@ -2530,8 +2540,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         const target = popover;
         closeAudiencePopover({ focus: true });
         if (!target) return;
+        // withBusy disables the button while the write is out, which drops the
+        // keyboard; it goes back once the button can take it again.
         applyAudienceChoice(target.ids, choice, { button: target.anchor, clearSelection: target.clearSelection })
-          .catch(() => {});
+          .catch(() => {})
+          .then(() => {
+            const anchor = target.anchor;
+            if (anchor && !anchor.disabled && anchor.isConnected !== false) anchor.focus?.();
+          });
       };
       popoverButtons.push(button);
       return button;
@@ -2621,8 +2637,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       closeAudiencePopover({ focus: true });
       return;
     }
+    // The menu sits at the end of the page, so a Tab left to itself would go
+    // on from there; it goes back to the button, and the next Tab onward.
     if (key === "Tab") {
-      closeAudiencePopover();
+      event.preventDefault?.();
+      closeAudiencePopover({ focus: true });
       return;
     }
     if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(key)) return;
@@ -5351,15 +5370,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   // renderServicePill is the title bar's one-line version of the panel below.
+  //
+  // The pill is also a button that installs or starts the service, and the
+  // status read that lands in the middle of that keeps its spinner (`busy`).
   function renderServicePill(status) {
     const pill_ = el("service-pill");
     const text = el("service-pill-text");
-    if (status.toolError) { pill_.className = "servicepill warn"; text.textContent = t("service.pillNoAh"); return; }
-    if (!status.supported) { pill_.className = "servicepill"; text.textContent = t("service.pillUnsupported"); return; }
-    if (status.installed && status.running) { pill_.className = "servicepill ok"; text.textContent = t("service.pillRunning"); return; }
-    if (status.installed) { pill_.className = "servicepill warn"; text.textContent = t("service.pillStopped"); return; }
-    pill_.className = "servicepill warn";
-    text.textContent = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
+    const busy = pill_.classList.contains("busy") ? " busy" : "";
+    let tone = "warn";
+    let words;
+    if (status.toolError) words = t("service.pillNoAh");
+    else if (!status.supported) { tone = ""; words = t("service.pillUnsupported"); }
+    else if (status.installed && status.running) { tone = "ok"; words = t("service.pillRunning"); }
+    else if (status.installed) words = t("service.pillStopped");
+    else words = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
+    pill_.className = `servicepill${tone ? ` ${tone}` : ""}${busy}`;
+    text.textContent = words;
   }
 
   function renderService() {
@@ -5690,13 +5716,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // restartNode, which waits for the node to answer before it says anything.
   // A failure's toast offers the settings page, where the command's own words
   // went.
+  //
+  // Two cases are not pressed through. Something else being written: the form
+  // below would be reset under it (withBusy would drop the install anyway, but
+  // only after openServiceForm had run). And a database path the owner has
+  // typed into the open form: installing from here would reset it to blank —
+  // the node's default database, a new identity and no pairings — without the
+  // question the form asks, so the press goes to the form instead.
   async function runServiceQuickAction({ button = null } = {}) {
+    if (state.busy) return;
     const action = serviceQuickAction();
-    if (action === "settings") {
-      goToService();
+    const typedPath = !el("service-form").classList.contains("hidden") && el("service-db").value.trim() !== "";
+    if (action === "settings" || (action === "install" && typedPath)) {
+      goToService({ keepForm: typedPath });
       return;
     }
-    const failureActions = [{ label: t("service.openSettings"), run: () => goToService() }];
+    const failureActions = [{ label: t("service.openSettings"), run: () => goToService({ keepForm: true }) }];
     if (action === "install") {
       await openServiceForm();
       await installService({ button, failureActions });

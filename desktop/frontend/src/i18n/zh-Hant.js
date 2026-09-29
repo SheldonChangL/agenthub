@@ -749,6 +749,7 @@ export const TEXT = {
   "popover.appliedNoneBody": "其他機器看不到了。",
   "popover.undo": "復原",
   "popover.undone": "已復原：公開對象回到原本的設定。",
+  "popover.undoBusy": "另一個動作還在進行，這次沒有復原；等它結束後，用那一列的公開對象按鈕改回去。",
   "attention.service.startAction": "啟動背景服務",
   "attention.service.installAction": "安裝為背景服務",
   "service.openSettings": "開啟設定",

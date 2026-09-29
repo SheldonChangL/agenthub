@@ -237,6 +237,18 @@ await reload();
       failures.push(`復原 answered ${latestToast(document).textContent}`);
     }
   }
+  // Picking an entry gives the keyboard back to the row's button afterwards.
+  if (document.activeElement !== audienceButton("codex:chosen")) failures.push("after a menu choice the keyboard is not on the row's button");
+  // An undo pressed while something else is being written says it was not done.
+  await pick("codex:chosen", "messages");
+  const again = toastButtons(latestToast(document).node).find((button) => button.textContent === ZH["popover.undo"]);
+  app.state.busy = true;
+  setCalls.length = 0;
+  again.onclick();
+  await settle();
+  app.state.busy = false;
+  if (setCalls.length !== 0) failures.push("an undo pressed while busy wrote anyway");
+  if (latestToast(document).textContent !== ZH["popover.undoBusy"]) failures.push(`an undo dropped while busy said ${latestToast(document).textContent}`);
 }
 clearToasts();
 
@@ -438,6 +450,10 @@ if (!app.interactionInProgress()) failures.push("an open menu is not an interact
   key("Home");
   if (document.activeElement !== live[0]) failures.push("Home did not go to the first entry");
   const anchor = audienceButton("codex:quiet");
+  key("Tab");
+  if (menuOpen()) failures.push("Tab left the menu open");
+  if (document.activeElement !== anchor) failures.push("Tab out of the menu did not go back to its button");
+  openRow("codex:quiet");
   if (!key("Escape")) failures.push("Esc was not taken by the menu");
   if (menuOpen()) failures.push("Esc did not close the menu");
   if (document.activeElement !== anchor) failures.push("Esc did not give the keyboard back to the button");
@@ -570,8 +586,37 @@ await settle();
     if (app.state.view !== "settings" || app.state.settingsSection !== "settings-service") {
       failures.push(`開啟設定 went to ${app.state.view} / ${app.state.settingsSection}`);
     }
+    // Where ah's own words went, still showing: the settings page's form is
+    // not opened again over them.
+    if (el("service-output").classList.contains("hidden") || !el("service-output").textContent.includes("launchctl refused")) {
+      failures.push(`開啟設定 hid why the install failed: ${el("service-output").textContent}`);
+    }
   }
 }
+// A database path typed into the open form is not reset by a press elsewhere:
+// blank is the node's default database, a new identity.
+installFails = false;
+app.state.view = "local";
+await app.openServiceForm();
+el("service-db").value = "/data/custom.db";
+serviceCalls.length = 0;
+await press(el("service-pill"));
+if (serviceCalls.length !== 0) failures.push(`with a path typed into the form the pill ran ${JSON.stringify(serviceCalls)}`);
+if (el("service-db").value !== "/data/custom.db") failures.push(`the pill reset a typed database path to ${JSON.stringify(el("service-db").value)}`);
+if (app.state.view !== "settings") failures.push(`with a path typed the pill went to ${app.state.view}, want the form`);
+el("service-db").value = "";
+el("service-form").classList.add("hidden");
+// And nothing happens while something else is being written.
+app.state.busy = true;
+serviceCalls.length = 0;
+await press(el("service-pill"));
+if (serviceCalls.length !== 0) failures.push(`the pill ran ${JSON.stringify(serviceCalls)} while another write was out`);
+app.state.busy = false;
+// The pill keeps its spinner through a status read that lands mid-press.
+el("service-pill").classList.add("busy");
+await app.loadService();
+if (!el("service-pill").classList.contains("busy")) failures.push("a status read took the pill's spinner away");
+el("service-pill").classList.remove("busy");
 installFails = false;
 serviceAnswer = { supported: true, installed: true, running: true, pid: 7 };
 app.state.view = "local";
