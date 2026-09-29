@@ -85,7 +85,9 @@ const onboarding = query.get("onboarding") ?? "";
 // shows with two steps ticked and three still open, which is the state worth
 // looking at: a tick that never appears proves nothing about the tick.
 const firstRun = onboarding === "fresh" || onboarding === "slow";
-const unreachable = onboarding === "unreachable";
+// `?service=down` is a node not answering with nothing registered either:
+// the one shape the one-press fix installs straight away (see below).
+let unreachable = onboarding === "unreachable" || query.get("service") === "down";
 // ServiceStatus behind a delay, because the defect it uncovers is a race: the
 // first render happens with no status at all, and what the card says then is
 // only visible if something answers slower than the first paint.
@@ -255,12 +257,20 @@ const overviewNodes = onboarding || query.get("paired") === "none" ? [] : nodes;
 // for, and the fix then changes it, so the attention row can be seen going:
 //
 //   ?service=stopped   installed, not running: the press runs RestartService
-//   ?service=none      a service manager and nothing registered: it installs
+//   ?service=none      the node answering and nothing registered — started by
+//                      hand, on a database the window cannot see — so the press
+//                      opens the service form rather than installing over it
+//   ?service=down      nothing registered and nothing answering: it installs
 //   ?service=noah      ah not found: the press opens the settings page
+//
+// The press reads the status again before it acts, so `mockService("stopped")`
+// in the console, with the row still saying "not a service", shows it starting
+// the service rather than installing over it.
 let serviceShape = query.get("service") ?? "";
 const shapedService = () => ({
   stopped: { tool: "/usr/local/bin/ah", supported: true, installed: true, running: false, pid: 0, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: [] },
   none: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false },
+  down: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: false, dbPathKnown: false },
   noah: { toolError: "ah not found on PATH or beside the app", supported: true, installed: false, running: false },
 }[serviceShape]);
 const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
@@ -417,7 +427,7 @@ configure({
     : firstRun
     ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
     : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] })),
-  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
+  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; unreachable = false; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => localAddresses,
   // The node filters by session (agenthub#132); the fake does the same, so the
@@ -439,6 +449,9 @@ configure({
   ], limits: { hops: 3, pair: 6, pairWindow: "10m0s", session: 3, sessionWindow: "10m0s", node: 30, nodeWindow: "1h0m0s" } }),
 });
 const preview = boot({ backdropUrl: backdrop });
+// Changes what the next ServiceStatus read answers without telling the window,
+// which is how a service installed from a terminal looks from here.
+globalThis.mockService = (shape) => { serviceShape = shape; };
 // The window follows the OS locale, which is right for the app and useless for
 // a preview: the screenshots in a pull request have to show either language
 // whatever the machine taking them is set to. `?lang=en` / `?lang=zh-Hant`.

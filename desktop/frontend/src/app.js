@@ -1006,6 +1006,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         title: t("onboarding.service.title"),
         body: t("onboarding.service.body"),
         done,
+        // The one step that is the attention strip's service row by another
+        // name: both install the service (renderAttention).
+        fixesService: !done,
         actions: done ? [] : [{ label: t("onboarding.service.action"), primary: true, run: () => goToService() }],
       });
     }
@@ -1061,6 +1064,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // steps itself changes.
   const onboardingNodes = new Map();
   let onboardingAllDoneShown = false;
+  // Whether the card is up showing 「把節點跑成背景服務」 not yet done, for the
+  // attention strip, which then leaves that one thing to the card
+  // (renderAttention). The node-down step starts the node instead, a different
+  // button for a different thing, and does not count.
+  let onboardingServiceStepOpen = false;
   // The farewell is spent by a TICK, not by a render.
   //
   // load() fires loadService() and renders; the status lands about fifty
@@ -1140,6 +1148,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       onboardingAllDoneShown = true;
     }
     section.classList.toggle("hidden", !show);
+    onboardingServiceStepOpen = show && steps.some((step) => step.fixesService === true);
     if (!show) return;
     // No node-settings read here any more. The step that needed one — the
     // listening address — is the pairing drawer's own first step now, and that
@@ -1604,7 +1613,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // alert for the two that stay: those interrupt a screen reader, the rest
     // wait their turn behind the container's aria-live="polite".
     node.setAttribute("role", lasting(kind) ? "alert" : "status");
-    const record = { node, kind, timer: null };
+    const record = { node, kind, timer: null, bar: null, holds: { pointer: false, focus: false } };
     const main = element("div", "toastmain");
     main.append(element("div", "toasttitle", title));
     if (body) main.append(element("div", "toastbody", body));
@@ -1626,19 +1635,61 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     close.onclick = () => dismissToast(record);
     node.append(element("i", "sev"), main, close);
     if (!lasting(kind)) {
-      node.append(element("i", "timer"));
-      record.timer = setTimeout(() => dismissToast(record), TOAST_MS);
-      // A pending toast is not a reason for a test process to stay alive for
-      // six more seconds; a browser's handle is a number and has no unref.
-      record.timer?.unref?.();
+      record.bar = element("i", "timer");
+      node.append(record.bar);
+      startToastTimer(record);
+      // Held while the pointer is on it or the keyboard is in it — a toast
+      // that goes while its 復原 is being aimed at takes the press with it —
+      // and given its whole six seconds again once both have left.
+      const hold = (why, on) => {
+        record.holds[why] = on;
+        if (record.holds.pointer || record.holds.focus) pauseToastTimer(record);
+        else if (!record.timer) restartToastTimer(record);
+      };
+      node.addEventListener?.("mouseenter", () => hold("pointer", true));
+      node.addEventListener?.("mouseleave", () => hold("pointer", false));
+      node.addEventListener?.("focusin", () => hold("focus", true));
+      node.addEventListener?.("focusout", (event) => {
+        // Moving from one of its buttons to the next is still inside it.
+        if (event?.relatedTarget && node.contains?.(event.relatedTarget)) return;
+        hold("focus", false);
+      });
     }
     toastsShown.push(record);
     el("toasts").append(node);
-    // The oldest goes when a fourth arrives, whatever its kind: it is still in
-    // the bell's log, and a column of errors taller than the window is one
-    // nobody reads.
-    while (toastsShown.length > TOAST_LIMIT) dismissToast(toastsShown[0]);
+    // Past three, the oldest that would have gone by itself goes first; a
+    // warning or an error is pushed off only when there is nothing else to
+    // push. Both are still in the bell's log, and a column of errors taller
+    // than the window is one nobody reads.
+    while (toastsShown.length > TOAST_LIMIT) {
+      dismissToast(toastsShown.find((shown) => !lasting(shown.kind)) ?? toastsShown[0]);
+    }
     return record;
+  }
+
+  function startToastTimer(record) {
+    record.timer = setTimeout(() => dismissToast(record), TOAST_MS);
+    // A pending toast is not a reason for a test process to stay alive for
+    // six more seconds; a browser's handle is a number and has no unref.
+    record.timer?.unref?.();
+  }
+
+  function pauseToastTimer(record) {
+    clearTimeout(record.timer);
+    record.timer = null;
+    record.node.classList.add("held");
+  }
+
+  // The countdown bar is a CSS animation, and a new element is the one way to
+  // start one from the beginning.
+  function restartToastTimer(record) {
+    if (!toastsShown.includes(record)) return;
+    record.node.classList.remove("held");
+    const bar = element("i", "timer");
+    record.bar?.remove();
+    record.node.append(bar);
+    record.bar = bar;
+    startToastTimer(record);
   }
 
   function dismissToast(record) {
@@ -1646,6 +1697,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (at === -1) return;
     toastsShown.splice(at, 1);
     clearTimeout(record.timer);
+    record.timer = null;
     record.node.remove();
   }
 
@@ -1752,7 +1804,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         body: status.installed
           ? t("service.lineInstalledStopped", { log: status.logHint || t("service.logHintFallback") })
           : (state.nodeReachable ? t("service.lineNotAService") : t("service.lineNothing")),
-        label: status.installed ? t("attention.service.startAction") : t("attention.service.installAction"),
+        label: status.installed
+          ? t("attention.service.startAction")
+          : (nodeRunningNotAService(status) ? t("attention.service.formAction") : t("attention.service.installAction")),
         run: (button) => runServiceQuickAction({ button }).catch(() => {}),
       });
     }
@@ -1786,13 +1840,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const incoming = pairWindowReportedOpen() ? state.pairIncoming : [];
     if (incoming.length > 0) {
       const first = incoming[0];
+      // The name is the other machine's word for itself, and nothing has
+      // checked it yet — comparing fingerprints is what this row asks for — so
+      // it is marked as that, the way an inbox sender's chosen half is.
+      const name = String(first.displayName || first.nodeId || "");
+      let title = plural(incoming.length, "attention.pair.titleMany");
+      let titleParts = null;
+      if (incoming.length === 1 && name === "") title = t("attention.pair.titleOneNoName");
+      else if (incoming.length === 1) {
+        const [before, after = ""] = t("attention.pair.titleOne").split("{name}");
+        title = `${before}${name}${after}`;
+        titleParts = [element("span", "", before), element("span", "claimed", name), element("span", "", after)];
+      }
       items.push({
         kind: "pair",
         key: `pair:${incoming.map((row) => row.id).sort().join(",")}`,
         sev: "info",
-        title: incoming.length === 1
-          ? t("attention.pair.titleOne", { name: first.displayName || first.nodeId || t("pair.noName") })
-          : plural(incoming.length, "attention.pair.titleMany"),
+        title,
+        titleParts,
         body: t("attention.pair.body"),
         label: t("attention.pair.action"),
         run: () => goToPairing(),
@@ -1822,7 +1887,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     entry.key = item.key;
     entry.row.className = `attnrow ${item.sev}`;
-    entry.title.textContent = item.title;
+    if (item.titleParts) entry.title.replaceChildren(...item.titleParts);
+    else entry.title.textContent = item.title;
     entry.body.textContent = item.body;
     // classList, not className: a retry in flight carries `busy`, and a render
     // landing in the middle of it must not take the spinner away.
@@ -1835,6 +1901,33 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return entry.row;
   }
 
+  const ATTENTION_ORDER = { alert: 0, warn: 1, info: 2 };
+  // How many rows the strip shows before the rest fold behind a button: two
+  // rows and the button are what fits above the table at 900×760 with five
+  // session rows still in view.
+  const ATTENTION_VISIBLE = 2;
+  // Whether the owner unfolded the rest. This window only, never saved.
+  let attentionExpanded = false;
+  let attentionMore = null;
+
+  function attentionMoreRow(hidden) {
+    if (!attentionMore) {
+      const row = element("div", "attnmore");
+      const button = element("button", "ghost attnmorebtn");
+      button.onclick = () => {
+        attentionExpanded = !attentionExpanded;
+        renderAttention();
+        // The button is still there, relabelled, so the keyboard stays on it.
+        button.focus?.();
+      };
+      row.append(button);
+      attentionMore = { row, button };
+    }
+    attentionMore.button.textContent = attentionExpanded ? t("attention.less") : plural(hidden, "attention.more");
+    attentionMore.button.setAttribute("aria-expanded", String(attentionExpanded));
+    return attentionMore.row;
+  }
+
   function renderAttention() {
     const items = attentionItems();
     const keys = new Set(items.map((item) => item.key));
@@ -1843,12 +1936,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!attentionKeys.has(item.key)) logNotice(ATTENTION_KIND[item.sev], item.title, item.body);
     }
     attentionKeys = keys;
-    const shown = items.filter((item) => !attentionDismissed.has(item.key));
+    // The checklist's own first step already offers the service's fix, on the
+    // local view where the card is: two buttons for one thing is one too many,
+    // so the strip leaves it to the card while that step is open. Still logged
+    // above, and back on the strip on any other view or once the card goes.
+    const cardHasService = onboardingServiceStepOpen && state.view === "local";
+    const shown = items
+      .filter((item) => !attentionDismissed.has(item.key))
+      .filter((item) => !(item.kind === "service" && cardHasService))
+      .sort((a, b) => ATTENTION_ORDER[a.sev] - ATTENTION_ORDER[b.sev]);
     for (const kind of [...attentionRows.keys()]) {
       if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
     }
+    const folded = shown.length > ATTENTION_VISIBLE;
+    const rows = folded && !attentionExpanded ? shown.slice(0, ATTENTION_VISIBLE) : shown;
+    const children = rows.map(attentionRow);
+    if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
     const box = el("attention");
-    keepChildren(box, shown.map(attentionRow));
+    keepChildren(box, children);
     box.classList.toggle("hidden", shown.length === 0);
   }
 
@@ -2301,9 +2406,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // So "who" is not asked here. It is worked out per session: a session nobody
   // can see yet goes to every paired machine, and one that is already
   // published keeps exactly the machines it has (mode and nodes). The line at
-  // the top of the menu says which of those this press is going to do. The
-  // working directory is never this menu's to change, for the reason the
-  // dialog's presets leave it alone (AUDIENCE_PRESETS).
+  // the top of the menu says which of those this press is going to do.
+  //
+  // The working directory is not this menu's to turn on, for the reason the
+  // dialog's presets leave it alone (AUDIENCE_PRESETS): publishing keeps what
+  // the session holds. 「不公開」 is the exception and clears it, as it always
+  // did before this menu. A flag kept on an unpublished session is invisible —
+  // the row shows no flags for a session nobody can see — so keeping it meant
+  // the next 「能留訊息」 published a directory the owner could not see was
+  // switched on. One can still be held from older data or the full dialog, so
+  // the top line says when a press is about to publish one.
   //
   // What "published" means is describeAudience's, so 「指定：無」 — selected,
   // no nodes — is a session nobody can see, and publishing it goes to every
@@ -2323,15 +2435,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // What one choice writes for one session.
   function audienceForChoice(session, choice) {
     const current = session?.audience ?? {};
-    const exportCwd = Boolean(current.exportCwd);
     if (choice === "none") {
-      return { mode: "none", nodes: [], exportCwd, acceptMessages: false, allowOutbound: false, autoWake: false };
+      return { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
     }
     const flags = AUDIENCE_PRESETS[choice];
     const keep = isPublished(current);
     const mode = keep ? current.mode : "all_paired";
     const nodes = keep && mode === "selected" ? [...(current.nodes ?? [])] : [];
-    return { mode, nodes, exportCwd, ...flags };
+    return { mode, nodes, exportCwd: Boolean(current.exportCwd), ...flags };
   }
 
   // An audience as SetAudience will take it.
@@ -2417,16 +2528,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const before = sessions.map((session) => ({ id: session.id, audience: writableAudience(session.audience) }));
     const after = sessions.map((session) => ({ id: session.id, audience: audienceForChoice(session, choice) }));
     const action = choice === "none" ? t("audience.verb.none") : t("popover.verb", { preset: choiceLabel(choice) });
+    const undo = { label: t("popover.undo"), run: () => undoAudience(before) };
     await withBusy(action, async () => {
       const result = await writeAudiences(after);
       await load();
       if (result.failed > 0) {
-        banner(t("audience.partlyApplied", {
+        // The part that went through is as undoable as a whole batch would
+        // be. The undo writes every session's own previous audience, the ones
+        // that failed included: those still hold it, so for them it is the
+        // same write again.
+        notify("error", t("audience.partlyApplied", {
           action,
           changed: result.changed,
           failed: result.failed,
           error: result.errors[0] || "",
-        }));
+        }), { actions: result.changed > 0 ? [undo] : [] });
         return;
       }
       if (clearSelection) state.selected.clear();
@@ -2438,10 +2554,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         ? t("popover.appliedNoneBody")
         : describeTargets(after.map((pair) => pair.audience));
       if (choice === "wake") body = `${body} ${t("wake.caveat")}`;
-      notify("ok", title, {
-        body,
-        actions: [{ label: t("popover.undo"), run: () => undoAudience(before) }],
-      });
+      notify("ok", title, { body, actions: [undo] });
     }, { button });
   }
 
@@ -2500,7 +2613,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const publishing = sessions.map((session) => audienceForChoice(session, "messages"));
     const head = element("div", "pophead");
     if (sessions.length > 1) head.append(element("b", "", plural(sessions.length, "popover.count")));
-    head.append(element("span", "", describeTargets(publishing)), element("span", "muted", t("popover.instant")));
+    head.append(element("span", "", describeTargets(publishing)));
+    // Said before the press rather than after it: a working directory held by
+    // a session nobody can see yet has no flag on its row (audienceForChoice).
+    const withCwd = publishing.filter((audience) => audience.exportCwd).length;
+    if (withCwd > 0) {
+      head.append(element("span", "popcwd", withCwd === sessions.length
+        ? t("popover.withCwd")
+        : plural(withCwd, "popover.withCwdSome")));
+    }
+    head.append(element("span", "muted", t("popover.instant")));
     parts.push(head);
     if (presets.size > 1) parts.push(element("div", "popnote", t("popover.mixed")));
     else if (current === "") parts.push(element("div", "popnote", t("popover.custom")));
@@ -5353,10 +5475,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   let serviceRequest = 0;
 
+  // Answers the status it read, even when a newer read has already been
+  // started and this one is therefore not the one put on screen: a caller about
+  // to act on the status (runServiceQuickAction) needs a fact read after its
+  // press, and this is one.
   async function loadService() {
     const sequence = ++serviceRequest;
     const status = await api.ServiceStatus();
-    if (sequence !== serviceRequest) return;
+    if (sequence !== serviceRequest) return status;
     state.service = status;
     renderService();
     // The checklist's first step is derived from this status, and load()
@@ -5367,6 +5493,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderOnboarding();
     // And the attention strip's service row, for the same reason.
     renderAttention();
+    return status;
   }
 
   // renderServicePill is the title bar's one-line version of the panel below.
@@ -5709,6 +5836,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return status.installed ? "restart" : "install";
   }
 
+  // A node answering with no service registered is a node somebody started by
+  // hand, on a database this window cannot see. Installing over it from one
+  // press would register the node's default database — which is a different
+  // identity when theirs was not the default, and every pairing gone — so that
+  // case goes to the form, which asks. Either reading says it: the last
+  // Overview, or the status command's own probe of the node.
+  function nodeRunningNotAService(status = state.service) {
+    return serviceQuickAction(status) === "install" && (state.nodeReachable || status?.nodeAnswering === true);
+  }
+
   // The one-press fix, through the very functions the settings page's own
   // buttons call: installService with the form the panel would open (its
   // database path blank, which is the node's default, because nothing is
@@ -5717,17 +5854,36 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // A failure's toast offers the settings page, where the command's own words
   // went.
   //
-  // Two cases are not pressed through. Something else being written: the form
-  // below would be reset under it (withBusy would drop the install anyway, but
-  // only after openServiceForm had run). And a database path the owner has
+  // The status is read again before anything is done. The one on screen can be
+  // minutes old — the fifteen-second tick stays away while rows are selected or
+  // a dialog is open — and `ah service install` replaces whatever is registered
+  // (internal/service/service.go), so installing on a stale "nothing installed"
+  // re-registers a working service on the default database: a new identity,
+  // every pairing void. A read that fails decides nothing; the press goes to
+  // the settings page and says why.
+  //
+  // Three cases are not pressed through. Something else being written: the
+  // form below would be reset under it (withBusy would drop the install anyway,
+  // but only after openServiceForm had run). A database path the owner has
   // typed into the open form: installing from here would reset it to blank —
   // the node's default database, a new identity and no pairings — without the
-  // question the form asks, so the press goes to the form instead.
+  // question the form asks, so the press goes to the form instead. And a node
+  // that is running but is not a service (nodeRunningNotAService): the form.
   async function runServiceQuickAction({ button = null } = {}) {
     if (state.busy) return;
-    const action = serviceQuickAction();
+    let status;
+    try {
+      status = await loadService();
+    } catch (error) {
+      goToService({ keepForm: true });
+      notify("error", t("service.quickReadFailed", { error }));
+      return;
+    }
+    // Something may have started while the status was being read.
+    if (state.busy) return;
+    const action = serviceQuickAction(status);
     const typedPath = !el("service-form").classList.contains("hidden") && el("service-db").value.trim() !== "";
-    if (action === "settings" || (action === "install" && typedPath)) {
+    if (action === "settings" || (action === "install" && (typedPath || nodeRunningNotAService(status)))) {
       goToService({ keepForm: typedPath });
       return;
     }

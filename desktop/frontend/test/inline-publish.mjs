@@ -61,9 +61,16 @@ const fresh = () => [
 ];
 let sessions = fresh();
 let nodes = [{ nodeId: "node_a", displayName: "alice" }, { nodeId: "node_b", displayName: "bob" }];
-const overview = () => ({
+// Whether the node answers Overview. A node that does not keeps the last lists
+// on screen (#114), which is what the service checks below need: nothing
+// running, so a one-press install is the right press.
+let reachable = true;
+const overview = () => (reachable ? {
   node: { id: "node_local", displayName: "local", platform: "test", fingerprint: "AAAA", autoWake: true },
   sessions, nodes, peers: [], counts: { total: sessions.length }, nodeUrl: "http://127.0.0.1:7462", reachable: true,
+} : {
+  sessions: [], nodes: [], peers: [], counts: {}, nodeUrl: "http://127.0.0.1:7462", reachable: false,
+  error: "dial tcp 127.0.0.1:7462: connection refused",
 });
 
 // SetAudience as the node does it: the audience is copied onto each session,
@@ -83,6 +90,9 @@ const SetAudience = async (ids, audience) => {
 };
 
 let serviceAnswer = { supported: true, installed: true, running: true, pid: 7 };
+// Set to an error to make the next ServiceStatus read throw.
+let serviceReadFails = null;
+let serviceReads = 0;
 const serviceCalls = [];
 let installFails = false;
 let overviewCalls = 0;
@@ -92,7 +102,11 @@ const pairDecisions = [];
 const { configure, boot } = await import("../src/app.js");
 configure({
   Overview: async () => { overviewCalls++; return overview(); },
-  ServiceStatus: async () => serviceAnswer,
+  ServiceStatus: async () => {
+    serviceReads++;
+    if (serviceReadFails) throw serviceReadFails;
+    return serviceAnswer;
+  },
   InboxCounts: async () => ({ ok: true, counts: {} }),
   Inbox: async (sessionId) => ({ sessionId, messages: [], held: 0, capacity: 500 }),
   Pairing: async () => ({ availability: "on", windowAvailable: true, state: { open: true, remainingSeconds: 200 }, candidates: [] }),
@@ -202,19 +216,62 @@ await pick("codex:emptychosen", "messages");
 if (lastSet()?.audience.mode !== "all_paired" || lastSet()?.audience.nodes.length !== 0) {
   failures.push(`publishing a 「指定：無」 session kept it on no machines: ${JSON.stringify(lastSet()?.audience)}`);
 }
-// Published to all keeps all, and 不公開 keeps the working directory too.
+// Published to all keeps all.
 await pick("codex:allwake", "messages");
 if (lastSet()?.audience.mode !== "all_paired" || lastSet()?.audience.autoWake) {
   failures.push(`能留訊息 on an all-paired waking session wrote ${JSON.stringify(lastSet()?.audience)}`);
 }
+// 不公開 clears the working directory. A flag left on an unpublished session
+// is one its row does not show, and the next 能留訊息 would publish the
+// directory without the owner seeing it was on.
 await pick("codex:chosen", "none");
 {
-  const want = { mode: "none", nodes: [], exportCwd: true, acceptMessages: false, allowOutbound: false, autoWake: false };
+  const want = { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
   if (JSON.stringify(lastSet()?.audience) !== JSON.stringify(want)) {
     failures.push(`不公開 wrote ${JSON.stringify(lastSet()?.audience)}, want ${JSON.stringify(want)}`);
   }
+  // So publishing it again does not bring the directory back with it.
+  openRow("codex:chosen");
+  if (menuText().includes(ZH["popover.withCwd"])) failures.push(`a session 不公開 just cleared still says it publishes its directory: ${menuText()}`);
+  await press(menuItem("messages"));
+  if (lastSet()?.audience.exportCwd !== false) failures.push(`publishing after 不公開 wrote exportCwd ${lastSet()?.audience.exportCwd}`);
 }
+// 收回公開 on the selection bar is the same 不公開.
+app.state.selected.add("codex:silent");
+app.state.selected.add("codex:chosen");
+sessions.find((s) => s.id === "codex:chosen").audience.exportCwd = true;
+await reload();
+setCalls.length = 0;
+await press(el("btn-unpublish"));
+if (setCalls.length !== 1 || setCalls[0].audience.exportCwd !== false || setCalls[0].audience.mode !== "none") {
+  failures.push(`收回公開 wrote ${JSON.stringify(setCalls)}, want one none with exportCwd false`);
+}
+app.state.selected.clear();
+app.render();
 clearToasts();
+
+// A session nobody can see that still holds exportCwd — older data, or the
+// full dialog — is told before the press that publishing takes the directory
+// with it; one that does not hold it is told nothing.
+sessions = fresh();
+await reload();
+openRow("codex:quiet");
+if (!menuText().includes(ZH["popover.withCwd"])) failures.push(`an unpublished session holding exportCwd is not told: ${menuText()}`);
+openRow("claude:only");
+if (menuText().includes(ZH["popover.withCwd"]) || menuText().includes("工作目錄")) {
+  failures.push(`a session without exportCwd is told it publishes a directory: ${menuText()}`);
+}
+app.closeAudiencePopover();
+// Several, some with it: how many.
+for (const id of ["codex:quiet", "claude:only"]) app.state.selected.add(id);
+app.render();
+el("btn-audience").onclick();
+if (!menuText().includes(fill(ZH["popover.withCwdSome.one"], { n: 1 }))) {
+  failures.push(`a batch with one directory to publish does not say how many: ${menuText()}`);
+}
+app.closeAudiencePopover();
+app.state.selected.clear();
+app.render();
 
 /* ---------------- 2. undo puts back each session's own audience ---------- */
 
@@ -327,7 +384,13 @@ clearToasts();
 sessions = fresh();
 await reload();
 {
-  setAudienceFails = (ids) => ({ changed: ids.length - 1, failed: 1, errors: [`${ids[0]}: refused by the node`] });
+  // The two get different audiences, so two calls: the node refuses the one
+  // for codex:quiet and applies the other.
+  setAudienceFails = (ids, audience) => {
+    if (ids.includes("codex:quiet")) return { changed: 0, failed: 1, errors: ["codex:quiet: refused by the node"] };
+    for (const s of sessions) if (ids.includes(s.id)) s.audience = JSON.parse(JSON.stringify(audience));
+    return { changed: ids.length, failed: 0, errors: [] };
+  };
   app.state.selected.add("codex:quiet");
   app.state.selected.add("codex:silent");
   app.render();
@@ -338,12 +401,74 @@ await reload();
   if (toast.kind !== "error" || !toast.textContent.includes("refused by the node")) {
     failures.push(`a partial failure said ${toast.kind}: ${toast.textContent}`);
   }
-  if (toastButtons(toast.node).some((button) => button.textContent === ZH["popover.undo"])) {
-    failures.push("a partial failure offered 復原 as if it had worked");
-  }
+  // What did go through is undoable: 復原 writes every session's own
+  // previous audience, the failed one included (for it, the same value again).
+  const undo = toastButtons(toast.node).find((button) => button.textContent === ZH["popover.undo"]);
   setAudienceFails = null;
+  if (!undo) {
+    failures.push(`a partial failure offers no 復原 for the part that went through: ${toast.textContent}`);
+  } else {
+    if (audienceOf("codex:silent").acceptMessages !== true) failures.push("the half of the batch that went through was not written");
+    const want = fresh().filter((s) => ["codex:quiet", "codex:silent"].includes(s.id)).map((s) => [s.id, s.audience]);
+    setCalls.length = 0;
+    await press(undo);
+    for (const [id, audience] of want) {
+      const call = setCalls.find((c) => c.ids.includes(id));
+      if (JSON.stringify(call?.audience) !== JSON.stringify(audience)) {
+        failures.push(`復原 after a partial failure wrote ${JSON.stringify(call?.audience)} for ${id}, want ${JSON.stringify(audience)}`);
+      }
+      if (JSON.stringify(audienceOf(id)) !== JSON.stringify(audience)) failures.push(`after 復原 ${id} holds ${JSON.stringify(audienceOf(id))}`);
+    }
+  }
   app.state.selected.clear();
   app.render();
+}
+clearToasts();
+// A SetAudience call that throws outright counts every session it carried as
+// failed (§2), and the calls for the other audiences are still made: the batch
+// does not stop half written, and the count is not one per call.
+sessions = fresh();
+await reload();
+{
+  // codex:silent and claude:only get the same audience (every paired machine,
+  // no directory), so they share one call; codex:quiet has its own.
+  setAudienceFails = (ids, audience) => {
+    if (ids.length === 2) throw new Error("SetAudience: node went away");
+    for (const s of sessions) if (ids.includes(s.id)) s.audience = JSON.parse(JSON.stringify(audience));
+    return { changed: ids.length, failed: 0, errors: [] };
+  };
+  for (const id of ["codex:silent", "claude:only", "codex:quiet"]) app.state.selected.add(id);
+  app.render();
+  el("btn-audience").onclick();
+  setCalls.length = 0;
+  await press(menuItem("messages"));
+  setAudienceFails = null;
+  const toast = latestToast(document);
+  const want = fill(ZH["audience.partlyApplied"], {
+    action: fill(ZH["popover.verb"], { preset: ZH["popover.messages"] }),
+    changed: 1,
+    failed: 2,
+    error: "Error: SetAudience: node went away",
+  });
+  if (toast.textContent !== want) failures.push(`a call that threw was reported as ${toast.kind}: ${toast.textContent}, want ${want}`);
+  if (setCalls.length !== 2) failures.push(`a call that threw stopped the batch after ${setCalls.length} of 2 calls`);
+  if (audienceOf("codex:quiet").acceptMessages !== true) failures.push("the audience after the one that threw was not written");
+  if (app.state.selected.size !== 3) failures.push(`a batch with a call that threw left ${app.state.selected.size} selected, want 3`);
+  app.state.selected.clear();
+  app.render();
+}
+clearToasts();
+
+// A batch where nothing went through has nothing to undo.
+sessions = fresh();
+await reload();
+{
+  setAudienceFails = (ids) => ({ changed: 0, failed: ids.length, errors: ["refused by the node"] });
+  await pick("codex:quiet", "messages");
+  setAudienceFails = null;
+  if (toastButtons(latestToast(document).node).some((button) => button.textContent === ZH["popover.undo"])) {
+    failures.push("a batch that changed nothing offered 復原");
+  }
 }
 clearToasts();
 
@@ -525,9 +650,10 @@ clearToasts();
 const serviceRow = () => attentionRows(document).find((row) => row.row.className.includes("alert")
   && (row.title === ZH["attention.service.stoppedTitle"] || row.title === ZH["attention.service.noneTitle"]));
 
-// Supported, nothing installed: install, through the settings page's own path,
-// with the database path blank (the node's default).
+// Supported, nothing installed, nothing running: install, through the
+// settings page's own path, with the database path blank (the node's default).
 serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+reachable = false;
 await reload();
 if (app.serviceQuickAction() !== "install") failures.push(`nothing installed answers ${app.serviceQuickAction()}, want install`);
 serviceCalls.length = 0;
@@ -538,10 +664,105 @@ if (JSON.stringify(serviceCalls.map((call) => call[0])) !== JSON.stringify(["Ins
 } else if (serviceCalls[0][1].dbPath !== "") {
   failures.push(`the one-press install sent the database path ${JSON.stringify(serviceCalls[0][1].dbPath)}, want blank`);
 }
+reachable = true;
 await reload();
 if (serviceRow()) failures.push("the service row outlived the install");
 if (latestToast(document).textContent !== ZH["service.installed"]) failures.push(`the install answered ${latestToast(document).textContent}`);
 clearToasts();
+
+// The status on screen is stale — the tick stays away while rows are selected
+// or a dialog is open — and `ah service install` replaces a registration. So
+// the press reads it again and acts on what it reads: here the service was
+// installed and started from a terminal since, and the press installs nothing.
+app.state.service = { supported: true, installed: false, running: false, pid: 0 };
+serviceAnswer = { supported: true, installed: true, running: true, pid: 21 };
+reachable = false;
+app.state.nodeReachable = false;
+app.state.view = "local";
+serviceCalls.length = 0;
+{
+  const reads = serviceReads;
+  await press(el("service-pill"));
+  if (serviceReads === reads) failures.push("the one-press fix acted without reading the service status again");
+}
+if (serviceCalls.length !== 0) failures.push(`a stale "nothing installed" was acted on: ${JSON.stringify(serviceCalls)}`);
+if (app.state.view !== "settings") failures.push(`a service found running on the re-read left the view at ${app.state.view}`);
+// Found installed and stopped instead: started, not installed over.
+app.state.service = { supported: true, installed: false, running: false, pid: 0 };
+serviceAnswer = { supported: true, installed: true, running: false, pid: 0 };
+app.state.view = "local";
+serviceCalls.length = 0;
+await press(el("service-pill"));
+await settle();
+if (JSON.stringify(serviceCalls.map((call) => call[0])) !== JSON.stringify(["RestartService"])) {
+  failures.push(`a stale "nothing installed" over a stopped service called ${JSON.stringify(serviceCalls)}, want RestartService`);
+}
+reachable = true;
+await reload();
+clearToasts();
+
+// A node running but not as a service was started by hand, on a database this
+// window cannot see: installing the default one over it would be a new
+// identity. The press goes to the form, which asks.
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+await reload();
+el("service-form").classList.add("hidden");
+app.state.view = "local";
+if (serviceRow()) failures.push("the checklist's own service step is open and the strip repeats it");
+app.state.ui.onboardingDismissed = true;
+app.render();
+{
+  const row = serviceRow();
+  if (!row) failures.push("a node that is not a service put no row on the strip");
+  else {
+    if (row.action.textContent !== ZH["attention.service.formAction"]) {
+      failures.push(`a running node that is not a service is offered ${row.action.textContent}, want ${ZH["attention.service.formAction"]}`);
+    }
+    serviceCalls.length = 0;
+    await press(row.action);
+    await settle();
+    if (serviceCalls.length !== 0) failures.push(`a running node that is not a service was installed over: ${JSON.stringify(serviceCalls)}`);
+    if (app.state.view !== "settings" || app.state.settingsSection !== "settings-service") {
+      failures.push(`a running node that is not a service went to ${app.state.view} / ${app.state.settingsSection}`);
+    }
+    if (el("service-form").classList.contains("hidden")) failures.push("a running node that is not a service did not open the form");
+  }
+}
+// The status command's own probe says the same when the last Overview did not.
+reachable = false;
+await reload();
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0, nodeAnswering: true };
+el("service-form").classList.add("hidden");
+app.state.view = "local";
+serviceCalls.length = 0;
+await press(el("service-pill"));
+await settle();
+if (serviceCalls.length !== 0) failures.push(`a node the status says is answering was installed over: ${JSON.stringify(serviceCalls)}`);
+if (app.state.view !== "settings") failures.push(`a node the status says is answering went to ${app.state.view}`);
+// A re-read that fails decides nothing: the settings page, and a toast that
+// says why.
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+await reload();
+serviceReadFails = new Error("ah service status: exit status 2");
+app.state.view = "local";
+serviceCalls.length = 0;
+clearToasts();
+await press(el("service-pill"));
+await settle();
+serviceReadFails = null;
+if (serviceCalls.length !== 0) failures.push(`a failed status read was acted on: ${JSON.stringify(serviceCalls)}`);
+if (app.state.view !== "settings") failures.push(`a failed status read left the view at ${app.state.view}`);
+{
+  const toast = latestToast(document);
+  if (toast.kind !== "error" || !toast.textContent.includes("exit status 2")
+    || !toast.textContent.startsWith(ZH["service.quickReadFailed"].split("{error}")[0])) {
+    failures.push(`a failed status read said ${toast.kind}: ${toast.textContent}`);
+  }
+}
+clearToasts();
+reachable = true;
+app.state.ui.onboardingDismissed = false;
+el("service-form").classList.add("hidden");
 
 // Installed, not running: RestartService, not RestartNode.
 serviceAnswer = { supported: true, installed: true, running: false, pid: 0, logHint: "~/node.log" };
@@ -567,6 +788,7 @@ for (const [status, label] of [
   [{ supported: true, installed: true, running: true, pid: 3 }, "running"],
 ]) {
   app.state.service = status;
+  serviceAnswer = status;
   app.state.view = "local";
   serviceCalls.length = 0;
   await press(el("service-pill"));
@@ -580,6 +802,7 @@ app.state.view = "local";
 // A failed install says so with a way to the settings page.
 serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
 installFails = true;
+reachable = false;
 await reload();
 clearToasts();
 await press(serviceRow().action);
@@ -635,6 +858,7 @@ if (!el("service-pill").classList.contains("busy")) failures.push("a status read
 el("service-pill").classList.remove("busy");
 installFails = false;
 serviceAnswer = { supported: true, installed: true, running: true, pid: 7 };
+reachable = true;
 app.state.view = "local";
 await reload();
 clearToasts();

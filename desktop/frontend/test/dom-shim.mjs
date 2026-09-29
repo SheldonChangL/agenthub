@@ -49,6 +49,28 @@ class Node {
     this.className = "";
     this._text = "";
     this._raw = undefined;
+    // Listeners by event type, for the few things app.js listens for on an
+    // element rather than through an on* property (a toast's pointer and
+    // focus, which hold its countdown). A check fires one with dispatchEvent.
+    this.listeners = {};
+  }
+
+  addEventListener(type, listener) {
+    (this.listeners[type] ??= []).push(listener);
+  }
+
+  // No bubbling and no capture: the listener on this element runs, with the
+  // event as given plus its type and target.
+  dispatchEvent(event) {
+    for (const listener of this.listeners[event.type] ?? []) listener({ target: this, ...event });
+    return true;
+  }
+
+  // Whether other is this element or inside it, by the parent links append
+  // keeps.
+  contains(other) {
+    for (let node = other; node; node = node.parentNode) if (node === this) return true;
+    return false;
   }
 
   set textContent(value) {

@@ -41,16 +41,23 @@ const realSetTimeout = globalThis.setTimeout;
 let toastTimers = [];
 globalThis.setTimeout = (fn, ms, ...rest) => {
   if (ms === 6000) {
-    const handle = { fn, fired: false, unref() {} };
+    const handle = { fn, fake: true, cleared: false, unref() {} };
     toastTimers.push(handle);
     return handle;
   }
   return realSetTimeout(fn, ms, ...rest);
 };
+// A toast's timer is cleared when it is closed and when it is held; a cleared
+// one must not fire when the check runs the clock forward.
+const realClearTimeout = globalThis.clearTimeout;
+globalThis.clearTimeout = (handle) => {
+  if (handle?.fake) handle.cleared = true;
+  else realClearTimeout(handle);
+};
 const runToastTimers = () => {
   const due = toastTimers;
   toastTimers = [];
-  for (const handle of due) handle.fn();
+  for (const handle of due) if (!handle.cleared) handle.fn();
 };
 const settle = () => new Promise((resolve) => realSetTimeout(resolve, 20));
 
@@ -70,22 +77,35 @@ const unreachable = () => ({
 });
 
 let overviewAnswer = reachable();
+// The first Overview is held until the check has looked at the strip before
+// any read has answered.
+let releaseFirstOverview;
+const firstOverview = new Promise((resolve) => { releaseFirstOverview = resolve; });
 let serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
 let countsAnswer = { ok: true, counts: {} };
 let pairingAnswer = { availability: "on", windowAvailable: true, state: { open: false }, candidates: [] };
 let pairRequestsAnswer = [];
+// When set, PairRequests answers whatever this returns (a promise the check
+// resolves when it wants).
+let pairRequestsHook = null;
 const pairRequestsCalls = [];
 const inboxReads = [];
 let discoverPark = null;
 
 const { configure, boot } = await import("../src/app.js");
 configure({
-  Overview: async () => overviewAnswer,
+  Overview: async () => {
+    await firstOverview;
+    return overviewAnswer;
+  },
   ServiceStatus: async () => serviceAnswer,
   InboxCounts: async () => countsAnswer,
   Inbox: async (sessionId) => { inboxReads.push(sessionId); return { sessionId, messages: [], held: 0, capacity: 500 }; },
   Pairing: async () => pairingAnswer,
-  PairRequests: async (all) => { pairRequestsCalls.push(all); return pairRequestsAnswer; },
+  PairRequests: async (all) => {
+    pairRequestsCalls.push(all);
+    return pairRequestsHook ? pairRequestsHook(all) : pairRequestsAnswer;
+  },
   OpenPairing: async () => ({ open: true }),
   ClosePairing: async () => ({ open: false }),
   NodeSettings: async () => ({ error: "not in this test" }),
@@ -95,6 +115,14 @@ configure({
   LocalAddresses: async () => [],
 });
 const app = boot();
+await settle();
+// Nothing has answered yet: a node nobody has asked is not a node that is
+// down, whatever the initial state says (state.nodeReachable starts false).
+if (app.state.nodeReachable !== false) failures.push("the check meant to run before the first read ran after it");
+if (attentionRows(document).some((entry) => entry.title === ZH["attention.nodeDown.title"])) {
+  failures.push("the strip said the node is not answering before the first read answered");
+}
+releaseFirstOverview();
 await settle();
 const tick15 = ticks.find((tick) => tick.ms === 15000);
 if (!tick15) failures.push(`no fifteen-second tick: ${ticks.map((tick) => tick.ms).join(", ")}`);
@@ -152,6 +180,58 @@ const stack = toastNodes(document).map(toastMessage);
 if (stack.join("|") !== "failure 2|failure 3|failure 4") failures.push(`four toasts left ${JSON.stringify(stack)}, want the newest three`);
 if (!app.state.notices.some((notice) => notice.title === "failure 1")) failures.push("the toast pushed off the stack is not in the log");
 clearToasts();
+// But what would have gone by itself goes before what would not: an error
+// or a warning is pushed off only when there is nothing else to push.
+app.notify("error", "kept error");
+app.notify("ok", "passing ok");
+app.notify("warn", "kept warning");
+app.notify("info", "passing info");
+{
+  const order = toastNodes(document).map(toastMessage).join("|");
+  if (order !== "kept error|kept warning|passing info") failures.push(`a fourth toast pushed off the wrong one: ${order}`);
+  app.notify("ok", "newest ok");
+  const next = toastNodes(document).map(toastMessage).join("|");
+  if (next !== "kept error|kept warning|newest ok") failures.push(`a fifth toast pushed off the wrong one: ${next}`);
+}
+clearToasts();
+toastTimers = [];
+
+// A toast that goes by itself holds while the pointer is on it or the
+// keyboard is in it, and gets its whole six seconds again once both leave.
+{
+  const record = app.notify("ok", "hold me", { actions: [{ label: "復原", run() {} }] });
+  const node = record.node;
+  const bar = () => node.children.find((child) => child.className === "timer");
+  const firstBar = bar();
+  node.dispatchEvent({ type: "mouseenter" });
+  runToastTimers();
+  if (!toastNodes(document).includes(node)) failures.push("a toast under the pointer went away by itself");
+  if (!node.classList.contains("held")) failures.push("a held toast's countdown bar is not paused");
+  node.dispatchEvent({ type: "focusin" });
+  node.dispatchEvent({ type: "mouseleave" });
+  runToastTimers();
+  if (!toastNodes(document).includes(node)) failures.push("a toast with the keyboard in it went away when the pointer left");
+  // Tab from its 復原 to its ✕ is still inside it.
+  const [undoButton, closeButton] = toastButtons(node);
+  node.dispatchEvent({ type: "focusout", relatedTarget: closeButton });
+  runToastTimers();
+  if (!toastNodes(document).includes(node)) failures.push("moving between a toast's own buttons let it go");
+  if (toastTimers.length !== 0) failures.push("moving between a toast's own buttons restarted its countdown");
+  node.dispatchEvent({ type: "focusout", relatedTarget: null });
+  if (node.classList.contains("held")) failures.push("a toast left by pointer and keyboard still shows as held");
+  if (toastTimers.length !== 1) failures.push(`leaving a held toast started ${toastTimers.length} countdowns, want one`);
+  if (bar() === firstBar || !bar()) failures.push("leaving a held toast did not restart its countdown bar from full");
+  runToastTimers();
+  if (toastNodes(document).includes(node)) failures.push("a toast let go did not go away when its new six seconds ran out");
+  void undoButton;
+  // An error has no countdown to hold.
+  const lasting = app.notify("error", "stays").node;
+  lasting.dispatchEvent({ type: "mouseenter" });
+  lasting.dispatchEvent({ type: "mouseleave" });
+  if (toastTimers.length !== 0) failures.push("leaving an error toast gave it a countdown");
+}
+clearToasts();
+toastTimers = [];
 
 // An action runs and closes its toast.
 let undone = 0;
@@ -250,6 +330,20 @@ if (app.state.notices.find((notice) => notice.title === ZH["attention.nodeDown.t
 // 3b. The service: supported, not running.
 serviceAnswer = { supported: true, installed: true, running: false, pid: 0, logHint: "~/agenthub.log" };
 await loadWith(reachable());
+// The first-launch checklist is up with 「把節點跑成背景服務」 not done, and
+// that step is the same fix: on the local view, where the card is, the strip
+// leaves it to the card. Logged all the same, and on another view it is back.
+if (el("onboarding").classList.contains("hidden")) failures.push("the checklist did not come up for a stopped service");
+if (byTitle(ZH["attention.service.stoppedTitle"])) failures.push("the strip repeats the checklist's service step beside it");
+if (!app.state.notices.some((notice) => notice.title === ZH["attention.service.stoppedTitle"])) {
+  failures.push("the service row the card stands in for was not logged");
+}
+app.state.view = "settings";
+app.render();
+if (!byTitle(ZH["attention.service.stoppedTitle"])) failures.push("away from the checklist the strip does not say the service is stopped");
+app.state.view = "local";
+app.state.ui.onboardingDismissed = true;
+app.render();
 let service = byTitle(ZH["attention.service.stoppedTitle"]);
 if (!service) {
   failures.push("a stopped service put no row on the strip");
@@ -262,11 +356,18 @@ if (!service) {
     failures.push(`a stopped service's row offers ${service.action.textContent}, want ${ZH["attention.service.startAction"]}`);
   }
 }
+// A node that answers and is not a service was started by hand: its button
+// goes to the form rather than installing (inline-publish.mjs §6 presses it).
 serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
 await loadWith(reachable());
 if (!byTitle(ZH["attention.service.noneTitle"])) failures.push("a node that is not a service put no row on the strip");
-else if (byTitle(ZH["attention.service.noneTitle"]).action.textContent !== ZH["attention.service.installAction"]) {
+else if (byTitle(ZH["attention.service.noneTitle"]).action.textContent !== ZH["attention.service.formAction"]) {
   failures.push(`a node that is not a service is offered ${byTitle(ZH["attention.service.noneTitle"]).action.textContent}`);
+}
+// Nothing running at all: installing is the fix, and the button says so.
+await loadWith(unreachable());
+if (byTitle(ZH["attention.service.noneTitle"])?.action.textContent !== ZH["attention.service.installAction"]) {
+  failures.push(`with nothing running the service row offers ${byTitle(ZH["attention.service.noneTitle"])?.action.textContent}`);
 }
 // Not a service manager this machine has, and not a status this window could
 // read: nothing to do from here, so nothing on the strip.
@@ -336,8 +437,19 @@ if (pairRequestsCalls.length !== 1 || pairRequestsCalls[0] !== false) {
 let pair = byTitle(fill(ZH["attention.pair.titleOne"], { name: "ubuntu-lab" }));
 if (!pair) {
   failures.push(`an incoming request put no row on the strip: ${attentionRows(document).map((entry) => entry.title).join(" | ")}`);
-} else if (pair.sev !== "info") {
-  failures.push(`the pairing row is ${pair.sev}, want info`);
+} else {
+  if (pair.sev !== "info") failures.push(`the pairing row is ${pair.sev}, want info`);
+  // The name is the other machine's own word for itself, marked as that the
+  // way an inbox sender's chosen half is: a claimed span, 「自稱」 in front.
+  const claimed = [];
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (String(node.className).split(/\s+/).includes("claimed")) claimed.push(node.textContent);
+    for (const child of node.children ?? []) walk(child);
+  };
+  walk(pair.row);
+  if (JSON.stringify(claimed) !== JSON.stringify(["ubuntu-lab"])) failures.push(`the pairing row marks ${JSON.stringify(claimed)} as claimed, want the name alone`);
+  if (!pair.title.includes("自稱")) failures.push(`the pairing row does not say the name is claimed: ${pair.title}`);
 }
 // The owner is busy selecting rows: the tick stays away, as it does for the list.
 app.state.selected.add("claude:one");
@@ -370,6 +482,23 @@ el("pairing-modal").classList.add("hidden");
 tick15.fn();
 await settle();
 if (attentionRows(document).some((entry) => entry.sev === "info")) failures.push("the pairing row outlived the request");
+// Reads are numbered: a slow answer that lands after a newer one is dropped.
+// Here the older read would put the request back; the newer one says there
+// is none.
+{
+  let resolveSlow;
+  const slow = new Promise((resolve) => { resolveSlow = resolve; });
+  let calls = 0;
+  pairRequestsHook = () => (calls++ === 0 ? slow : Promise.resolve([outgoing]));
+  const older = app.refreshIncomingPairRequests();
+  await app.refreshIncomingPairRequests();
+  resolveSlow([incoming, outgoing]);
+  await older;
+  await settle();
+  pairRequestsHook = null;
+  if (calls !== 2) failures.push(`the ordering check made ${calls} reads, want 2`);
+  if (attentionRows(document).some((entry) => entry.sev === "info")) failures.push("a slow read of the exchange overwrote a newer one");
+}
 // A window that closed takes its requests with it, without another read.
 pairRequestsAnswer = [incoming];
 tick15.fn();
@@ -384,13 +513,15 @@ await settle();
 if (pairRequestsCalls.length !== callsBeforeClose) failures.push("a closed window was read again");
 
 // 3e. 稍後: put away while the thing lasts, back when it comes back.
+await loadWith(reachable());
+const outagesBefore = nodeLogged();
 await loadWith(unreachable());
 node = byTitle(ZH["attention.nodeDown.title"]);
 node?.later.onclick();
 if (byTitle(ZH["attention.nodeDown.title"])) failures.push("稍後 did not put the row away");
 await loadWith(unreachable());
 if (byTitle(ZH["attention.nodeDown.title"])) failures.push("a row put away came back while the thing was still going on");
-if (nodeLogged() !== 2) failures.push(`the second outage was logged ${nodeLogged()} times in all, want 2 (once per appearance)`);
+if (nodeLogged() !== outagesBefore + 1) failures.push(`an outage was logged ${nodeLogged() - outagesBefore} times, want once per appearance`);
 await loadWith(reachable());
 await loadWith(unreachable());
 if (!byTitle(ZH["attention.nodeDown.title"])) failures.push("a row put away did not come back after the thing cleared and happened again");
@@ -405,6 +536,45 @@ const kept = byTitle(ZH["attention.service.noneTitle"])?.row;
 app.render();
 if (byTitle(ZH["attention.service.noneTitle"])?.row !== kept) failures.push("a render replaced the attention row element");
 serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
+await loadWith(reachable());
+
+// 3f. Past two rows, the rest fold behind one button, most severe first; the
+//     button unfolds them for this window only.
+serviceAnswer = { supported: true, installed: true, running: false, pid: 0, logHint: "~/agenthub.log" };
+countsAnswer = { ok: true, counts: { "codex:two": { held: 9, capacity: 9, full: true } } };
+pairRequestsAnswer = [incoming];
+pairingAnswer = { availability: "on", windowAvailable: true, state: { open: true, remainingSeconds: 300 }, candidates: [] };
+await app.loadPairing();
+await loadWith(reachable());
+tick15.fn();
+await settle();
+{
+  const strip = () => el("attention").children;
+  const titles = () => attentionRows(document).filter((entry) => entry.title).map((entry) => entry.sev);
+  const more = () => strip().at(-1);
+  if (JSON.stringify(titles()) !== JSON.stringify(["alert", "warn"])) failures.push(`three things show ${JSON.stringify(titles())}, want the alert and the warning`);
+  const button = more()?.children?.[0];
+  if (strip().length !== 3 || button?.textContent !== fill(ZH["attention.more.one"], { n: 1 })) {
+    failures.push(`the third row is ${JSON.stringify(button?.textContent)}, want ${fill(ZH["attention.more.one"], { n: 1 })}`);
+  }
+  button?.onclick();
+  if (JSON.stringify(titles()) !== JSON.stringify(["alert", "warn", "info"])) failures.push(`unfolded the strip shows ${JSON.stringify(titles())}`);
+  if (more()?.children?.[0] !== button || button?.textContent !== ZH["attention.less"]) failures.push(`unfolded, the button reads ${button?.textContent}`);
+  // It stays unfolded across the tick's renders.
+  app.render();
+  if (titles().length !== 3) failures.push("a render folded the strip back up");
+  button?.onclick();
+  if (titles().length !== 2) failures.push("收起 did not fold the strip");
+  // Two or fewer: no button at all.
+  pairRequestsAnswer = [];
+  tick15.fn();
+  await settle();
+  if (attentionRows(document).some((entry) => !entry.title)) failures.push("two rows still carry the fold button");
+}
+serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
+countsAnswer = { ok: true, counts: {} };
+pairingAnswer = { availability: "on", windowAvailable: true, state: { open: false }, candidates: [] };
+await app.loadPairing();
 await loadWith(reachable());
 
 /* ---------------- 4. the pressed button spins ---------------- */
