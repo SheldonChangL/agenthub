@@ -30,9 +30,15 @@ configure({
 const module = boot({ start: false });
 
 const flags = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
+// Picks a 誰看得到 radio the way a press does: checked, then its onchange.
+const setMode = (mode) => {
+  for (const radio of document.querySelectorAll('input[name="audience-mode"]')) radio.checked = radio.value === mode;
+  document.querySelectorAll('input[name="audience-mode"]').find((radio) => radio.value === mode)?.onchange?.();
+};
 
-// Somebody opens the dialog and ticks everything, for one session.
+// Somebody opens the dialog, publishes and ticks everything, for one session.
 module.openAudienceModal();
+setMode("all_paired");
 for (const id of flags) el(id).checked = true;
 if (!module.readAudienceForm().autoWake) {
   failures.push("the dialog does not read the auto-wake box at all");
@@ -58,6 +64,9 @@ for (const [name, value] of Object.entries(module.readAudienceForm())) {
 // shows, whichever half the owner used.
 const presetOf = () =>
   [...document.querySelectorAll('input[name="audience-preset"]')].find((radio) => radio.checked)?.value ?? "";
+// Under 不公開 every flag is written off whatever the boxes say (below), so
+// what the presets write is read under a mode that publishes.
+setMode("all_paired");
 
 module.applyAudiencePreset("messages");
 const afterMessages = module.readAudienceForm();

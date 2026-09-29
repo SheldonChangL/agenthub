@@ -1660,9 +1660,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Past three, the oldest that would have gone by itself goes first; a
     // warning or an error is pushed off only when there is nothing else to
     // push. Both are still in the bell's log, and a column of errors taller
-    // than the window is one nobody reads.
+    // than the window is one nobody reads. The one just shown is never the
+    // one pushed off: behind three errors it is the only one that would go by
+    // itself, and taking it would take its 復原 with it — the log keeps the
+    // sentence, not the buttons.
     while (toastsShown.length > TOAST_LIMIT) {
-      dismissToast(toastsShown.find((shown) => !lasting(shown.kind)) ?? toastsShown[0]);
+      dismissToast(toastsShown.slice(0, -1).find((shown) => !lasting(shown.kind)) ?? toastsShown[0]);
     }
     return record;
   }
@@ -4707,15 +4710,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   // Whether the form holds something neither preset names, as far as that is
-  // worth saying. Every flag off under 不公開 is not "custom": it is where a
-  // fresh dialog and an unpublished session start, and nothing is shared. Off
-  // under a mode that shares the session is — that is the combination the
-  // preset that was taken out used to name.
+  // worth saying. Nothing under 不公開 is "custom": readAudienceForm writes
+  // every flag off there, whatever the boxes say, so there is no combination
+  // to name — only the line saying the boxes will go off
+  // (audienceFlagsCleared). Off under a mode that shares the session is custom
+  // — that is the combination the preset that was taken out used to name.
   function audienceFormIsCustom() {
-    const flags = audienceFlagsOnForm();
-    if (presetForFlags(flags) !== "") return false;
-    const anyMessageFlag = flags.acceptMessages || flags.allowOutbound || flags.autoWake;
-    return anyMessageFlag || selectedMode() !== "none";
+    if (selectedMode() === "none") return false;
+    return presetForFlags(audienceFlagsOnForm()) === "";
+  }
+
+  // 不公開 with a box still ticked: what 套用 writes is every flag off, the same
+  // as the menu's 不公開, and the boxes on screen say otherwise until the
+  // owner is told.
+  function audienceFlagsCleared() {
+    if (selectedMode() !== "none") return false;
+    return AUDIENCE_FLAG_IDS.some((id) => el(id).checked);
   }
 
   function applyAudiencePreset(name) {
@@ -4738,6 +4748,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const note = el("audience-preset-note");
     const lines = [];
     if (audienceFormIsCustom()) lines.push(t("audience.presetCustom"));
+    if (audienceFlagsCleared()) lines.push(t("audience.noneClearsFlags"));
+    // A preset leaves the working-directory box as it found it, and the box is
+    // in the section that starts folded for a session a preset names. So a
+    // directory about to be published is said here, in the menu's words,
+    // whenever the section that holds its box is folded: a session loaded
+    // with it on, 不公開 turned into a publish, or the section folded again.
+    if (selectedMode() !== "none" && el("audience-cwd").checked && !el("audience-advanced").open) {
+      lines.push(t("popover.withCwd"));
+    }
     // Only on a selection of more than one. A single session opens showing its
     // own settings, so the sentence about them being reset is untrue there —
     // and it was the sentence the whole dialog was read through.
@@ -4792,11 +4811,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-autowake").checked = Boolean(only && current.autoWake);
 
     renderAutoWakeNote();
-    syncAudiencePreset();
     // A session whose flags are no preset's opens with the flags in view: the
     // radios are all empty then, and the only place that says what the session
     // actually does is the section that would otherwise start collapsed.
     el("audience-advanced").open = audienceFormIsCustom();
+    // After the section is set: whether it is folded decides whether the line
+    // under the presets has to say the working directory is published.
+    syncAudiencePreset();
     el("audience-modal").classList.remove("hidden");
     syncAudienceForm();
   }
@@ -4889,6 +4910,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       .filter((box) => box.checked)
       .map((box) => box.value);
     const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];
+    // 不公開 is every flag off, as the menu's 不公開 writes it
+    // (audienceForChoice): a flag kept on a session nobody can see is shown
+    // nowhere — the row's flag column is for published sessions — and a
+    // working directory kept that way is published by the next 能留訊息
+    // without anything on screen saying so.
+    if (mode === "none") {
+      return { mode, nodes, exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
+    }
     return {
       mode,
       nodes,
@@ -5705,7 +5734,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         : t("service.dbNoteDefault");
       return;
     }
-    note.textContent = status.installed ? t("service.dbNoteUnknown") : t("service.dbNoteFirstInstall");
+    // Nothing registered is not the same as nothing running. A node somebody
+    // started by hand is on a database this window cannot see, and a blank
+    // field is the default one — a new identity when theirs was not — so the
+    // form says what to type there, and installService asks before a blank.
+    if (status.installed) note.textContent = t("service.dbNoteUnknown");
+    else if (nodeRunningNotAService(status)) note.textContent = t("service.dbNoteRunningNotService");
+    else note.textContent = t("service.dbNoteFirstInstall");
   }
 
   function readServiceForm() {
@@ -5744,6 +5779,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         title: t("service.reinstallUnknownDbConfirmTitle", { wanted: wanted || t("service.nodeDefaultLocation") }),
         body: t("service.reinstallUnknownDbConfirm"),
         confirmLabel: t("service.reinstallConfirmAction"),
+        danger: true,
+      });
+      if (!ok) return;
+    } else if (!baseline.installed && wanted === "" && nodeRunningNotAService()) {
+      // Nothing to compare the blank with: the running node's database is not
+      // something this window can read. A blank is still the default, which
+      // is a different identity for a node started with --db.
+      const ok = await askConfirm({
+        title: t("service.runningNotServiceConfirmTitle"),
+        body: t("service.runningNotServiceConfirm"),
+        confirmLabel: t("service.runningNotServiceConfirmAction"),
         danger: true,
       });
       if (!ok) return;
@@ -5840,7 +5886,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // hand, on a database this window cannot see. Installing over it from one
   // press would register the node's default database — which is a different
   // identity when theirs was not the default, and every pairing gone — so that
-  // case goes to the form, which asks. Either reading says it: the last
+  // case goes to the form: its note says to type the --db path the node was
+  // started with (service.dbNoteRunningNotService), and installService asks
+  // before installing with the field blank. Either reading says it: the last
   // Overview, or the status command's own probe of the node.
   function nodeRunningNotAService(status = state.service) {
     return serviceQuickAction(status) === "install" && (state.nodeReachable || status?.nodeAnswering === true);
@@ -6033,6 +6081,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   for (const id of AUDIENCE_FLAG_IDS) {
     el(id).onchange = syncAudiencePreset;
   }
+  // Folding the section hides the working-directory box, and the line under
+  // the presets takes over saying it (syncAudiencePreset).
+  el("audience-advanced").addEventListener?.("toggle", syncAudiencePreset);
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
     if (audience.mode === "selected" && audience.nodes.length === 0) {

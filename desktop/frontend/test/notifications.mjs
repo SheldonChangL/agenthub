@@ -198,6 +198,24 @@ app.notify("info", "passing info");
 }
 clearToasts();
 toastTimers = [];
+// Behind three that stay, the new one that would go by itself is still the
+// one just shown: the oldest of the three goes, not it and its 復原.
+{
+  app.notify("error", "stays 1");
+  app.notify("warn", "stays 2");
+  app.notify("error", "stays 3");
+  let undid = 0;
+  const record = app.notify("ok", "done, undo?", { actions: [{ label: "復原", run() { undid += 1; } }] });
+  const order = toastNodes(document).map(toastMessage).join("|");
+  if (order !== "stays 2|stays 3|done, undo?") failures.push(`a success behind three errors pushed off the wrong one: ${order}`);
+  if (!toastNodes(document).includes(record.node)) failures.push("a success with 復原 behind three errors pushed itself off");
+  else {
+    toastButtons(record.node)[0].onclick();
+    if (undid !== 1) failures.push("the 復原 on a success behind three errors did not run");
+  }
+}
+clearToasts();
+toastTimers = [];
 
 // A toast that goes by itself holds while the pointer is on it or the
 // keyboard is in it, and gets its whole six seconds again once both leave.

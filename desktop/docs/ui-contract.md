@@ -66,7 +66,7 @@
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 toast |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
-| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理**動手前先重讀** `ServiceStatus()`（`loadService()`，用讀到的狀態重算；畫面上的可能是好幾分鐘前的——有選取或對話框開著時 15 秒 tick 不讀——而 `ah service install` 會取代既有註冊，照舊狀態裝等於用預設資料庫換掉節點身分），重讀失敗就跳設定頁並用錯誤 toast 說明（`service.quickReadFailed`），什麼都不做；**節點在跑但不是服務**（`state.nodeReachable` 或狀態的 `nodeAnswering`，且未安裝）不直接裝，改去設定頁的服務表單（`goToService()` 會展開它）。其餘走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問） |
+| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理**動手前先重讀** `ServiceStatus()`（`loadService()`，用讀到的狀態重算；畫面上的可能是好幾分鐘前的——有選取或對話框開著時 15 秒 tick 不讀——而 `ah service install` 會取代既有註冊，照舊狀態裝等於用預設資料庫換掉節點身分），重讀失敗就跳設定頁並用錯誤 toast 說明（`service.quickReadFailed`），什麼都不做；**節點在跑但不是服務**（`state.nodeReachable` 或狀態的 `nodeAnswering`，且未安裝）不直接裝，改去設定頁的服務表單（`goToService()` 會展開它）。其餘走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問）。服務表單在「節點在跑但不是服務」時資料庫說明改為 `service.dbNoteRunningNotService`（它若是用 --db 啟動的就填那個路徑；留空＝預設資料庫＝新身分、現有配對失效），欄位空白按安裝先 `askConfirm`（`service.runningNotServiceConfirm*`，danger、焦點在取消；有填路徑不問；測試 `inline-publish.mjs` §6） |
 | `UninstallService()` | `service-uninstall` | `askConfirm`；成功後 reload |
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
@@ -145,7 +145,9 @@
 - **通知三層（2026-09-29，取代 `#banner`）**。原本的 banner 只有一則：成功 4 秒就消失、錯誤被下一則蓋掉，
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
   - **Toast**（`#toasts`，`aria-live="polite"`，在 index.html 所有抽屜與對話框**之後**）：右下角堆疊，最多 3 則，
-    新的在下；超過時先擠掉最舊的**會自動消失**的（`ok`／`info`），沒有才擠掉最舊的警告或錯誤（都仍在通知紀錄裡）。`notify(kind, title, {body, actions})`，kind 是
+    新的在下；超過時先擠掉最舊的**會自動消失**的（`ok`／`info`），沒有才擠掉最舊的警告或錯誤（都仍在通知紀錄裡）。
+    **剛跳出的那一則永遠不是被擠掉的**：三則警告／錯誤之後來的 `ok` 是唯一會自動消失的一則，擠掉它等於連同「復原」一起丟掉
+    （通知紀錄只存句子、不存按鈕），所以此時擠掉的是最舊的警告或錯誤（測試 `notifications.mjs`）。`notify(kind, title, {body, actions})`，kind 是
     `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起（底部倒數條；滑鼠停在上面或鍵盤焦點在它裡面時暫停——倒數條停住、加 `held`——兩者都離開後重新給足 6 秒，在它自己的按鈕之間移動焦點不算離開），`warn` 與 `error`
     **不自動消失**，要按 ✕；後兩種 `role="alert"`，前兩種 `role="status"`。`actions` 是 toast 上的按鈕，
     按了先收起再執行。舊的 `banner(message, ok)` 保留為 wrapper：`ok=true` → 成功，其餘 → 錯誤。
@@ -174,7 +176,8 @@
     `ServiceStatus()`，這一列自己消失。三種情況不照按：另一個寫入進行中（`state.busy`，連表單都不動）；設定頁的服務表單開著、
     資料庫欄位有打字——空白是節點預設資料庫，等於新身分、所有配對作廢，所以改去表單，不替使用者清掉；
     節點在跑但不是服務（`nodeRunningNotAService()`：`install` 且 `state.nodeReachable` 或狀態的 `nodeAnswering`）——
-    那是手動帶起來的節點，資料庫可能不是預設的，改去服務表單。pill 的 `busy` 轉圈
+    那是手動帶起來的節點，資料庫可能不是預設的，改去服務表單；表單的說明請使用者填那個節點的 `--db` 路徑，
+    欄位空白按安裝會先問（danger、預設焦點在取消，見 §2 `InstallService`）。pill 的 `busy` 轉圈
     撐過中途落地的 `ServiceStatus()`（`renderServicePill` 保留 `busy`）。測試 `inline-publish.mjs` §6（三個分支、空資料庫路徑、RestartService 不是 RestartNode、
     失敗 toast 的動作、過期狀態重讀後不裝、節點在跑非服務不裝、重讀失敗）、`notifications.mjs` §3b（按鈕文字）。
 
@@ -383,9 +386,13 @@
   存進 `state.nodesError`，對話框以 `audience.nodesReadFailed` 說明讀取失敗，不顯示「還沒有配對任何機器」。
   **兩個**情境 preset（2026-09-29 拿掉「只讓他們看見」：對方看得到卻不能寫訊息，等於沒給它任何事做），只寫三個訊息旗標
   （能留訊息：`acceptMessages`；留訊息並喚醒：`acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值。
-  「自訂」（`audienceFormIsCustom()`）：旗標不是兩個 preset 之一，**而且**有任何訊息旗標開著或 mode 不是 `none`——
-  所以已公開但全部 off 的 session 開啟即展開進階區並顯示「自訂」，而未公開、全 off 的單選與多選的起始狀態（`none`＋全 off）
-  不算自訂、不展開；換 mode radio 會重算這一句。喚醒的說明 `audience-autowake-note` 在進階區**外面**，除了只有
+  「自訂」（`audienceFormIsCustom()`）：mode 不是 `none`，**而且**旗標不是兩個 preset 之一——
+  所以已公開但全部 off 的 session 開啟即展開進階區並顯示「自訂」，而 mode `none` 一律不算自訂、不展開；換 mode radio 會重算這一句。
+  **mode `none` 套用時四個旗標一律寫 false**（`readAudienceForm()`，含 `exportCwd`，與選單的「不公開」相同）：單選照樣載入現值，
+  所以勾選框可能還勾著，此時 preset 下方多一句 `audience.noneClearsFlags`（套用時四個旗標一律關掉）。
+  mode 不是 `none`、`audience-cwd` 勾著、進階區收合時，preset 下方另有選單同一句「含工作目錄」（`popover.withCwd`）——
+  符合 preset 的 session 開啟時進階區是收合的，工作目錄的勾選框在裡面看不到；展開進階區（`toggle` 事件）這句就收起，
+  再收合又出現（測試 `inline-publish.mjs`：未公開但帶 `exportCwd` 的 session 從對話框公開、已公開帶 `exportCwd` 的 session 在對話框改不公開）。喚醒的說明 `audience-autowake-note` 在進階區**外面**，除了只有
   Claude Code 的選取（那裡直接說叫不醒），第一行一律是喚醒備註 `wake.caveat`，節點沒帶 `-auto-wake`、Codex、Claude 的句子接在後面。
   喚醒備註另外出現在：行內選單的喚醒選項下、旗標欄的 ⚠、套用喚醒後的 toast、設定頁節點設定「允許訊息自動喚醒」的第二行說明
   （第一行「每個 session 仍要各自打開。」不變，兩句不重複）。
@@ -459,7 +466,7 @@
   toast 的 6 秒自動收起是 `setTimeout`，不是 interval（`notifications.mjs` 斷言仍然只有四個）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - `inbox-clear` 在 `askConfirm` 回 false（取消／Esc／背景）時不呼叫 `ClearInbox`；回 true 時呼叫並把結果畫在抽屜內（測試 `confirm-dialog.mjs`）。app.js 不得呼叫 `window.confirm`／`alert`／`prompt`（同一個測試逐字檢查原始碼）。
-- 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。
+- 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。mode 為 `none` 時 `readAudienceForm()` 不論勾選框一律回傳四個 false（與選單「不公開」相同）。
 
 ### 4.1 測試架構的耦合
 

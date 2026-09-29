@@ -26,7 +26,18 @@ import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 import { TEXT as EN } from "../src/i18n/en.js";
 
 globalThis.document = document;
-answerConfirms(document, () => true);
+// Every question asked, and how it was asked; answered yes unless a check
+// says otherwise.
+const questions = [];
+let confirmAnswer = () => true;
+answerConfirms(document, (question) => {
+  questions.push({
+    question,
+    danger: document.getElementById("confirm-ok").className === "danger",
+    focusedCancel: document.activeElement === document.getElementById("confirm-cancel"),
+  });
+  return confirmAnswer(question);
+});
 
 const failures = [];
 const el = (id) => document.getElementById(id);
@@ -623,6 +634,78 @@ if (JSON.stringify([...app.state.selected]) !== JSON.stringify(["codex:silent"])
 app.state.selected.clear();
 app.render();
 
+// The dialog never keeps or publishes a working directory out of sight. It
+// opens as the session is (§4), so a directory held by a session nobody can
+// see is loaded with it — and the box is in the section a preset's session
+// opens folded.
+const setDialogMode = (mode) => {
+  const radios = document.querySelectorAll('input[name="audience-mode"]');
+  for (const radio of radios) radio.checked = radio.value === mode;
+  radios.find((radio) => radio.value === mode).onchange();
+};
+const dialogFor = async (id) => {
+  openRow(id);
+  await press(menuButtons().at(-1));
+};
+sessions = fresh();
+await reload();
+clearToasts();
+// (a) Unpublished, holding exportCwd, published from the dialog: the line
+// under the presets says the directory goes with it, in the menu's words,
+// before 套用 — and what 套用 writes is what it said.
+await dialogFor("codex:quiet");
+if (el("audience-advanced").open) failures.push("an unpublished session matching no preset opened the advanced section");
+if (!el("audience-preset-note").textContent.includes(ZH["audience.noneClearsFlags"])) {
+  failures.push(`不公開 with the directory box ticked does not say the flags go off: ${el("audience-preset-note").textContent}`);
+}
+setDialogMode("all_paired");
+app.applyAudiencePreset("messages");
+if (!el("audience-preset-note").textContent.includes(ZH["popover.withCwd"])) {
+  failures.push(`publishing from the dialog with the directory box folded away says nothing: ${el("audience-preset-note").textContent}`);
+}
+// Unfolded, the box says it itself; folded again, the line comes back.
+el("audience-advanced").open = true;
+el("audience-advanced").dispatchEvent({ type: "toggle" });
+if (el("audience-preset-note").textContent.includes(ZH["popover.withCwd"])) {
+  failures.push("the directory line stays with the box it describes in view");
+}
+el("audience-advanced").open = false;
+el("audience-advanced").dispatchEvent({ type: "toggle" });
+if (!el("audience-preset-note").textContent.includes(ZH["popover.withCwd"])) {
+  failures.push("folding the section again did not bring the directory line back");
+}
+setCalls.length = 0;
+await press(el("audience-apply"));
+{
+  const want = { mode: "all_paired", nodes: [], exportCwd: true, acceptMessages: true, allowOutbound: false, autoWake: false };
+  if (JSON.stringify(lastSet()?.audience) !== JSON.stringify(want)) {
+    failures.push(`the dialog published codex:quiet as ${JSON.stringify(lastSet()?.audience)}, want ${JSON.stringify(want)}`);
+  }
+}
+clearToasts();
+// (b) Published with the directory, turned to 不公開 in the dialog: every flag
+// off, the directory included, as the menu's 不公開.
+await dialogFor("codex:chosen");
+if (!el("audience-cwd").checked) failures.push("codex:chosen opened without its own working-directory flag");
+setDialogMode("none");
+if (!el("audience-preset-note").textContent.includes(ZH["audience.noneClearsFlags"])) {
+  failures.push(`turning to 不公開 does not say the flags go off: ${el("audience-preset-note").textContent}`);
+}
+if (el("audience-preset-note").textContent.includes(ZH["popover.withCwd"])) {
+  failures.push("不公開 still says the working directory is published");
+}
+setCalls.length = 0;
+await press(el("audience-apply"));
+{
+  const want = { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
+  if (JSON.stringify(lastSet()?.audience) !== JSON.stringify(want)) {
+    failures.push(`不公開 from the dialog wrote ${JSON.stringify(lastSet()?.audience)}, want ${JSON.stringify(want)}`);
+  }
+}
+clearToasts();
+app.state.selected.clear();
+app.render();
+
 /* ---------------- 5. the wake caveat ---------------- */
 
 {
@@ -726,8 +809,54 @@ app.render();
       failures.push(`a running node that is not a service went to ${app.state.view} / ${app.state.settingsSection}`);
     }
     if (el("service-form").classList.contains("hidden")) failures.push("a running node that is not a service did not open the form");
+    // The form says what the field is for here: the --db the node was started
+    // with, and what a blank costs. Not 「第一次安裝：留空就用預設位置」, which
+    // walked the owner into a new identity.
+    if (el("service-db-note").textContent !== ZH["service.dbNoteRunningNotService"]) {
+      failures.push(`the form for a running node that is not a service says: ${el("service-db-note").textContent}`);
+    }
   }
 }
+// Installing from that form with the field blank is asked first — red, with
+// the keyboard on 取消 — and a 取消 installs nothing.
+questions.length = 0;
+confirmAnswer = () => false;
+serviceCalls.length = 0;
+el("service-db").value = "";
+await app.installService();
+await settle();
+if (questions.length !== 1 || !questions[0].question.includes(ZH["service.runningNotServiceConfirmTitle"])) {
+  failures.push(`a blank install over a running node asked ${JSON.stringify(questions)}`);
+} else if (!questions[0].danger || !questions[0].focusedCancel) {
+  failures.push(`a blank install over a running node was not asked as a danger with 取消 focused: ${JSON.stringify(questions[0])}`);
+}
+if (serviceCalls.length !== 0) failures.push(`取消 on a blank install over a running node still ran ${JSON.stringify(serviceCalls)}`);
+// A path typed in is the owner's answer already: no question, and that path.
+questions.length = 0;
+confirmAnswer = () => true;
+el("service-db").value = "/data/by-hand.db";
+await app.installService();
+await settle();
+if (questions.length !== 0) failures.push(`an install over a running node with its path typed asked ${JSON.stringify(questions)}`);
+if (serviceCalls.length !== 1 || serviceCalls[0][0] !== "InstallService" || serviceCalls[0][1].dbPath !== "/data/by-hand.db") {
+  failures.push(`an install over a running node with its path typed ran ${JSON.stringify(serviceCalls)}`);
+}
+// And a yes to the question installs, blank.
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+await reload();
+await app.openServiceForm();
+questions.length = 0;
+serviceCalls.length = 0;
+el("service-db").value = "";
+await app.installService();
+await settle();
+if (questions.length !== 1) failures.push(`a confirmed blank install over a running node asked ${questions.length} questions`);
+if (serviceCalls.length !== 1 || serviceCalls[0][0] !== "InstallService" || serviceCalls[0][1].dbPath !== "") {
+  failures.push(`a confirmed blank install over a running node ran ${JSON.stringify(serviceCalls)}`);
+}
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+await reload();
+clearToasts();
 // The status command's own probe says the same when the last Overview did not.
 reachable = false;
 await reload();

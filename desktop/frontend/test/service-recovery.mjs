@@ -367,10 +367,15 @@ if (confirmations.length !== 0) {
 if (installed.length !== 1) failures.push("an unchanged reinstall did not install");
 
 // 10. A first install, with no unit to read, still works: blank is the node's
-//     default and the form says so rather than pretending to know.
+//     default and the form says so rather than pretending to know. Nothing is
+//     running here either — a node answering with no service is a different
+//     case, whose form says to type its --db path (inline-publish.mjs).
+const wasReachable = app.state.nodeReachable;
+app.state.nodeReachable = false;
 app.state.service = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "/log" };
 app.renderService();
 await app.openServiceForm();
+app.state.nodeReachable = wasReachable;
 if (el("service-db").value !== "") {
   failures.push(`a first install prefilled "${el("service-db").value}"`);
 }
