@@ -1,0 +1,786 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentHub 桌面版改版</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* Layout: 設計畫布。上方是可操作的主視窗原型（真的會動），下方三張規格板：步驟對照、按鈕規格、通知分級。
+   刻意只做深色：沿用 app 既有的 --bg / --accent 色票，只把控制項放大、把通知收成三層。 */
+:root {
+  color-scheme: dark;
+  --bg: #0b0f12;
+  --canvas: #080b0d;
+  --panel: #12171c;
+  --panel-2: #1a2027;
+  --line: #262e37;
+  --line-strong: #3a4552;
+  --text: #e3ebe6;
+  --muted: #8f9ca8;
+  --dim: #5d6873;
+  --accent: #39e07a;
+  --accent-ink: #062312;
+  --accent-dim: rgba(57, 224, 122, 0.14);
+  --info: #5ec8ff;
+  --info-dim: rgba(94, 200, 255, 0.13);
+  --amber: #e8ad4a;
+  --amber-dim: rgba(232, 173, 74, 0.14);
+  --red: #ef5d53;
+  --red-dim: rgba(239, 93, 83, 0.14);
+  --sans: "IBM Plex Sans", "Noto Sans TC", "PingFang TC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --h-btn: 36px;
+  --h-primary: 40px;
+  --r: 8px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+.page { padding: 32px 20px 64px; max-width: 1240px; margin: 0 auto; display: grid; gap: 40px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 600; }
+h1 { font-size: 26px; letter-spacing: -0.01em; }
+h2 { font-size: 19px; }
+h3 { font-size: 15px; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 68ch; }
+.eyebrow { font: 500 11px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+header.top { display: grid; gap: 10px; }
+.rules { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.rule { font-size: 13px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.rule b { color: var(--text); font-weight: 500; }
+
+/* ---------- board ---------- */
+.board { display: grid; gap: 14px; }
+.board-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; }
+.board-head p { color: var(--muted); font-size: 13px; max-width: 70ch; }
+.scroller { overflow-x: auto; border-radius: 12px; }
+
+/* ---------- mock window ---------- */
+.win { position: relative; min-width: 1000px; height: 700px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; font-size: 13.5px; }
+.titlebar { display: flex; align-items: center; gap: 14px; padding: 0 14px 0 84px; height: 52px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; position: relative; }
+.lights { position: absolute; left: 16px; top: 20px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line-strong); }
+.tabs { display: flex; gap: 2px; }
+.tab { height: 36px; padding: 0 14px; border-radius: var(--r); background: none; border: 0; color: var(--muted); font: inherit; font-weight: 500; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tab:hover { background: var(--panel-2); color: var(--text); }
+.tab[aria-selected="true"] { background: var(--panel-2); color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.count { font: 500 11.5px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--info); color: #04121c; font: 600 11.5px/20px var(--mono); text-align: center; font-variant-numeric: tabular-nums; }
+.badge.warn { background: var(--amber); color: #231400; }
+.badge.alert { background: var(--red); color: #fff; }
+.spacer { flex: 1; }
+
+button { font: inherit; color: inherit; }
+.btn { height: var(--h-btn); min-width: 36px; padding: 0 14px; border-radius: var(--r); border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--text); font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; white-space: nowrap; transition: background .12s, border-color .12s, transform .06s; }
+.btn:hover { border-color: var(--muted); background: #222a33; }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible, .tab:focus-visible, .aud:focus-visible, .menu button:focus-visible, .check:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.btn.primary { height: var(--h-primary); background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; padding: 0 18px; }
+.btn.primary:hover { background: #52ea8c; }
+.btn.danger { color: var(--red); border-color: rgba(239,93,83,.45); background: var(--red-dim); }
+.btn.ghost { background: none; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--text); background: var(--panel-2); }
+.btn.sm { height: 32px; padding: 0 12px; font-size: 13px; }
+.btn[disabled] { opacity: .45; cursor: not-allowed; transform: none; }
+.btn.busy { pointer-events: none; }
+.btn.busy::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.svc { height: 36px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line-strong); background: none; display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--text); }
+.svc:hover { background: var(--panel-2); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); flex: none; }
+.dot.warn { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-dim); }
+.dot.bad { background: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
+.dot.off { background: var(--dim); box-shadow: none; }
+.bell { position: relative; }
+.bell .badge { position: absolute; top: -6px; right: -6px; }
+
+/* attention strip: 需要你處理的事，一列一個，按鈕就在列上 */
+.attn { flex: none; display: grid; gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+.attn:empty { display: none; }
+.attn-row { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: var(--panel); min-height: 52px; }
+.attn-row .sev { width: 4px; align-self: stretch; border-radius: 2px; background: var(--info); flex: none; }
+.attn-row.warn .sev { background: var(--amber); }
+.attn-row.alert .sev { background: var(--red); }
+.attn-row .msg { flex: 1; min-width: 0; }
+.attn-row .msg b { font-weight: 600; }
+.attn-row .msg span { color: var(--muted); display: block; font-size: 12.5px; }
+
+.body { flex: 1; min-height: 0; display: flex; }
+.view { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.view[hidden] { display: none; }
+
+/* sessions view */
+.toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 14px; flex-wrap: wrap; }
+.search { height: 36px; width: 260px; border-radius: var(--r); border: 1px solid var(--line-strong); background: var(--panel); color: var(--text); padding: 0 12px; font: inherit; }
+.search:focus { outline: 2px solid var(--info); outline-offset: 1px; }
+.seg { display: flex; border: 1px solid var(--line-strong); border-radius: var(--r); overflow: hidden; }
+.seg button { height: 34px; padding: 0 12px; background: none; border: 0; color: var(--muted); cursor: pointer; display: flex; gap: 6px; align-items: center; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-dim); color: var(--text); }
+.seg button:hover { color: var(--text); }
+.table-wrap { flex: 1; min-height: 0; overflow: auto; padding: 0 14px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+td { padding: 0 10px; height: 52px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+tr.sel td { background: rgba(94,200,255,.06); }
+tr:hover td { background: rgba(255,255,255,.02); }
+.check { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+td.cb, th.cb { width: 44px; }
+.sid { font-family: var(--mono); font-size: 12.5px; }
+.prov { font: 500 10.5px var(--mono); padding: 2px 6px; border-radius: 4px; background: var(--panel-2); color: var(--muted); margin-right: 8px; text-transform: uppercase; }
+.st { display: inline-flex; align-items: center; gap: 6px; }
+.cwd { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.aud { height: 34px; padding: 0 10px; border-radius: var(--r); border: 1px dashed var(--line-strong); background: none; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; min-width: 150px; justify-content: space-between; }
+.aud.on { border-style: solid; border-color: rgba(57,224,122,.45); color: var(--text); background: var(--accent-dim); }
+.aud:hover { border-color: var(--muted); }
+.aud::after { content: "▾"; color: var(--dim); font-size: 11px; }
+td.act { text-align: right; white-space: nowrap; }
+td.act .btn + .btn { margin-left: 6px; }
+.ago { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.bulk { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 16px; border-radius: 12px; background: #1e262e; border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0,0,0,.5); z-index: 5; }
+.bulk[hidden] { display: none; }
+
+/* popover menu */
+.menu { position: absolute; z-index: 20; width: 300px; background: #1a2128; border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 16px 40px rgba(0,0,0,.55); padding: 6px; }
+.menu[hidden] { display: none; }
+.menu button { width: 100%; text-align: left; background: none; border: 0; border-radius: 6px; padding: 10px 10px; min-height: 48px; cursor: pointer; display: grid; grid-template-columns: 18px 1fr; gap: 2px 10px; color: var(--text); }
+.menu button:hover { background: var(--panel-2); }
+.menu button .mk { grid-row: span 2; color: var(--accent); padding-top: 1px; }
+.menu button small { color: var(--muted); font-size: 12px; grid-column: 2; }
+.menu button small.caveat { color: var(--amber); margin-top: 2px; }
+.aud .caveat { color: var(--amber); font-size: 12px; margin-left: -2px; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
+
+/* machines view */
+.split { flex: 1; display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+.side { border-right: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+.mrow { display: grid; grid-template-columns: 10px 1fr; gap: 2px 10px; align-items: center; padding: 10px 12px; border-radius: var(--r); cursor: pointer; border: 1px solid transparent; background: none; text-align: left; color: var(--text); min-height: 56px; }
+.mrow:hover { background: var(--panel-2); }
+.mrow[aria-current="true"] { background: var(--panel-2); border-color: var(--line-strong); }
+.mrow small { grid-column: 2; color: var(--muted); font-size: 12px; }
+.main { padding: 20px 24px; overflow: auto; display: grid; align-content: start; gap: 18px; }
+
+.stepper { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.step { padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); display: grid; gap: 2px; }
+.step .n { font: 500 11px var(--mono); color: var(--dim); letter-spacing: .08em; }
+.step.now { border-color: var(--info); background: var(--info-dim); }
+.step.now .n { color: var(--info); }
+.step.done { border-color: rgba(57,224,122,.35); }
+.step.done .n { color: var(--accent); }
+.step small { color: var(--muted); font-size: 12px; }
+.card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 16px; display: grid; gap: 12px; }
+.card-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
+.addr { font: 500 20px var(--mono); letter-spacing: .01em; }
+.cand { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.cand:first-of-type { border-top: 0; }
+.cand .meta { color: var(--muted); font-size: 12.5px; }
+.fp { font: 500 15px/1.4 var(--mono); letter-spacing: .04em; padding: 10px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.fpgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.fpgrid label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+.inline-fix { display: flex; gap: 12px; align-items: center; padding: 12px; border-radius: 8px; background: var(--amber-dim); border: 1px solid rgba(232,173,74,.35); }
+.inline-fix p { flex: 1; }
+.inline-fix p span { display: block; color: var(--muted); font-size: 12.5px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 12px; background: var(--panel-2); color: var(--muted); }
+.pill.ok { background: var(--accent-dim); color: var(--accent); }
+.pill.info { background: var(--info-dim); color: var(--info); }
+.pill.warn { background: var(--amber-dim); color: var(--amber); }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 14px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; }
+
+/* settings */
+.set { padding: 20px 24px; overflow: auto; display: grid; gap: 14px; align-content: start; max-width: 760px; }
+.set .card p span { display: block; color: var(--muted); font-size: 12.5px; }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid var(--line); min-height: 52px; }
+.toggle:first-of-type { border-top: 0; }
+.toggle span { display: block; color: var(--muted); font-size: 12.5px; }
+.sw { width: 44px; height: 26px; border-radius: 13px; background: var(--line-strong); border: 0; position: relative; cursor: pointer; flex: none; }
+.sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--text); transition: left .15s; }
+.sw[aria-checked="true"] { background: var(--accent); }
+.sw[aria-checked="true"]::after { left: 21px; background: var(--accent-ink); }
+
+/* drawer (inbox + notifications) */
+.drawer { position: absolute; top: 52px; right: 0; bottom: 0; width: 400px; background: var(--panel); border-left: 1px solid var(--line-strong); box-shadow: -16px 0 40px rgba(0,0,0,.45); z-index: 15; display: flex; flex-direction: column; }
+.drawer[hidden] { display: none; }
+.drawer-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.drawer-body { flex: 1; overflow: auto; padding: 12px 14px; display: grid; gap: 10px; align-content: start; }
+.note { font-size: 12.5px; color: var(--muted); padding: 8px 10px; border-radius: 6px; background: var(--bg); }
+.msgrow { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--line); display: grid; gap: 6px; }
+.msgrow .from { font-size: 12px; color: var(--muted); }
+.msgrow .from code { font-family: var(--mono); color: var(--info); }
+.msgrow .from em { font-style: normal; color: var(--amber); }
+.nitem { display: grid; grid-template-columns: 4px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.nitem:first-child { border-top: 0; }
+.nitem .sev { border-radius: 2px; background: var(--accent); }
+.nitem.error .sev { background: var(--red); }
+.nitem.warn .sev { background: var(--amber); }
+.nitem.info .sev { background: var(--info); }
+.nitem small { color: var(--dim); font: 11.5px var(--mono); display: block; }
+.empty { color: var(--muted); text-align: center; padding: 24px 0; }
+
+/* toasts */
+.toasts { position: absolute; right: 16px; bottom: 16px; display: grid; gap: 8px; z-index: 30; width: 360px; }
+.toast { position: relative; overflow: hidden; display: grid; grid-template-columns: 4px 1fr auto; gap: 12px; align-items: start; padding: 12px 12px 12px 0; border-radius: 10px; background: #1e262e; border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0,0,0,.5); animation: rise .18s ease-out; }
+.toast .sev { align-self: stretch; background: var(--accent); }
+.toast.error .sev { background: var(--red); }
+.toast.warn .sev { background: var(--amber); }
+.toast.info .sev { background: var(--info); }
+.toast b { display: block; font-weight: 600; }
+.toast span { display: block; color: var(--muted); font-size: 12.5px; }
+.toast .acts { display: flex; gap: 6px; margin-top: 8px; }
+.toast .timer { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); animation: drain 6s linear forwards; }
+@keyframes drain { from { width: 100%; } to { width: 0; } }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.statusbar { flex: none; height: 30px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 16px; padding: 0 14px; color: var(--dim); font: 11.5px var(--mono); }
+
+/* ---------- spec boards ---------- */
+.specs { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+.spec { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 18px; display: grid; gap: 14px; align-content: start; min-width: 0; }
+.spec table td, .spec table th { height: auto; padding: 8px 6px; position: static; background: none; }
+.spec td { font-size: 13px; }
+.num { font: 500 13px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+.was { color: var(--red); }
+.now { color: var(--accent); }
+.spec ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.spec ul b { color: var(--text); font-weight: 500; }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.tier { display: grid; grid-template-columns: 88px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.tier:first-of-type { border-top: 0; }
+.tier span { color: var(--muted); }
+.tbl-wrap { overflow-x: auto; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="page">
+  <header class="top">
+    <div class="eyebrow">AgentHub Desktop · 改版提案</div>
+    <h1>每件事三步以內，每個按鈕都有結果</h1>
+    <p class="lede">下面這個視窗可以直接操作：公開 session、開收件匣、和另一台機器配對、修背景服務。畫面上的資料都是示範資料。每一次點擊都會得到一個看得見的回應，失敗的訊息會留到你關掉為止。</p>
+    <div class="rules">
+      <span class="rule"><b>按鈕</b> 至少 36px 高，主要動作 40px</span>
+      <span class="rule"><b>通知</b> 待處理列 · toast · 通知中心 三層</span>
+      <span class="rule"><b>步驟</b> 任何流程不超過 3 次操作</span>
+      <span class="rule"><b>不能按</b> 的按鈕旁邊寫原因</span>
+    </div>
+  </header>
+
+  <section class="board">
+    <div class="board-head">
+      <h2>主視窗原型</h2>
+      <p>試試看：點「公開對象」欄直接換情境；勾幾列用底部的批次列；到「機器」分頁跑一次配對；點右上的鈴鐺看通知紀錄。</p>
+    </div>
+    <div class="scroller">
+      <div class="win" id="win">
+        <div class="titlebar">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <nav class="tabs" role="tablist">
+            <button class="tab" role="tab" aria-selected="true" data-view="sessions" id="tab-sessions">Session <span class="count" id="n-sessions">6</span><span class="badge warn" id="tab-inbox" title="還在收件匣裡、agent 還沒取走的訊息">15</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-view="machines" id="tab-machines">機器 <span class="count" id="n-machines">1</span></button>
+            <button class="tab" role="tab" aria-selected="false" data-view="settings" id="tab-settings">設定</button>
+          </nav>
+          <span class="spacer"></span>
+          <button class="svc" id="svc-pill" title="背景服務狀態，點了直接處理"><span class="dot warn" id="svc-dot"></span><span id="svc-text" data-label>背景服務沒在跑</span></button>
+          <button class="btn ghost" id="btn-scan" title="重新掃描這台機器上的 Claude / Codex session">重新掃描</button>
+          <button class="btn bell" id="btn-bell" aria-label="通知紀錄">🔔<span class="badge alert" id="bell-n">2</span></button>
+        </div>
+
+        <div class="attn" id="attn"></div>
+
+        <div class="body">
+          <!-- Sessions -->
+          <section class="view" id="view-sessions">
+            <div class="toolbar">
+              <input class="search" id="q" placeholder="搜尋 session、目錄…" aria-label="搜尋">
+              <div class="seg" role="group" aria-label="篩選">
+                <button aria-pressed="true" data-f="all">全部 <span class="count">6</span></button>
+                <button aria-pressed="false" data-f="pub">已公開 <span class="count" id="n-pub">2</span></button>
+                <button aria-pressed="false" data-f="inbox">有訊息 <span class="count" id="n-inb">2</span></button>
+                <button aria-pressed="false" data-f="active">執行中 <span class="count">3</span></button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th class="cb"><input type="checkbox" class="check" id="select-all" aria-label="全選"></th><th>Session</th><th>狀態</th><th>公開對象</th><th>工作目錄</th><th>最後活動</th><th></th></tr></thead>
+                <tbody id="rows"></tbody>
+              </table>
+            </div>
+            <div class="bulk" id="bulk" hidden>
+              <span>已選 <b id="bulk-n">0</b> 個</span>
+              <button class="btn primary" id="bulk-publish">公開給所有已配對機器 ▾</button>
+              <button class="btn" id="bulk-off">收回公開</button>
+              <button class="btn ghost" id="bulk-clear">取消選取</button>
+            </div>
+          </section>
+
+          <!-- Machines -->
+          <section class="view" id="view-machines" hidden>
+            <div class="split">
+              <aside class="side">
+                <button class="btn primary" id="btn-pair" style="width:100%">＋ 配對另一台機器</button>
+                <div class="eyebrow" style="color:var(--dim);margin-top:6px">已配對</div>
+                <div id="machine-list"></div>
+              </aside>
+              <div class="main" id="machine-main"></div>
+            </div>
+          </section>
+
+          <!-- Settings -->
+          <section class="view" id="view-settings" hidden>
+            <div class="set" id="settings"></div>
+          </section>
+        </div>
+
+        <div class="statusbar"><span>節點 demo-node-7f3a</span><span>顯示 6 / 6 個 session</span><span class="spacer"></span><span>v0.1.6</span></div>
+
+        <div class="menu" id="aud-menu" hidden role="menu"></div>
+
+        <aside class="drawer" id="drawer" hidden>
+          <div class="drawer-head"><h3 id="drawer-title">收件匣</h3><span class="spacer"></span><button class="btn ghost sm" id="drawer-close">關閉</button></div>
+          <div class="drawer-body" id="drawer-body"></div>
+        </aside>
+
+        <div class="toasts" id="toasts" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="specs">
+    <article class="spec">
+      <div class="eyebrow">步驟對照</div>
+      <h2>從開始到完成要按幾下</h2>
+      <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>流程</th><th class="num">現在</th><th class="num">改版</th></tr></thead>
+        <tbody>
+          <tr><td>公開一個 session<br><small class="muted">點公開對象欄 → 選情境（立即套用，可復原）</small></td><td class="num was">4</td><td class="num now">2</td></tr>
+          <tr><td>批次公開 N 個<br><small class="muted">勾選 → 底部批次列按公開</small></td><td class="num was">4</td><td class="num now">2＋N</td></tr>
+          <tr><td>和另一台機器配對（發起方）<br><small class="muted">配對 → 送出請求 → 指紋一致，確認</small></td><td class="num was">5+</td><td class="num now">3</td></tr>
+          <tr><td>核准對方的請求<br><small class="muted">待處理列按「比對並核准」→ 核准</small></td><td class="num was">4</td><td class="num now">2</td></tr>
+          <tr><td>讓區網連得到這台機器<br><small class="muted">在配對卡片上一鍵存檔並重啟</small></td><td class="num was">5</td><td class="num now">1</td></tr>
+          <tr><td>讀收件匣<br><small class="muted">點徽章</small></td><td class="num was">1</td><td class="num now">1</td></tr>
+          <tr><td>啟動背景服務<br><small class="muted">點標題列的服務狀態</small></td><td class="num was">3</td><td class="num now">1</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <ul>
+        <li><b>不跳頁。</b>修問題的按鈕放在問題旁邊，不再「跳到設定 → 找到區塊 → 存檔 → 重啟」。</li>
+        <li><b>可復原取代確認。</b>公開對象的變更立即套用，toast 帶「復原」；只有撤銷信任、清空收件匣這種回不去的動作才問。</li>
+        <li><b>比對指紋永遠是使用者自己按的那一下。</b>沒有自動核准，也沒有全部核准。</li>
+      </ul>
+    </article>
+
+    <article class="spec">
+      <div class="eyebrow">按鈕規格</div>
+      <h2>好點、看得出狀態</h2>
+      <div class="swatches">
+        <button class="btn primary">主要動作</button>
+        <button class="btn">一般</button>
+        <button class="btn danger">撤銷信任</button>
+        <button class="btn busy">套用中…</button>
+        <button class="btn" disabled>已停用</button>
+      </div>
+      <ul>
+        <li><b>尺寸：</b>一般 36px、主要 40px、表格列 52px；可點面積不小於 36×36。現在是 28px。</li>
+        <li><b>每個畫面一個主要按鈕。</b>綠色只給「下一步該按的那顆」。</li>
+        <li><b>按下後立刻換狀態：</b>轉圈＋動詞進行式（「套用中…」），同時停用避免連點。完成時一定有 toast 或原地的結果文字。</li>
+        <li><b>停用要說原因。</b>停用鈕旁邊一行小字寫為什麼、怎麼解，不只放在 tooltip。</li>
+        <li><b>沒有功能的按鈕不上畫面。</b>隱藏的 btn-reload、重複的開啟配對入口全部拿掉。</li>
+        <li><b>鍵盤：</b>焦點外框用藍色 2px；Enter 送出、Esc 關抽屜。</li>
+      </ul>
+    </article>
+
+    <article class="spec">
+      <div class="eyebrow">通知分級</div>
+      <h2>三層，各管一件事</h2>
+      <div>
+        <div class="tier"><b>待處理列</b><span>標題列下方，固定不消失，直到事情處理完。每列帶一顆能直接解決它的按鈕：配對請求、收件匣已滿、服務沒在跑、節點連不到。</span></div>
+        <div class="tier"><b>Toast</b><span>右下角，回應你剛按的那一下。成功 6 秒後收起（底部有倒數條）；錯誤與警告<b style="color:var(--text)">不會自己消失</b>，並附補救按鈕。</span></div>
+        <div class="tier"><b>通知中心</b><span>鈴鐺裡保留本次開啟後的每一則，含時間。錯過 toast 的人在這裡找得到。鈴鐺數字只算未讀的錯誤與待處理。</span></div>
+        <div class="tier"><b>系統通知</b><span>視窗不在前景時，配對請求與收件匣已滿另送一則 macOS / Windows 通知，點了回到對應畫面。</span></div>
+      </div>
+      <div class="swatches">
+        <span class="pill ok">● 成功</span><span class="pill info">● 需要你</span><span class="pill warn">● 警告</span><span class="pill" style="background:var(--red-dim);color:var(--red)">● 錯誤</span>
+      </div>
+    </article>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const win = $('#win');
+  const PRESETS = [
+    { id: 'none', label: '不公開', hint: '其他機器看不到這個 session' },
+    { id: 'msg', label: '能留訊息', hint: '對方看得到，也能寄訊息到收件匣' },
+    { id: 'wake', label: '留訊息並喚醒', hint: '訊息到了試著叫醒 agent 回覆',
+      note: '不保證叫得醒：節點沒開自動喚醒、agent 已關閉或不支援時都不會醒。叫不醒的訊息會留在收件匣。' },
+  ];
+  const label = id => PRESETS.find(p => p.id === id).label;
+  const state = {
+    view: 'sessions', filter: 'all', q: '',
+    sessions: [
+      { id: 'a41c-9e02', prov: 'claude', st: 'active', aud: 'wake', cwd: '~/demo/web-shop', ago: '12 秒前', inbox: 3 },
+      { id: 'b7d0-11fa', prov: 'codex', st: 'active', aud: 'msg', cwd: '~/demo/api-server', ago: '1 分前', inbox: 12, full: true },
+      { id: 'c093-5b7e', prov: 'claude', st: 'idle', aud: 'none', cwd: '~/demo/docs-site', ago: '18 分前', inbox: 0 },
+      { id: 'd2e8-a4c1', prov: 'claude', st: 'active', aud: 'none', cwd: '~/demo/mobile-app', ago: '25 分前', inbox: 0 },
+      { id: 'e5f1-0d93', prov: 'codex', st: 'idle', aud: 'none', cwd: '~/demo/infra', ago: '2 小時前', inbox: 0 },
+      { id: 'f66a-72b8', prov: 'claude', st: 'inactive', aud: 'none', cwd: '—', ago: '3 天前', inbox: 0 },
+    ],
+    selected: new Set(),
+    service: 'stopped',
+    lanOpen: false,
+    pair: { step: 0, sent: null },
+    incoming: true,
+    machines: [{ name: 'Demo-Ubuntu', plat: 'linux', online: true, seen: '剛剛' }],
+    curMachine: 0,
+    notes: [
+      { kind: 'warn', title: '背景服務沒在跑', body: '關掉視窗後其他機器會連不到這台。', t: '09:41', unread: true },
+      { kind: 'info', title: 'Demo-MacBook 想和這台機器配對', body: '比對兩邊畫面上的指紋後核准。', t: '09:40', unread: true },
+    ],
+  };
+  const now = () => new Date().toTimeString().slice(0, 5);
+
+  /* ---------- toasts + notification log ---------- */
+  function notify(kind, title, body = '', actions = []) {
+    state.notes.unshift({ kind, title, body, t: now(), unread: kind === 'error' || kind === 'warn' });
+    renderBell();
+    const el = document.createElement('div');
+    el.className = 'toast ' + kind;
+    el.innerHTML = '<i class="sev"></i><div><b></b><span></span><div class="acts"></div></div><button class="btn ghost sm" aria-label="關閉">✕</button>';
+    el.querySelector('b').textContent = title;
+    el.querySelector('span').textContent = body;
+    const acts = el.querySelector('.acts');
+    if (!actions.length) acts.remove();
+    actions.forEach(a => { const b = document.createElement('button'); b.className = 'btn sm'; b.textContent = a.label; b.onclick = () => { el.remove(); a.run(); }; acts.appendChild(b); });
+    el.querySelector('[aria-label="關閉"]').onclick = () => el.remove();
+    if (kind === 'ok' || kind === 'info') { const tm = document.createElement('i'); tm.className = 'timer'; el.appendChild(tm); setTimeout(() => el.remove(), 6000); }
+    const box = $('#toasts'); box.appendChild(el);
+    while (box.children.length > 3) box.firstChild.remove();
+  }
+  function renderBell() {
+    const n = state.notes.filter(x => x.unread).length;
+    const b = $('#bell-n'); b.textContent = n; b.hidden = !n;
+  }
+  function busy(btn, ms, done, text) {
+    const lab = btn.querySelector('[data-label]') || btn;
+    const old = lab.textContent; btn.classList.add('busy'); btn.disabled = true; if (text) lab.textContent = text;
+    setTimeout(() => { btn.classList.remove('busy'); btn.disabled = false; lab.textContent = old; done(); }, ms);
+  }
+
+  /* ---------- attention strip ---------- */
+  function renderAttn() {
+    const items = [];
+    if (state.incoming) items.push({ sev: 'info', title: 'Demo-MacBook 想和這台機器配對', sub: '請求 9 分鐘後到期 · 比對兩邊畫面上的指紋再核准', btn: '比對並核准', run: () => { go('machines'); state.pair.step = 'incoming'; renderMachines(); } });
+    const full = state.sessions.find(s => s.full);
+    if (full) items.push({ sev: 'warn', title: `收件匣已滿：${full.cwd.split('/').pop()}`, sub: '12 / 12 則，新訊息會被退回給寄件者', btn: '開啟收件匣', run: () => openInbox(full) });
+    if (state.service === 'stopped') items.push({ sev: 'alert', title: '背景服務沒在跑', sub: '關掉這個視窗後，其他機器就連不到這台', btn: '啟動背景服務', run: e => startService(e.currentTarget) });
+    const box = $('#attn'); box.replaceChildren();
+    items.forEach(it => {
+      const r = document.createElement('div'); r.className = 'attn-row ' + it.sev;
+      r.innerHTML = '<i class="sev"></i><div class="msg"><b></b><span></span></div>';
+      r.querySelector('b').textContent = it.title; r.querySelector('span').textContent = it.sub;
+      const b = document.createElement('button'); b.className = 'btn' + (it.sev === 'alert' ? ' primary' : ''); b.textContent = it.btn; b.onclick = it.run;
+      const x = document.createElement('button'); x.className = 'btn ghost sm'; x.textContent = '稍後'; x.title = '先收起，鈴鐺裡還找得到';
+      x.onclick = () => r.remove();
+      r.append(b, x); box.appendChild(r);
+    });
+  }
+
+  function startService(btn) {
+    busy(btn, 900, () => { state.service = 'running'; renderSvc(); renderAttn(); if (state.view === 'settings') renderSettings(); notify('ok', '背景服務已啟動', '登入後會自動執行，關掉視窗也不會停。'); }, '啟動中…');
+  }
+  function renderSvc() {
+    const run = state.service === 'running';
+    $('#svc-dot').className = 'dot ' + (run ? '' : 'warn');
+    $('#svc-text').textContent = run ? '背景服務執行中' : '背景服務沒在跑';
+  }
+  $('#svc-pill').onclick = e => { if (state.service === 'stopped') startService(e.currentTarget); else { go('settings'); } };
+  $('#btn-scan').onclick = e => busy(e.currentTarget, 800, () => notify('ok', '掃描完成', '找到 claude 4 個、codex 2 個，共 6 個 session。'), '掃描中…');
+
+  /* ---------- sessions ---------- */
+  function visible() {
+    return state.sessions.filter(s => {
+      if (state.q && !(s.id + s.cwd).toLowerCase().includes(state.q)) return false;
+      if (state.filter === 'pub') return s.aud !== 'none';
+      if (state.filter === 'inbox') return s.inbox > 0;
+      if (state.filter === 'active') return s.st === 'active';
+      return true;
+    });
+  }
+  function renderRows() {
+    const tb = $('#rows'); tb.replaceChildren();
+    const rows = visible();
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">沒有符合條件的 session。<button class="btn sm" id="clear-f" style="margin-left:8px">清除篩選</button></td></tr>'; $('#clear-f').onclick = () => setFilter('all', true); }
+    rows.forEach(s => {
+      const tr = document.createElement('tr'); if (state.selected.has(s.id)) tr.className = 'sel';
+      const stDot = s.st === 'active' ? '' : s.st === 'idle' ? 'warn' : 'off';
+      const stTxt = { active: '執行中', idle: '閒置', inactive: '已結束' }[s.st];
+      tr.innerHTML = `<td class="cb"><input type="checkbox" class="check" aria-label="選取"></td>
+        <td><span class="prov"></span><span class="sid"></span></td>
+        <td><span class="st"><i class="dot ${stDot}"></i>${stTxt}</span></td>
+        <td><button class="aud"></button></td>
+        <td class="cwd"></td><td class="ago"></td>
+        <td class="act"><button class="btn sm ib">收件匣</button><button class="btn sm ghost rs" title="複製 resume 指令">複製 resume</button></td>`;
+      tr.querySelector('.prov').textContent = s.prov;
+      tr.querySelector('.sid').textContent = s.id;
+      tr.querySelector('.cwd').textContent = s.cwd;
+      tr.querySelector('.ago').textContent = s.ago;
+      const cb = tr.querySelector('.check'); cb.checked = state.selected.has(s.id);
+      cb.onchange = () => { cb.checked ? state.selected.add(s.id) : state.selected.delete(s.id); renderRows(); };
+      const aud = tr.querySelector('.aud'); aud.textContent = label(s.aud); if (s.aud !== 'none') aud.classList.add('on');
+      if (s.aud === 'wake') { const c = document.createElement('span'); c.className = 'caveat'; c.textContent = '⚠'; aud.appendChild(c); aud.title = PRESETS[2].note; }
+      aud.onclick = e => openMenu(e.currentTarget, [s]);
+      const ib = tr.querySelector('.ib');
+      if (s.inbox) { const b = document.createElement('span'); b.className = 'badge' + (s.full ? ' warn' : ''); b.textContent = s.inbox; ib.appendChild(b); }
+      ib.onclick = () => openInbox(s);
+      tr.querySelector('.rs').onclick = e => { const b = e.currentTarget; b.textContent = '已複製 ✓'; setTimeout(() => b.textContent = '複製 resume', 1600); };
+      tb.appendChild(tr);
+    });
+    const n = state.selected.size;
+    $('#bulk').hidden = !n; $('#bulk-n').textContent = n;
+    const all = $('#select-all'); all.checked = n && n === rows.length; all.indeterminate = n > 0 && n < rows.length;
+    $('#n-pub').textContent = state.sessions.filter(s => s.aud !== 'none').length;
+    $('#n-inb').textContent = state.sessions.filter(s => s.inbox).length;
+    const total = state.sessions.reduce((a, s) => a + s.inbox, 0);
+    const tb2 = $('#tab-inbox'); tb2.textContent = total; tb2.hidden = !total; tb2.className = 'badge' + (state.sessions.some(s => s.full) ? ' warn' : '');
+  }
+  function setFilter(f, clearQ) {
+    state.filter = f; if (clearQ) { state.q = ''; $('#q').value = ''; }
+    document.querySelectorAll('.seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.f === f));
+    renderRows();
+  }
+  document.querySelectorAll('.seg button').forEach(b => b.onclick = () => setFilter(b.dataset.f));
+  $('#q').oninput = e => { state.q = e.target.value.toLowerCase(); renderRows(); };
+  $('#select-all').onchange = e => { visible().forEach(s => e.target.checked ? state.selected.add(s.id) : state.selected.delete(s.id)); renderRows(); };
+  $('#bulk-clear').onclick = () => { state.selected.clear(); renderRows(); };
+  $('#bulk-off').onclick = () => apply([...state.selected].map(id => state.sessions.find(s => s.id === id)), 'none');
+  $('#bulk-publish').onclick = e => openMenu(e.currentTarget, [...state.selected].map(id => state.sessions.find(s => s.id === id)), true);
+
+  function apply(list, aud) {
+    const prev = list.map(s => [s, s.aud]);
+    list.forEach(s => s.aud = aud); state.selected.clear(); renderRows();
+    const what = list.length === 1 ? list[0].cwd.split('/').pop() || list[0].id : `${list.length} 個 session`;
+    notify('ok', aud === 'none' ? `已收回：${what}` : `已公開：${what}`, aud === 'none' ? '其他機器看不到了。' : `情境：${label(aud)}，對象：所有已配對機器。` + (aud === 'wake' ? '喚醒不一定成功，叫不醒時訊息會留在收件匣。' : ''),
+      [{ label: '復原', run: () => { prev.forEach(([s, a]) => s.aud = a); renderRows(); notify('ok', '已復原', '公開對象回到原本的設定。'); } }]);
+  }
+  const menu = $('#aud-menu');
+  function openMenu(anchor, list, above) {
+    const cur = list.length === 1 ? list[0].aud : null;
+    menu.replaceChildren();
+    const head = document.createElement('div'); head.className = 'note'; head.style.margin = '2px 2px 6px';
+    head.textContent = list.length === 1 ? '公開給所有已配對機器，選了立即套用' : `套用到 ${list.length} 個 session，選了立即套用`;
+    menu.appendChild(head);
+    PRESETS.forEach(p => {
+      const b = document.createElement('button'); b.setAttribute('role', 'menuitem');
+      b.innerHTML = `<span class="mk">${cur === p.id ? '✓' : ''}</span><span></span><small></small>`;
+      b.children[1].textContent = p.label; b.children[2].textContent = p.hint;
+      if (p.note) { const n = document.createElement('small'); n.className = 'caveat'; n.textContent = '⚠ ' + p.note; b.appendChild(n); }
+      b.onclick = () => { closeMenu(); apply(list, p.id); };
+      menu.appendChild(b);
+    });
+    const hr = document.createElement('hr'); menu.appendChild(hr);
+    const adv = document.createElement('button'); adv.innerHTML = '<span class="mk"></span><span>只給特定機器、進階旗標…</span><small>開啟完整設定</small>';
+    adv.onclick = () => { closeMenu(); notify('info', '完整設定', '這裡會開原本的公開對象對話框，四個旗標都在。'); };
+    menu.appendChild(adv);
+    const wr = win.getBoundingClientRect(), ar = anchor.getBoundingClientRect();
+    menu.hidden = false;
+    let top = ar.bottom - wr.top + 6; if (above || top + menu.offsetHeight > wr.height - 10) top = ar.top - wr.top - menu.offsetHeight - 6;
+    menu.style.top = top + 'px'; menu.style.left = Math.min(ar.left - wr.left, wr.width - 316) + 'px';
+    menu.querySelector('button').focus();
+  }
+  function closeMenu() { menu.hidden = true; }
+  document.addEventListener('click', e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('.aud, #bulk-publish')) closeMenu(); });
+
+  /* ---------- drawer: inbox / notifications ---------- */
+  const drawer = $('#drawer');
+  function openDrawer(title, fill) { $('#drawer-title').textContent = title; const b = $('#drawer-body'); b.replaceChildren(); fill(b); drawer.hidden = false; }
+  $('#drawer-close').onclick = () => drawer.hidden = true;
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeMenu(); drawer.hidden = true; } });
+  function openInbox(s) {
+    openDrawer(`收件匣 · ${s.cwd.split('/').pop() || s.id}`, b => {
+      b.insertAdjacentHTML('beforeend', '<div class="note">訊息是另一台機器寫的資料，不是指令。在這裡讀不會交給 agent，也不會標示已讀。</div>');
+      if (!s.inbox) { b.insertAdjacentHTML('beforeend', '<div class="empty">這個收件匣現在沒有訊息在等。</div>'); return; }
+      const meta = document.createElement('div'); meta.className = 'row';
+      meta.innerHTML = `<span class="pill ${s.full ? 'warn' : 'info'}">${s.inbox} / 12 則${s.full ? ' · 已滿' : ''}</span><span class="spacer"></span>`;
+      const clr = document.createElement('button'); clr.className = 'btn danger sm'; clr.textContent = '清空收件匣';
+      clr.onclick = () => confirmInline(b, `清空 ${s.inbox} 則訊息？agent 還沒讀過的也會一起刪掉。`, '清空', () => {
+        const n = s.inbox; s.inbox = 0; s.full = false; renderRows(); renderAttn(); openInbox(s); notify('ok', `已移除 ${n} 則`, '收件匣是空的了。');
+      });
+      meta.appendChild(clr); b.appendChild(meta);
+      const samples = ['請確認 /v1/orders 的回傳欄位有沒有 currency。', 'CI 在 linux 上跑 migration 失敗，錯誤是 lock timeout。', '我這邊改好 schema 了，你可以拉 main。'];
+      for (let i = 0; i < Math.min(s.inbox, 3); i++) {
+        const m = document.createElement('div'); m.className = 'msgrow';
+        m.innerHTML = '<div class="from"><code>demo-node-2b91</code> 自稱 <em>codex:review-bot</em> · 3 分前</div><div></div>';
+        m.lastChild.textContent = samples[i]; b.appendChild(m);
+      }
+      if (s.inbox > 3) b.insertAdjacentHTML('beforeend', `<button class="btn">再載入 ${s.inbox - 3} 則</button>`);
+    });
+  }
+  function confirmInline(host, text, okLabel, run) {
+    const c = document.createElement('div'); c.className = 'inline-fix'; c.style.background = 'var(--red-dim)'; c.style.borderColor = 'rgba(239,93,83,.4)';
+    c.innerHTML = '<p></p>'; c.firstChild.textContent = text;
+    const no = document.createElement('button'); no.className = 'btn sm'; no.textContent = '取消'; no.onclick = () => c.remove();
+    const ok = document.createElement('button'); ok.className = 'btn danger sm'; ok.textContent = okLabel; ok.onclick = run;
+    c.append(no, ok); host.prepend(c); no.focus();
+  }
+  $('#btn-bell').onclick = () => {
+    openDrawer('通知紀錄', b => {
+      if (!state.notes.length) { b.innerHTML = '<div class="empty">目前沒有通知。</div>'; return; }
+      state.notes.forEach(n => {
+        const d = document.createElement('div'); d.className = 'nitem ' + (n.kind === 'ok' ? '' : n.kind);
+        d.innerHTML = '<i class="sev"></i><div><b></b><div class="muted" style="font-size:12.5px"></div><small></small></div>';
+        d.querySelector('b').textContent = n.title; d.querySelector('.muted').textContent = n.body; d.querySelector('small').textContent = n.t;
+        b.appendChild(d);
+      });
+    });
+    state.notes.forEach(n => n.unread = false); renderBell();
+  };
+
+  /* ---------- machines / pairing ---------- */
+  function renderMachines() {
+    const list = $('#machine-list'); list.replaceChildren();
+    state.machines.forEach((m, i) => {
+      const r = document.createElement('button'); r.className = 'mrow'; r.setAttribute('aria-current', state.pair.step === 0 && state.curMachine === i);
+      r.innerHTML = `<i class="dot ${m.online ? '' : 'off'}"></i><span></span><small></small>`;
+      r.children[1].textContent = m.name; r.children[2].textContent = `${m.online ? '線上' : '離線'} · ${m.plat} · ${m.seen}`;
+      r.onclick = () => { state.pair.step = 0; state.curMachine = i; renderMachines(); };
+      list.appendChild(r);
+    });
+    $('#n-machines').textContent = state.machines.length;
+    const main = $('#machine-main'); main.replaceChildren();
+    const st = state.pair.step;
+    if (st === 0 && !state.machines.length) { main.innerHTML = '<div class="empty">還沒有配對任何機器。按左上的「配對另一台機器」開始。</div>'; return; }
+    if (st === 0) return machineDetail(main, state.machines[state.curMachine]);
+    if (st === 'incoming') return incomingView(main);
+    main.insertAdjacentHTML('beforeend', `<div class="row"><h2>配對另一台機器</h2><span class="pill info">配對開放中 · <span id="cd">9:42</span></span><span class="spacer"></span></div>`);
+    const cancel = document.createElement('button'); cancel.className = 'btn ghost'; cancel.textContent = '結束配對';
+    cancel.onclick = () => { state.pair = { step: 0, sent: null }; renderMachines(); notify('info', '配對已結束', '這台機器不再接受新的配對請求。'); };
+    main.firstElementChild.appendChild(cancel);
+    const steps = [['找到對方', '同網段自動出現，或輸入位址'], ['送出請求', '一鍵送出'], ['比對指紋', '兩邊一致就按確認']];
+    const sp = document.createElement('div'); sp.className = 'stepper';
+    steps.forEach(([t, s], i) => { const d = document.createElement('div'); d.className = 'step' + (i + 1 < st ? ' done' : i + 1 === st ? ' now' : ''); d.innerHTML = `<span class="n">${i + 1 < st ? '✓ 完成' : '第 ' + (i + 1) + ' 步'}</span><b>${t}</b><small>${s}</small>`; sp.appendChild(d); });
+    main.appendChild(sp);
+
+    if (st === 1) {
+      const here = document.createElement('div'); here.className = 'card';
+      if (!state.lanOpen) {
+        here.innerHTML = '<div class="card-head"><h3>這台機器的位址</h3></div>';
+        const fix = document.createElement('div'); fix.className = 'inline-fix';
+        fix.innerHTML = '<p><b>還沒有人連得進這台機器</b><span>節點只聽 127.0.0.1。允許區網連線後會用 192.168.1.20 並重啟節點，約 3 秒。</span></p>';
+        const b = document.createElement('button'); b.className = 'btn primary'; b.textContent = '允許區網連線';
+        b.onclick = () => busy(b, 1200, () => { state.lanOpen = true; renderMachines(); notify('ok', '區網連得到了', '節點已重啟，位址 192.168.1.20:7463。'); }, '重啟節點中…');
+        fix.appendChild(b); here.appendChild(fix);
+      } else {
+        here.innerHTML = '<div class="card-head"><h3>這台機器的位址</h3><span class="muted" style="font-size:12.5px">對方找不到你時，請他輸入這串</span></div><div class="row"><span class="addr">192.168.1.20:7463</span></div>';
+        const cp = document.createElement('button'); cp.className = 'btn sm'; cp.textContent = '複製位址';
+        cp.onclick = () => { cp.textContent = '已複製 ✓'; setTimeout(() => cp.textContent = '複製位址', 1600); };
+        here.querySelector('.row').appendChild(cp);
+      }
+      main.appendChild(here);
+      const c = document.createElement('div'); c.className = 'card';
+      c.innerHTML = '<div class="card-head"><h3>同網段找到的機器</h3><span class="pill">名稱與指紋都是對方自稱的</span></div><div id="cands"></div><div class="row"><input class="search" id="pair-address" placeholder="或輸入對方的位址，例如 192.168.1.31:7463" style="flex:1"><button class="btn" id="btn-pair-send">送出請求</button></div>';
+      main.appendChild(c);
+      const cands = [{ name: 'Demo-MacBook', meta: 'darwin · 192.168.1.31:7463 · 剛剛看到' }, { name: 'Demo-Windows', meta: 'windows · 192.168.1.44:7463 · 2 分前看到' }];
+      cands.forEach(cd => {
+        const r = document.createElement('div'); r.className = 'cand';
+        r.innerHTML = '<div><b></b><div class="meta"></div></div>';
+        r.querySelector('b').textContent = cd.name; r.querySelector('.meta').textContent = cd.meta;
+        const b = document.createElement('button'); b.className = 'btn primary'; b.textContent = '送出配對請求';
+        b.onclick = () => busy(b, 900, () => { state.pair = { step: 3, sent: cd.name }; renderMachines(); notify('info', `已送到 ${cd.name}`, '對方核准後，這裡會出現指紋讓你確認。'); }, '送出中…');
+        r.appendChild(b); $('#cands').appendChild(r);
+      });
+      const send = () => { const v = $('#pair-address').value.trim(); if (!v) { notify('error', '請先輸入位址', '格式像 192.168.1.31:7463，在對方的配對畫面上找得到。'); $('#pair-address').focus(); return; } state.pair = { step: 3, sent: v }; renderMachines(); notify('info', `已送到 ${v}`, '對方核准後，這裡會出現指紋讓你確認。'); };
+      $('#btn-pair-send').onclick = send; $('#pair-address').onkeydown = e => { if (e.key === 'Enter') send(); };
+    }
+    if (st === 3) {
+      const c = document.createElement('div'); c.className = 'card';
+      c.innerHTML = `<div class="card-head"><h3>和 ${state.pair.sent} 比對指紋</h3><span class="pill ok">對方已核准</span></div>
+        <p class="muted" style="font-size:13px">下面兩組指紋，上面是發起方（這台）、下面是對方。請看對方螢幕，兩組都要一模一樣。</p>
+        <div class="fpgrid"><div><label>發起方 · 這台機器</label><div class="fp">7F3A 91C2 0B4E D5A8</div></div><div><label>對方 · ${state.pair.sent}</label><div class="fp">2B91 6E07 AC33 F14D</div></div></div>`;
+      const row = document.createElement('div'); row.className = 'row';
+      const ok = document.createElement('button'); ok.className = 'btn primary'; ok.textContent = '指紋一致，確認';
+      ok.onclick = () => busy(ok, 900, () => {
+        state.machines.push({ name: state.pair.sent, plat: 'darwin', online: true, seen: '剛剛' });
+        state.curMachine = state.machines.length - 1; state.pair = { step: 0, sent: null }; renderMachines();
+        notify('ok', '配對完成', '兩台機器互相信任了。要讓對方看到 session，回 Session 分頁公開。', [{ label: '去公開 session', run: () => go('sessions') }]);
+      }, '確認中…');
+      const no = document.createElement('button'); no.className = 'btn danger'; no.textContent = '不一致，拒絕';
+      no.onclick = () => { state.pair = { step: 1, sent: null }; renderMachines(); notify('warn', '已拒絕這次配對', '指紋不一致代表中間可能有人。請確認對方位址後再送一次。'); };
+      row.append(ok, no); c.appendChild(row); main.appendChild(c);
+    }
+  }
+  function incomingView(main) {
+    main.insertAdjacentHTML('beforeend', '<div class="row"><h2>Demo-MacBook 想和這台機器配對</h2><span class="pill info">9 分鐘後到期</span></div>');
+    const c = document.createElement('div'); c.className = 'card';
+    c.innerHTML = `<dl class="kv"><dt>平台 · 位址</dt><dd>darwin · 192.168.1.31:7463</dd><dt>節點 ID</dt><dd class="sid">demo-node-2b91c7e0</dd></dl>
+      <p class="muted" style="font-size:13px">下面兩組指紋，上面是發起方（對方）、下面是這台。請看對方螢幕，兩組都要一模一樣。</p>
+      <div class="fpgrid"><div><label>發起方 · Demo-MacBook</label><div class="fp">2B91 6E07 AC33 F14D</div></div><div><label>這台機器</label><div class="fp">7F3A 91C2 0B4E D5A8</div></div></div>`;
+    const row = document.createElement('div'); row.className = 'row';
+    const ok = document.createElement('button'); ok.className = 'btn primary'; ok.textContent = '指紋一致，核准';
+    ok.onclick = () => busy(ok, 900, () => { state.incoming = false; state.pair.step = 0; renderAttn(); renderMachines(); notify('ok', '已核准 Demo-MacBook', '對方按下確認後就完成配對，這裡會自動更新。'); }, '核准中…');
+    const no = document.createElement('button'); no.className = 'btn danger'; no.textContent = '拒絕';
+    no.onclick = () => { state.incoming = false; state.pair.step = 0; renderAttn(); renderMachines(); notify('ok', '已拒絕 Demo-MacBook', '對方會看到這次請求被拒絕。'); };
+    row.append(ok, no); c.appendChild(row); main.appendChild(c);
+  }
+  function machineDetail(main, m) {
+    main.insertAdjacentHTML('beforeend', `<div class="row"><h2></h2><span class="pill ${m.online ? 'ok' : ''}">${m.online ? '線上' : '離線'}</span></div>`);
+    main.querySelector('h2').textContent = m.name;
+    const c = document.createElement('div'); c.className = 'card';
+    c.innerHTML = '<dl class="kv"><dt>平台</dt><dd></dd><dt>最後聯繫</dt><dd></dd><dt>指紋</dt><dd class="sid">2B91 6E07 AC33 F14D</dd><dt>公開給我的</dt><dd>2 個 session</dd></dl>';
+    const dd = c.querySelectorAll('dd'); dd[0].textContent = m.plat; dd[1].textContent = m.seen;
+    const row = document.createElement('div'); row.className = 'row';
+    const rv = document.createElement('button'); rv.className = 'btn danger'; rv.textContent = '撤銷信任';
+    rv.onclick = () => confirmInline(c, `撤銷 ${m.name}？它會同時失去所有 session 的授權，要再用得重新配對。`, '撤銷', () => {
+      state.machines.splice(state.machines.indexOf(m), 1); state.curMachine = 0;
+      renderMachines();
+      notify('ok', `已撤銷 ${m.name}`, '授權也一併移除了。');
+    });
+    row.appendChild(rv); c.appendChild(row); main.appendChild(c);
+  }
+  $('#btn-pair').onclick = () => { state.pair = { step: 1, sent: null }; renderMachines(); };
+
+  /* ---------- settings ---------- */
+  function renderSettings() {
+    const s = $('#settings'); s.replaceChildren();
+    const run = state.service === 'running';
+    const svc = document.createElement('div'); svc.className = 'card';
+    svc.innerHTML = `<div class="card-head"><h3>背景服務</h3><span class="pill ${run ? 'ok' : 'warn'}">${run ? '執行中' : '沒在跑'}</span></div><p>${run ? '已安裝為登入項目，關掉視窗也會繼續執行。' : '節點只在視窗開著時執行。'}<span>資料庫：預設位置</span></p>`;
+    const row = document.createElement('div'); row.className = 'row';
+    if (run) {
+      const r = document.createElement('button'); r.className = 'btn'; r.textContent = '重新啟動';
+      r.onclick = () => busy(r, 900, () => notify('ok', '背景服務已重新啟動', '新的節點設定生效了。'), '重新啟動中…');
+      const u = document.createElement('button'); u.className = 'btn danger'; u.textContent = '移除服務';
+      u.onclick = () => confirmInline(svc, '移除背景服務？關掉視窗後其他機器就連不到這台。身分與配對會保留。', '移除', () => { state.service = 'stopped'; renderSvc(); renderAttn(); renderSettings(); notify('warn', '背景服務已移除', '需要時可以在這裡重新安裝。', [{ label: '重新安裝', run: () => { state.service = 'running'; renderSvc(); renderAttn(); renderSettings(); } }]); });
+      row.append(r, u);
+    } else {
+      const i = document.createElement('button'); i.className = 'btn primary'; i.textContent = '安裝並啟動';
+      i.onclick = () => startService(i); row.appendChild(i);
+    }
+    svc.appendChild(row); s.appendChild(svc);
+    const ns = document.createElement('div'); ns.className = 'card';
+    ns.innerHTML = '<div class="card-head"><h3>節點設定</h3><span class="muted" style="font-size:12.5px">改了會問你要不要現在重啟</span></div>';
+    [['允許區網連線', '其他機器可以連到 192.168.1.20:7463', () => state.lanOpen, v => state.lanOpen = v], ['在同網段廣播', '讓對方的配對畫面自動看到這台', () => true, () => {}], ['訊息到了喚醒 agent', '只對設成「留訊息並喚醒」的 session 生效；agent 已關閉或不支援時叫不醒，訊息會留在收件匣', () => true, () => {}]].forEach(([t, d, get, set]) => {
+      const r = document.createElement('div'); r.className = 'toggle';
+      r.innerHTML = '<div><b></b><span></span></div>'; r.querySelector('b').textContent = t; r.querySelector('span').textContent = d;
+      const sw = document.createElement('button'); sw.className = 'sw'; sw.setAttribute('role', 'switch'); sw.setAttribute('aria-checked', get()); sw.setAttribute('aria-label', t);
+      sw.onclick = () => { const v = sw.getAttribute('aria-checked') !== 'true'; sw.setAttribute('aria-checked', v); set(v); notify('info', `已儲存：${t}${v ? '開啟' : '關閉'}`, '重啟節點後生效。', [{ label: '現在重啟', run: () => notify('ok', '節點已重啟', '新設定生效了。') }]); };
+      r.appendChild(sw); ns.appendChild(r);
+    });
+    s.appendChild(ns);
+  }
+
+  /* ---------- tabs ---------- */
+  function go(v) {
+    state.view = v; drawer.hidden = true; closeMenu();
+    document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.view === v));
+    ['sessions', 'machines', 'settings'].forEach(k => $('#view-' + k).hidden = k !== v);
+    if (v === 'machines') renderMachines();
+    if (v === 'settings') renderSettings();
+  }
+  document.querySelectorAll('.tab').forEach(t => t.onclick = () => go(t.dataset.view));
+
+  renderRows(); renderAttn(); renderSvc(); renderBell();
+})();
+</script>
