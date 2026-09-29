@@ -25,7 +25,9 @@ installer="$repository/install.sh"
 }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/agenthub-install-test.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+# u+w first: a case below makes a directory read-only, and a harness that
+# fails before undoing it would otherwise leave it behind in TMPDIR.
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 
 # install.sh puts a Claude Code skill under ${CLAUDE_CONFIG_DIR:-$HOME/.claude},
 # and several runs below install for real without a HOME of their own. Pointed
@@ -964,6 +966,13 @@ tree_at() { # tree_at <dir> <log> <db> <status>
 	chmod +x "$1/agenthub-node"
 }
 
+# mac_bundle puts a minimal AgentHub.app at <app path>, its ah the given fake.
+mac_bundle() { # mac_bundle <app path> <log>
+	mkdir -p "$1/Contents/MacOS"
+	uninstall_ah_script "$1/Contents/MacOS/ah" "$2" "" 0
+	printf '#!/bin/sh\n' >"$1/Contents/MacOS/agenthub-node"
+}
+
 echo "== --purge of a database outside the default takes only its files =="
 checkout="$work/checkout/agenthub"
 purge_home="$work/purge-home"
@@ -1069,6 +1078,33 @@ PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$work/spelled-link/
 contains spelled "$work/spelled-ah.log" "service uninstall"
 lacks spelled "$work/spelled.txt" "left the registered background service alone"
 
+echo "== escaped spellings: launchd XML and systemd quoting =="
+# launchd: xml.EscapeText, so an apostrophe is &#39;. systemd: % doubled, and
+# a path with a space or $ quoted with $ doubled (internal/service systemdQuote).
+xml_home="$work/xml-home"
+xml_pfx="$work/o'brien pfx"
+mac_bundle "$xml_pfx/agenthub-desktop.app" "$work/xml-ah.log"
+mkdir -p "$xml_home/Library/LaunchAgents"
+printf '<plist>\n\t<array>\n\t\t<string>%s</string>\n\t</array>\n</plist>\n' \
+	"$(printf '%s' "$xml_pfx" | sed "s/'/\&#39;/g")/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
+	>"$xml_home/Library/LaunchAgents/local.agenthub.node.plist"
+checks=$((checks + 1))
+PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+	isolated "$xml_home" sh "$installer" --uninstall --prefix "$xml_pfx" >"$work/xml.txt" 2>&1 || fail "xml: failed: $(cat "$work/xml.txt")"
+contains xml "$work/xml-ah.log" "service uninstall"
+sd_home="$work/sd-home"
+sd_tree="$work/pct%dir \$x/agenthub"
+tree_at "$sd_tree" "$work/sd-ah.log" "" 0
+mkdir -p "$sd_home/.config/systemd/user"
+printf '[Service]\nExecStart="%s/agenthub-node" --db x\n' "$(printf '%s' "$sd_tree" | sed 's/%/%%/g; s/\$/$$/g')" \
+	>"$sd_home/.config/systemd/user/agenthub-node.service"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$sd_tree" \
+	isolated "$sd_home" sh "$installer" --uninstall >"$work/sd.txt" 2>&1 || fail "sd: failed: $(cat "$work/sd.txt")"
+contains sd "$work/sd-ah.log" "service uninstall"
+checks=$((checks + 1))
+! exists_path "$sd_tree" || fail "sd: the tree is still there"
+
 echo "== a unit that names this install but cannot be read stops the uninstall =="
 unread_home="$work/unread-home"
 tree_at "$unread_home/.local/share/agenthub" "$work/unread-ah.log" "" 0
@@ -1094,6 +1130,33 @@ PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$built" \
 	isolated "$work/built-home" sh "$installer" --uninstall >"$work/built.txt" 2>&1 || fail "built: failed: $(cat "$work/built.txt")"
 checks=$((checks + 1))
 [ -f "$built/go.mod" ] || fail "built: the checkout was removed"
+
+git_checkout="$work/git-checkout"
+tree_at "$git_checkout" "$work/git-ah.log" "" 0
+mkdir -p "$git_checkout/.git"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$git_checkout" 	isolated "$work/built-home" sh "$installer" --uninstall >"$work/git-built.txt" 2>&1 || fail "git-built: failed: $(cat "$work/git-built.txt")"
+checks=$((checks + 1))
+[ -d "$git_checkout/.git" ] || fail "git-built: the checkout was removed"
+
+echo "== an app in an Applications this account cannot write is a warning =="
+# The app went to ~/Applications at install time... or another administrator
+# put one in /Applications. Either way it is looked at, and a directory this
+# account cannot write stops nothing else. Root writes anyway, so not as root.
+if [ "$(id -u)" -ne 0 ]; then
+	ro_apps_home="$work/ro-apps-home"
+	ro_apps="$work/ro-Applications"
+	mac_bundle "$ro_apps/agenthub-desktop.app" "$work/ro-apps-ah.log"
+	mkdir -p "$ro_apps_home"
+	chmod 555 "$ro_apps"
+	checks=$((checks + 1))
+	PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh 		isolated "$ro_apps_home" env AGENTHUB_APPLICATIONS="$ro_apps" sh "$installer" --uninstall >"$work/ro-apps.txt" 2>&1 ||
+		fail "ro-apps: a directory it cannot write ended the uninstall: $(cat "$work/ro-apps.txt")"
+	contains ro-apps "$work/ro-apps.txt" "could not remove $ro_apps/agenthub-desktop.app"
+	contains ro-apps "$work/ro-apps.txt" "done, except for what could not be removed"
+	lacks ro-apps "$work/ro-apps.txt" "done. AgentHub is uninstalled."
+	chmod 755 "$ro_apps"
+fi
 
 echo "== an old unquoted menu entry is still this install's =="
 old_entry_home="$work/old-entry-home"
@@ -1143,11 +1206,6 @@ echo "== --uninstall on macOS finds the app in either Applications =="
 # otherwise; an account made admin since the install changes which one that is.
 mac_home="$work/mac-home"
 mac_apps="$work/mac-Applications"
-mac_bundle() { # mac_bundle <app path> <log>
-	mkdir -p "$1/Contents/MacOS"
-	uninstall_ah_script "$1/Contents/MacOS/ah" "$2" "" 0
-	printf '#!/bin/sh\n' >"$1/Contents/MacOS/agenthub-node"
-}
 mac_bundle "$mac_apps/agenthub-desktop.app" "$work/mac-ah.log"
 mac_bundle "$mac_home/Applications/agenthub-desktop.app" "$work/mac-home-ah.log"
 mkdir -p "$mac_home/.local/bin" "$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences"

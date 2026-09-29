@@ -171,14 +171,15 @@ In this order, and each only when it is this install's:
    it holds `Contents/MacOS/ah` or `desktop`. On Linux `~/.local/share/agenthub/`
    (or `AGENTHUB_HOME`), only when `ah` and `agenthub-node` are at its top level
    and it is neither `/`, your home, nor a directory containing it — a source
-   checkout, which has `bin/ah` or a `go.mod`, is left. The Linux menu entry goes when its
+   checkout, which has `bin/ah`, a `go.mod` or a `.git`, is left. The Linux menu entry goes when its
    `Exec=` launches this install's app.
 5. The PATH lines: the `# added by the AgentHub installer` comment, the
    `export` under it and the blank line above them, from every startup file in
    the "PATH" table. The rest of each file is kept as it was, except that a file
-   whose last line had no newline gets one. A file that mentions the comment in
-   any other form (a CRLF copy, a commented-out one) is left as it is, with a
-   warning.
+   whose last line had no newline gets one. A file that mentions the comment
+   only in some other form (a CRLF copy, a commented-out one) is left as it is,
+   with a warning; where the exact comment line is there as well, that block is
+   the one removed.
 6. On macOS, the app's caches and preferences under `~/Library` (`Caches`,
    `WebKit`, `HTTPStorages`, `Preferences`, `Saved Application State`, each by
    the bundle id).
@@ -206,7 +207,9 @@ on Linux the menu entry, which a `--prefix` install also writes, when its
 `~/Library` caches (they are named by bundle id, so the real install's are the
 same ones), no skill, and a service or data only when they are the prefix's
 own. `--dry-run` prints every command and removes nothing; its last line says
-so.
+so. Something whose directory this account cannot write — an app another
+administrator put in `/Applications` — is a warning naming it, and the closing
+line says what is left.
 
 ## The Claude Code skill
 

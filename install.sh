@@ -60,6 +60,7 @@ SKILL_SOURCE=""
 
 AH=""
 SERVICE_STATE=""
+REMOVE_SKIPPED=""
 PATH_STATE=""
 SKILL_STATE=""
 
@@ -962,6 +963,7 @@ remove_path() { # remove_path <path>
 		# would end the uninstall halfway; this says what is left instead.
 		if [ ! -w "$(dirname "$1")" ]; then
 			warn "could not remove $1: $(dirname "$1") is not writable by this account; delete it yourself (from Finder, or with an administrator's help)"
+			REMOVE_SKIPPED="$REMOVE_SKIPPED $1"
 			return 0
 		fi
 		run rm -rf "$1"
@@ -1021,6 +1023,13 @@ physical_path() { # physical_path <path>
 	fi
 }
 
+# xml_escape spells a string the way Go's xml.EscapeText does, which is how
+# the launchd plist writer puts each argument inside <string>.
+xml_escape() { # xml_escape <string>
+	xml_tab="$(printf '\t')"
+	printf '%s' "$1" | sed "s/&/\\&amp;/g; s/</\\&lt;/g; s/>/\\&gt;/g; s/\"/\\&#34;/g; s/'/\\&#39;/g; s/$xml_tab/\\&#x9;/g"
+}
+
 # node_forms prints, one per line, every way the unit can spell this install's
 # agenthub-node: as given and resolved, each as launchd writes it (XML-escaped
 # inside <string>) and as systemd does (% doubled; quoted, with \ " $ escaped,
@@ -1030,7 +1039,7 @@ node_forms() {
 		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
 		[ -n "$forms_node" ] || continue
 		for forms_path in "$forms_node" "$(physical_path "$forms_node")"; do
-			forms_xml="$(printf '%s' "$forms_path" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+			forms_xml="$(xml_escape "$forms_path")"
 			printf '<string>%s</string>\n' "$forms_xml"
 			forms_pct="$(printf '%s' "$forms_path" | sed 's/%/%%/g')"
 			# systemdQuote quotes a path holding a space, tab, quote, \ or $.
@@ -1077,6 +1086,7 @@ unit_mentions_install() {
 		[ -n "$mention_dir" ] || continue
 		for mention_form in "$mention_dir" "$(physical_path "$mention_dir")"; do
 			grep -qF "$mention_form/" "$(unit_file)" 2>/dev/null && return 0
+			grep -qF "$(xml_escape "$mention_form")/" "$(unit_file)" 2>/dev/null && return 0
 		done
 	done
 	return 1
@@ -1383,8 +1393,14 @@ uninstall() {
 		say "dry run: the commands above are what --uninstall would run; nothing was removed."
 		return 0
 	fi
-	say "done. AgentHub is uninstalled."
-	if [ "$PURGED" -eq 1 ]; then
+	if [ -n "$REMOVE_SKIPPED" ]; then
+		say "done, except for what could not be removed (see the warnings above):$REMOVE_SKIPPED"
+	else
+		say "done. AgentHub is uninstalled."
+	fi
+	if [ "$PURGED" -eq 1 ] && [ -n "$REMOVE_SKIPPED" ]; then
+		say "Some of what --purge was asked to delete is still there (see the warnings above)."
+	elif [ "$PURGED" -eq 1 ]; then
 		say "The node's identity and database are deleted too; installing again makes a new node,"
 		say "so machines paired with this one need to pair again."
 	elif [ "$PURGE" -eq 1 ]; then
