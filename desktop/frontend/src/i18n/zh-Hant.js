@@ -535,7 +535,7 @@ export const TEXT = {
   "service.dbNoteDefault": "目前服務沒有指定資料庫，節點用預設位置；填上路徑就是換一個節點身分。",
   "service.dbNoteUnknown": "讀不到目前服務使用的資料庫路徑；安裝前會再問一次。",
   "service.dbNoteFirstInstall": "第一次安裝：留空就用節點的預設位置。",
-  "service.dbNoteRunningNotService": "有一個節點正在執行，但不是以服務執行。它若是用 --db 啟動的，請在這裡填那個路徑；留空會改用預設資料庫，也就是新的節點身分，現有的配對都會失效。",
+  "service.dbNoteRunningNotService": "有一個節點正在執行，但不是以服務執行。它若是用 --db 啟動的，請在這裡填那個路徑：這種節點留空會改用預設資料庫，對它來說就是新的節點身分，現有的配對都會失效。",
   "service.runningNotServiceConfirmTitle": "用節點預設的資料庫安裝服務？",
   "service.runningNotServiceConfirm": "這台機器上有一個節點正在執行，但不是服務，而資料庫欄位是空的。那個節點若是用 --db 啟動的，預設資料庫就是另一個節點身分：配對過的機器都不再認得這台，要重新配對。要保留它請按取消，填上它的 --db 路徑。",
   "service.runningNotServiceConfirmAction": "用預設資料庫安裝",

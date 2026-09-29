@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -57,9 +59,10 @@ func (a *App) RestartNode() (ServiceResult, error) {
 }
 
 // restartNodeProcess stops every agenthub-node on this machine and starts the
-// one beside this app, detached, with its output going to a file.
+// one beside this app, detached, with its output going to a file, on the
+// arguments the stopped one was started with.
 func (a *App) restartNodeProcess() (ServiceResult, error) {
-	_, nodeURL := a.current()
+	nodeClient, nodeURL := a.current()
 	// Killing by executable name cannot tell one node from another, and what
 	// starts afterwards takes the node's own defaults — which is the node the
 	// installer runs and the node this app points at out of the box. An owner
@@ -79,15 +82,53 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 	if err != nil {
 		return ServiceResult{}, err
 	}
-	result := ServiceResult{Command: binary + " (stop, then start)"}
+
+	// Everything that can refuse, refuses here, before anything is stopped: a
+	// refusal after the stop leaves the owner with no node at all (#205).
+	listCtx, cancelList := context.WithTimeout(a.ctx, nodeListTimeout)
+	plan, running, err := planFromRunningNodes(listCtx)
+	cancelList()
+	if err != nil {
+		return ServiceResult{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(a.ctx, nodeStopTimeout+nodeStartTimeout+10*time.Second)
+	defer cancel()
+
+	// Who is answering now, so that what answers afterwards can be checked
+	// against it. A node that answers and will not say who it is gives nothing
+	// to check against, so that is a refusal too. A node that is not answering
+	// at all (hung, or not running) has no identity on offer: restarting it on
+	// its own arguments is what the owner asked for, but only when those name
+	// its database for certain — planNodeRestart read it from the node's own
+	// command line or environment — because afterwards there is nothing to
+	// compare the node that answers with.
+	before, err := readNodeIdentity(ctx, nodeClient)
+	if err != nil {
+		if probeNode(ctx, nodeURL) {
+			return ServiceResult{}, fmt.Errorf(
+				"could not read which node is answering on %s (%v), so there would be no way to tell afterwards "+
+					"whether the node that came back is the same one; it was not restarted", nodeURL, err)
+		}
+		if running != nil && !plan.confirmed {
+			return ServiceResult{}, fmt.Errorf(
+				"the running node (pid %d) is not answering, so who it is cannot be checked after a restart, and "+
+					"its database %s is only this app's inference (from %s), not read from the node; it was not "+
+					"restarted: stop it and start it again with --db naming its database", running.PID, plan.db, plan.dbFrom)
+		}
+		before = NodeIdentity{}
+	}
+
+	result := ServiceResult{Command: commandLine(binary, plan.args) + " (stop, then start)"}
 	var steps []string
 	say := func(format string, args ...any) {
 		steps = append(steps, fmt.Sprintf(format, args...))
 		result.Output = strings.Join(steps, "\n")
 	}
-
-	ctx, cancel := context.WithTimeout(a.ctx, nodeStopTimeout+nodeStartTimeout+10*time.Second)
-	defer cancel()
+	if running != nil {
+		say("the running node (pid %d) was started as %s, on the database %s (from %s)",
+			running.PID, commandLine(running.program(), running.args()), plan.db, plan.dbFrom)
+	}
 
 	// Not checked: on a machine where the node is not running there is nothing
 	// to stop, and every platform's tool reports that as a failure. Whether the
@@ -102,12 +143,23 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 			" after being asked to stop, so it was not restarted: a second node on the same database " +
 			"would fail to start and leave nothing running")
 	}
+	// The port closing is not the process ending: a node on its way out has
+	// shut its listener and may still hold the database, and one that was hung
+	// was never answering in the first place. The replacement opens the same
+	// database, so it waits for the process itself.
+	if running != nil {
+		if err := waitForProcessGone(ctx, running.PID); err != nil {
+			return result, fmt.Errorf("agenthub-node (pid %d) was asked to stop and has not exited (%v), so it was "+
+				"not restarted: a second node on the same database would fail to start and leave nothing running",
+				running.PID, err)
+		}
+	}
 	say("stopped the node answering on %s", nodeURL)
 
-	if err := startNode(binary, logPath); err != nil {
-		return result, fmt.Errorf("start %s: %w", binary, err)
+	if err := startNode(binary, logPath, plan.args); err != nil {
+		return result, fmt.Errorf("start %s: %w", commandLine(binary, plan.args), err)
 	}
-	say("started %s (log: %s)", binary, logPath)
+	say("started %s (log: %s)", commandLine(binary, plan.args), logPath)
 	if !waitForNodeAnswering(ctx, nodeURL) {
 		return result, fmt.Errorf(
 			"the node was started but is not answering on %s after %s; the settings it has just been "+
@@ -115,8 +167,159 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 			nodeURL, nodeStartTimeout, logPath)
 	}
 	say("the node is answering on %s", nodeURL)
+
+	// Answering is not the same as being the node that was stopped. A node
+	// that came back on another database answers just as well, as someone
+	// else: a new id, a new key, and no paired machine that knows it.
+	after, err := readNodeIdentity(ctx, nodeClient)
+	if err != nil {
+		return result, fmt.Errorf(
+			"the node is answering on %s but would not say which node it is (%v), so this app cannot "+
+				"confirm it came back as the node that was stopped", nodeURL, err)
+	}
+	if before.ID != "" && (after.ID != before.ID || (before.Fingerprint != "" && after.Fingerprint != before.Fingerprint)) {
+		recovery := "start it again the way it was started"
+		switch {
+		case running != nil && len(plan.inferred) == 0:
+			recovery = "stop this one and start the old one again, which names every path it used: " +
+				commandLine(running.program(), plan.recovery)
+		case running != nil:
+			// The paths this restart used were this app's inference, and the
+			// node that came back is what they lead to, so they are not the
+			// way back. Where the old node's are is known only to the
+			// environment it was first started in.
+			recovery = "stop this one and start the old one again from the environment it was first started in " +
+				"(its login, or the shell it was started from), with the command it was started with: " +
+				commandLine(running.program(), plan.recovery) + ". Its " + strings.Join(plan.inferred, ", ") +
+				" here were inferred from this app's environment, not read from the node, so this app does not " +
+				"know where the old node's are"
+		}
+		return result, fmt.Errorf(
+			"the node that came back is %s, not %s, which was running before: it opened a different database, "+
+				"which is a different identity that no paired machine recognises. Nothing was deleted — the old "+
+				"node's database is where it was; %s", after.ID, before.ID, recovery)
+	}
+	switch {
+	case before.ID != "":
+		say("it is %s, the node that was stopped", after.ID)
+	case running != nil:
+		// Not silent: nothing could be compared, and the owner is told what
+		// the restart rests on instead.
+		say("it was not answering before the restart, so there was no id to compare; it came back as %s, "+
+			"on the database %s (from %s)", after.ID, plan.db, plan.dbFrom)
+	}
 	return result, nil
 }
+
+// nodeProcess is one agenthub-node running on this machine and the command
+// line it was started with, argv[0] included.
+type nodeProcess struct {
+	PID  int
+	Argv []string
+	// Env is the environment the process runs with, and EnvErr why it could
+	// not be read; Env means nothing when EnvErr is set. It is where the node
+	// found every path its command line does not name (nodeenv.go).
+	Env    []string
+	EnvErr error
+	// UserErr is nil when the process is known to run as this app's user, and
+	// otherwise says why that is not known. The macOS and Linux listings only
+	// return this user's processes; on Windows it is read from the process.
+	UserErr error
+}
+
+func (p nodeProcess) program() string {
+	if len(p.Argv) == 0 {
+		return nodeExecutable
+	}
+	return p.Argv[0]
+}
+
+func (p nodeProcess) args() []string {
+	if len(p.Argv) < 2 {
+		return nil
+	}
+	return p.Argv[1:]
+}
+
+// planFromRunningNodes decides what the restarted node is started with, from
+// the one that is running, and refuses when that cannot be known.
+//
+// Nothing running is the first start: the node's defaults are what this app
+// has always started, and there is no identity to lose. More than one is a
+// machine this restart would stop entirely and bring back as one, so it is
+// left alone. Exactly one is started again with its own arguments
+// (planNodeRestart), and when those cannot be read the restart does not guess
+// — a guess is the default database, which for a node started with --db is a
+// new identity and every pairing gone.
+func planFromRunningNodes(ctx context.Context) (nodeRestartPlan, *nodeProcess, error) {
+	refuse := func(reason string) error {
+		return fmt.Errorf("%s, so this app will not restart it: stop and start the node the way it was started", reason)
+	}
+	processes, err := listNodesSettled(ctx)
+	if err != nil {
+		return nodeRestartPlan{}, nil, refuse(fmt.Sprintf(
+			"could not read how the running node was started (%v), and a node started without its --db "+
+				"would be a different node", err))
+	}
+	switch len(processes) {
+	case 0:
+		return nodeRestartPlan{}, nil, nil
+	case 1:
+	default:
+		pids := make([]string, 0, len(processes))
+		for _, process := range processes {
+			pids = append(pids, fmt.Sprint(process.PID))
+		}
+		return nodeRestartPlan{}, nil, refuse(fmt.Sprintf(
+			"%d agenthub-node processes are running (pids %s), and stopping by name stops all of them "+
+				"to bring back one", len(processes), strings.Join(pids, ", ")))
+	}
+	running := processes[0]
+	plan, err := planNodeRestart(running, appPaths)
+	if err != nil {
+		return nodeRestartPlan{}, nil, refuse(fmt.Sprintf("the running node (pid %d) cannot be started again as it is: %v",
+			running.PID, err))
+	}
+	return plan, &running, nil
+}
+
+// listNodesSettled is listNodes, asked again a few times when it fails the
+// way a listing fails that caught an agenthub-node on its way out: macOS
+// answers kern.procargs2 for a process that is exiting and not yet a zombie
+// with EINVAL, and a process gone between being listed and being read is
+// ESRCH. That process is not taken for gone — nothing is known about it until
+// a listing succeeds — so the listing is asked again, briefly, and a failure
+// that persists is a refusal like any other.
+func listNodesSettled(ctx context.Context) ([]nodeProcess, error) {
+	for attempt := 1; ; attempt++ {
+		processes, err := listNodes(ctx)
+		if err == nil || attempt >= nodeListAttempts || !transientListError(err) {
+			return processes, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(nodeListRetryInterval):
+		}
+	}
+}
+
+// transientListError is whether a listing failed on a process caught
+// exiting (listNodesSettled).
+func transientListError(err error) bool {
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ESRCH)
+}
+
+// nodeListAttempts and nodeListRetryInterval bound listNodesSettled: long
+// enough for a process on its way out to finish, short enough not to be felt.
+var (
+	nodeListAttempts      = 6
+	nodeListRetryInterval = 50 * time.Millisecond
+)
+
+// nodeListTimeout bounds reading the running node's command line. Windows
+// answers it through PowerShell, which can take seconds to start cold.
+var nodeListTimeout = 30 * time.Second
 
 // nodeLogPath is where a node started from this window writes its output. A
 // process started detached has nowhere else to put it, and its startup lines
@@ -144,6 +347,37 @@ func openNodeLog(path string) (*os.File, error) {
 	// Nothing the window, the node or the network supplies reaches it, so
 	// there is no traversal to scope with os.Root.
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
+// waitForProcessGone waits until no agenthub-node with this pid is listed,
+// for as long as a stop is given, and says why not when it is still there.
+// A listing that fails is asked again: a process on its way out can be caught
+// half-gone, which some platforms answer with an error.
+func waitForProcessGone(ctx context.Context, pid int) error {
+	deadline := time.Now().Add(nodeStopTimeout)
+	for {
+		listCtx, cancel := context.WithTimeout(ctx, nodeListTimeout)
+		processes, err := listNodes(listCtx)
+		cancel()
+		if err == nil {
+			still := false
+			for _, process := range processes {
+				still = still || process.PID == pid
+			}
+			if !still {
+				return nil
+			}
+			err = fmt.Errorf("it is still running after %s", nodeStopTimeout)
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(nodePollInterval):
+		}
+	}
 }
 
 // waitForNodeGone reports whether the node stopped answering before the
@@ -198,16 +432,24 @@ func nodeAnswers(ctx context.Context, nodeURL string) bool {
 	return response.StatusCode == http.StatusOK
 }
 
-// The three things this restart does to the machine, behind variables: the
+// The things this restart does to the machine, behind variables: the
 // tests assert the sequence — stop, wait for gone, start, wait for answering —
 // without killing anything on the machine running them, binding the node's
 // port (which on a developer's machine belongs to their own node), or creating
 // directories in their home.
+//
+// listNodes, readNodeIdentity and appPaths are the three things it reads from
+// the machine to decide what to start: which nodes are running and how they
+// were started, who is answering, and where a node with this app's environment
+// would put its paths.
 var (
-	stopNode  = stopNodeProcesses
-	startNode = startNodeDetached
-	probeNode = nodeAnswers
-	logDir    = nodeLogDir
+	stopNode         = stopNodeProcesses
+	startNode        = startNodeDetached
+	probeNode        = nodeAnswers
+	logDir           = nodeLogDir
+	listNodes        = listNodeProcesses
+	readNodeIdentity = func(ctx context.Context, c *client) (NodeIdentity, error) { return c.node(ctx) }
+	appPaths         = appDefaultPaths
 )
 
 // runCommand executes one command and returns its combined output. A variable
@@ -217,4 +459,18 @@ var runCommand = func(ctx context.Context, name string, args ...string) (string,
 	// window or the network supplies reaches here.
 	output, err := quietly(exec.CommandContext(ctx, name, args...)).CombinedOutput()
 	return string(output), err
+}
+
+// runCommandOutput executes one command and returns what it wrote to stdout
+// and to stderr apart, for a command whose stdout is data: a stderr line mixed
+// into it would be read as part of the answer.
+var runCommandOutput = func(ctx context.Context, name string, args ...string) (string, string, error) {
+	var stdout, stderr bytes.Buffer
+	// #nosec G204 -- name and args are the callers' own constants and an
+	// encoded script of their own; nothing the window or the network supplies
+	// reaches here.
+	command := quietly(exec.CommandContext(ctx, name, args...))
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	return stdout.String(), stderr.String(), err
 }

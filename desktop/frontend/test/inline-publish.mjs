@@ -1019,6 +1019,47 @@ for (const [name, button] of [["the pill", () => el("service-pill")], ["the stri
   if (pressed.classList.contains("busy") || pressed.disabled) failures.push(`${name} still spins after the re-read found nothing to do`);
 }
 app.state.ui.onboardingDismissed = false;
+// The pill and the strip's row pressed together are one press: the second
+// finds the first still reading and does nothing — no second read, no second
+// start. Each button's spinner stops only itself, which is how both used to run.
+{
+  serviceAnswer = { supported: true, installed: true, running: false, pid: 0 };
+  app.state.service = { supported: true, installed: true, running: false, pid: 0 };
+  app.state.ui.onboardingDismissed = true;
+  app.state.view = "local";
+  app.render();
+  const pill = el("service-pill");
+  const rowButton = serviceRow()?.action;
+  if (!rowButton) failures.push("no strip row to press alongside the pill");
+  serviceCalls.length = 0;
+  const reads = serviceReads;
+  serviceReadGate = gate();
+  const first = app.runServiceQuickAction({ button: pill });
+  await settle();
+  const second = app.runServiceQuickAction({ button: rowButton });
+  const third = app.runServiceQuickAction({ button: pill });
+  await settle();
+  serviceReadGate.open();
+  serviceReadGate = null;
+  await Promise.all([first, second, third]);
+  await settle();
+  if (serviceReads - reads !== 1 + 1) {
+    // One re-read by the press, one by the load() after its restart.
+    failures.push(`three presses at once read the status ${serviceReads - reads} times, want the one press's re-read and its reload`);
+  }
+  if (JSON.stringify(serviceCalls.map((call) => call[0])) !== JSON.stringify(["RestartService"])) {
+    failures.push(`three presses at once ran ${JSON.stringify(serviceCalls)}, want one RestartService`);
+  }
+  // Let go once it is done: a later press is a press.
+  serviceAnswer = { supported: true, installed: true, running: false, pid: 0 };
+  app.state.service = { supported: true, installed: true, running: false, pid: 0 };
+  serviceCalls.length = 0;
+  await app.runServiceQuickAction({ button: pill });
+  await settle();
+  if (serviceCalls.length !== 1) failures.push(`a press after the first had finished ran ${JSON.stringify(serviceCalls)}`);
+  app.state.ui.onboardingDismissed = false;
+  clearToasts();
+}
 // And a write that starts while the status is being read wins: the press does
 // nothing with what it read — not even open the form under that write.
 serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };

@@ -4755,7 +4755,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // in words when nothing fits. It writes no box: the presets write the boxes,
   // the boxes never write each other.
   function syncAudiencePreset() {
-    const name = presetForFlags(audienceFlagsOnForm());
+    // Nothing under 不公開: what 套用 writes there is every flag off, whatever
+    // the boxes say, so a radio ticked because the boxes happen to match a
+    // preset would name a combination that is not going to be applied.
+    const name = selectedMode() === "none" ? "" : presetForFlags(audienceFlagsOnForm());
     for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
       radio.checked = radio.value === name;
     }
@@ -5908,6 +5911,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return serviceQuickAction(status) === "install" && (state.nodeReachable || status?.nodeAnswering === true);
   }
 
+  // Held for the whole of one one-press fix, from the re-read to the end of
+  // what it decided. The pill and the strip's row are two buttons for the same
+  // press, and each one's own spinner stops only itself: pressed together, both
+  // read the status and both acted on it. withBusy stops a second write, but
+  // not the second re-read, nor the form the second one opens under the first.
+  let serviceQuickPending = false;
+
   // The one-press fix, through the very functions the settings page's own
   // buttons call: installService with the form the panel would open (its
   // database path blank, which is the node's default, because nothing is
@@ -5932,7 +5942,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // question the form asks, so the press goes to the form instead. And a node
   // that is running but is not a service (nodeRunningNotAService): the form.
   async function runServiceQuickAction({ button = null } = {}) {
-    if (state.busy) return;
+    if (state.busy || serviceQuickPending) return;
+    serviceQuickPending = true;
+    try {
+      await runServiceQuickActionOnce({ button });
+    } finally {
+      serviceQuickPending = false;
+    }
+  }
+
+  async function runServiceQuickActionOnce({ button }) {
     // The re-read can take the status command's whole timeout, and a button
     // that shows nothing for that long is pressed again. So it spins and
     // cannot be pressed from the moment it is pressed — withBusy's own

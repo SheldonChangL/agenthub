@@ -30,7 +30,7 @@ func stopNodeProcesses(ctx context.Context) (string, error) {
 //
 // Setsid puts it in its own session, so it is not killed with the app's
 // process group and has no controlling terminal to be stopped by.
-func startNodeDetached(binary, logPath string) error {
+func startNodeDetached(binary, logPath string, args []string) error {
 	log, err := openNodeLog(logPath)
 	if err != nil {
 		return err
@@ -38,8 +38,11 @@ func startNodeDetached(binary, logPath string) error {
 	defer log.Close()
 	// #nosec G204 -- binary is what findNode resolved: named by the owner in
 	// the environment, or sitting beside this executable where the packaging
-	// step put it. PATH is deliberately not among the places it looks.
-	command := exec.Command(binary)
+	// step put it. PATH is deliberately not among the places it looks. args
+	// are the stopped node's own command line, parsed against the node's flag
+	// table and less its remembered settings (planNodeRestart); nothing the
+	// window or the network supplies reaches them.
+	command := exec.Command(binary, args...)
 	command.Dir = filepath.Dir(binary)
 	command.Stdout = log
 	command.Stderr = log
