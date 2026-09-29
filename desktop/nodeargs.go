@@ -124,10 +124,17 @@ type nodeRestartPlan struct {
 	// environment. An inferred one is checked afterwards by the node id, so a
 	// node that cannot be asked who it is is not restarted on one.
 	confirmed bool
-	// recovery is the running node's whole command line with the same paths
-	// made explicit: what starts that node again from anywhere, whatever the
-	// environment it is typed into.
+	// recovery is what starts the running node again. When every path it
+	// used was read from the node itself (inferred is empty), it is the node's
+	// whole command line with those paths made explicit, which starts it again
+	// whatever the environment it is typed into. When any was inferred from
+	// this app's environment, it is the node's command line as it was, and
+	// nothing more: an inferred path is exactly what would have brought up the
+	// wrong node, so it is not handed back as the way to the right one.
 	recovery []string
+	// inferred are the path flags whose values this app worked out from its
+	// own environment, standing in for the node's (nodeEnvironmentFallback).
+	inferred []string
 }
 
 // planNodeRestart turns the running node's command line and environment into
@@ -216,6 +223,9 @@ func planNodeRestart(running nodeProcess, appPaths func() (nodePaths, error)) (n
 						"work out the default from its own either: %w", strings.Join(missing, ", -"), running.EnvErr, err)
 			}
 			from = "this app's environment (the node's own could not be read: " + running.EnvErr.Error() + ")"
+			for _, pathFlag := range missing {
+				plan.inferred = append(plan.inferred, "--"+pathFlag)
+			}
 			if _, ok := given["db"]; !ok {
 				plan.confirmed = false
 			}
@@ -250,7 +260,11 @@ func planNodeRestart(running nodeProcess, appPaths func() (nodePaths, error)) (n
 		plan.db = defaults.database
 	}
 	plan.args = append(append(append(plan.args, kept...), added...), rest...)
-	plan.recovery = append(append(append([]string{}, all...), added...), rest...)
+	if len(plan.inferred) > 0 {
+		plan.recovery = append(append([]string{}, all...), rest...)
+	} else {
+		plan.recovery = append(append(append([]string{}, all...), added...), rest...)
+	}
 
 	// The database has to be there. A running node holds it open, so a path
 	// that names nothing means the command line or the environment was

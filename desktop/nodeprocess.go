@@ -179,9 +179,20 @@ func (a *App) restartNodeProcess() (ServiceResult, error) {
 	}
 	if before.ID != "" && (after.ID != before.ID || (before.Fingerprint != "" && after.Fingerprint != before.Fingerprint)) {
 		recovery := "start it again the way it was started"
-		if running != nil {
+		switch {
+		case running != nil && len(plan.inferred) == 0:
 			recovery = "stop this one and start the old one again, which names every path it used: " +
 				commandLine(running.program(), plan.recovery)
+		case running != nil:
+			// The paths this restart used were this app's inference, and the
+			// node that came back is what they lead to, so they are not the
+			// way back. Where the old node's are is known only to the
+			// environment it was first started in.
+			recovery = "stop this one and start the old one again from the environment it was first started in " +
+				"(its login, or the shell it was started from), with the command it was started with: " +
+				commandLine(running.program(), plan.recovery) + ". Its " + strings.Join(plan.inferred, ", ") +
+				" here were inferred from this app's environment, not read from the node, so this app does not " +
+				"know where the old node's are"
 		}
 		return result, fmt.Errorf(
 			"the node that came back is %s, not %s, which was running before: it opened a different database, "+

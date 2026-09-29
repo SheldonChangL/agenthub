@@ -409,6 +409,41 @@ func TestRestartNodeReportsANodeThatCameBackAsSomeoneElse(t *testing.T) {
 	}
 }
 
+// On Windows, when this app's environment stood in for the node's, the node
+// that came back as someone else came back on the paths this app inferred —
+// so those are the one thing the way back must not name. It is the old
+// command line as it was, to be run where the old node was first started.
+func TestRestartNodeDoesNotHandBackAnInferredPathAsTheWayBack(t *testing.T) {
+	withFakeNode(t)
+	withEnvironmentFallback(t, true)
+	fake := &fakeRestart{
+		answers: []bool{false, true},
+		running: []nodeProcess{{PID: 22, Argv: []string{`C:\agenthub\agenthub-node.exe`, "-discover"},
+			EnvErr: errors.New("access is denied")}},
+		identities: []NodeIdentity{sameNode, {ID: "node_new", Fingerprint: sameNode.Fingerprint}},
+	}
+	fake.install(t)
+
+	result, err := restartAppProcess(t)
+	if err == nil {
+		t.Fatalf("a node that came back as someone else was reported as restarted:\n%s", result.Output)
+	}
+	if len(fake.started) != 1 || !slices.Contains(fake.started[0], fake.appDB) {
+		t.Fatalf("started with %q; the fixture should have used this app's database %s", fake.started, fake.appDB)
+	}
+	if strings.Contains(err.Error(), fake.appDB) || strings.Contains(err.Error(), filepath.Dir(fake.appDB)) {
+		t.Errorf("the way back names the inferred path %s, which is what brought up node_new: %v", fake.appDB, err)
+	}
+	for _, phrase := range []string{
+		"node_new", sameNode.ID, commandLine(`C:\agenthub\agenthub-node.exe`, []string{"-discover"}),
+		"environment it was first started in", "--db, --claude-root, --codex-root", "inferred",
+	} {
+		if !strings.Contains(err.Error(), phrase) {
+			t.Errorf("error does not say %q: %v", phrase, err)
+		}
+	}
+}
+
 // Whatever cannot be known about the running node is found out before it is
 // stopped. A refusal after the stop is the outage this exists to prevent.
 func TestRestartNodeRefusesBeforeStoppingWhatItCannotStartAgain(t *testing.T) {
