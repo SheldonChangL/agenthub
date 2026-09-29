@@ -40,8 +40,8 @@ globalThis.setInterval = (fn, ms) => {
 const realSetTimeout = globalThis.setTimeout;
 let toastTimers = [];
 globalThis.setTimeout = (fn, ms, ...rest) => {
-  if (ms === 6000) {
-    const handle = { fn, fake: true, cleared: false, unref() {} };
+  if (ms === 6000 || ms === 15000) {
+    const handle = { fn, ms, fake: true, cleared: false, unref() {} };
     toastTimers.push(handle);
     return handle;
   }
@@ -164,6 +164,20 @@ runToastTimers();
 const afterTimers = toastNodes(document);
 if (!afterTimers.includes(errorToast)) failures.push("the error toast went away by itself");
 if (afterTimers.includes(okToast) || afterTimers.includes(infoToast)) failures.push("a success or info toast outlived its six seconds");
+
+// One that carries a button gets fifteen seconds, one without gets six: the
+// owner asked for the longer time so 復原 can still be reached.
+{
+  toastTimers = [];
+  const plain = app.notify("ok", "plain success");
+  const withUndo = app.notify("ok", "success with undo", { actions: [{ label: "復原", run() {} }] });
+  const [plainTimer, undoTimer] = toastTimers;
+  if (plainTimer?.ms !== 6000) failures.push(`a success without a button got ${plainTimer?.ms} ms, want 6000`);
+  if (undoTimer?.ms !== 15000) failures.push(`a success with 復原 got ${undoTimer?.ms} ms, want 15000`);
+  if (!withUndo.node.classList.contains("long")) failures.push("a success with 復原 lacks .long, so its bar drains in six seconds");
+  if (plain.node.classList.contains("long")) failures.push("a success without a button is marked .long");
+  runToastTimers();
+}
 
 // A warning stays too.
 app.notify("warn", "half done");

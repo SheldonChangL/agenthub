@@ -1561,6 +1561,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // machine asking to pair. Each row has the button that deals with it.
   const TOAST_LIMIT = 3;
   const TOAST_MS = 6000;
+  // One that carries a button (復原, 去公開 session) stays longer: six seconds
+  // is too short to read the sentence and then aim at the button.
+  const TOAST_ACTION_MS = 15000;
   const NOTICE_LIMIT = 100;
   const NOTICE_KINDS = new Set(["ok", "info", "warn", "error"]);
   // The ones that stay on screen until closed, and the ones the bell counts.
@@ -1613,7 +1616,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // alert for the two that stay: those interrupt a screen reader, the rest
     // wait their turn behind the container's aria-live="polite".
     node.setAttribute("role", lasting(kind) ? "alert" : "status");
-    const record = { node, kind, timer: null, bar: null, holds: { pointer: false, focus: false } };
+    const record = { node, kind, ms: actions.length > 0 ? TOAST_ACTION_MS : TOAST_MS, timer: null, bar: null, holds: { pointer: false, focus: false } };
+    if (actions.length > 0) node.classList.add("long");
     const main = element("div", "toastmain");
     main.append(element("div", "toasttitle", title));
     if (body) main.append(element("div", "toastbody", body));
@@ -1640,7 +1644,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       startToastTimer(record);
       // Held while the pointer is on it or the keyboard is in it — a toast
       // that goes while its 復原 is being aimed at takes the press with it —
-      // and given its whole six seconds again once both have left.
+      // and given its whole time again once both have left.
       const hold = (why, on) => {
         record.holds[why] = on;
         if (record.holds.pointer || record.holds.focus) pauseToastTimer(record);
@@ -1671,9 +1675,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   function startToastTimer(record) {
-    record.timer = setTimeout(() => dismissToast(record), TOAST_MS);
+    record.timer = setTimeout(() => dismissToast(record), record.ms);
     // A pending toast is not a reason for a test process to stay alive for
-    // six more seconds; a browser's handle is a number and has no unref.
+    // its remaining seconds; a browser's handle is a number and has no unref.
     record.timer?.unref?.();
   }
 
