@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -87,7 +88,9 @@ func TestProcessBasicInformationIsLaidOutLikeWindows(t *testing.T) {
 }
 
 func TestParseEnvironmentBlock(t *testing.T) {
-	block := func(text string) []uint16 { return windows.StringToUTF16(text)[:len(text)] }
+	// utf16.Encode, not windows.StringToUTF16: that one panics on the NULs a
+	// block is made of, and appends one of its own.
+	block := func(text string) []uint16 { return utf16.Encode([]rune(text)) }
 	env, err := parseEnvironmentBlock(block("=C:=C:\\x\x00APPDATA=C:\\Users\\me \u00e9\\AppData\\Roaming\x00\x00"))
 	if err != nil || !slices.Equal(env, []string{`=C:=C:\x`, "APPDATA=C:\\Users\\me \u00e9\\AppData\\Roaming"}) {
 		t.Errorf("env %q, err %v", env, err)

@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"os"
 
@@ -45,11 +44,11 @@ func listNodeProcesses(context.Context) ([]nodeProcess, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the command line of agenthub-node (pid %d): %w", pid, err)
 		}
-		argv, env, envErr, err := parseProcargs2(raw)
+		argv, env, err := parseProcargs2(raw)
 		if err != nil {
 			return nil, fmt.Errorf("read the command line of agenthub-node (pid %d): %w", pid, err)
 		}
-		found = append(found, nodeProcess{PID: pid, Argv: argv, Env: env, EnvErr: envErr})
+		found = append(found, nodeProcess{PID: pid, Argv: argv, Env: env})
 	}
 	return found, nil
 }
@@ -61,38 +60,49 @@ const zombie = 5
 // parseProcargs2 reads one process's argv and environment out of
 // kern.procargs2: a native int argc; the executable path, NUL-terminated and
 // padded with NULs to a multiple of the pointer size; argc NUL-terminated
-// arguments; the environment, NUL-terminated entries ending at an empty one;
-// then the kernel's own strings, which are not read.
+// arguments; then the environment and, straight after it, the kernel's own
+// "apple" strings (pfz=, stack_guard=, ptr_munge=, main_stack=,
+// executable_cdhash=, th_port=, ...), each NUL-terminated, to the end of the
+// buffer.
 //
-// The padding is measured rather than skipped over: an argv[0] that is the
-// empty string is one NUL, the same byte as the padding, and skipping every
-// NUL after the path would swallow it and read the first environment entry as
-// the last argument.
+// Nothing marks where the environment stops and the apple strings start. The
+// kernel pads the environment's end with NULs to a multiple of the pointer
+// size — so when it ends on that boundary there is no empty entry between the
+// two — and the buffer itself may end on the last string's NUL with no padding
+// after it (measured on Darwin 25.6). An empty entry is therefore padding, not
+// the end of anything, and the end of the buffer is the end of the strings.
+// The apple strings are kept rather than filtered by a list of names the
+// kernel is free to extend: they come after every environment entry, and a
+// lookup takes the first entry for a name (environmentLookup), so none of them
+// can stand in for a variable the process has, and none of them is named HOME
+// or XDG_CONFIG_HOME.
 //
-// The environment's error is separate, because a command line that reads
-// cleanly is still worth having without it.
-func parseProcargs2(raw []byte) (argv, env []string, envErr, err error) {
+// The padding after the path is measured rather than skipped over: an argv[0]
+// that is the empty string is one NUL, the same byte as the padding, and
+// skipping every NUL after the path would swallow it and read the first
+// environment entry as the last argument.
+func parseProcargs2(raw []byte) (argv, env []string, err error) {
 	if len(raw) < 4 {
-		return nil, nil, nil, fmt.Errorf("kern.procargs2 answered %d bytes", len(raw))
+		return nil, nil, fmt.Errorf("kern.procargs2 answered %d bytes", len(raw))
 	}
 	argc := int(int32(binary.LittleEndian.Uint32(raw[:4]))) // #nosec G115 -- the kernel's int, read back as one
 	rest := raw[4:]
 	// Every argument is at least its NUL, so argc cannot exceed what is left.
 	if argc < 0 || argc > len(rest) {
-		return nil, nil, nil, fmt.Errorf("kern.procargs2 says %d arguments in %d bytes", argc, len(rest))
+		return nil, nil, fmt.Errorf("kern.procargs2 says %d arguments in %d bytes", argc, len(rest))
 	}
 	end := bytes.IndexByte(rest, 0)
 	if end < 0 {
-		return nil, nil, nil, fmt.Errorf("kern.procargs2 has no end to its executable path")
+		return nil, nil, fmt.Errorf("kern.procargs2 has no end to its executable path")
 	}
 	const word = 8 // the pointer size of every Mac this app runs on
 	padded := (end + 1 + word - 1) / word * word
 	if padded > len(rest) {
-		return nil, nil, nil, fmt.Errorf("kern.procargs2 ends inside the padding after its executable path")
+		return nil, nil, fmt.Errorf("kern.procargs2 ends inside the padding after its executable path")
 	}
 	for _, b := range rest[end:padded] {
 		if b != 0 {
-			return nil, nil, nil, fmt.Errorf("kern.procargs2 has no padding after its executable path")
+			return nil, nil, fmt.Errorf("kern.procargs2 has no padding after its executable path")
 		}
 	}
 	rest = rest[padded:]
@@ -100,21 +110,16 @@ func parseProcargs2(raw []byte) (argv, env []string, envErr, err error) {
 	for len(argv) < argc {
 		end := bytes.IndexByte(rest, 0)
 		if end < 0 {
-			return nil, nil, nil, fmt.Errorf("kern.procargs2 ended after %d of %d arguments", len(argv), argc)
+			return nil, nil, fmt.Errorf("kern.procargs2 ended after %d of %d arguments", len(argv), argc)
 		}
 		argv = append(argv, string(rest[:end]))
 		rest = rest[end+1:]
 	}
 	env = []string{}
-	for {
-		end := bytes.IndexByte(rest, 0)
-		if end < 0 {
-			return argv, nil, errors.New("kern.procargs2 ended inside the environment"), nil
+	for _, entry := range bytes.Split(rest, []byte{0}) {
+		if len(entry) > 0 {
+			env = append(env, string(entry))
 		}
-		if end == 0 {
-			return argv, env, nil, nil
-		}
-		env = append(env, string(rest[:end]))
-		rest = rest[end+1:]
 	}
+	return argv, env, nil
 }

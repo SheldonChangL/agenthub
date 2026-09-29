@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,7 +34,14 @@ func TestNodeProcessHelper(t *testing.T) {
 // as the process has it, and name the process the way pkill -x or taskkill /IM
 // will.
 //
-// The Windows half runs in CI's windows job; nothing else runs it.
+// Eight of them, the last entry of each one's environment a byte longer than
+// the last: on macOS the kernel pads the environment's end to eight bytes, and
+// one that ends on the boundary has nothing between it and the kernel's own
+// strings (nodeprocs_darwin.go parseProcargs2). Whichever length this
+// environment happens to be, one of the eight ends there.
+//
+// The Windows half runs in CI's windows job, the macOS half in its macos job
+// as well as on a developer's Mac.
 func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
@@ -47,82 +55,99 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	database := filepath.Join(dir, "Application Support", "not the default", "agenthub.db")
 	helperArgs := []string{"-test.run=^TestNodeProcessHelper$", "--", "--db", database,
 		"--display-name", `say "hi" to me`, "", `trailing\`}
-	// #nosec G204 -- this test's own binary, copied under the node's name.
-	command := exec.Command(binary, helperArgs...)
-	command.Env = append(os.Environ(), "AGENTHUB_NODE_PROCESS_HELPER=1",
-		"HOME="+home, "XDG_CONFIG_HOME="+config, "APPDATA="+config, "USERPROFILE="+home)
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
-	}
-	waited := false
-	t.Cleanup(func() {
-		_ = command.Process.Kill()
-		if !waited {
-			_ = command.Wait()
-		}
-	})
 	want := append([]string{binary}, helperArgs...)
-	process := waitForListed(t, command.Process.Pid)
-	if !slices.Equal(process.Argv, want) {
-		t.Fatalf("argv = %q, want %q", process.Argv, want)
-	}
-	if process.EnvErr != nil {
-		t.Fatalf("its environment was not read: %v", process.EnvErr)
-	}
-	if process.UserErr != nil {
-		t.Errorf("a process this test started is not this user's: %v", process.UserErr)
-	}
-	paths, err := nodeDefaultPaths(runtime.GOOS, environmentLookup(runtime.GOOS, process.Env))
-	if err != nil {
-		t.Fatalf("its environment names no default paths: %v", err)
-	}
 	wantPaths, _ := nodeDefaultPaths(runtime.GOOS, func(name string) string {
 		return map[string]string{"HOME": home, "XDG_CONFIG_HOME": config, "AppData": config, "USERPROFILE": home}[name]
 	})
-	if paths != wantPaths {
-		t.Errorf("from its environment: %+v, want %+v", paths, wantPaths)
+
+	const lengths = 8
+	commands := make([]*exec.Cmd, 0, lengths)
+	fills := map[int]string{}
+	for fill := range lengths {
+		// #nosec G204 -- this test's own binary, copied under the node's name.
+		command := exec.Command(binary, helperArgs...)
+		// Last, so that its length is where the environment ends.
+		command.Env = append(os.Environ(), "AGENTHUB_NODE_PROCESS_HELPER=1",
+			"HOME="+home, "XDG_CONFIG_HOME="+config, "APPDATA="+config, "USERPROFILE="+home,
+			"AGENTHUB_TEST_FILL="+strings.Repeat("f", fill))
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		})
+		commands = append(commands, command)
+		fills[command.Process.Pid] = strings.Repeat("f", fill)
 	}
 
-	// Killed and not yet waited for, it is a zombie on macOS and Linux —
+	for _, process := range waitForListed(t, fills) {
+		fill := fills[process.PID]
+		if !slices.Equal(process.Argv, want) {
+			t.Fatalf("fill %d: argv = %q, want %q", len(fill), process.Argv, want)
+		}
+		if process.EnvErr != nil {
+			t.Fatalf("fill %d: its environment was not read: %v", len(fill), process.EnvErr)
+		}
+		if process.UserErr != nil {
+			t.Errorf("fill %d: a process this test started is not this user's: %v", len(fill), process.UserErr)
+		}
+		lookup := environmentLookup(runtime.GOOS, process.Env)
+		if got := lookup("AGENTHUB_TEST_FILL"); got != fill {
+			t.Errorf("fill %d: the environment's last entry read back as %q", len(fill), got)
+		}
+		paths, err := nodeDefaultPaths(runtime.GOOS, lookup)
+		if err != nil {
+			t.Fatalf("fill %d: its environment names no default paths: %v", len(fill), err)
+		}
+		if paths != wantPaths {
+			t.Errorf("fill %d: from its environment: %+v, want %+v", len(fill), paths, wantPaths)
+		}
+	}
+
+	// Killed and not yet waited for, each is a zombie on macOS and Linux —
 	// what a node this app started and then stopped stays until the app
-	// exits. It is not a running node, and it must not stop the listing.
-	if err := command.Process.Kill(); err != nil {
-		t.Fatal(err)
+	// exits. It is not a running node, and it must not stop the listing. On
+	// its way there a process can be caught exiting and not yet a zombie,
+	// which macOS answers with an error: that is asked again, not failed.
+	for _, command := range commands {
+		if err := command.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	deadline := time.Now().Add(15 * time.Second) // PowerShell again
 	for {
 		processes, err := listNodeProcesses(context.Background())
-		if err != nil {
-			t.Fatalf("list with an exited node about: %v", err)
-		}
-		if !slices.ContainsFunc(processes, func(p nodeProcess) bool { return p.PID == command.Process.Pid }) {
+		if err == nil && !slices.ContainsFunc(processes, func(p nodeProcess) bool { _, ours := fills[p.PID]; return ours }) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("pid %d is still listed after it was killed", command.Process.Pid)
+			t.Fatalf("the killed processes are still listed, or the listing still fails: %d listed, %v", len(processes), err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	waited = true
-	_ = command.Wait()
 }
 
-// waitForListed lists agenthub-node processes until pid is among them.
-func waitForListed(t *testing.T, pid int) nodeProcess {
+// waitForListed lists agenthub-node processes until every pid in want is
+// among them. A listing that fails is asked again until the deadline: another
+// agenthub-node on this machine may be on its way out.
+func waitForListed(t *testing.T, want map[int]string) []nodeProcess {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second) // PowerShell can take seconds to start cold
 	for {
 		processes, err := listNodeProcesses(context.Background())
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
+		var found []nodeProcess
 		for _, process := range processes {
-			if process.PID == pid {
-				return process
+			if _, ok := want[process.PID]; ok {
+				found = append(found, process)
 			}
 		}
+		if err == nil && len(found) == len(want) {
+			return found
+		}
 		if time.Now().After(deadline) {
-			t.Fatalf("pid %d, named %s, was not listed among %d agenthub-node processes", pid, nodeExecutable, len(processes))
+			t.Fatalf("%d of %d processes named %s were listed among %d agenthub-node processes (last error: %v)",
+				len(found), len(want), nodeExecutable, len(processes), err)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
