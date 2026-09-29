@@ -146,22 +146,37 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 
 In this order, and each only when it is this install's:
 
-1. The background service: `ah service uninstall`, with the installed `ah`
-   (or the one on `PATH`). If that fails nothing else is removed — an app
-   deleted under a registered service fails at every login. With no `ah`
-   anywhere, the launchd plist or systemd unit `ah service install` wrote is
-   taken down directly.
-2. On macOS, a running `agenthub-desktop` is asked to quit; a node the window
-   started on its own is stopped, matched by the full path of this install's
-   `agenthub-node`.
+1. The background service, when the registered unit
+   (`~/Library/LaunchAgents/local.agenthub.node.plist` or
+   `~/.config/systemd/user/agenthub-node.service`) starts this install's
+   `agenthub-node`. There is one registration per user whoever made it, so a
+   unit that starts some other node — one registered from a source checkout's
+   `bin/ah`, or the real install during a `--prefix` run — is left running and
+   named. Ours is taken down with this install's own `ah service uninstall`,
+   never an `ah` found on `PATH`; if that fails nothing else is removed, because
+   an app deleted under a registered service fails at every login. With this
+   install's `ah` already gone, the unit is taken down directly (`launchctl
+   bootout` or `systemctl --user disable --now`, then the file).
+2. On macOS, a running `agenthub-desktop` is asked to quit. A node the window
+   started on its own, and on Linux a running window, is stopped, matched by the
+   full path of this install's binary.
 3. The links in `~/.local/bin` (`ah`, `agenthub-node`, `agenthub-mcp`,
    `agenthub-desktop`) — only those that point into this install; a link to
    some other `ah` is left and named.
-4. The app: `/Applications/agenthub-desktop.app` (or `~/Applications`) on
-   macOS, `~/.local/share/agenthub/` on Linux, and the Linux menu entry.
+4. The app: on macOS both `/Applications/agenthub-desktop.app` and
+   `~/Applications/agenthub-desktop.app` are looked at, since which one install
+   picks can change after it ran (an account made admin); each goes only when
+   it holds `Contents/MacOS/ah` or `desktop`. On Linux `~/.local/share/agenthub/`
+   (or `AGENTHUB_HOME`), only when `ah` and `agenthub-node` are at its top level
+   and it is neither `/`, your home, nor a directory containing it — a source
+   checkout, which has `bin/ah`, is left. The Linux menu entry goes when its
+   `Exec=` launches this install's app.
 5. The PATH lines: the `# added by the AgentHub installer` comment, the
    `export` under it and the blank line above them, from every startup file in
-   the "PATH" table. The rest of each file is left byte for byte.
+   the "PATH" table. The rest of each file is kept as it was, except that a file
+   whose last line had no newline gets one. A file that mentions the comment in
+   any other form (a CRLF copy, a commented-out one) is left as it is, with a
+   warning.
 6. On macOS, the app's caches and preferences under `~/Library` (`Caches`,
    `WebKit`, `HTTPStorages`, `Preferences`, `Saved Application State`, each by
    the bundle id).
@@ -170,18 +185,24 @@ In this order, and each only when it is this install's:
    marker. A symlink or a copy of your own is left and named. `--no-skill`
    leaves it in any case.
 
-It keeps the node's identity and database —
+It keeps the node's identity and database by default —
 `~/Library/Application Support/agenthub/` on macOS, `~/.config/agenthub/` on
 Linux, or beside the database the service unit names — and its logs, so
 installing again brings the same node back with its pairings. `--purge`
 deletes them as well: the default directory whole, and for a database kept
 anywhere else only `node.key` and the database's own files, so a checkout the
-database lived in is not taken with it. After `--purge` a reinstall is a new
-node. Either way the machines paired with this one still list it until they
+database lived in is not taken with it. It deletes them only when the node
+they belong to is this install's: with a registered unit that is someone
+else's, or on a `--prefix` run without a unit of its own, `--purge` leaves the
+data and says so. After `--purge` a reinstall is a new node. Either way the machines paired with this one still list it until they
 revoke it (`ah revoke <node-id>`, or from their app).
 
-With `--prefix`, the same run removes that prefix's app, links and marker.
-`--dry-run` prints all of it and removes nothing.
+With `--prefix`, the run removes that prefix's app, tree, links and marker and
+nothing outside it: no startup file (a `--prefix` install never writes one), no
+`~/Library` caches (they are named by bundle id, so the real install's are the
+same ones), no skill, and a service or data only when they are the prefix's
+own. `--dry-run` prints every command and removes nothing; its last line says
+so.
 
 ## The Claude Code skill
 
