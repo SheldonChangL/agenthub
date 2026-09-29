@@ -15,6 +15,7 @@
 
 import { document } from "./dom-shim.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
+import { attentionRows, attentionText, toastNodes } from "./fixtures/toasts.mjs";
 
 globalThis.document = document;
 answerConfirms(document, () => true);
@@ -144,18 +145,24 @@ if (refresh) {
   if (el("conn-dot").className !== "dot bad") {
     failures.push(`a failed read left the connection dot as ${el("conn-dot").className}`);
   }
-  const bannerText = el("banner").textContent;
-  if (el("banner").classList.contains("hidden")) {
-    failures.push("a failed read showed no banner");
+  // Said on the attention strip, the one place visible from every view, with
+  // the button that asks again (it used to be a banner that every other
+  // message replaced).
+  const nodeRow = attentionRows(document).find((row) => row.title === "節點沒有回應");
+  const bannerText = attentionText(document);
+  if (!nodeRow) {
+    failures.push(`a failed read put no row on the attention strip: ${bannerText}`);
+  } else if (nodeRow.sev !== "alert" || !nodeRow.action) {
+    failures.push(`the unreachable row is ${nodeRow.sev} with ${nodeRow.action ? "a" : "no"} button, want alert with 重試`);
   }
   if (!bannerText.includes("節點未連線")) {
-    failures.push(`the banner does not say the node is unreachable: ${bannerText}`);
+    failures.push(`the attention strip does not say the node is unreachable: ${bannerText}`);
   }
   if (!bannerText.includes("上次")) {
-    failures.push(`the banner does not say the lists are the previous read's: ${bannerText}`);
+    failures.push(`the attention strip does not say the lists are the previous read's: ${bannerText}`);
   }
   if (!bannerText.includes("connection refused")) {
-    failures.push(`the banner dropped the reason: ${bannerText}`);
+    failures.push(`the attention strip dropped the reason: ${bannerText}`);
   }
 }
 
@@ -171,8 +178,8 @@ if (refresh) {
   if (state.nodes.length !== 2) {
     failures.push(`a successful refresh did not adopt the new node list (${state.nodes.length})`);
   }
-  if (!el("banner").classList.contains("hidden")) {
-    failures.push("the unreachable banner survived a successful refresh");
+  if (attentionText(document).includes("節點未連線")) {
+    failures.push("the unreachable row survived a successful refresh");
   }
 }
 
@@ -257,7 +264,7 @@ if (!state.selected.has("claude:three")) {
   }
 }
 
-// And the same for the banner and the connection dot: a late read that could
+// And the same for the attention strip and the connection dot: a late read that could
 // not reach the node must not report the window as disconnected when the newer
 // read reached it.
 {
@@ -277,8 +284,8 @@ if (!state.selected.has("claude:three")) {
   if (el("conn-dot").className !== "dot ok") {
     failures.push(`a late failed read set the connection dot to ${el("conn-dot").className} over a newer read that reached the node`);
   }
-  if (!el("banner").classList.contains("hidden")) {
-    failures.push(`a late failed read raised the unreachable banner over a newer successful read: ${el("banner").textContent}`);
+  if (attentionText(document).includes("節點未連線")) {
+    failures.push(`a late failed read raised the unreachable row over a newer successful read: ${attentionText(document)}`);
   }
   if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:newest") {
     failures.push(`a late failed read disturbed the newer session list: ${JSON.stringify(state.sessions.map((s) => s.id))}`);
@@ -303,8 +310,8 @@ const droppedMidInteraction = async (label, arrange, restore) => {
   const sessionsBefore = state.sessions.map((s) => s.id).join(",");
   const nodesBefore = state.nodes.map((n) => n.nodeId).join(",");
   const rowsBefore = drawnRows();
-  const bannerHiddenBefore = el("banner").classList.contains("hidden");
-  const bannerTextBefore = el("banner").textContent;
+  const attentionBefore = attentionText(document);
+  const toastsBefore = toastNodes(document).length;
   const dotBefore = el("conn-dot").className;
 
   // The tick fires with nothing in the way, and the read parks in flight.
@@ -337,9 +344,8 @@ const droppedMidInteraction = async (label, arrange, restore) => {
   if (drawnRows() !== rowsBefore) {
     failures.push(`a background read landing while ${label} redrew the table (${rowsBefore} rows -> ${drawnRows()})`);
   }
-  if (el("banner").classList.contains("hidden") !== bannerHiddenBefore
-    || el("banner").textContent !== bannerTextBefore) {
-    failures.push(`a background read landing while ${label} moved the banner`);
+  if (attentionText(document) !== attentionBefore || toastNodes(document).length !== toastsBefore) {
+    failures.push(`a background read landing while ${label} moved the attention strip or the toasts`);
   }
   if (el("conn-dot").className !== dotBefore) {
     failures.push(`a background read landing while ${label} changed the connection dot to ${el("conn-dot").className}`);

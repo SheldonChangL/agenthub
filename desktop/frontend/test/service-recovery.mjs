@@ -16,6 +16,7 @@
 //   node frontend/test/service-recovery.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { inEnglish } from "./fixtures/in-english.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 
@@ -25,6 +26,8 @@ const { configure, boot } = await import("../src/app.js");
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const noop = async () => ({});
 const text = (id) => el(id).textContent ?? "";
 
@@ -147,8 +150,8 @@ if ("allowLan" in saved[0]) {
 app.state.service = { supported: true, installed: true, running: false, pid: 0, unitPath: "/u", logHint: "/log" };
 app.state.nodeSettingsAnswer = degraded;
 await app.restartNode();
-if (!text("banner").includes("對外位址沒有綁起來")) {
-  failures.push(`a node that came back degraded was reported as an ordinary restart: ${text("banner")}`);
+if (!toast().textContent.includes("對外位址沒有綁起來")) {
+  failures.push(`a node that came back degraded was reported as an ordinary restart: ${toast().textContent}`);
 }
 
 // 5. A unit that pins node settings overrides this window on every start. The
@@ -247,8 +250,8 @@ if (installed.length !== 0) {
 if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
   failures.push(`a refused confirmation sent ${JSON.stringify(saved)}, want the unpinned change alone`);
 }
-if (!text("banner").includes("沒有存") || !text("banner").includes("允許區網")) {
-  failures.push(`a pinned field left out of the save was not named: ${text("banner")}`);
+if (!toast().textContent.includes("沒有存") || !toast().textContent.includes("允許區網")) {
+  failures.push(`a pinned field left out of the save was not named: ${toast().textContent}`);
 }
 
 // Only pinned fields, declined: nothing to save, and the banner says why.
@@ -260,8 +263,8 @@ await app.saveNodeSettings();
 if (installed.length !== 0 || saved.length !== 0) {
   failures.push(`a refused save of pinned fields only still sent ${JSON.stringify(saved)}`);
 }
-if (!text("banner").includes("沒有存")) {
-  failures.push(`a refused save of pinned fields only said nothing: ${text("banner")}`);
+if (!toast().textContent.includes("沒有存")) {
+  failures.push(`a refused save of pinned fields only said nothing: ${toast().textContent}`);
 }
 
 // Pinned and accepted: re-registered once, then the whole change saved.
@@ -301,8 +304,8 @@ if (installed.length !== 1) {
 if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
   failures.push(`a save whose re-registration failed sent ${JSON.stringify(saved)}, want the unpinned change alone`);
 }
-if (!text("banner").includes("沒有存") || !text("banner").includes("允許區網")) {
-  failures.push(`a pinned field left out after a failed re-registration was not named: ${text("banner")}`);
+if (!toast().textContent.includes("沒有存") || !toast().textContent.includes("允許區網")) {
+  failures.push(`a pinned field left out after a failed re-registration was not named: ${toast().textContent}`);
 }
 
 // A unit whose database this window cannot read is never re-registered from
@@ -322,8 +325,8 @@ if (confirmations.length !== 0 || installed.length !== 0) {
 if (saved.length !== 1 || saved[0].discover !== false || "allowLan" in saved[0]) {
   failures.push(`with an unreadable database path the save sent ${JSON.stringify(saved)}, want the unpinned change alone`);
 }
-if (!text("banner").includes("資料庫路徑") || !text("banner").includes("沒有存")) {
-  failures.push(`with an unreadable database path the banner does not say what was left out and why: ${text("banner")}`);
+if (!toast().textContent.includes("資料庫路徑") || !toast().textContent.includes("沒有存")) {
+  failures.push(`with an unreadable database path the banner does not say what was left out and why: ${toast().textContent}`);
 }
 app.state.service = unreadable;
 
@@ -364,10 +367,15 @@ if (confirmations.length !== 0) {
 if (installed.length !== 1) failures.push("an unchanged reinstall did not install");
 
 // 10. A first install, with no unit to read, still works: blank is the node's
-//     default and the form says so rather than pretending to know.
+//     default and the form says so rather than pretending to know. Nothing is
+//     running here either — a node answering with no service is a different
+//     case, whose form says to type its --db path (inline-publish.mjs).
+const wasReachable = app.state.nodeReachable;
+app.state.nodeReachable = false;
 app.state.service = { supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "/log" };
 app.renderService();
 await app.openServiceForm();
+app.state.nodeReachable = wasReachable;
 if (el("service-db").value !== "") {
   failures.push(`a first install prefilled "${el("service-db").value}"`);
 }

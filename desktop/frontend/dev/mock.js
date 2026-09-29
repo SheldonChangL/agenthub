@@ -20,7 +20,9 @@ const sessions = [
   S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/home/alex/projects/serialwrap", aud("none"), 180, "unmanaged", "Build frontend testing workflows"),
   S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/home/alex/projects/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60, "managed", "Show the conversation title in the main column, fall back to the session id"),
   S("b61f0d5c-2b3c-4d4e-9f0a-patents00005", "claude", "idle", "/home/alex/projects/patent-search", aud("selected", []), 42 * 60),
-  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/home/alex/projects/fw-bootloader", aud("none"), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
+  // Unpublished but still holding exportCwd — older data, or the full dialog —
+  // so the menu and the dialog can be seen saying the directory goes with it.
+  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/home/alex/projects/fw-bootloader", aud("none", [], { cwd: 1 }), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
   S("d05e3b21-3c4d-4e5f-a0b1-docs00000007", "claude", "idle", "", aud("selected", ["node_a91c3e7b2d5f8046c0e1"], { cwd: 1 }), 5 * 3600, "managed", "Docs version, branch state and progress"),
   S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/home/alex/projects/archive/thing", aud("none"), 3 * 86400, "managed", "OTA update .bin files"),
   S("f28a5d43-thread-inactive-00000000009", "codex", "inactive", "/home/alex/projects/archive/other", aud("none"), 9 * 86400, "unmanaged"),
@@ -85,7 +87,9 @@ const onboarding = query.get("onboarding") ?? "";
 // shows with two steps ticked and three still open, which is the state worth
 // looking at: a tick that never appears proves nothing about the tick.
 const firstRun = onboarding === "fresh" || onboarding === "slow";
-const unreachable = onboarding === "unreachable";
+// `?service=down` is a node not answering with nothing registered either:
+// the one shape the one-press fix installs straight away (see below).
+let unreachable = onboarding === "unreachable" || query.get("service") === "down";
 // ServiceStatus behind a delay, because the defect it uncovers is a race: the
 // first render happens with no status at all, and what the card says then is
 // only visible if something answers slower than the first paint.
@@ -247,7 +251,30 @@ if (listenShape === "multi") {
   delete nodeSettings.peerListenProblem;
 }
 const overviewSessions = firstRun ? [] : sessions;
-const overviewNodes = onboarding ? [] : nodes;
+// `?paired=none`: every session and no paired machine, which is what the
+// inline audience menu's "nothing paired yet" line is for.
+const overviewNodes = onboarding || query.get("paired") === "none" ? [] : nodes;
+
+// `?service=` puts the background service in the state the one-press fix is
+// for, and the fix then changes it, so the attention row can be seen going:
+//
+//   ?service=stopped   installed, not running: the press runs RestartService
+//   ?service=none      the node answering and nothing registered — started by
+//                      hand, on a database the window cannot see — so the press
+//                      opens the service form rather than installing over it
+//   ?service=down      nothing registered and nothing answering: it installs
+//   ?service=noah      ah not found: the press opens the settings page
+//
+// The press reads the status again before it acts, so `mockService("stopped")`
+// in the console, with the row still saying "not a service", shows it starting
+// the service rather than installing over it.
+let serviceShape = query.get("service") ?? "";
+const shapedService = () => ({
+  stopped: { tool: "/usr/local/bin/ah", supported: true, installed: true, running: false, pid: 0, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: [] },
+  none: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false },
+  down: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: false, dbPathKnown: false },
+  noah: { toolError: "ah not found on PATH or beside the app", supported: true, installed: false, running: false },
+}[serviceShape]);
 const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
 
 configure({
@@ -389,20 +416,20 @@ configure({
   // build that no tag stamped really answers, so that is what the dev page
   // shows rather than a version number nothing produced.
   Version: async () => ({ release: "unreleased", goos: "darwin", goarch: "arm64" }),
-  RestartService: async () => { log("RestartService"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartService: async () => { log("RestartService"); await sleep(600); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // What the window actually calls. It was missing, so every save on this page
   // ended in "could not restart the node: api.RestartNode is not a function" — the dev
   // page showing a failure the real app does not have, which is the same wasted
   // hour as a bug, spent in the other direction.
-  RestartNode: async () => { log("RestartNode"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartNode: async () => { log("RestartNode"); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // Installed the old way, with the node's settings burned into the unit, so
   // the panel's offer to re-register it cleanly is visible here too.
-  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), unreachable
+  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), shapedService() ?? (unreachable
     ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
     : firstRun
     ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
-    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
-  InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
+    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] })),
+  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; unreachable = false; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => localAddresses,
   // The node filters by session (agenthub#132); the fake does the same, so the
@@ -424,6 +451,9 @@ configure({
   ], limits: { hops: 3, pair: 6, pairWindow: "10m0s", session: 3, sessionWindow: "10m0s", node: 30, nodeWindow: "1h0m0s" } }),
 });
 const preview = boot({ backdropUrl: backdrop });
+// Changes what the next ServiceStatus read answers without telling the window,
+// which is how a service installed from a terminal looks from here.
+globalThis.mockService = (shape) => { serviceShape = shape; };
 // The window follows the OS locale, which is right for the app and useless for
 // a preview: the screenshots in a pull request have to show either language
 // whatever the machine taking them is set to. `?lang=en` / `?lang=zh-Hant`.
@@ -466,10 +496,17 @@ globalThis.layoutCheck = async () => {
   $("#rows button.inbox").click(); await pause();
   results.push(measure("inbox drawer", $("#inbox-modal .drawer-card")));
   $("#inbox-close").click(); await pause();
+  $("#rows button.audbtn").click(); await pause();
+  results.push(measure("audience menu (row)", $("#audience-popover")));
+  $("#audience-popover").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   $("#rows input[type=checkbox]").click(); await pause();
   $("#btn-audience").click(); await pause();
+  results.push(measure("audience menu (selection)", $("#audience-popover")));
+  results.push(measure("selection bar", $("#selectionbar")));
+  [...document.querySelectorAll("#audience-popover button.popitem")].at(-1).click(); await pause();
   results.push(measure("audience modal", $("#audience-modal .modal-card")));
   $("#audience-close").click();
+  $("#btn-deselect").click();
   results.push(measure("document", document.documentElement));
   console.table(results);
   return results;

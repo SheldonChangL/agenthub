@@ -100,6 +100,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // reason: the option labels are part translation, and rebuilding them
     // after a switch must not mean another round trip to the node.
     nodeAddresses: { list: [], failure: "" },
+    // Why the last read did not reach the node, for the attention row that
+    // says so. Empty while it answers.
+    nodeError: "",
+    // Whether any read has answered at all. nodeReachable starts false, which
+    // before the first answer means "not asked yet" rather than "down" — and
+    // the attention strip must not say the node is down on every launch.
+    nodeChecked: false,
+    // Every notice since the window opened, newest first, in memory only and
+    // at most NOTICE_LIMIT of them: the log behind the bell. A toast goes
+    // away; this is where it can still be read.
+    notices: [],
+    // Requests from another machine that are waiting for this one to approve,
+    // as the last read of the exchange said. Read by the pairing drawer while
+    // it is open, and otherwise once per fifteen-second tick — and only while
+    // the node last reported the pairing window open, since no request can be
+    // waiting on a closed one (docs/ui-contract.md §2 PairRequests).
+    pairIncoming: [],
     // ---- redesign state ----
     // Grouped filters: a Set of chosen values per group (docs/ui-contract.md
     // §5.1). Empty means "no restriction". Search, filters and sort are kept in
@@ -455,6 +472,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkCell.append(checkbox);
+    // The cell is the target, not the 13px box: a press anywhere in it
+    // toggles the box, which then fires its own change handler.
+    checkCell.onclick = (event) => {
+      if (event?.target === checkCell) checkbox.click?.();
+    };
 
     // The name the session's own app gives the conversation is what a person
     // recognises a row by; the UUID is only ever needed to resume or to quote
@@ -470,8 +492,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusPill = element("span", "pill");
     statusCell.append(statusPill);
 
+    // The audience is a button now: pressing it opens the inline menu over
+    // this row (openAudiencePopover), and picking an entry applies it at once.
+    // Worded by updateSessionRow, like everything else in a kept row; the ▾ is
+    // drawn by the stylesheet so the label stays exactly the cell's text.
     const audienceCell = element("td");
-    const audiencePill = element("span", "pill");
+    const audiencePill = element("button", "audbtn pill");
+    audiencePill.setAttribute("aria-haspopup", "menu");
+    audiencePill.setAttribute("aria-expanded", "false");
     audienceCell.append(audiencePill);
 
     // The four audience flags, readable without opening the dialog. They say
@@ -485,7 +513,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const flagOut = element("span", "flag");
     const flagWake = element("span", "flag");
     chips.append(flagCwd, flagIn, flagOut, flagWake);
-    flagsCell.append(chips);
+    // Beside the wake chip on a row that has it: waking is a request, not a
+    // promise, and the reasons it can fail are in the tooltip (wake.caveat).
+    const wakeCaveat = element("span", "wakecaveat hidden", "⚠");
+    flagsCell.append(chips, wakeCaveat);
 
     // The path goes in a <bdi> because the cell is laid out right-to-left so
     // that a path too long for the column loses its head rather than its tail —
@@ -538,7 +569,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       flagsCell, cwdCell, seenCell, actionsCell);
     tr.sessionParts = {
       checkbox, idCell, providerTag, label, statusPill,
-      audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, cwdCell, cwdText,
+      audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, wakeCaveat, cwdCell, cwdText,
       seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
     };
     updateSessionRow(tr, session);
@@ -581,12 +612,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.statusPill.textContent = session.status;
 
     const audience = describeAudience(session.audience);
-    parts.audiencePill.className = audience.published ? "pill public" : "pill";
+    // classList, not className: a menu choice applied from this button leaves
+    // it spinning (withBusy's `busy`), and the render withBusy runs must not
+    // take the spinner away.
+    parts.audiencePill.classList.toggle("public", audience.published);
     parts.audiencePill.textContent = audience.text;
     // The column is sized for the 900px window, with every table wording
     // measured to fit it (style.css col.c-audience); the tooltip carries the
     // whole of it anyway, and the long form where the cell uses a short one.
     parts.audiencePill.title = audience.title ?? audience.text;
+    parts.audiencePill.disabled = state.busy;
+    parts.audiencePill.onclick = () => openAudiencePopover(parts.audiencePill, [session.id]);
 
     // The flags describe what a peer is allowed to do with this session, so on
     // one no peer has been given they describe nothing. Hidden rather than
@@ -602,6 +638,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
     setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
     setFlagChip(parts.flagWake, t("row.flagWake"), Boolean(a.autoWake), true);
+    parts.wakeCaveat.classList.toggle("hidden", !(audience.published && a.autoWake));
+    parts.wakeCaveat.title = t("wake.caveat");
+    parts.wakeCaveat.setAttribute("aria-label", t("wake.caveat"));
 
     parts.cwdText.textContent = session.cwd ? session.cwd : "—";
     parts.cwdCell.title = session.cwd ? session.cwd : "";
@@ -824,7 +863,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // goToService is the way into the service panel, for the same reason
   // goToNodeSettings exists: the remedy is two tabs away, and an owner who has
   // just been told to install a service should not also have to find it.
-  function goToService() {
+  //
+  // keepForm is for a caller that has just used the form: the one-press
+  // install's failure toast. Opening the form again would reset the database
+  // field and hide the output that says why the install failed.
+  function goToService({ keepForm = false } = {}) {
     state.view = "settings";
     state.settingsSection = "settings-service";
     render();
@@ -832,7 +875,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const status = state.service ?? {};
     // Opened for them when there is nothing installed yet: that form is the
     // whole of this step, and leaving it closed means one more thing to find.
-    if (status.supported && !status.installed) {
+    if (!keepForm && status.supported && !status.installed) {
       openServiceForm().catch((error) =>
         banner(t("busy.failed", { action: t("service.busyOpenForm"), error })));
     }
@@ -963,6 +1006,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         title: t("onboarding.service.title"),
         body: t("onboarding.service.body"),
         done,
+        // The one step that is the attention strip's service row by another
+        // name: both install the service (renderAttention).
+        fixesService: !done,
         actions: done ? [] : [{ label: t("onboarding.service.action"), primary: true, run: () => goToService() }],
       });
     }
@@ -1018,6 +1064,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // steps itself changes.
   const onboardingNodes = new Map();
   let onboardingAllDoneShown = false;
+  // Whether the card is up showing 「把節點跑成背景服務」 not yet done, for the
+  // attention strip, which then leaves that one thing to the card
+  // (renderAttention). The node-down step starts the node instead, a different
+  // button for a different thing, and does not count.
+  let onboardingServiceStepOpen = false;
   // The farewell is spent by a TICK, not by a render.
   //
   // load() fires loadService() and renders; the status lands about fifty
@@ -1097,6 +1148,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       onboardingAllDoneShown = true;
     }
     section.classList.toggle("hidden", !show);
+    onboardingServiceStepOpen = show && steps.some((step) => step.fixesService === true);
     if (!show) return;
     // No node-settings read here any more. The step that needed one — the
     // listening address — is the pairing drawer's own first step now, and that
@@ -1112,8 +1164,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function render() {
     renderOnboarding();
     for (const view of VIEWS) el(`${view}-view`).classList.toggle("hidden", state.view !== view);
-    for (const segment of document.querySelectorAll("#view-switch span[data-view]")) {
-      segment.className = segment.dataset.view === state.view ? "tab on" : "tab";
+    for (const segment of document.querySelectorAll("#view-switch [data-view]")) {
+      const on = segment.dataset.view === state.view;
+      segment.className = on ? "tab on" : "tab";
+      segment.setAttribute?.("aria-selected", String(on));
+      // One stop in the tab order for the strip, as a tablist has: the arrow
+      // keys move between the three (viewSwitchKey).
+      segment.setAttribute?.("tabindex", on ? "0" : "-1");
     }
     if (state.view === "network") {
       renderNodes();
@@ -1151,8 +1208,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     // The selection bar floats over the table only while something is picked;
     // #select-all in the header is the way in, the bar is the way to act.
+    // body.selecting lifts the toast stack clear of it (style.css).
     const count = state.selected.size;
     el("selectionbar").classList.toggle("hidden", count === 0);
+    document.body?.classList?.toggle("selecting", count > 0 && state.view === "local");
     el("selection-count").textContent = count ? plural(count, "table.selectedCount") : t("local.noneSelected");
     el("btn-audience").disabled = count === 0 || state.busy;
     el("btn-unpublish").disabled = count === 0 || state.busy;
@@ -1176,12 +1235,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
     const allPicked = rows.length > 0 && rows.every((s) => state.selected.has(s.id));
     const some = !allPicked && rows.some((s) => state.selected.has(s.id));
-    for (const id of ["select-all", "select-all-visible"]) {
-      const box = el(id);
-      box.checked = allPicked;
-      box.indeterminate = some;
-    }
-    el("select-label").textContent = t("local.selectAllFilteredCount", { n: rows.length });
+    const box = el("select-all");
+    box.checked = allPicked;
+    box.indeterminate = some;
 
     el("footer-left").textContent = t("footer.counts", {
       shown: rows.length,
@@ -1190,6 +1246,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       selected: state.counts.selected ?? 0,
       none: state.counts.none ?? 0,
     });
+
+    // On every view, so last: every read above may have changed what is
+    // waiting on the owner.
+    renderAttention();
+    renderBell();
   }
 
   /* ---------------- settings view ---------------- */
@@ -1202,6 +1263,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
+    el("motion-why").classList.toggle("hidden", state.ui.backdrop);
     el("appearance-state").textContent = describeBackdropState();
     // The control shows the language in use, not the stored override: with no
     // override stored the window is following the OS, and a blank box over a
@@ -1291,12 +1353,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await openPairingWindowIfNeeded();
   }
 
-  // keepBanner is for a caller whose own result is already on the banner — the
-  // repair from step 1, whose save and restart said what they did. A refused
-  // OpenPairing used to replace that sentence, so the owner learned the window
-  // did not open and lost whether the address they had just fixed was saved.
-  // The failure is added after it instead.
-  async function openPairingWindowIfNeeded({ keepBanner = false } = {}) {
+  // A refused OpenPairing is its own toast. It used to replace the one banner,
+  // which after the repair from step 1 held what the save and restart had
+  // done — so the owner learned the window did not open and lost whether the
+  // address they had just fixed was saved. Toasts stack, and an error stays,
+  // so both are on screen without being glued into one sentence.
+  async function openPairingWindowIfNeeded() {
     // The drawer can be dismissed while loadPairing is still on its way: a
     // window opened after that is one nobody asked for, and nothing on screen
     // would then close it.
@@ -1311,10 +1373,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // No duration: the node's own default is the one the node documents.
       await api.OpenPairing(0);
     } catch (error) {
-      const failure = pairErrorMessage(error);
-      const shown = el("banner");
-      const before = keepBanner && !shown.classList.contains("hidden") ? shown.textContent : "";
-      banner(before ? `${before} ${failure}` : failure);
+      banner(pairErrorMessage(error));
       return;
     }
     await loadPairing();
@@ -1480,19 +1539,473 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
 
-  /* ---------------- banner ---------------- */
+  /* ---------------- notices: toasts, the bell, the attention strip ---------------- */
 
-  let bannerTimer = null;
-  function banner(message, ok = false) {
-    const node = el("banner");
-    node.textContent = message;
-    node.className = ok ? "banner ok" : "banner";
-    clearTimeout(bannerTimer);
-    if (ok) bannerTimer = setTimeout(() => node.classList.add("hidden"), 4000);
+  // Three layers, because they answer three different questions.
+  //
+  // A toast answers the button just pressed. There used to be one banner under
+  // the title bar for that: a success went after four seconds, and every new
+  // message replaced the last — so an error was gone the moment anything else
+  // was said, and the load() that follows most writes hid whatever the write
+  // had just reported. Toasts stack instead (three at most, newest at the
+  // bottom); successes and plain information still go by themselves, but after
+  // six seconds and with a bar that shows it happening, and errors and
+  // warnings stay until someone closes them.
+  //
+  // The bell answers "what did I miss": every toast and every attention row
+  // since the window opened, with the time. Its number is the errors and
+  // warnings nobody has opened the drawer to look at.
+  //
+  // The attention strip answers "what is waiting on me", on every view: a node
+  // that is not answering, a service that is not running, a full inbox, a
+  // machine asking to pair. Each row has the button that deals with it.
+  const TOAST_LIMIT = 3;
+  const TOAST_MS = 6000;
+  // One that carries a button (復原, 去公開 session) stays longer: six seconds
+  // is too short to read the sentence and then aim at the button.
+  const TOAST_ACTION_MS = 15000;
+  const NOTICE_LIMIT = 100;
+  const NOTICE_KINDS = new Set(["ok", "info", "warn", "error"]);
+  // The ones that stay on screen until closed, and the ones the bell counts.
+  const lasting = (kind) => kind === "error" || kind === "warn";
+
+  // What is on screen, oldest first. Kept here rather than read back from the
+  // container, so dismissing one toast never has to rebuild the others: a
+  // re-inserted element restarts its countdown bar.
+  const toastsShown = [];
+
+  function noticeTime(date) {
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   }
 
-  function hideBanner() {
-    el("banner").classList.add("hidden");
+  // notify is the one way anything in this window tells the owner something.
+  //
+  // title is the sentence; body is an optional second line; actions are
+  // buttons on the toast, each { label, run }, and pressing one closes the
+  // toast before it runs. Answers the toast's record, which dismissToast takes.
+  function notify(kind, title, { body = "", actions = [] } = {}) {
+    const known = NOTICE_KINDS.has(kind) ? kind : "error";
+    logNotice(known, title, body);
+    return showToast(known, String(title ?? ""), String(body ?? ""), actions);
+  }
+
+  // banner is what the forty-odd call sites that predate toasts still say:
+  // ok true is a success, anything else is an error. The name is kept because
+  // the question each caller answers — did this work — has not changed.
+  function banner(message, ok = false) {
+    return notify(ok ? "ok" : "error", message);
+  }
+
+  function logNotice(kind, title, body = "") {
+    const open = noticeDrawerOpen();
+    state.notices.unshift({
+      kind,
+      title: String(title ?? ""),
+      body: String(body ?? ""),
+      at: new Date(),
+      // Read already when the drawer is open to see it arrive.
+      unread: lasting(kind) && !open,
+    });
+    if (state.notices.length > NOTICE_LIMIT) state.notices.length = NOTICE_LIMIT;
+    renderBell();
+    if (open) renderNotices();
+  }
+
+  function showToast(kind, title, body, actions) {
+    const node = element("div", `toast ${kind}`);
+    // alert for the two that stay: those interrupt a screen reader, the rest
+    // wait their turn behind the container's aria-live="polite".
+    node.setAttribute("role", lasting(kind) ? "alert" : "status");
+    const record = { node, kind, ms: actions.length > 0 ? TOAST_ACTION_MS : TOAST_MS, timer: null, bar: null, holds: { pointer: false, focus: false } };
+    if (actions.length > 0) node.classList.add("long");
+    const main = element("div", "toastmain");
+    main.append(element("div", "toasttitle", title));
+    if (body) main.append(element("div", "toastbody", body));
+    if (actions.length > 0) {
+      const row = element("div", "toastacts");
+      for (const action of actions) {
+        const button = element("button", "", action.label);
+        button.onclick = () => {
+          dismissToast(record);
+          action.run();
+        };
+        row.append(button);
+      }
+      main.append(row);
+    }
+    const close = element("button", "ghost iconbtn toastclose", "✕");
+    close.title = t("notify.close");
+    close.setAttribute("aria-label", t("notify.close"));
+    close.onclick = () => dismissToast(record);
+    node.append(element("i", "sev"), main, close);
+    if (!lasting(kind)) {
+      record.bar = element("i", "timer");
+      node.append(record.bar);
+      startToastTimer(record);
+      // Held while the pointer is on it or the keyboard is in it — a toast
+      // that goes while its 復原 is being aimed at takes the press with it —
+      // and given its whole time again once both have left.
+      const hold = (why, on) => {
+        record.holds[why] = on;
+        if (record.holds.pointer || record.holds.focus) pauseToastTimer(record);
+        else if (!record.timer) restartToastTimer(record);
+      };
+      node.addEventListener?.("mouseenter", () => hold("pointer", true));
+      node.addEventListener?.("mouseleave", () => hold("pointer", false));
+      node.addEventListener?.("focusin", () => hold("focus", true));
+      node.addEventListener?.("focusout", (event) => {
+        // Moving from one of its buttons to the next is still inside it.
+        if (event?.relatedTarget && node.contains?.(event.relatedTarget)) return;
+        hold("focus", false);
+      });
+    }
+    toastsShown.push(record);
+    el("toasts").append(node);
+    // Past three, the oldest that would have gone by itself goes first; a
+    // warning or an error is pushed off only when there is nothing else to
+    // push. Both are still in the bell's log, and a column of errors taller
+    // than the window is one nobody reads. The one just shown is never the
+    // one pushed off: behind three errors it is the only one that would go by
+    // itself, and taking it would take its 復原 with it — the log keeps the
+    // sentence, not the buttons.
+    while (toastsShown.length > TOAST_LIMIT) {
+      dismissToast(toastsShown.slice(0, -1).find((shown) => !lasting(shown.kind)) ?? toastsShown[0]);
+    }
+    return record;
+  }
+
+  function startToastTimer(record) {
+    record.timer = setTimeout(() => dismissToast(record), record.ms);
+    // A pending toast is not a reason for a test process to stay alive for
+    // its remaining seconds; a browser's handle is a number and has no unref.
+    record.timer?.unref?.();
+  }
+
+  function pauseToastTimer(record) {
+    clearTimeout(record.timer);
+    record.timer = null;
+    record.node.classList.add("held");
+  }
+
+  // The countdown bar is a CSS animation, and a new element is the one way to
+  // start one from the beginning.
+  function restartToastTimer(record) {
+    if (!toastsShown.includes(record)) return;
+    record.node.classList.remove("held");
+    const bar = element("i", "timer");
+    record.bar?.remove();
+    record.node.append(bar);
+    record.bar = bar;
+    startToastTimer(record);
+  }
+
+  function dismissToast(record) {
+    const at = toastsShown.indexOf(record);
+    if (at === -1) return;
+    toastsShown.splice(at, 1);
+    clearTimeout(record.timer);
+    record.timer = null;
+    record.node.remove();
+  }
+
+  /* ---- the bell and its drawer ---- */
+
+  function noticeDrawerOpen() {
+    return !el("notify-modal").classList.contains("hidden");
+  }
+
+  function renderBell() {
+    const unread = state.notices.filter((notice) => notice.unread).length;
+    const badge = el("bell-n");
+    badge.textContent = unread > 0 ? String(unread) : "";
+    badge.classList.toggle("hidden", unread === 0);
+    el("btn-bell").title = unread > 0 ? plural(unread, "notify.bellUnread") : t("notify.bellTitle");
+  }
+
+  function openNotices() {
+    el("notify-modal").classList.remove("hidden");
+    // Opening it is reading it.
+    for (const notice of state.notices) notice.unread = false;
+    renderBell();
+    renderNotices();
+    el("notify-close").focus?.();
+  }
+
+  function closeNotices() {
+    el("notify-modal").classList.add("hidden");
+  }
+
+  function renderNotices() {
+    const list = el("notify-list");
+    if (state.notices.length === 0) {
+      list.replaceChildren(element("p", "empty", t("notify.empty")));
+      return;
+    }
+    list.replaceChildren(...state.notices.map((notice) => {
+      const row = element("div", `noticerow ${notice.kind}`);
+      const main = element("div", "noticemain");
+      main.append(element("div", "noticetitle", notice.title));
+      if (notice.body) main.append(element("div", "noticebody", notice.body));
+      // The severity in words as well as in colour, beside the time.
+      main.append(element("div", "noticewhen", `${noticeTime(notice.at)} · ${t("notify.kind." + notice.kind)}`));
+      row.append(element("i", "sev"), main);
+      return row;
+    }));
+  }
+
+  /* ---- the attention strip ---- */
+
+  // Which severity of row is logged as which kind of notice.
+  const ATTENTION_KIND = { alert: "error", warn: "warn", info: "info" };
+
+  // Put away with 「later」, by key. A key leaves this set the first time the
+  // thing it names is no longer there, so the same thing coming back later is
+  // shown again rather than staying hidden for the rest of the session.
+  const attentionDismissed = new Set();
+  // The keys on the strip at the last render, dismissed or not, so a row is
+  // logged once when it appears rather than on every render.
+  let attentionKeys = new Set();
+  // One row element per kind, kept across renders for the reason every other
+  // row in this window is: the fifteen-second tick must not replace the button
+  // under the pointer.
+  const attentionRows = new Map();
+
+  function pairWindowReportedOpen() {
+    return Boolean(state.pairing?.state?.open) && pairingRemaining() > 0;
+  }
+
+  function pendingIncoming(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .filter((row) => row?.direction === "incoming" && row?.state === "pending");
+  }
+
+  function sessionLabel(id) {
+    const session = state.sessions.find((candidate) => candidate.id === id);
+    return session?.title || id;
+  }
+
+  // attentionItems is state in, rows out. Order is severity: the two that stop
+  // this machine being reachable, then a full inbox, then a request to pair.
+  function attentionItems() {
+    const items = [];
+    if (state.nodeChecked && state.nodeReachable === false) {
+      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
+      items.push({
+        kind: "node",
+        key: "node",
+        sev: "alert",
+        title: t("attention.nodeDown.title"),
+        body: t("app.notConnected", { error: state.nodeError || "unknown error", shown }),
+        label: t("attention.nodeDown.action"),
+        run: (button) => withBusy(t("app.reload"), load, { button }),
+      });
+    }
+
+    const status = state.service;
+    if (status && status.supported === true && !status.toolError && !(status.installed && status.running)) {
+      items.push({
+        kind: "service",
+        key: status.installed ? "service:stopped" : "service:none",
+        sev: "alert",
+        title: status.installed ? t("attention.service.stoppedTitle") : t("attention.service.noneTitle"),
+        body: status.installed
+          ? t("service.lineInstalledStopped", { log: status.logHint || t("service.logHintFallback") })
+          : (state.nodeReachable ? t("service.lineNotAService") : t("service.lineNothing")),
+        label: status.installed
+          ? t("attention.service.startAction")
+          : (nodeRunningNotAService(status) ? t("attention.service.formAction") : t("attention.service.installAction")),
+        run: (button) => runServiceQuickAction({ button }).catch(() => {}),
+      });
+    }
+
+    // Unknown counts say nothing, so a read that failed hides this row rather
+    // than repeating the last numbers as if they were current.
+    if (state.inboxCounts.ok) {
+      const order = new Map(state.sessions.map((session, index) => [session.id, index]));
+      const full = Object.entries(state.inboxCounts.counts ?? {})
+        .filter(([, count]) => count?.full)
+        .map(([id, count]) => ({ id, held: count.held ?? 0, capacity: count.capacity ?? 0 }))
+        .sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity) || a.id.localeCompare(b.id));
+      if (full.length > 0) {
+        const first = full[0];
+        items.push({
+          kind: "inbox",
+          key: `inbox:${full.map((entry) => entry.id).sort().join(",")}`,
+          sev: "warn",
+          title: full.length === 1
+            ? t("attention.inboxFull.titleOne", { session: sessionLabel(first.id) })
+            : plural(full.length, "attention.inboxFull.titleMany"),
+          body: full.length === 1
+            ? t("attention.inboxFull.body", { held: first.held, capacity: first.capacity })
+            : t("attention.inboxFull.bodyMany", { session: sessionLabel(first.id) }),
+          label: t("attention.inboxFull.action"),
+          run: () => openInbox(first.id).catch((error) => banner(t("inbox.readFailed", { error }))),
+        });
+      }
+    }
+
+    const incoming = pairWindowReportedOpen() ? state.pairIncoming : [];
+    if (incoming.length > 0) {
+      const first = incoming[0];
+      // The name is the other machine's word for itself, and nothing has
+      // checked it yet — comparing fingerprints is what this row asks for — so
+      // it is marked as that, the way an inbox sender's chosen half is. A
+      // machine that gave no name gets the sentence that says so, as a
+      // candidate row does (candidateName): its node id is not a name it
+      // chose, and 「自稱 node_…」 put words in its mouth.
+      const name = String(first.displayName ?? "").trim();
+      let title = plural(incoming.length, "attention.pair.titleMany");
+      let titleParts = null;
+      if (incoming.length === 1 && name === "") title = t("attention.pair.titleOneNoName");
+      else if (incoming.length === 1) {
+        const [before, after = ""] = t("attention.pair.titleOne").split("{name}");
+        title = `${before}${name}${after}`;
+        titleParts = [element("span", "", before), element("span", "claimed", name), element("span", "", after)];
+      }
+      items.push({
+        kind: "pair",
+        key: `pair:${incoming.map((row) => row.id).sort().join(",")}`,
+        sev: "info",
+        title,
+        titleParts,
+        body: t("attention.pair.body"),
+        label: t("attention.pair.action"),
+        run: () => goToPairing(),
+      });
+    }
+    return items;
+  }
+
+  function attentionRow(item) {
+    let entry = attentionRows.get(item.kind);
+    if (!entry) {
+      const row = element("div", "attnrow");
+      const sev = element("i", "sev");
+      const msg = element("div", "attnmsg");
+      const title = element("div", "attntitle");
+      const body = element("div", "attnbody");
+      msg.append(title, body);
+      const action = element("button", "attnaction");
+      const later = element("button", "ghost attnlater");
+      row.append(sev, msg, action, later);
+      entry = { row, title, body, action, later, key: "" };
+      later.onclick = () => {
+        attentionDismissed.add(entry.key);
+        renderAttention();
+      };
+      attentionRows.set(item.kind, entry);
+    }
+    entry.key = item.key;
+    entry.row.className = `attnrow ${item.sev}`;
+    if (item.titleParts) entry.title.replaceChildren(...item.titleParts);
+    else entry.title.textContent = item.title;
+    entry.body.textContent = item.body;
+    // classList, not className: a retry in flight carries `busy`, and a render
+    // landing in the middle of it must not take the spinner away.
+    entry.action.classList.toggle("primary", item.sev === "alert");
+    entry.action.textContent = item.label;
+    // A button carrying `busy` is one whose press is still being worked out
+    // (runServiceQuickAction's re-read, before withBusy), and stays unpressable
+    // through a render that lands in the middle of it.
+    entry.action.disabled = state.busy || entry.action.classList.contains("busy");
+    entry.action.onclick = () => item.run(entry.action);
+    entry.later.textContent = t("attention.later");
+    entry.later.title = t("attention.laterTitle");
+    return entry.row;
+  }
+
+  const ATTENTION_ORDER = { alert: 0, warn: 1, info: 2 };
+  // How many rows the strip shows before the rest fold behind a button: two
+  // rows and the button are what fits above the table at 900×760 with five
+  // session rows still in view.
+  const ATTENTION_VISIBLE = 2;
+  // Whether the owner unfolded the rest. This window only, never saved.
+  let attentionExpanded = false;
+  let attentionMore = null;
+
+  function attentionMoreRow(hidden) {
+    if (!attentionMore) {
+      const row = element("div", "attnmore");
+      const button = element("button", "ghost attnmorebtn");
+      button.onclick = () => {
+        attentionExpanded = !attentionExpanded;
+        renderAttention();
+        // The button is still there, relabelled, so the keyboard stays on it.
+        button.focus?.();
+      };
+      row.append(button);
+      attentionMore = { row, button };
+    }
+    attentionMore.button.textContent = attentionExpanded ? t("attention.less") : plural(hidden, "attention.more");
+    attentionMore.button.setAttribute("aria-expanded", String(attentionExpanded));
+    return attentionMore.row;
+  }
+
+  function renderAttention() {
+    const items = attentionItems();
+    const keys = new Set(items.map((item) => item.key));
+    for (const key of [...attentionDismissed]) if (!keys.has(key)) attentionDismissed.delete(key);
+    for (const item of items) {
+      if (!attentionKeys.has(item.key)) logNotice(ATTENTION_KIND[item.sev], item.title, item.body);
+    }
+    attentionKeys = keys;
+    // The checklist's own first step already offers the service's fix, on the
+    // local view where the card is: two buttons for one thing is one too many,
+    // so the strip leaves it to the card while that step is open. Still logged
+    // above, and back on the strip on any other view or once the card goes.
+    const cardHasService = onboardingServiceStepOpen && state.view === "local";
+    const shown = items
+      .filter((item) => !attentionDismissed.has(item.key))
+      .filter((item) => !(item.kind === "service" && cardHasService))
+      .sort((a, b) => ATTENTION_ORDER[a.sev] - ATTENTION_ORDER[b.sev]);
+    for (const kind of [...attentionRows.keys()]) {
+      if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
+    }
+    const folded = shown.length > ATTENTION_VISIBLE;
+    // Unfolded is about the rows that were folded then. Once there is nothing
+    // left to fold, the next time there is starts folded again, rather than
+    // unfolding rows the owner never asked to see.
+    if (!folded) attentionExpanded = false;
+    const rows = folded && !attentionExpanded ? shown.slice(0, ATTENTION_VISIBLE) : shown;
+    const children = rows.map(attentionRow);
+    if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
+    const box = el("attention");
+    keepChildren(box, children);
+    box.classList.toggle("hidden", shown.length === 0);
+  }
+
+  // The fifteen-second tick's one read of the exchange, for the attention row.
+  //
+  // PairRequests is not free — the node dials the far side of every pending
+  // outgoing request before it answers — which is why the drawer reads it only
+  // while open. This is the one other read, and it is bounded twice: once per
+  // tick, and only while the node's last answer said the pairing window is
+  // open, because a request from another machine can only be waiting on an open
+  // one. Never while the drawer is open: its own two-second poll is reading
+  // the same rows, and loadPairRequests hands them on.
+  let incomingRequest = 0;
+  let incomingApplied = 0;
+  async function refreshIncomingPairRequests() {
+    if (pairingDrawerOpen()) return;
+    if (!pairWindowReportedOpen()) {
+      if (state.pairIncoming.length > 0) {
+        state.pairIncoming = [];
+        renderAttention();
+      }
+      return;
+    }
+    const sequence = ++incomingRequest;
+    let rows;
+    try {
+      rows = await api.PairRequests(false);
+    } catch {
+      // Not a fact about the other machine; the row keeps what it last knew.
+      return;
+    }
+    if (sequence <= incomingApplied) return;
+    incomingApplied = sequence;
+    state.pairIncoming = pendingIncoming(rows);
+    renderAttention();
   }
 
   /* ---------------- data ---------------- */
@@ -1560,9 +2073,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // guards still apply: a decision in flight, rows selected, or a caret in a
   // field all stop the read, because those are the reads that pull the ground
   // out from under someone.
+  //
+  // The inline audience menu counts as well. It is not a modal, but it is drawn
+  // against the row it was opened from, and a tick that re-sorted or re-filled
+  // the table under it would leave the menu pointing at a different row.
   function interactionInProgress({ exceptPairingDrawer = false } = {}) {
     return state.busy || state.selected.size > 0
-      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus();
+      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus() || audiencePopoverOpen();
   }
 
   // background: this read is the 15-second tick's, not the owner's. A background
@@ -1642,15 +2159,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderNodeLine();
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
-    if (!reachable) {
-      // The banner has to say which of the two situations this is, or a stale
-      // list reads as the current truth.
-      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
-      banner(t("app.notConnected", { error: overview.error || "unknown error", shown }));
-    } else {
-      hideBanner();
-    }
+    // Said by the attention strip rather than a toast: this is a state, not an
+    // answer to a button, and a toast every fifteen seconds that stays until
+    // closed is a column of the same error. The row says which of the two
+    // situations this is — the last lists kept, or none ever read — because
+    // a stale list otherwise reads as the current truth, and it goes away by
+    // itself on the first read that answers.
+    state.nodeError = reachable ? "" : (overview.error || "");
     state.nodeReachable = reachable;
+    state.nodeChecked = true;
     loadService().catch(() => {});
 
     // The scan that used to be step 2 of the checklist.
@@ -1721,6 +2238,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-line").textContent = line.reachable
       ? `${line.displayName} · ${line.platform} · ${line.nodeUrl}${version}`
       : t("app.unreachable", { url: line.nodeUrl, version });
+    // The bar clamps it to two lines at a narrow window; the whole of it here.
+    el("node-line").title = el("node-line").textContent;
   }
 
   // askConfirm asks one yes-or-no question in the window's own dialog, and
@@ -1828,7 +2347,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   if (typeof document.addEventListener === "function") document.addEventListener("keydown", confirmKey, true);
 
-  async function withBusy(label, fn) {
+  // button is the one that was pressed, when there is one: it turns into a
+  // spinner and cannot be pressed again until the call has answered, so the
+  // press visibly did something even while the node takes its time. The rest
+  // of the window's write buttons are held off by state.busy through render().
+  //
+  // failureActions go on the error toast a throw ends in, for a caller whose
+  // remedy is somewhere else — the one-press service fix offers the settings
+  // page it skipped.
+  async function withBusy(label, fn, { button = null, failureActions = [] } = {}) {
     // Ignored while another one is running. Disabling buttons covers only the
     // ids render() knows about, and the repair buttons are created on the fly —
     // so the ones most likely to be pressed twice were the ones not covered.
@@ -1837,13 +2364,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // first one has already replaced.
     if (state.busy) return;
     state.busy = true;
+    const pressed = button && typeof button === "object" && button.classList ? button : null;
+    if (pressed) {
+      pressed.classList.add("busy");
+      pressed.setAttribute("aria-busy", "true");
+      pressed.disabled = true;
+    }
     render();
     try {
       await fn();
     } catch (error) {
-      banner(t("busy.failed", { action: label, error }));
+      notify("error", t("busy.failed", { action: label, error }), { actions: failureActions });
     } finally {
       state.busy = false;
+      if (pressed) {
+        pressed.classList.remove("busy");
+        pressed.setAttribute("aria-busy", "false");
+        // Back to pressable; the render below disables it again if something
+        // else still says it should be.
+        pressed.disabled = false;
+      }
       render();
     }
   }
@@ -1851,7 +2391,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // mode is the audience's own mode, not a sentence: the two languages put the
   // verb and the count in different places, so each one gets its own key rather
   // than a noun glued to a template.
-  async function applyAudience(audience, mode) {
+  async function applyAudience(audience, mode, { button = null } = {}) {
     const ids = [...state.selected];
     await withBusy(t("audience.verb." + mode), async () => {
       const result = await api.SetAudience(ids, audience);
@@ -1868,7 +2408,430 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         closeAudienceModal();
         banner(plural(result.changed, "audience.applied." + mode), true);
       }
+    }, { button });
+  }
+
+  /* ---------------- the inline audience menu ---------------- */
+
+  // The AUDIENCE cell is a button, and so is 「公開 ▾」 on the selection bar.
+  // Both open this one menu: three situations and a way into the full dialog,
+  // and a choice is applied the moment it is picked. The dialog needed four
+  // presses for the commonest change there is — open, pick a preset, pick who,
+  // apply — and asked "who" of a session whose answer almost always stays the
+  // same.
+  //
+  // So "who" is not asked here. It is worked out per session: a session nobody
+  // can see yet goes to every paired machine, and one that is already
+  // published keeps exactly the machines it has (mode and nodes). The line at
+  // the top of the menu says which of those this press is going to do.
+  //
+  // The working directory is not this menu's to turn on, for the reason the
+  // dialog's presets leave it alone (AUDIENCE_PRESETS): publishing keeps what
+  // the session holds. 「不公開」 is the exception and clears it, as it always
+  // did before this menu. A flag kept on an unpublished session is invisible —
+  // the row shows no flags for a session nobody can see — so keeping it meant
+  // the next 「能留訊息」 published a directory the owner could not see was
+  // switched on. One can still be held from older data or the full dialog, so
+  // the top line says when a press is about to publish one.
+  //
+  // What "published" means is describeAudience's, so 「指定：無」 — selected,
+  // no nodes — is a session nobody can see, and publishing it goes to every
+  // paired machine rather than to the empty list it had.
+
+  function isPublished(audience) {
+    return describeAudience(audience).published;
+  }
+
+  // Which of the menu's three a session is in, or "" for a combination none
+  // of them names (a published session with every flag off is one).
+  function presetOfAudience(audience) {
+    if (!isPublished(audience)) return "none";
+    return presetForFlags(audience ?? {});
+  }
+
+  // What one choice writes for one session.
+  function audienceForChoice(session, choice) {
+    const current = session?.audience ?? {};
+    if (choice === "none") {
+      return { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
+    }
+    const flags = AUDIENCE_PRESETS[choice];
+    const keep = isPublished(current);
+    const mode = keep ? current.mode : "all_paired";
+    const nodes = keep && mode === "selected" ? [...(current.nodes ?? [])] : [];
+    return { mode, nodes, exportCwd: Boolean(current.exportCwd), ...flags };
+  }
+
+  // An audience as SetAudience will take it.
+  //
+  // One shape the node can hold is one SetAudience refuses: selected with no
+  // nodes (app.go: "selected requires at least one node"). A session gets
+  // there when a revoke deletes its last grant. Nobody can see such a session,
+  // and nobody can see it under none either, so an undo writes none with the
+  // same flags — the one place this is not the stored object byte for byte.
+  function writableAudience(audience) {
+    const a = audience ?? {};
+    let mode = ["none", "all_paired", "selected"].includes(a.mode) ? a.mode : "none";
+    const nodes = mode === "selected" ? [...new Set(a.nodes ?? [])] : [];
+    if (mode === "selected" && nodes.length === 0) mode = "none";
+    return {
+      mode,
+      nodes,
+      exportCwd: Boolean(a.exportCwd),
+      acceptMessages: Boolean(a.acceptMessages),
+      allowOutbound: Boolean(a.allowOutbound),
+      autoWake: Boolean(a.autoWake),
+    };
+  }
+
+  // writeAudiences sends each distinct audience once, with every session that
+  // gets it: SetAudience takes one audience for many ids, and a batch whose
+  // sessions keep their own machines is several audiences. A call that fails
+  // outright counts all of its sessions as failed, so the partial-failure rule
+  // (§2) still sees them, rather than the batch stopping half written.
+  async function writeAudiences(pairs) {
+    const groups = new Map();
+    for (const { id, audience } of pairs) {
+      const wanted = writableAudience(audience);
+      const key = JSON.stringify(wanted);
+      if (!groups.has(key)) groups.set(key, { audience: wanted, ids: [] });
+      groups.get(key).ids.push(id);
+    }
+    const total = { changed: 0, failed: 0, errors: [] };
+    for (const { audience, ids } of groups.values()) {
+      try {
+        const result = await api.SetAudience(ids, audience);
+        total.changed += result?.changed ?? 0;
+        total.failed += result?.failed ?? 0;
+        total.errors.push(...(result?.errors ?? []));
+      } catch (error) {
+        total.failed += ids.length;
+        total.errors.push(String(error));
+      }
+    }
+    return total;
+  }
+
+  function choiceLabel(choice) {
+    return t(`popover.${choice}`);
+  }
+
+  // Who this press publishes to, as a sentence, from the audiences it writes.
+  function describeTargets(audiences) {
+    const all = audiences.filter((audience) => audience.mode === "all_paired").length;
+    const kept = audiences.filter((audience) => audience.mode === "selected");
+    if (kept.length === 0) return t("popover.targetAll");
+    if (all > 0) return t("popover.targetMixed", { all, kept: kept.length });
+    const lists = new Set(kept.map((audience) => JSON.stringify([...audience.nodes].sort())));
+    if (lists.size === 1) return plural(kept[0].nodes.length, "popover.targetSelected");
+    return t("popover.targetKept");
+  }
+
+  function sessionsFor(ids) {
+    return ids.map((id) => state.sessions.find((session) => session.id === id)).filter(Boolean);
+  }
+
+  // applyAudienceChoice writes one choice to these sessions and offers to put
+  // back what they had. The undo writes each session's own previous audience —
+  // flags, mode and nodes — so a batch that held three different settings goes
+  // back to three different settings (writeAudiences groups them again).
+  //
+  // clearSelection is for the selection bar: its sessions are the selection,
+  // and a batch that went through leaves nothing selected, as the dialog does.
+  // A row's own menu leaves the selection as it was.
+  async function applyAudienceChoice(ids, choice, { button = null, clearSelection = false } = {}) {
+    const sessions = sessionsFor(ids);
+    if (sessions.length === 0 || !(choice === "none" || AUDIENCE_PRESETS[choice])) return;
+    const before = sessions.map((session) => ({ id: session.id, audience: writableAudience(session.audience) }));
+    const after = sessions.map((session) => ({ id: session.id, audience: audienceForChoice(session, choice) }));
+    const action = choice === "none" ? t("audience.verb.none") : t("popover.verb", { preset: choiceLabel(choice) });
+    const undo = { label: t("popover.undo"), run: () => undoAudience(before) };
+    await withBusy(action, async () => {
+      const result = await writeAudiences(after);
+      await load();
+      if (result.failed > 0) {
+        // The part that went through is as undoable as a whole batch would
+        // be. The undo writes every session's own previous audience, the ones
+        // that failed included: those still hold it, so for them it is the
+        // same write again.
+        notify("error", t("audience.partlyApplied", {
+          action,
+          changed: result.changed,
+          failed: result.failed,
+          error: result.errors[0] || "",
+        }), { actions: result.changed > 0 ? [undo] : [] });
+        return;
+      }
+      if (clearSelection) state.selected.clear();
+      const n = sessions.length;
+      const title = choice === "none"
+        ? plural(n, "audience.applied.none")
+        : plural(n, `popover.applied.${choice}`);
+      let body = choice === "none"
+        ? t("popover.appliedNoneBody")
+        : describeTargets(after.map((pair) => pair.audience));
+      if (choice === "wake") body = `${body} ${t("wake.caveat")}`;
+      notify("ok", title, { body, actions: [undo] });
+    }, { button });
+  }
+
+  async function undoAudience(before) {
+    const action = t("popover.undo");
+    // withBusy drops a call made while another write is out, and the toast
+    // this came from is already gone: say so rather than doing nothing.
+    if (state.busy) {
+      notify("warn", t("popover.undoBusy"));
+      return;
+    }
+    await withBusy(action, async () => {
+      const result = await writeAudiences(before);
+      await load();
+      if (result.failed > 0) {
+        banner(t("audience.partlyApplied", {
+          action,
+          changed: result.changed,
+          failed: result.failed,
+          error: result.errors[0] || "",
+        }));
+        return;
+      }
+      banner(t("popover.undone"), true);
     });
+  }
+
+  // What the menu is open for: the sessions, the button it hangs from (which
+  // gets the keyboard back and spins while the choice is written), and whether
+  // it came from the selection bar.
+  let popover = null;
+  let popoverButtons = [];
+
+  function audiencePopoverOpen() {
+    return !el("audience-popover").classList.contains("hidden");
+  }
+
+  function openAudiencePopover(anchor, ids, { clearSelection = false } = {}) {
+    // A second press on the same button closes it, as a menu button does.
+    if (audiencePopoverOpen() && popover?.anchor === anchor) {
+      closeAudiencePopover({ focus: true });
+      return;
+    }
+    closeAudiencePopover();
+    const sessions = sessionsFor(ids);
+    if (sessions.length === 0 || state.busy) return;
+    popover = { anchor, ids: sessions.map((session) => session.id), clearSelection };
+
+    const presets = new Set(sessions.map((session) => presetOfAudience(session.audience)));
+    const current = presets.size === 1 ? [...presets][0] : "";
+    const menu = el("audience-popover");
+    const parts = [];
+    popoverButtons = [];
+
+    // Who, first: the one thing this menu decides without asking.
+    const publishing = sessions.map((session) => audienceForChoice(session, "messages"));
+    const head = element("div", "pophead");
+    if (sessions.length > 1) head.append(element("b", "", plural(sessions.length, "popover.count")));
+    head.append(element("span", "", describeTargets(publishing)));
+    // Said before the press rather than after it: a working directory held by
+    // a session nobody can see yet has no flag on its row (audienceForChoice).
+    const withCwd = publishing.filter((audience) => audience.exportCwd).length;
+    if (withCwd > 0) {
+      head.append(element("span", "popcwd", withCwd === sessions.length
+        ? t("popover.withCwd")
+        : plural(withCwd, "popover.withCwdSome")));
+    }
+    head.append(element("span", "muted", t("popover.instant")));
+    parts.push(head);
+    if (presets.size > 1) parts.push(element("div", "popnote", t("popover.mixed")));
+    else if (current === "") parts.push(element("div", "popnote", t("popover.custom")));
+    // Nothing paired yet is not a reason to refuse: publishing now is how a
+    // machine paired later gets to see it. A failed read of the pairing list
+    // is not "nothing paired", so it is not said then.
+    if (state.nodes.length === 0 && !state.nodesError) {
+      const none = element("div", "popnote");
+      none.append(element("span", "", t("popover.noNodes")));
+      const pair = element("button", "ghost popaction", t("popover.pairAction"));
+      pair.setAttribute("role", "menuitem");
+      pair.onclick = () => {
+        closeAudiencePopover();
+        goToPairing();
+      };
+      none.append(pair);
+      popoverButtons.push(pair);
+      parts.push(none);
+    }
+
+    // The same rule as the dialog's wake preset: a selection that is nothing
+    // but Claude Code cannot be woken, and no restart changes that
+    // (renderAutoWakeNoteLines), so the entry is there but cannot be picked.
+    const claudeOnly = sessions.every((session) => session.provider === "claude");
+    const item = (choice, hint, extra = []) => {
+      const button = element("button", "popitem");
+      button.setAttribute("role", "menuitemradio");
+      button.setAttribute("aria-checked", String(current === choice));
+      button.dataset.choice = choice;
+      button.append(
+        element("span", "mk", current === choice ? "✓" : ""),
+        element("span", "poplabel", choiceLabel(choice)),
+        element("small", "pophint", hint),
+        ...extra,
+      );
+      button.onclick = () => {
+        const target = popover;
+        closeAudiencePopover({ focus: true });
+        if (!target) return;
+        // withBusy disables the button while the write is out, which drops the
+        // keyboard; it goes back once the button can take it again.
+        applyAudienceChoice(target.ids, choice, { button: target.anchor, clearSelection: target.clearSelection })
+          .catch(() => {})
+          .then(() => {
+            const anchor = target.anchor;
+            if (anchor && !anchor.disabled && anchor.isConnected !== false) anchor.focus?.();
+          });
+      };
+      popoverButtons.push(button);
+      return button;
+    };
+    parts.push(item("none", t("popover.noneHint")));
+    parts.push(item("messages", t("popover.messagesHint")));
+    const wakeExtra = [element("small", "caveat", `⚠ ${t("wake.caveat")}`)];
+    if (claudeOnly) wakeExtra.push(element("small", "pophint", t("popover.wakeClaudeOnly")));
+    const wake = item("wake", t("popover.wakeHint"), wakeExtra);
+    wake.disabled = claudeOnly;
+    parts.push(wake);
+    parts.push(element("hr"));
+    const advanced = element("button", "popitem");
+    advanced.setAttribute("role", "menuitem");
+    advanced.append(element("span", "mk", ""), element("span", "poplabel", t("popover.advanced")),
+      element("small", "pophint", t("popover.advancedHint")));
+    advanced.onclick = () => {
+      const target = popover;
+      closeAudiencePopover();
+      if (target) openAudienceModalFor(target.ids);
+    };
+    popoverButtons.push(advanced);
+    parts.push(advanced);
+
+    menu.replaceChildren(...parts);
+    menu.setAttribute("aria-label", t("popover.title"));
+    menu.classList.remove("hidden");
+    anchor?.setAttribute?.("aria-expanded", "true");
+    positionPopover(menu, anchor);
+    const checked = popoverButtons.find((button) => button.getAttribute("aria-checked") === "true" && !button.disabled);
+    (checked ?? popoverButtons.find((button) => !button.disabled))?.focus?.();
+  }
+
+  // Below the button when it fits, above it when it does not (the selection
+  // bar is at the bottom of the window), and never over the button itself:
+  // when neither side holds the whole menu it takes the larger one and
+  // scrolls, rather than being pushed up over the row it is about.
+  function positionPopover(menu, anchor) {
+    const rect = anchor?.getBoundingClientRect?.();
+    if (!rect || !menu.style) return;
+    menu.style.maxHeight = "";
+    const width = menu.offsetWidth || 320;
+    const height = menu.offsetHeight || 0;
+    const viewWidth = globalThis.innerWidth || width + 16;
+    const viewHeight = globalThis.innerHeight || height + 16;
+    const gap = 6;
+    const below = viewHeight - rect.bottom - gap - 8;
+    const above = rect.top - gap - 8;
+    let top;
+    if (height <= below) {
+      top = rect.bottom + gap;
+    } else if (height <= above) {
+      top = rect.top - gap - height;
+    } else if (below >= above) {
+      top = rect.bottom + gap;
+      menu.style.maxHeight = `${Math.max(120, Math.floor(below))}px`;
+    } else {
+      const room = Math.max(120, Math.floor(above));
+      menu.style.maxHeight = `${room}px`;
+      top = rect.top - gap - room;
+    }
+    const left = Math.max(8, Math.min(rect.left, viewWidth - width - 8));
+    menu.style.top = `${Math.round(Math.max(8, top))}px`;
+    menu.style.left = `${Math.round(left)}px`;
+  }
+
+  function closeAudiencePopover({ focus = false } = {}) {
+    const menu = el("audience-popover");
+    if (menu.classList.contains("hidden")) return;
+    menu.classList.add("hidden");
+    const anchor = popover?.anchor;
+    anchor?.setAttribute?.("aria-expanded", "false");
+    popover = null;
+    popoverButtons = [];
+    if (focus) anchor?.focus?.();
+  }
+
+  // Arrow keys move through the entries, Home and End go to either end, Esc
+  // closes and gives the keyboard back to the button, and Tab closes and lets
+  // the keyboard go on. Enter and Space are the buttons' own.
+  function popoverKey(event) {
+    if (!audiencePopoverOpen()) return;
+    const key = event?.key;
+    if (key === "Escape") {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      closeAudiencePopover({ focus: true });
+      return;
+    }
+    // The menu sits at the end of the page, so a Tab left to itself would go
+    // on from there; it goes back to the button, and the next Tab onward.
+    if (key === "Tab") {
+      event.preventDefault?.();
+      closeAudiencePopover({ focus: true });
+      return;
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(key)) return;
+    const live = popoverButtons.filter((button) => !button.disabled);
+    if (live.length === 0) return;
+    event.preventDefault?.();
+    const at = live.indexOf(document.activeElement);
+    let next = 0;
+    if (key === "End") next = live.length - 1;
+    else if (key === "ArrowDown") next = at === -1 ? 0 : (at + 1) % live.length;
+    else if (key === "ArrowUp") next = at <= 0 ? live.length - 1 : at - 1;
+    live[next].focus();
+  }
+
+  function within(node, container) {
+    for (let at = node; at; at = at.parentNode) if (at === container) return true;
+    return false;
+  }
+
+  // A press anywhere but the menu and its own button closes it. The button is
+  // left to its click, which toggles.
+  function popoverOutsidePress(event) {
+    if (!audiencePopoverOpen()) return;
+    const target = event?.target;
+    if (within(target, el("audience-popover")) || (popover?.anchor && within(target, popover.anchor))) return;
+    closeAudiencePopover();
+  }
+
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("keydown", popoverKey);
+    document.addEventListener("pointerdown", popoverOutsidePress, true);
+    // Drawn where the button was; once the page under it moves, it is not.
+    document.addEventListener("scroll", (event) => {
+      if (!within(event?.target, el("audience-popover"))) closeAudiencePopover();
+    }, true);
+  }
+  globalThis.addEventListener?.("resize", () => closeAudiencePopover());
+
+  // The dialog from a row's menu. The dialog applies to the selection, so for
+  // a row that is not the whole selection it becomes the selection while the
+  // dialog is open, and the owner's own selection comes back when it closes.
+  let audienceModalRestore = null;
+  function openAudienceModalFor(ids) {
+    const same = ids.length === state.selected.size && ids.every((id) => state.selected.has(id));
+    if (!same) {
+      audienceModalRestore = new Set(state.selected);
+      state.selected.clear();
+      for (const id of ids) state.selected.add(id);
+      render();
+    }
+    openAudienceModal();
   }
 
   /* ---------------- network view ---------------- */
@@ -2022,7 +2985,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // invent one. It is not validated here — the node holds the ranges this build
   // will talk to, and a second rule in this process could only disagree with
   // the one that actually decides.
-  async function sendPairRequest(address) {
+  async function sendPairRequest(address, { button = null } = {}) {
     const wanted = String(address ?? "").trim();
     if (wanted === "") {
       banner(PAIR_TEXT.addressEmpty);
@@ -2038,7 +3001,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("pair-address").value = "";
       banner(PAIR_TEXT.sent, true);
       await loadPairRequests();
-    });
+    }, { button });
   }
 
   // decidePairRequest is approve, confirm and reject, which differ only in
@@ -2046,7 +3009,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   //
   // The id comes from the row the button was built on, never from a field: an
   // id typed or pasted is an id that can name somebody else's request.
-  async function decidePairRequest(id, verb) {
+  async function decidePairRequest(id, verb, { button = null } = {}) {
     const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
     if (!call) return;
     const label = t("pair.busy." + verb);
@@ -2066,11 +3029,72 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // refusal it could not deliver leaves that machine trusting a key this
       // owner has just refused. So it is neither shown alone nor dropped.
       const said = pairDecisionMessage(answer, verb);
-      if (said) banner(said, verb !== "reject");
+      // Paired is half of the point; the other half is publishing something to
+      // the machine, which is a different view. The toast carries the way there.
+      if (said && verb === "reject") banner(said);
+      else if (said) notify("ok", said, { actions: [{ label: t("pair.goPublish"), run: goToPublish }] });
       await loadPairRequests();
       // Approving or confirming writes the trust store, so the node list is
       // now out of date.
       if (verb !== "reject") await load();
+    }, { button });
+  }
+
+  // goToPublish is the pairing toast's way to the sessions table. The drawer is
+  // put away the way its own close button does it, so a window with nothing
+  // pending is closed rather than left announcing behind a view nobody sees.
+  function goToPublish() {
+    closeAudiencePopover();
+    if (pairingDrawerOpen()) dismissPairingDrawer().catch(() => {});
+    state.view = "local";
+    render();
+  }
+
+  // pairStepperPhase says where the two machines are in the exchange, from the
+  // rows alone: "find" until a request is out, "waiting" while one this machine
+  // sent is waiting on the other owner, and "compare" once there is a pair of
+  // fingerprints to compare here — a request from the other machine, or one
+  // of ours the other side has approved.
+  function pairStepperPhase(rows = state.pairRequests) {
+    const live = (Array.isArray(rows) ? rows : [])
+      .filter((row) => row?.state === "pending" || row?.state === "awaiting-confirm");
+    if (live.some((row) => row.state === "awaiting-confirm" || row.direction === "incoming")) return "compare";
+    if (live.some((row) => row.direction === "outgoing")) return "waiting";
+    return "find";
+  }
+
+  // renderPairStepper draws the three steps at the top of the drawer. Display
+  // only: nothing in it can be pressed, and the three step elements are kept,
+  // so the two-second poll rewrites text and classes rather than the strip.
+  const PAIR_STEPS = ["find", "send", "compare"];
+  let pairStepperItems = null;
+  function renderPairStepper() {
+    const strip = el("pair-stepper");
+    if (!pairStepperItems) {
+      pairStepperItems = PAIR_STEPS.map(() => {
+        const item = element("li", "pairstepitem");
+        const n = element("span", "n");
+        const label = element("b");
+        item.append(n, label);
+        return { item, n, label };
+      });
+      strip.replaceChildren(...pairStepperItems.map((entry) => entry.item));
+    }
+    const phase = pairStepperPhase();
+    // How many steps are behind the owner, and whether the next one is theirs.
+    const done = { find: 0, waiting: 2, compare: 2 }[phase];
+    strip.setAttribute("aria-label", t("pair.stepper.label"));
+    pairStepperItems.forEach((entry, index) => {
+      const isDone = index < done;
+      const isNow = index === done;
+      const waiting = isNow && phase === "waiting";
+      entry.item.className = `pairstepitem${isDone ? " done" : ""}${isNow ? (waiting ? " waiting" : " now") : ""}`;
+      if (isNow) entry.item.setAttribute("aria-current", "step");
+      else entry.item.setAttribute("aria-current", "false");
+      entry.n.textContent = isDone
+        ? t("pair.stepper.done")
+        : waiting ? t("pair.stepper.waiting") : t("pair.stepper.stepN", { n: index + 1 });
+      entry.label.textContent = t(`pair.stepper.${PAIR_STEPS[index]}`);
     });
   }
 
@@ -2250,12 +3274,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (verb !== "") {
       parts.primary.textContent = verb === "confirm" ? PAIR_TEXT.confirm : PAIR_TEXT.approve;
       parts.primary.disabled = state.busy;
-      parts.primary.onclick = () => decidePairRequest(request.id, verb);
+      parts.primary.onclick = () => decidePairRequest(request.id, verb, { button: parts.primary });
       wanted.push(parts.primary);
     }
     if (undecided) {
       parts.reject.disabled = state.busy;
-      parts.reject.onclick = () => decidePairRequest(request.id, "reject");
+      parts.reject.onclick = () => decidePairRequest(request.id, "reject", { button: parts.reject });
       wanted.push(parts.reject);
     }
     // A finished row carries no button at all, so the box is emptied rather than
@@ -2299,6 +3323,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     note.textContent = "";
     el("pair-requests-all").checked = state.pairRequestsAll;
     renderPairWaiting();
+    renderPairStepper();
 
     // Every path that shows a message instead of rows forgets the kept rows:
     // they are off screen, and reusing one when the list comes back would put a
@@ -3031,7 +4056,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const use = element("button", "ghost", PAIR_TEXT.sendManual);
     actions.append(use);
     row.append(actions);
-    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use };
+    // Why 送出 is greyed out, when it is: said beside it, because a disabled
+    // button with its reason in a tooltip is a button that does nothing.
+    const why = element("div", "disabledwhy");
+    row.append(why);
+    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use, why };
     // No flags yet, which is what the empty string means: a row that does carry
     // one differs from this and gets its line written on the first update.
     row.candidateFlags = "";
@@ -3067,7 +4096,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       last: relative(candidate.lastSeen),
     });
     parts.send.disabled = state.busy || !candidate.address;
-    parts.send.onclick = () => sendPairRequest(candidate.address);
+    // Empty is hidden (.disabledwhy:empty), so no class of this row is ever
+    // decided by what the candidate sent.
+    parts.why.textContent = candidate.address ? "" : t("candidate.noAddressWhy");
+    parts.send.onclick = () => sendPairRequest(candidate.address, { button: parts.send });
     parts.use.onclick = () => prefillPairFrom(candidate);
   }
 
@@ -3353,7 +4385,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
 
     const revoke = element("button", "btn danger", t("network.revoke"));
-    revoke.onclick = () => revokeSelected(node);
+    revoke.onclick = () => revokeSelected(node, { button: revoke });
     const revokeNote = element("p", "muted", t("network.revokeNote"));
 
     const grid = element("div", "detailgrid");
@@ -3456,7 +4488,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const add = element("button", "btn addaddress", t("network.addAddress"));
     add.onclick = () => reshape(() => values.push(""));
     const submit = element("button", "btn setaddress", t("network.recordAddress"));
-    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value));
+    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value), { button: submit });
     fill();
 
     const actions = element("div", "addressactions");
@@ -3466,7 +4498,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return parts;
   }
 
-  async function recordAddresses(node, raw) {
+  async function recordAddresses(node, raw, { button = null } = {}) {
     // Trimmed, and an emptied row is a row the owner did not fill rather than
     // an address: a stray space typed into a field reaches the node as a
     // refusal otherwise.
@@ -3492,7 +4524,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         return;
       }
       banner(t("network.addressSaved", { name: node.displayName, address: addresses.join(", ") }), true);
-    });
+    }, { button });
   }
 
   // A node's reach is the owner's real question, so count it rather than making
@@ -3511,7 +4543,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // does not bring them back. docs/ui-contract.md had always said 「confirm 後
   // 執行」 and the button went straight to RevokeNode. A dangerous question,
   // so the keyboard starts on 取消.
-  async function revokeSelected(node) {
+  async function revokeSelected(node, { button = null } = {}) {
     if (state.busy) return;
     const ok = await askConfirm({
       title: t("network.revokeConfirmTitle", { name: node.displayName }),
@@ -3525,7 +4557,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.selectedNode = null;
       await load();
       banner(t("network.revoked", { name: node.displayName }), true);
-    });
+    }, { button });
   }
 
   function openPairModal() {
@@ -3661,8 +4693,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // (AGENTS.md, "When AgentHub wakes you"), and without allowOutbound the node
   // refuses that send, so a wake preset without it wakes an agent that cannot
   // do the one thing it was woken for.
+  //
+  // There were three. The first, 「只讓他們看見」, wrote every message flag off,
+  // and the owner took it out (2026-09-29): a session another machine can see
+  // but not write to gives that machine nothing to do with it. A published
+  // session with every flag off is still a thing the node can hold, and the
+  // dialog shows it as what it now is — a custom combination.
   const AUDIENCE_PRESETS = {
-    view: { acceptMessages: false, allowOutbound: false, autoWake: false },
     messages: { acceptMessages: true, allowOutbound: false, autoWake: false },
     wake: { acceptMessages: true, allowOutbound: true, autoWake: true },
   };
@@ -3686,6 +4723,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return "";
   }
 
+  // Whether the form holds something neither preset names, as far as that is
+  // worth saying. Nothing under 不公開 is "custom": readAudienceForm writes
+  // every flag off there, whatever the boxes say, so there is no combination
+  // to name — only the line saying the boxes will go off
+  // (audienceFlagsCleared). Off under a mode that shares the session is custom
+  // — that is the combination the preset that was taken out used to name.
+  function audienceFormIsCustom() {
+    if (selectedMode() === "none") return false;
+    return presetForFlags(audienceFlagsOnForm()) === "";
+  }
+
+  // 不公開 with a box still ticked: what 套用 writes is every flag off, the same
+  // as the menu's 不公開, and the boxes on screen say otherwise until the
+  // owner is told.
+  function audienceFlagsCleared() {
+    if (selectedMode() !== "none") return false;
+    return AUDIENCE_FLAG_IDS.some((id) => el(id).checked);
+  }
+
   function applyAudiencePreset(name) {
     const wanted = AUDIENCE_PRESETS[name];
     if (!wanted) return;
@@ -3705,7 +4761,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     const note = el("audience-preset-note");
     const lines = [];
-    if (name === "") lines.push(t("audience.presetCustom"));
+    if (audienceFormIsCustom()) lines.push(t("audience.presetCustom"));
+    if (audienceFlagsCleared()) lines.push(t("audience.noneClearsFlags"));
+    // A preset leaves the working-directory box as it found it, and the box is
+    // in the section that starts folded for a session a preset names. So a
+    // directory about to be published is said here, in the menu's words,
+    // whenever the section that holds its box is folded: a session loaded
+    // with it on, 不公開 turned into a publish, or the section folded again.
+    if (selectedMode() !== "none" && el("audience-cwd").checked && !el("audience-advanced").open) {
+      lines.push(t("popover.withCwd"));
+    }
     // Only on a selection of more than one. A single session opens showing its
     // own settings, so the sentence about them being reset is untrue there —
     // and it was the sentence the whole dialog was read through.
@@ -3760,11 +4825,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("audience-autowake").checked = Boolean(only && current.autoWake);
 
     renderAutoWakeNote();
-    syncAudiencePreset();
     // A session whose flags are no preset's opens with the flags in view: the
     // radios are all empty then, and the only place that says what the session
     // actually does is the section that would otherwise start collapsed.
-    el("audience-advanced").open = presetForFlags(audienceFlagsOnForm()) === "";
+    el("audience-advanced").open = audienceFormIsCustom();
+    // After the section is set: whether it is folded decides whether the line
+    // under the presets has to say the working directory is published.
+    syncAudiencePreset();
     el("audience-modal").classList.remove("hidden");
     syncAudienceForm();
   }
@@ -3817,6 +4884,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       note.append(element("div", "muted", t("audience.autoWakeClaude")));
       return;
     }
+    // What waking can and cannot promise, before what this node and these
+    // sessions add to it. Not on the all-Claude branch above: that one says
+    // plainly that nothing will wake, which is the stronger sentence.
+    note.append(element("div", "wakecaveat-line", t("wake.caveat")));
     if (!state.nodeAutoWake) {
       note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
       return;
@@ -3831,6 +4902,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   function closeAudienceModal() {
     el("audience-modal").classList.add("hidden");
+    // Opened from a row's menu over somebody else's selection: that selection
+    // comes back, whether the dialog was applied or put away.
+    if (audienceModalRestore) {
+      const restore = audienceModalRestore;
+      audienceModalRestore = null;
+      state.selected.clear();
+      const alive = new Set(state.sessions.map((session) => session.id));
+      for (const id of restore) if (alive.has(id)) state.selected.add(id);
+      render();
+    }
   }
 
   function readAudienceForm() {
@@ -3843,6 +4924,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       .filter((box) => box.checked)
       .map((box) => box.value);
     const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];
+    // 不公開 is every flag off, as the menu's 不公開 writes it
+    // (audienceForChoice): a flag kept on a session nobody can see is shown
+    // nowhere — the row's flag column is for published sessions — and a
+    // working directory kept that way is published by the next 能留訊息
+    // without anything on screen saying so.
+    if (mode === "none") {
+      return { mode, nodes, exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
+    }
     return {
       mode,
       nodes,
@@ -4429,10 +5518,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   let serviceRequest = 0;
 
+  // Answers the status it read, even when a newer read has already been
+  // started and this one is therefore not the one put on screen: a caller about
+  // to act on the status (runServiceQuickAction) needs a fact read after its
+  // press, and this is one.
   async function loadService() {
     const sequence = ++serviceRequest;
     const status = await api.ServiceStatus();
-    if (sequence !== serviceRequest) return;
+    if (sequence !== serviceRequest) return status;
     state.service = status;
     renderService();
     // The checklist's first step is derived from this status, and load()
@@ -4441,18 +5534,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // yet" — while the title bar's pill, painted by renderService above,
     // already says the service is running.
     renderOnboarding();
+    // And the attention strip's service row, for the same reason.
+    renderAttention();
+    return status;
   }
 
   // renderServicePill is the title bar's one-line version of the panel below.
+  //
+  // The pill is also a button that installs or starts the service, and the
+  // status read that lands in the middle of that keeps its spinner (`busy`).
   function renderServicePill(status) {
     const pill_ = el("service-pill");
     const text = el("service-pill-text");
-    if (status.toolError) { pill_.className = "servicepill warn"; text.textContent = t("service.pillNoAh"); return; }
-    if (!status.supported) { pill_.className = "servicepill"; text.textContent = t("service.pillUnsupported"); return; }
-    if (status.installed && status.running) { pill_.className = "servicepill ok"; text.textContent = t("service.pillRunning"); return; }
-    if (status.installed) { pill_.className = "servicepill warn"; text.textContent = t("service.pillStopped"); return; }
-    pill_.className = "servicepill warn";
-    text.textContent = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
+    const busy = pill_.classList.contains("busy") ? " busy" : "";
+    let tone = "warn";
+    let words;
+    if (status.toolError) words = t("service.pillNoAh");
+    else if (!status.supported) { tone = ""; words = t("service.pillUnsupported"); }
+    else if (status.installed && status.running) { tone = "ok"; words = t("service.pillRunning"); }
+    else if (status.installed) words = t("service.pillStopped");
+    else words = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
+    pill_.className = `servicepill${tone ? ` ${tone}` : ""}${busy}`;
+    text.textContent = words;
   }
 
   function renderService() {
@@ -4645,7 +5748,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         : t("service.dbNoteDefault");
       return;
     }
-    note.textContent = status.installed ? t("service.dbNoteUnknown") : t("service.dbNoteFirstInstall");
+    // Nothing registered is not the same as nothing running. A node somebody
+    // started by hand is on a database this window cannot see, and a blank
+    // field is the default one — a new identity when theirs was not — so the
+    // form says what to type there, and installService asks before a blank.
+    if (status.installed) note.textContent = t("service.dbNoteUnknown");
+    else if (nodeRunningNotAService(status)) note.textContent = t("service.dbNoteRunningNotService");
+    else note.textContent = t("service.dbNoteFirstInstall");
   }
 
   function readServiceForm() {
@@ -4665,7 +5774,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     output.classList.remove("hidden");
   }
 
-  async function installService() {
+  async function installService({ button = el("service-install"), failureActions = [] } = {}) {
     // The one change on this form that cannot be undone by changing it back.
     //
     // A different database is a different node.key, so this machine gets a new
@@ -4684,6 +5793,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         title: t("service.reinstallUnknownDbConfirmTitle", { wanted: wanted || t("service.nodeDefaultLocation") }),
         body: t("service.reinstallUnknownDbConfirm"),
         confirmLabel: t("service.reinstallConfirmAction"),
+        danger: true,
+      });
+      if (!ok) return;
+    } else if (!baseline.installed && wanted === "" && nodeRunningNotAService()) {
+      // Nothing to compare the blank with: the running node's database is not
+      // something this window can read. A blank is still the default, which
+      // is a different identity for a node started with --db.
+      const ok = await askConfirm({
+        title: t("service.runningNotServiceConfirmTitle"),
+        body: t("service.runningNotServiceConfirm"),
+        confirmLabel: t("service.runningNotServiceConfirmAction"),
         danger: true,
       });
       if (!ok) return;
@@ -4715,7 +5835,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("service-form").classList.add("hidden");
       banner(t("service.installed"), true);
       await load();
-    });
+    }, { button, failureActions });
   }
 
   // restartNode applies settings the node only reads at start-up, by whatever
@@ -4723,14 +5843,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // app stopping and starting the node itself. Which of the two happened is
   // the Go side's decision (desktop/nodeprocess.go); what comes back names the
   // command either way, and it goes on screen verbatim.
-  async function restartNode() {
+  //
+  // service: true asks the service manager and nothing else (RestartService),
+  // for the one-press fix on a service that is installed and not running —
+  // the case where RestartNode would have gone there anyway, said without a
+  // second ServiceStatus read on the Go side deciding it again.
+  async function restartNode({ button = null, service = false, failureActions = [] } = {}) {
     // Read before anything is asked of the service manager: it is what says
     // whether the node answering afterwards is a new one.
     const previousPid = state.service?.pid ?? 0;
-    await withBusy(t("service.restart"), async () => {
+    await withBusy(service ? t("service.start") : t("service.restart"), async () => {
       let result;
       try {
-        result = await api.RestartNode();
+        result = service ? await api.RestartService() : await api.RestartNode();
       } catch (error) {
         // The failures here are the ones an owner has to act on — a node that
         // would not stop, or one that did not come back because of the setting
@@ -4750,14 +5875,105 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const up = await waitForNode({ previousPid });
       await load();
       if (up.answering) {
-        banner(up.degraded ? t("service.restartedDegraded") : t("service.restarted"), !up.degraded);
+        if (up.degraded) notify("error", t("service.restartedDegraded"), { actions: failureActions });
+        else banner(t("service.restarted"), true);
         return;
       }
-      banner(t("service.restartedNoAnswer", {
+      notify("error", t("service.restartedNoAnswer", {
         seconds: up.seconds,
         log: state.service?.logHint ?? t("service.logHintFallback"),
-      }));
-    });
+      }), { actions: failureActions });
+    }, { button, failureActions });
+  }
+
+  // What one press on the service's row or pill does, from the status alone:
+  // install when there is a service manager and nothing registered, start
+  // when something is registered and not running, and otherwise the settings
+  // page — no ah, no service manager, a status not read yet, or nothing to fix.
+  function serviceQuickAction(status = state.service) {
+    if (!status || status.toolError || status.supported !== true) return "settings";
+    if (status.installed && status.running) return "settings";
+    return status.installed ? "restart" : "install";
+  }
+
+  // A node answering with no service registered is a node somebody started by
+  // hand, on a database this window cannot see. Installing over it from one
+  // press would register the node's default database — which is a different
+  // identity when theirs was not the default, and every pairing gone — so that
+  // case goes to the form: its note says to type the --db path the node was
+  // started with (service.dbNoteRunningNotService), and installService asks
+  // before installing with the field blank. Either reading says it: the last
+  // Overview, or the status command's own probe of the node.
+  function nodeRunningNotAService(status = state.service) {
+    return serviceQuickAction(status) === "install" && (state.nodeReachable || status?.nodeAnswering === true);
+  }
+
+  // The one-press fix, through the very functions the settings page's own
+  // buttons call: installService with the form the panel would open (its
+  // database path blank, which is the node's default, because nothing is
+  // installed to carry one over from) and every question that path asks, and
+  // restartNode, which waits for the node to answer before it says anything.
+  // A failure's toast offers the settings page, where the command's own words
+  // went.
+  //
+  // The status is read again before anything is done. The one on screen can be
+  // minutes old — the fifteen-second tick stays away while rows are selected or
+  // a dialog is open — and `ah service install` replaces whatever is registered
+  // (internal/service/service.go), so installing on a stale "nothing installed"
+  // re-registers a working service on the default database: a new identity,
+  // every pairing void. A read that fails decides nothing; the press goes to
+  // the settings page and says why.
+  //
+  // Three cases are not pressed through. Something else being written: the
+  // form below would be reset under it (withBusy would drop the install anyway,
+  // but only after openServiceForm had run). A database path the owner has
+  // typed into the open form: installing from here would reset it to blank —
+  // the node's default database, a new identity and no pairings — without the
+  // question the form asks, so the press goes to the form instead. And a node
+  // that is running but is not a service (nodeRunningNotAService): the form.
+  async function runServiceQuickAction({ button = null } = {}) {
+    if (state.busy) return;
+    // The re-read can take the status command's whole timeout, and a button
+    // that shows nothing for that long is pressed again. So it spins and
+    // cannot be pressed from the moment it is pressed — withBusy's own
+    // spinner takes over once there is something to do — and is let go the
+    // moment the read has answered, before anything is decided from it.
+    const pressed = button?.classList ? button : null;
+    const hold = (on) => {
+      if (!pressed) return;
+      pressed.classList.toggle("busy", on);
+      pressed.setAttribute("aria-busy", String(on));
+      pressed.disabled = on;
+      // Let go, a strip button goes back to what the strip says, which is
+      // still unpressable if another write started during the read.
+      if (!on) renderAttention();
+    };
+    let status;
+    hold(true);
+    try {
+      status = await loadService();
+    } catch (error) {
+      hold(false);
+      goToService({ keepForm: true });
+      notify("error", t("service.quickReadFailed", { error }));
+      return;
+    }
+    hold(false);
+    // Something may have started while the status was being read.
+    if (state.busy) return;
+    const action = serviceQuickAction(status);
+    const typedPath = !el("service-form").classList.contains("hidden") && el("service-db").value.trim() !== "";
+    if (action === "settings" || (action === "install" && (typedPath || nodeRunningNotAService(status)))) {
+      goToService({ keepForm: typedPath });
+      return;
+    }
+    const failureActions = [{ label: t("service.openSettings"), run: () => goToService({ keepForm: true }) }];
+    if (action === "install") {
+      await openServiceForm();
+      await installService({ button, failureActions });
+      return;
+    }
+    await restartNode({ button, service: true, failureActions });
   }
 
   // waitForNode asks the node whether it is there, for a few seconds, because
@@ -4807,11 +6023,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       showServiceOutput(result);
       banner(t("service.uninstalled"), true);
       await load();
-    });
+    }, { button: el("service-uninstall") });
   }
 
-  for (const segment of document.querySelectorAll("#view-switch span[data-view]")) {
+  // The three tabs are buttons in a tablist: one stop for Tab, and the arrow
+  // keys (with Home and End) move to a neighbour and open it.
+  function viewSwitchKey(event) {
+    const tabs = [...document.querySelectorAll("#view-switch [data-view]")];
+    const at = tabs.findIndex((tab) => tab.dataset.view === state.view);
+    const key = event?.key;
+    let next = -1;
+    if (key === "ArrowRight") next = (at + 1) % tabs.length;
+    else if (key === "ArrowLeft") next = (at - 1 + tabs.length) % tabs.length;
+    else if (key === "Home") next = 0;
+    else if (key === "End") next = tabs.length - 1;
+    if (next < 0 || tabs.length === 0) return;
+    event.preventDefault?.();
+    tabs[next].onclick?.();
+    tabs[next].focus?.();
+  }
+  el("view-switch").onkeydown = viewSwitchKey;
+
+  for (const segment of document.querySelectorAll("#view-switch [data-view]")) {
     segment.onclick = () => {
+      closeAudiencePopover();
       state.view = segment.dataset.view;
       render();
       // Read on arrival rather than on the next poll: a candidate list that is up
@@ -4851,16 +6086,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // banner is how "you are half done" gets missed, and half-done pairing is
       // exactly what happened on 2026-09-10: the mac was paired, the Ubuntu box
       // still answered `No paired nodes`, and nothing said so.
-      banner(t("pairManual.trusted", { name: node.displayName }));
-    });
+      notify("warn", t("pairManual.trusted", { name: node.displayName }));
+    }, { button: el("pair-submit") });
 
-  el("btn-audience").onclick = openAudienceModal;
+  // 「公開 ▾」 on the selection bar: the row's own menu, for every selected
+  // session at once. The full dialog is its last entry.
+  el("btn-audience").onclick = () =>
+    openAudiencePopover(el("btn-audience"), [...state.selected], { clearSelection: true });
   el("audience-close").onclick = closeAudienceModal;
   el("audience-modal").onclick = (event) => {
     if (event.target === el("audience-modal")) closeAudienceModal();
   };
+  // The mode decides whether every flag off is custom (audienceFormIsCustom),
+  // so the line under the presets follows it.
   for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
-    radio.onchange = syncAudienceForm;
+    radio.onchange = () => {
+      syncAudienceForm();
+      syncAudiencePreset();
+    };
   }
   // A preset writes the boxes; a box unsets the preset. Never the other way
   // round, so nothing this dialog shows is a value it invented.
@@ -4870,28 +6113,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   for (const id of AUDIENCE_FLAG_IDS) {
     el(id).onchange = syncAudiencePreset;
   }
+  // Folding the section hides the working-directory box, and the line under
+  // the presets takes over saying it (syncAudiencePreset).
+  el("audience-advanced").addEventListener?.("toggle", syncAudiencePreset);
   el("audience-apply").onclick = () => {
     const audience = readAudienceForm();
     if (audience.mode === "selected" && audience.nodes.length === 0) {
       banner(t("audience.needsANode"));
       return;
     }
-    applyAudience(audience, audience.mode);
+    applyAudience(audience, audience.mode, { button: el("audience-apply") });
   };
 
+  // The menu's 不公開, for the selection: same write, same undo.
   el("btn-unpublish").onclick = () =>
-    applyAudience(
-      { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
-      "none",
-    );
+    applyAudienceChoice([...state.selected], "none", { button: el("btn-unpublish"), clearSelection: true });
 
-  el("btn-reload").onclick = () => withBusy(t("app.reload"), load);
+  el("btn-reload").onclick = () => withBusy(t("app.reload"), load, { button: el("btn-reload") });
 
   // discoverSessions is a named function rather than a handler body because the
   // first-launch checklist presses the same button. A second copy of this would
   // be a second rescan with its own banner, its own skipped count and its own
   // bugs.
-  async function discoverSessions() {
+  async function discoverSessions({ button = null } = {}) {
     return withBusy(t("app.rescan"), async () => {
       const counts = await api.Discover();
       await load();
@@ -4905,16 +6149,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         claude: counts.claude, codex: counts.codex, total: counts.total,
       }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : "")
         + (total === 0 ? t("app.rescanNothingFound") : ""), skipped === 0 && total > 0);
-    });
+    }, { button });
   }
 
-  el("btn-discover").onclick = () => discoverSessions().catch(() => {});
+  el("btn-discover").onclick = () => discoverSessions({ button: el("btn-discover") }).catch(() => {});
 
   el("btn-heartbeat").onclick = () =>
     withBusy(t("heartbeat.busy"), async () => {
       el("modal-body").textContent = await api.Heartbeat();
       el("modal").classList.remove("hidden");
-    });
+    }, { button: el("btn-heartbeat") });
 
   el("modal-close").onclick = () => el("modal").classList.add("hidden");
   el("modal").onclick = (event) => {
@@ -5002,6 +6246,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.pairRequests = Array.isArray(rows) ? rows : [];
     state.pairRequestsError = "";
     state.pairRequestsLoaded = true;
+    // The attention strip's request row reads the same answer. Numbered past
+    // any read the fifteen-second tick still has in flight, which describes an
+    // earlier moment than this one.
+    incomingApplied = ++incomingRequest;
+    state.pairIncoming = pendingIncoming(state.pairRequests);
+    renderAttention();
     if (render) renderPairRequests();
   }
 
@@ -5035,7 +6285,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // and a failure has to be visible there, or the owner is left with an
       // unchanged list and no sign the action did not happen.
       await openInbox(session, cleared);
-    });
+    }, { button: el("inbox-clear") });
   };
 
   el("btn-pairing-on").onclick = () =>
@@ -5044,22 +6294,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // sending a number from here would make this window disagree with `ah`.
       await api.OpenPairing(0);
       await loadPairing();
-    });
+    }, { button: el("btn-pairing-on") });
 
   el("btn-pairing-off").onclick = () =>
     withBusy(t("pair.busyClose"), async () => {
       await api.ClosePairing();
       await loadPairing();
-    });
+    }, { button: el("btn-pairing-off") });
 
   /* ---------------- the pairing exchange's own controls ---------------- */
 
   el("copy-pair-address").onclick = () => copyPairAddress();
-  el("btn-pair-send").onclick = () => sendPairRequest(el("pair-address").value);
+  el("btn-pair-send").onclick = () => sendPairRequest(el("pair-address").value, { button: el("btn-pair-send") });
   el("pair-address").onkeydown = (event) => {
     // Enter in the address field sends, because that is what a field with one
     // button beside it is for.
-    if (event?.key === "Enter") sendPairRequest(el("pair-address").value);
+    if (event?.key === "Enter") sendPairRequest(el("pair-address").value, { button: el("btn-pair-send") });
   };
   el("pair-requests-all").onchange = () => {
     state.pairRequestsAll = Boolean(el("pair-requests-all").checked);
@@ -5468,7 +6718,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nothing on screen would close.
     if (!pairingDrawerOpen()) return;
     await loadPairing();
-    await openPairingWindowIfNeeded({ keepBanner: true });
+    await openPairingWindowIfNeeded();
   }
 
   const NODE_SETTINGS_FIELD_LABELS = {
@@ -6137,20 +7387,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
     }
     if (Object.keys(patch).length === 0) {
-      banner(skippedNote);
+      notify("warn", skippedNote);
       return;
     }
-    await saveNodeSettingsPatch(patch);
-    // After the save's own report, which is a single banner that each outcome
-    // replaces: said last, so the fields that were left out are not overwritten
-    // by the sentence about the ones that were saved.
-    if (skippedNote) {
-      const said = el("banner").classList.contains("hidden") ? "" : el("banner").textContent;
-      banner([said, skippedNote].filter(Boolean).join(" "));
-    }
+    await saveNodeSettingsPatch(patch, { button: el("node-settings-save") });
+    // After the save's own report, as a toast of its own: said last, so it is
+    // the newest thing on screen, and a warning, so it stays until read even
+    // when the save beside it was a success that goes by itself.
+    if (skippedNote) notify("warn", skippedNote);
   }
 
-  async function saveNodeSettingsPatch(patch) {
+  async function saveNodeSettingsPatch(patch, { button = null } = {}) {
     await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
       let view;
@@ -6312,7 +7559,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
           : t("nodeSettings.savedServiceDown",
             { log: back.logHint || t("nodeSettings.noLogPath") }),
       );
-    });
+    }, { button });
   }
 
   // readNodeSettingsAfterRestart re-reads the node once it has been restarted.
@@ -6467,7 +7714,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   /* ---------------- redesign wiring ---------------- */
 
-  el("select-all-visible").onchange = setSelectionForVisible;
+  el("btn-bell").onclick = () => (noticeDrawerOpen() ? closeNotices() : openNotices());
+  el("notify-close").onclick = closeNotices;
+  el("notify-modal").onclick = (event) => {
+    if (event.target === el("notify-modal")) closeNotices();
+  };
+  // The header checkbox is 13px of a 40px cell; the whole cell toggles it, so
+  // the target is the cell and not the box inside it.
+  el("select-all-cell").onclick = (event) => {
+    if (event?.target === el("select-all-cell")) el("select-all").click?.();
+  };
+
   el("btn-deselect").onclick = () => {
     state.selected.clear();
     render();
@@ -6531,11 +7788,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("node-allow-lan").onchange = syncNodeSettingsForm;
   el("node-private").oninput = syncNodeSettingsForm;
 
-  el("service-pill").onclick = () => {
-    state.view = "settings";
-    state.settingsSection = "settings-service";
-    render();
-  };
+  // One press: install or start when that is what it needs, the settings
+  // page otherwise (runServiceQuickAction).
+  el("service-pill").onclick = () => runServiceQuickAction({ button: el("service-pill") }).catch(() => {});
   el("copy-identity-key").onclick = () => copyLocalPublicKey("identity-copy-status");
   el("toggle-backdrop").onchange = (event) => {
     state.ui.backdrop = Boolean(event.target.checked);
@@ -6622,6 +7877,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
     peerListensSupported, checkedPeerListens, samePeerListens, peerListenRowState, pairOpenAddresses, peerListensNotOpen,
     peerListenRows: () => peerListenRows,
+    notify, banner, withBusy, openNotices, closeNotices, renderAttention, attentionItems,
+    refreshIncomingPairRequests,
+    openAudiencePopover, closeAudiencePopover, audiencePopoverOpen, popoverKey, popoverOutsidePress,
+    applyAudienceChoice, audienceForChoice, presetOfAudience, writableAudience, interactionInProgress,
+    serviceQuickAction, runServiceQuickAction, pairStepperPhase, renderPairStepper, goToPublish, viewSwitchKey,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.
@@ -6694,9 +7954,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The same check runs again inside load() before a background answer is
   // applied, because the owner can start any of those while the read is in the
   // air.
+  //
+  // The same tick is the only place, besides the open pairing drawer, that
+  // reads the exchange's rows — once, and only while the node last said the
+  // pairing window is open — so a machine asking to pair shows on the
+  // attention strip from whatever view the owner is on
+  // (refreshIncomingPairRequests says why that read is bounded).
   setInterval(() => {
     if (interactionInProgress()) return;
-    load({ background: true }).catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
+    load({ background: true })
+      .then(() => refreshIncomingPairRequests())
+      .catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
   }, 15000);
 
   load()
@@ -6708,9 +7976,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("service-open").onclick = () => openServiceForm()
     .catch((error) => banner(t("busy.failed", { action: t("service.busyOpenForm"), error })));
   el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
-  el("service-install").onclick = installService;
+  el("service-install").onclick = () => installService();
   el("service-uninstall").onclick = uninstallService;
-  el("service-restart").onclick = restartNode;
+  el("service-restart").onclick = () => restartNode({ button: el("service-restart") });
 
   return internals;
 }

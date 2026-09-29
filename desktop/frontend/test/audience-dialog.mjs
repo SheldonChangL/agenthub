@@ -1,5 +1,5 @@
 // The audience dialog must not carry a flag from one use to the next, and the
-// three presets in front of the flags have to agree with them.
+// two presets in front of the flags have to agree with them.
 //
 // It applies to whatever is selected and reads its values straight from the
 // boxes, so a box left ticked from last time is a setting about to be applied
@@ -30,9 +30,15 @@ configure({
 const module = boot({ start: false });
 
 const flags = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
+// Picks a 誰看得到 radio the way a press does: checked, then its onchange.
+const setMode = (mode) => {
+  for (const radio of document.querySelectorAll('input[name="audience-mode"]')) radio.checked = radio.value === mode;
+  document.querySelectorAll('input[name="audience-mode"]').find((radio) => radio.value === mode)?.onchange?.();
+};
 
-// Somebody opens the dialog and ticks everything, for one session.
+// Somebody opens the dialog, publishes and ticks everything, for one session.
 module.openAudienceModal();
+setMode("all_paired");
 for (const id of flags) el(id).checked = true;
 if (!module.readAudienceForm().autoWake) {
   failures.push("the dialog does not read the auto-wake box at all");
@@ -51,13 +57,16 @@ for (const [name, value] of Object.entries(module.readAudienceForm())) {
   }
 }
 
-/* ---------------- the three presets in front of the four flags ------------ */
+/* ---------------- the two presets in front of the four flags -------------- */
 
 // A preset writes the boxes. Nothing else does, and a box never writes another
 // box — so what the dialog applies is always what its own advanced section
 // shows, whichever half the owner used.
 const presetOf = () =>
   [...document.querySelectorAll('input[name="audience-preset"]')].find((radio) => radio.checked)?.value ?? "";
+// Under 不公開 every flag is written off whatever the boxes say (below), so
+// what the presets write is read under a mode that publishes.
+setMode("all_paired");
 
 module.applyAudiencePreset("messages");
 const afterMessages = module.readAudienceForm();
@@ -77,14 +86,22 @@ if (!afterWake.acceptMessages || !afterWake.autoWake || !afterWake.allowOutbound
   failures.push(`"and wake it" did not turn messages, outbound and wake on: ${JSON.stringify(afterWake)}`);
 }
 
-module.applyAudiencePreset("view");
-const afterView = module.readAudienceForm();
-if (Object.values(afterView).some((value) => value === true)) {
-  failures.push(`"let them see it only" left a flag on: ${JSON.stringify(afterView)}`);
+// Two presets, not three (2026-09-29): 「只讓他們看見」 wrote every message
+// flag off, and a session another machine can see but not write to gives that
+// machine nothing to do. The markup offers exactly the other two, and asking
+// for the old one writes nothing.
+{
+  const values = [...document.querySelectorAll('input[name="audience-preset"]')].map((radio) => radio.value);
+  if (JSON.stringify(values) !== JSON.stringify(["messages", "wake"])) {
+    failures.push(`the dialog offers the presets ${JSON.stringify(values)}, want exactly messages and wake`);
+  }
+  module.applyAudiencePreset("view");
+  if (!module.readAudienceForm().autoWake) failures.push("the removed 'view' preset still writes the boxes");
 }
 
-// A combination no preset names unsets all three radios and says so, rather
+// A combination no preset names unsets both radios and says so, rather
 // than leaving one of them checked over flags it does not describe.
+for (const id of ["audience-messages", "audience-outbound", "audience-autowake"]) el(id).checked = false;
 el("audience-outbound").checked = true;
 module.syncAudiencePreset();
 if (presetOf() !== "") {
@@ -102,7 +119,7 @@ if (module.presetForFlags({ acceptMessages: true, autoWake: true }) !== "") {
 
 // The working directory is not a preset's to write. It lives in the collapsed
 // section, so a preset that cleared it withdrew a setting nobody saw change.
-for (const name of ["view", "messages", "wake"]) {
+for (const name of ["messages", "wake"]) {
   for (const cwd of [true, false]) {
     el("audience-cwd").checked = cwd;
     module.applyAudiencePreset(name);
@@ -137,6 +154,26 @@ if (!el("audience-preset-note").textContent.includes("自訂")) {
 }
 if (opened({ exportCwd: true, acceptMessages: true })) {
   failures.push("a session matching a preset opened with the advanced section unfolded");
+}
+
+// Every message flag off on a session that is published is what the removed
+// preset used to name, so it is now custom: unfolded, and said.
+if (!opened({ exportCwd: true })) {
+  failures.push("a published session with every message flag off opened folded, with no preset naming it");
+}
+if (!el("audience-preset-note").textContent.includes("自訂")) {
+  failures.push(`a published session with every flag off was not called custom: ${el("audience-preset-note").textContent}`);
+}
+if (presetOf() !== "") failures.push(`a published session with every flag off opened on the ${presetOf()} preset`);
+// The same flags on a session nobody can see are just where it starts.
+{
+  const quiet = { id: "codex:quiet", provider: "codex", audience: { mode: "none", nodes: [] } };
+  module.state.sessions = [quiet];
+  module.state.selected.clear();
+  module.state.selected.add(quiet.id);
+  module.openAudienceModal();
+  if (el("audience-advanced").open) failures.push("an unpublished session with every flag off opened unfolded");
+  if (el("audience-preset-note").textContent.includes("自訂")) failures.push("an unpublished session with every flag off was called custom");
 }
 
 // Reopening with exactly one session selected shows that session's own
@@ -177,6 +214,9 @@ if (many.mode !== "none" || Object.values(many).some((value) => value === true))
 if (!el("audience-preset-note").textContent.includes("全關")) {
   failures.push(`a multiple selection did not say the flags start off: ${el("audience-preset-note").textContent}`);
 }
+if (el("audience-preset-note").textContent.includes("自訂") || el("audience-advanced").open) {
+  failures.push("a multiple selection, which starts at 不公開 with every flag off, was shown as custom");
+}
 
 // The dependencies of the auto-wake box, said next to the auto-wake box.
 //
@@ -206,6 +246,16 @@ if (!nodeOff.includes("-auto-wake") || !nodeOff.includes("不會有任何 sessio
 }
 if (nodeOff.includes("app-server")) {
   failures.push("the node-off note also promised the Codex path would work");
+}
+
+// What waking cannot promise, said where the box is, whatever else is said.
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  for (const [autoWake, selection] of [[false, [codex]], [true, [codex]], [true, [codex, claude]]]) {
+    if (!withSelection(autoWake, selection).includes(ZH["wake.caveat"])) {
+      failures.push(`the auto-wake note does not say waking can fail (node auto-wake ${autoWake}): ${noteText()}`);
+    }
+  }
 }
 
 const codexOnly = withSelection(true, [codex]);

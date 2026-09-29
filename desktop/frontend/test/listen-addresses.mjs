@@ -18,6 +18,7 @@
 //   node frontend/test/listen-addresses.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 import { TEXT as EN } from "../src/i18n/en.js";
@@ -28,6 +29,8 @@ const { configure, boot } = await import("../src/app.js");
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const noop = async () => ({});
 const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key]);
 
@@ -320,8 +323,8 @@ saveAnswer = async () => view([A, B], { top: { restartRequired: true } });
 settingsAnswer = async () => view([A]);
 await app.saveNodeSettings();
 await tick();
-if (!el("banner").textContent.includes(fill(ZH["nodeSettings.savedDidNotStick"], { lost: ZH["nodeSettings.peerListensLabel"] }))) {
-  failures.push(`a list the restart undid was not reported: ${el("banner").textContent}`);
+if (!toast().textContent.includes(fill(ZH["nodeSettings.savedDidNotStick"], { lost: ZH["nodeSettings.peerListensLabel"] }))) {
+  failures.push(`a list the restart undid was not reported: ${toast().textContent}`);
 }
 await load(view([A]));
 toggle(B, true);
@@ -332,19 +335,19 @@ settingsAnswer = async () => view([A, B], { peerListeners: [
 ] });
 await app.saveNodeSettings();
 await tick();
-const said = el("banner").textContent;
+const said = toast().textContent;
 if (!said.includes(ZH["nodeSettings.savedServiceAnswering"]) ||
     !said.includes(fill(ZH["nodeSettings.savedNotOpen"], { addresses: B }))) {
   failures.push(`a saved address that did not open was not said on its own: ${said}`);
 }
-if (String(el("banner").className).includes("ok")) failures.push("a save with an address not open was styled as a plain success");
+if (String(toast().className).includes("ok")) failures.push("a save with an address not open was styled as a plain success");
 settingsAnswer = async () => view([A, B]);
 await load(view([A]));
 toggle(B, true);
 await app.saveNodeSettings();
 await tick();
-if (el("banner").textContent.includes(fill(ZH["nodeSettings.savedNotOpen"], { addresses: B }).slice(0, 8))) {
-  failures.push(`every address open still produced the not-open sentence: ${el("banner").textContent}`);
+if (toast().textContent.includes(fill(ZH["nodeSettings.savedNotOpen"], { addresses: B }).slice(0, 8))) {
+  failures.push(`every address open still produced the not-open sentence: ${toast().textContent}`);
 }
 
 // Every failed is still the node's own problem banner, with its repairs.

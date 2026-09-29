@@ -18,6 +18,7 @@
 //   node frontend/test/node-settings.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { inEnglish } from "./fixtures/in-english.mjs";
 
 globalThis.document = document;
@@ -26,6 +27,8 @@ const { configure, boot } = await import("../src/app.js");
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const noop = async () => ({});
 
 let settingsAnswer = async () => ({ settings: {}, sources: {}, saved: {} });
@@ -144,8 +147,8 @@ if (!el("node-settings-hint").textContent.includes("重新啟動")) {
   failures.push("restartRequired did not reach the owner");
 }
 if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
-if (!el("banner").textContent.includes("回應中")) {
-  failures.push(`a restart that came back was not confirmed from the re-read status: ${el("banner").textContent}`);
+if (!toast().textContent.includes("回應中")) {
+  failures.push(`a restart that came back was not confirmed from the re-read status: ${toast().textContent}`);
 }
 
 // 4b. A node that does not come back is not announced as restarted. This is the
@@ -161,7 +164,7 @@ saveAnswer = async () => cameBackView;
 afterRestart(cameBackView);
 await app.saveNodeSettings();
 await tick();
-const afterFailedRestart = el("banner").textContent;
+const afterFailedRestart = toast().textContent;
 if (afterFailedRestart.includes("回應中")) {
   failures.push("a node that never came back was announced as answering");
 }
@@ -171,7 +174,7 @@ if (!afterFailedRestart.includes("沒有在執行")) {
 if (!afterFailedRestart.includes("/var/log/agenthub-node.log")) {
   failures.push("the log path was not offered when the node failed to come back");
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("a failed restart was marked successful, so it fades off screen");
 }
 serviceStatus = { supported: true, installed: true, running: true, pid: 1, unitPath: "/u", logHint: "/l", nodeAnswering: true };
@@ -219,8 +222,8 @@ restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
 if (restartCalls !== 1) failures.push(`a node that is not a service was restarted ${restartCalls} times, want 1`);
-if (!el("banner").textContent.includes("節點已重新啟動並回應中")) {
-  failures.push(`a node that came back was not confirmed: ${el("banner").textContent}`);
+if (!toast().textContent.includes("節點已重新啟動並回應中")) {
+  failures.push(`a node that came back was not confirmed: ${toast().textContent}`);
 }
 
 // 6a. The same restart, on a node that did not come back. Nothing about the
@@ -235,7 +238,7 @@ afterRestart(goneView);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
-const goneBanner = el("banner").textContent;
+const goneBanner = toast().textContent;
 if (goneBanner.includes("回應中")) {
   failures.push(`a node that never answered was reported as back: ${goneBanner}`);
 }
@@ -255,7 +258,7 @@ afterRestart(unknownView);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
-const unknownBanner = el("banner").textContent;
+const unknownBanner = toast().textContent;
 if (restartCalls !== 0) failures.push("a service whose status could not be read was restarted anyway");
 if (unknownBanner.includes("不是背景服務")) {
   failures.push(`an unreadable status was reported as "not a service": ${unknownBanner}`);
@@ -263,7 +266,7 @@ if (unknownBanner.includes("不是背景服務")) {
 if (!unknownBanner.includes("讀不到背景服務狀態") || !unknownBanner.includes("找不到 ah")) {
   failures.push(`the owner was not told the status could not be read: ${unknownBanner}`);
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("a save whose effect could not be confirmed was marked successful");
 }
 
@@ -390,8 +393,8 @@ if (restartCalls !== 1) {
 }
 // And nothing in that sequence may be reported as a value that failed to stick:
 // the node holds what was asked for.
-if (el("banner").textContent.includes("又變回原來的值")) {
-  failures.push(`a save that did stick was reported as replaced: ${el("banner").textContent}`);
+if (toast().textContent.includes("又變回原來的值")) {
+  failures.push(`a save that did stick was reported as replaced: ${toast().textContent}`);
 }
 if (el("node-discover").checked) {
   failures.push("the form shows a value the owner had turned off");
@@ -506,8 +509,8 @@ app.state.nodeSettings = null;
 saveCalls = [];
 await app.saveNodeSettings();
 if (saveCalls.length !== 0) failures.push("a save went out with no baseline to diff against");
-if (!el("banner").textContent.includes("重新讀取")) {
-  failures.push(`the owner was not told to reload first: ${el("banner").textContent}`);
+if (!toast().textContent.includes("重新讀取")) {
+  failures.push(`the owner was not told to reload first: ${toast().textContent}`);
 }
 
 // R9. Two overlapping reads must not interleave. Painting used to await in the
@@ -822,7 +825,7 @@ restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
 if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
-const pinnedBanner = el("banner").textContent;
+const pinnedBanner = toast().textContent;
 if (pinnedBanner.includes("回應中")) {
   failures.push("a setting the unit replaced after the restart was reported as having taken effect");
 }
@@ -832,7 +835,7 @@ if (!pinnedBanner.includes("自動喚醒")) {
 if (!pinnedBanner.includes("單元檔") || !pinnedBanner.includes("重裝")) {
   failures.push("the owner was not told the likely cause or how to clear it");
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("a save that did not take effect was marked successful");
 }
 // Only what the owner asked for is judged, and each field the way the node
@@ -865,7 +868,7 @@ saveCalls = [];
 saveAnswer = async () => ({ ...unitPinned, saved: { ...unitPinned.saved, discover: true }, restartRequired: true });
 await app.saveNodeSettings();
 await tick();
-const restartFailed = el("banner").textContent;
+const restartFailed = toast().textContent;
 if (restartFailed.includes("儲存節點設定失敗")) {
   failures.push(`a failed restart was reported as a failed save: ${restartFailed}`);
 }
@@ -910,7 +913,7 @@ await tick();
 if (el("node-discover").checked) {
   failures.push("after the restart the form shows the value the owner had just turned off");
 }
-if (el("banner").textContent.includes("又變回原來的值")) {
+if (toast().textContent.includes("又變回原來的值")) {
   failures.push("a save that did stick was reported as replaced");
 }
 if (reads <= readsBefore) {
@@ -1001,7 +1004,7 @@ saveAnswer = async () => autoWakeSaved;
 afterRestart(autoWakeSaved);
 await app.saveNodeSettings();
 await tick();
-const statusFailed = el("banner").textContent;
+const statusFailed = toast().textContent;
 if (statusFailed.includes("儲存節點設定失敗")) {
   failures.push(`a status read that threw was reported as a failed save: ${statusFailed}`);
 }
@@ -1027,14 +1030,14 @@ settingsAnswer = async () => ({ error: "connection refused" });
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
-const unverified = el("banner").textContent;
+const unverified = toast().textContent;
 if (unverified.includes("回應中")) {
   failures.push(`a save whose effect was never checked was reported as confirmed: ${unverified}`);
 }
 if (!unverified.includes("無法確認")) {
   failures.push(`the owner was not told the check did not happen: ${unverified}`);
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("an unverified save was marked successful");
 }
 
@@ -1085,7 +1088,7 @@ afterRestart(wokeView);
 restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
-const afterStatusFail = el("banner").textContent;
+const afterStatusFail = toast().textContent;
 if (restartCalls !== 1) failures.push(`restarted ${restartCalls} times, want 1`);
 if (afterStatusFail.includes("重新啟動背景服務失敗")) {
   failures.push(`a status read that failed after a good restart was reported as a failed restart: ${afterStatusFail}`);
@@ -1176,10 +1179,10 @@ saveAnswer = async () => wokeView;
 afterRestart(wokeView);
 await app.saveNodeSettings();
 await tick();
-if (!el("banner").textContent.includes("沒有回應")) {
-  failures.push(`the owner was not told the node did not come back: ${el("banner").textContent}`);
+if (!toast().textContent.includes("沒有回應")) {
+  failures.push(`the owner was not told the node did not come back: ${toast().textContent}`);
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("a save the node has not read yet was marked successful, so it fades off screen");
 }
 
