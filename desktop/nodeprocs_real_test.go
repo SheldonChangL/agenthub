@@ -89,7 +89,7 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	if err := command.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second) // PowerShell again
 	for {
 		processes, err := listNodeProcesses(context.Background())
 		if err != nil {

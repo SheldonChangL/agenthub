@@ -146,6 +146,65 @@ jobs:
           go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
           gosec -fmt=text ./...
 
+  # The desktop restart reads the running node's command line, environment and
+  # user from Windows itself (desktop/nodeprocs_windows.go): PowerShell's WMI
+  # answer, the process's PEB, its token. A wrong answer there is a node
+  # restarted on another database — another identity, every pairing gone — and
+  # none of it can run on the ubuntu runner or a developer's Mac, where it is
+  # only compiled. So this job starts a real process named agenthub-node.exe,
+  # with quoted arguments, a --db that is not the default and an APPDATA of its
+  # own, and reads it back. Only these tests: the rest of the desktop suite is
+  # the ubuntu job's.
+  desktop-windows-processes:
+    name: desktop process reading (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      # main.go embeds all:frontend/dist, so the package's tests do not compile
+      # until the frontend is built.
+      - name: build frontend
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+      # Each test is asserted to have PASSED, not merely not failed: a -run
+      # that stops matching a renamed test selects nothing and exits 0.
+      - name: read a real agenthub-node.exe back
+        working-directory: desktop
+        run: |
+          tests=(
+            TestListNodeProcessesReadsARealProcess
+            TestProcessEnvironmentReadsAProcess
+            TestParseNodeProcessList
+            TestParseEnvironmentBlock
+            TestProcessBasicInformationIsLaidOutLikeWindows
+            TestWindowsCommandLineRoundTrips
+            TestSplitWindowsCommandLineReadsTheWayGoDoes
+            TestPowerShellIsTheOneWindowsKeeps
+            TestRunCommandOutputKeepsStderrApart
+          )
+          pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
+          go test -count=1 -v -run "$pattern" ./... | tee process-check.log
+          status=0
+          for test in "${tests[@]}"; do
+            if ! grep -q -- "--- PASS: ${test} " process-check.log; then
+              echo "${test} did not pass: it was skipped, renamed, or removed"
+              status=1
+            fi
+          done
+          exit $status
+
   frontend:
     name: frontend (install, build, audit)
     runs-on: ubuntu-latest
