@@ -60,6 +60,7 @@ SKILL_SOURCE=""
 
 AH=""
 SERVICE_STATE=""
+REMOVE_SKIPPED=""
 PATH_STATE=""
 SKILL_STATE=""
 
@@ -500,10 +501,11 @@ replace_directory() { # replace_directory <staging> <destination>
 # process alive with no files: menus stop working, and the next launch is from
 # a bundle the old process still half-owns.
 quit_running_app() {
+	quit_app="${QUIT_APP_PATH:-$APP_PATH}"
 	if ! command -v pgrep >/dev/null 2>&1; then
 		return 0
 	fi
-	if ! pgrep -f "$APP_PATH/Contents/MacOS/desktop" >/dev/null 2>&1; then
+	if ! pgrep -f "$quit_app/Contents/MacOS/desktop" >/dev/null 2>&1; then
 		return 0
 	fi
 	say "agenthub-desktop is running; asking it to quit before its bundle is removed"
@@ -513,7 +515,7 @@ quit_running_app() {
 	fi
 	quit_waited=0
 	while [ "$quit_waited" -lt 10 ]; do
-		if ! pgrep -f "$APP_PATH/Contents/MacOS/desktop" >/dev/null 2>&1; then
+		if ! pgrep -f "$quit_app/Contents/MacOS/desktop" >/dev/null 2>&1; then
 			say "agenthub-desktop quit"
 			return 0
 		fi
@@ -521,7 +523,7 @@ quit_running_app() {
 		quit_waited=$((quit_waited + 1))
 	done
 	die "agenthub-desktop is still running after 10 seconds, and removing a running app's bundle breaks it.
-Quit it yourself (right-click its Dock icon, Quit) and run this again, or re-run with --no-open after quitting."
+Quit it yourself (right-click its Dock icon, Quit) and run this again."
 }
 
 install_macos_app() {
@@ -956,8 +958,16 @@ BUNDLE_ID="com.wails.agenthub-desktop"
 # remove_path deletes one file or directory when it exists, and says so.
 remove_path() { # remove_path <path>
 	if exists "$1"; then
+		# Removing an entry needs its directory writable: /Applications after an
+		# account stopped being an admin is the case. Under set -e a failing rm
+		# would end the uninstall halfway; this says what is left instead.
+		if [ ! -w "$(dirname "$1")" ]; then
+			warn "could not remove $1: $(dirname "$1") is not writable by this account; delete it yourself (from Finder, or with an administrator's help)"
+			REMOVE_SKIPPED="$REMOVE_SKIPPED $1"
+			return 0
+		fi
 		run rm -rf "$1"
-		say "removed $1"
+		[ "$DRY_RUN" -eq 1 ] || say "removed $1"
 	fi
 }
 
@@ -969,31 +979,135 @@ remove_link() { # remove_link <name>
 	link_target="$(readlink "$link_path" 2>/dev/null || true)"
 	case "$link_target" in
 	"") ;;
-	"${APP_PATH:-/nonexistent-app-path}"/* | "$AGENTHUB_DIR"/*)
+	"${APP_PATH:-/nonexistent-app-path}"/* | "${OTHER_APP_PATH:-/nonexistent-app-path}"/* | "$AGENTHUB_DIR"/*)
 		run rm -f "$link_path"
-		say "removed $link_path"
+		[ "$DRY_RUN" -eq 1 ] || say "removed $link_path"
 		;;
 	*) say "left $link_path alone: it points at $link_target, not at this install" ;;
 	esac
 }
 
-# uninstall_ah names an ah that can take the service down: the installed one,
-# then whatever is on PATH.
+# uninstall_ah names this install's own ah, and nothing else. An ah found on
+# PATH could be a source build, or the real install when this run is a
+# --prefix one, and what it would take down is its own service, not this one.
 uninstall_ah() {
-	for uninstall_candidate in "${APP_PATH:+$APP_PATH/Contents/MacOS/ah}" "$AGENTHUB_DIR/ah"; do
+	for uninstall_candidate in "${APP_PATH:+$APP_PATH/Contents/MacOS/ah}" \
+		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/ah}" "$AGENTHUB_DIR/ah"; do
 		[ -n "$uninstall_candidate" ] || continue
 		if [ -x "$uninstall_candidate" ]; then
 			printf '%s' "$uninstall_candidate"
 			return 0
 		fi
 	done
-	command -v ah 2>/dev/null || true
+}
+
+# unit_file is where `ah service install` wrote the registration.
+unit_file() {
+	if [ "$OS_SLUG" = "darwin" ]; then
+		printf '%s' "$HOME/Library/LaunchAgents/local.agenthub.node.plist"
+	else
+		printf '%s' "$HOME/.config/systemd/user/agenthub-node.service"
+	fi
+}
+
+# physical_path prints a path with its directory resolved the way the node
+# records it: `ah service install` writes os.Executable's answer, which is
+# symlink-free on Linux and has no doubled or trailing slashes. The directory
+# must exist; a path whose directory does not is printed as given.
+physical_path() { # physical_path <path>
+	physical_dir="$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P)" || physical_dir=""
+	if [ -n "$physical_dir" ]; then
+		printf '%s/%s' "$physical_dir" "$(basename "$1")"
+	else
+		printf '%s' "$1"
+	fi
+}
+
+# xml_escape spells a string the way Go's xml.EscapeText does, which is how
+# the launchd plist writer puts each argument inside <string>.
+xml_escape() { # xml_escape <string>
+	xml_tab="$(printf '\t')"
+	printf '%s' "$1" | sed "s/&/\\&amp;/g; s/</\\&lt;/g; s/>/\\&gt;/g; s/\"/\\&#34;/g; s/'/\\&#39;/g; s/$xml_tab/\\&#x9;/g"
+}
+
+# node_forms prints, one per line, every way the unit can spell this install's
+# agenthub-node: as given and resolved, each as launchd writes it (XML-escaped
+# inside <string>) and as systemd does (% doubled; quoted, with \ " $ escaped,
+# when the path needs it — internal/service SystemdUnit).
+node_forms() {
+	for forms_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" \
+		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
+		[ -n "$forms_node" ] || continue
+		for forms_path in "$forms_node" "$(physical_path "$forms_node")"; do
+			forms_xml="$(xml_escape "$forms_path")"
+			printf '<string>%s</string>\n' "$forms_xml"
+			forms_pct="$(printf '%s' "$forms_path" | sed 's/%/%%/g')"
+			# systemdQuote quotes a path holding a space, tab, quote, \ or $.
+			if printf '%s' "$forms_pct" | grep -q '[[:space:]"'"'"'\\$]'; then
+				forms_quoted="$(printf '%s' "$forms_pct" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\$/$$/g')"
+				printf 'ExecStart="%s"\n' "$forms_quoted"
+			else
+				printf 'ExecStart=%s\n' "$forms_pct"
+			fi
+		done
+	done
+}
+
+# service_is_ours says yes when the registered unit starts the agenthub-node of
+# this install. There is one registration per user whoever made it — a source
+# checkout's bin/ah, the real install while this is a --prefix run — so the
+# unit's own program is the only thing that says whose it is. Read from the
+# file rather than through `ah`, which may be gone or be someone else's.
+service_is_ours() {
+	ours_unit="$(unit_file)"
+	[ -f "$ours_unit" ] || return 1
+	node_forms >"$TEMP_DIR/node-forms"
+	while IFS= read -r ours_form; do
+		case "$ours_form" in
+		"<string>"*)
+			grep -qF "$ours_form" "$ours_unit" 2>/dev/null && return 0
+			;;
+		*)
+			# The first word of ExecStart: followed by a space, or the whole line.
+			grep -qF "$ours_form " "$ours_unit" 2>/dev/null && return 0
+			grep -qxF "$ours_form" "$ours_unit" 2>/dev/null && return 0
+			;;
+		esac
+	done <"$TEMP_DIR/node-forms"
+	return 1
+}
+
+# unit_mentions_install says yes when the unit names a directory this run is
+# about to delete, in any form. A unit that does and still is not recognised
+# as ours is one this script cannot read — and deleting the files a registered
+# service runs from is the one outcome remove_service exists to prevent.
+unit_mentions_install() {
+	for mention_dir in "$APP_PATH" "$OTHER_APP_PATH" "$AGENTHUB_DIR"; do
+		[ -n "$mention_dir" ] || continue
+		for mention_form in "$mention_dir" "$(physical_path "$mention_dir")"; do
+			grep -qF "$mention_form/" "$(unit_file)" 2>/dev/null && return 0
+			grep -qF "$(xml_escape "$mention_form")/" "$(unit_file)" 2>/dev/null && return 0
+		done
+	done
+	return 1
 }
 
 # remove_service stops the node and removes its registration, before any file
 # it runs from is deleted: launchd and systemd both restart a node that exits,
 # and one pointed at a binary that is gone fails in a loop at every login.
 remove_service() {
+	SERVICE_OURS=0
+	if ! exists "$(unit_file)"; then
+		return 0
+	fi
+	if ! service_is_ours; then
+		if unit_mentions_install; then
+			die "$(unit_file) names a path inside this install, but not in a form this script can read as this install's agenthub-node, so nothing was removed: deleting what a registered service runs from leaves it failing at every login. Take the service down first (\"ah service uninstall\" with the ah it was registered by), then run this again."
+		fi
+		say "left the registered background service alone: $(unit_file) starts an agenthub-node that is not this install's"
+		return 0
+	fi
+	SERVICE_OURS=1
 	if [ -n "$AH" ]; then
 		if ! run "$AH" service uninstall; then
 			die "\"$AH\" service uninstall failed, so nothing else was removed: deleting the app under a registered service leaves it failing at every login. Fix that first, then run this again."
@@ -1002,23 +1116,15 @@ remove_service() {
 	fi
 	# No ah anywhere, which is an install half-removed by hand. The unit is
 	# still where `ah service install` wrote it; take it down the same way.
+	uninstall_unit="$(unit_file)"
 	case "$OS_SLUG" in
-	darwin)
-		uninstall_unit="$HOME/Library/LaunchAgents/local.agenthub.node.plist"
-		if exists "$uninstall_unit"; then
-			run launchctl bootout "gui/$(id -u)/local.agenthub.node" || true
-			remove_path "$uninstall_unit"
-		fi
-		;;
-	linux)
-		uninstall_unit="$HOME/.config/systemd/user/agenthub-node.service"
-		if exists "$uninstall_unit"; then
-			run systemctl --user disable --now agenthub-node.service || true
-			remove_path "$uninstall_unit"
-			run systemctl --user daemon-reload || true
-		fi
-		;;
+	darwin) run launchctl bootout "gui/$(id -u)/local.agenthub.node" || true ;;
+	linux) run systemctl --user disable --now agenthub-node.service || true ;;
 	esac
+	remove_path "$uninstall_unit"
+	if [ "$OS_SLUG" = "linux" ]; then
+		run systemctl --user daemon-reload || true
+	fi
 }
 
 # stop_window_node stops a node the desktop window started on its own (it does
@@ -1027,11 +1133,13 @@ remove_service() {
 # path of this install's binary, so no other agenthub-node is touched.
 stop_window_node() {
 	command -v pkill >/dev/null 2>&1 || return 0
-	for window_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
+	for window_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" \
+		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/agenthub-node}" \
+		"$AGENTHUB_DIR/agenthub-node" "$AGENTHUB_DIR/agenthub-desktop"; do
 		[ -n "$window_node" ] || continue
 		if pgrep -f "$window_node" >/dev/null 2>&1; then
 			run pkill -f "$window_node" || true
-			say "stopped the node started from $window_node"
+			say "stopped $window_node"
 		fi
 	done
 }
@@ -1043,6 +1151,10 @@ stop_window_node() {
 unpath_file() { # unpath_file <file>
 	[ -f "$1" ] || return 0
 	grep -qF "$PATH_MARK" "$1" 2>/dev/null || return 0
+	if ! grep -qxF "$PATH_MARK" "$1" 2>/dev/null; then
+		warn "$1 mentions \"$PATH_MARK\" but not as the line this script writes; left it as it is"
+		return 0
+	fi
 	case "$1" in
 	*/fish/conf.d/agenthub.fish)
 		# The whole file is this script's.
@@ -1107,6 +1219,15 @@ log_directory() {
 # ./data in a checkout, or a checkout itself, which is also a directory called
 # agenthub — takes only its own files with it.
 purge_data() {
+	# The data a registered service belongs to is only this install's to
+	# delete when the service is. A --prefix run with no service of its own
+	# would otherwise take the default directory, which is the real node's.
+	if [ "$SERVICE_OURS" -eq 0 ] && { [ -n "$PREFIX" ] || [ "$SERVICE_FOUND" -eq 1 ]; }; then
+		say "left the node's identity and database alone: the node they belong to is not this install's"
+		PURGED=0
+		return 0
+	fi
+	PURGED=1
 	purge_dir="$(data_directory)"
 	if [ "$SERVICE_READ" -eq 0 ]; then
 		warn "the registered service could not be read, so a database kept somewhere other than $(default_data_directory) was not looked for"
@@ -1122,6 +1243,30 @@ purge_data() {
 	remove_path "$(log_directory)"
 }
 
+# is_install_tree says yes to a directory that is an unpacked AgentHub tree and
+# not a place that merely has one in it: the two binaries at its top level, and
+# none of the directories install refuses to use. holds_agenthub is looser on
+# purpose — it recognises a prefix — and a source checkout, which has bin/ah,
+# passes it.
+is_install_tree() { # is_install_tree <directory>
+	tree_dir="$(absolute_path "$1")"
+	tree_home="$(absolute_path "$HOME")"
+	[ "$tree_dir" != "/" ] || return 1
+	[ "$tree_dir" != "$tree_home" ] || return 1
+	case "$tree_home" in "$tree_dir"/*) return 1 ;; esac
+	# A checkout with both binaries built at its root (`go build ./cmd/ah`)
+	# has them too; its go.mod or .git says what it is.
+	if exists "$tree_dir/go.mod" || exists "$tree_dir/.git"; then
+		return 1
+	fi
+	[ -f "$tree_dir/ah" ] && [ -f "$tree_dir/agenthub-node" ]
+}
+
+# looks_like_app says yes to an AgentHub app bundle.
+looks_like_app() { # looks_like_app <path>
+	exists "$1/Contents/MacOS/ah" || exists "$1/Contents/MacOS/desktop"
+}
+
 uninstall() {
 	TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agenthub-uninstall.XXXXXX")"
 	trap cleanup EXIT INT TERM HUP
@@ -1133,40 +1278,67 @@ uninstall() {
 	# how the tests run, that is the developer's own app. Emptied here, it
 	# matches nothing: no ah is taken from it, no link counts as pointing into
 	# it, no process is matched by it and nothing under it is removed.
+	OTHER_APP_PATH=""
 	if [ "$OS_SLUG" != "darwin" ]; then
 		APP_PATH=""
+	elif [ -z "$PREFIX" ]; then
+		# Install picks /Applications when it is writable and ~/Applications
+		# when it is not, and that can change between the install and now (an
+		# account made admin). Both are looked at, so the app is found where it
+		# is rather than where it would go today.
+		OTHER_APP_PATH="$HOME/Applications/agenthub-desktop.app"
+		if [ "$OTHER_APP_PATH" = "$APP_PATH" ]; then
+			OTHER_APP_PATH="${AGENTHUB_APPLICATIONS:-/Applications}/agenthub-desktop.app"
+		fi
 	fi
 
 	AH="$(uninstall_ah)"
+	SERVICE_FOUND=0
+	exists "$(unit_file)" && SERVICE_FOUND=1
+	SERVICE_READ=0
+	SERVICE_DB=""
 	# Read before the service goes: the unit is the only record of a database
 	# kept somewhere other than the default, and --purge needs to know where.
-	read_service_registration
-	if [ -n "$APP_PATH" ] && [ -f "$APP_PATH/Contents/Info.plist" ]; then
-		uninstall_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Contents/Info.plist" 2>/dev/null || true)"
-		[ -z "$uninstall_bundle_id" ] || BUNDLE_ID="$uninstall_bundle_id"
+	# Only through this install's own ah, and only for a unit that is ours.
+	if [ -n "$AH" ] && service_is_ours; then
+		read_service_registration
+	elif [ "$SERVICE_FOUND" -eq 0 ]; then
+		SERVICE_READ=1
 	fi
+	for uninstall_app in "$APP_PATH" "$OTHER_APP_PATH"; do
+		if [ -n "$uninstall_app" ] && looks_like_app "$uninstall_app" && [ -f "$uninstall_app/Contents/Info.plist" ]; then
+			uninstall_bundle_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$uninstall_app/Contents/Info.plist" 2>/dev/null || true)"
+			[ -z "$uninstall_bundle_id" ] || BUNDLE_ID="$uninstall_bundle_id"
+		fi
+	done
 
 	remove_service
 	if [ "$OS_SLUG" = "darwin" ]; then
-		quit_running_app
+		for uninstall_app in "$APP_PATH" "$OTHER_APP_PATH"; do
+			[ -n "$uninstall_app" ] || continue
+			QUIT_APP_PATH="$uninstall_app"
+			quit_running_app
+		done
 	fi
 	stop_window_node
 
 	for uninstall_name in ah agenthub-node agenthub-mcp agenthub-desktop; do
 		remove_link "$uninstall_name"
 	done
-	if [ -z "$APP_PATH" ]; then
-		:
-	elif exists "$APP_PATH/Contents/MacOS/ah" || exists "$APP_PATH/Contents/MacOS/desktop"; then
-		remove_path "$APP_PATH"
-	elif exists "$APP_PATH"; then
-		say "left $APP_PATH alone: it does not look like the AgentHub app"
-	fi
+	for uninstall_app in "$APP_PATH" "$OTHER_APP_PATH"; do
+		if [ -z "$uninstall_app" ]; then
+			:
+		elif looks_like_app "$uninstall_app"; then
+			remove_path "$uninstall_app"
+		elif exists "$uninstall_app"; then
+			say "left $uninstall_app alone: it does not look like the AgentHub app"
+		fi
+	done
 	if [ -d "$AGENTHUB_DIR" ]; then
-		if holds_agenthub "$AGENTHUB_DIR" && [ "$(absolute_path "$AGENTHUB_DIR")" != "$(absolute_path "$HOME")" ]; then
+		if is_install_tree "$AGENTHUB_DIR"; then
 			remove_path "$AGENTHUB_DIR"
 		else
-			say "left $AGENTHUB_DIR alone: it holds no AgentHub install"
+			say "left $AGENTHUB_DIR alone: it is not an unpacked AgentHub install"
 		fi
 	fi
 	if [ -n "$PREFIX" ]; then
@@ -1184,32 +1356,58 @@ uninstall() {
 		say "left $uninstall_skill alone: it is not a copy this script installed"
 	fi
 
+	# The menu entry is this install's when it launches this install's app;
+	# one written by a --prefix install and one by the real install share the
+	# same file name.
 	uninstall_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/agenthub.desktop"
-	if [ -f "$uninstall_entry" ] && grep -q '^StartupWMClass=agenthub-desktop$' "$uninstall_entry" 2>/dev/null; then
+	# Entries from before Exec= was quoted spell it bare.
+	if [ -f "$uninstall_entry" ] && { grep -qxF "Exec=\"$AGENTHUB_DIR/agenthub-desktop\"" "$uninstall_entry" 2>/dev/null ||
+		grep -qxF "Exec=$AGENTHUB_DIR/agenthub-desktop" "$uninstall_entry" 2>/dev/null; }; then
 		remove_path "$uninstall_entry"
+	elif [ -f "$uninstall_entry" ]; then
+		say "left $uninstall_entry alone: it launches some other AgentHub install"
 	fi
 
-	for uninstall_rc in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bash_profile" "$HOME/.bash_login" \
+	# A --prefix install never writes a startup file or has caches of its own
+	# (they are named by bundle id, and the real install's are the same ones),
+	# so a --prefix uninstall leaves both alone.
+	[ -n "$PREFIX" ] || for uninstall_rc in "${ZDOTDIR:-$HOME}/.zshrc" "$HOME/.bash_profile" "$HOME/.bash_login" \
 		"$HOME/.profile" "$HOME/.bashrc" "${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/agenthub.fish"; do
 		unpath_file "$uninstall_rc"
 	done
 
-	if [ "$OS_SLUG" = "darwin" ]; then
+	if [ "$OS_SLUG" = "darwin" ] && [ -z "$PREFIX" ]; then
 		for uninstall_cache in "Caches/$BUNDLE_ID" "WebKit/$BUNDLE_ID" "HTTPStorages/$BUNDLE_ID" \
 			"Preferences/$BUNDLE_ID.plist" "Saved Application State/$BUNDLE_ID.savedState"; do
 			remove_path "$HOME/Library/$uninstall_cache"
 		done
 	fi
 
+	PURGED=0
+	PURGE_SKIPPED=0
 	if [ "$PURGE" -eq 1 ]; then
+		purge_before="$REMOVE_SKIPPED"
 		purge_data
+		[ "$REMOVE_SKIPPED" = "$purge_before" ] || PURGE_SKIPPED=1
 	fi
 
 	say ""
-	say "done. AgentHub is uninstalled."
-	if [ "$PURGE" -eq 1 ]; then
+	if [ "$DRY_RUN" -eq 1 ]; then
+		say "dry run: the commands above are what --uninstall would run; nothing was removed."
+		return 0
+	fi
+	if [ -n "$REMOVE_SKIPPED" ]; then
+		say "done, except for what could not be removed (see the warnings above):$REMOVE_SKIPPED"
+	else
+		say "done. AgentHub is uninstalled."
+	fi
+	if [ "$PURGED" -eq 1 ] && [ "$PURGE_SKIPPED" -eq 1 ]; then
+		say "Some of what --purge was asked to delete is still there (see the warnings above)."
+	elif [ "$PURGED" -eq 1 ]; then
 		say "The node's identity and database are deleted too; installing again makes a new node,"
 		say "so machines paired with this one need to pair again."
+	elif [ "$PURGE" -eq 1 ]; then
+		say "Kept: the node's identity and database, which belong to a node that is not this install's (see above)."
 	else
 		say "Kept: the node's identity and database in $(data_directory), and its logs."
 		say "Installing again brings the same node back with its pairings. To delete them as well:"

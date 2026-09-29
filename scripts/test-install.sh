@@ -25,7 +25,9 @@ installer="$repository/install.sh"
 }
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/agenthub-install-test.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+# u+w first: a case below makes a directory read-only, and a harness that
+# fails before undoing it would otherwise leave it behind in TMPDIR.
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT
 
 # install.sh puts a Claude Code skill under ${CLAUDE_CONFIG_DIR:-$HOME/.claude},
 # and several runs below install for real without a HOME of their own. Pointed
@@ -683,7 +685,7 @@ fi
 unset AGENTHUB_HOME
 commands_only "$work/guard-agenthub-home.txt" "$work/guard-agenthub-home.cmds"
 contains agenthub-home "$work/guard-agenthub-home.txt" "holds no AgentHub install"
-lacks agenthub-home "$work/guard-agenthub-home.cmds" "rm"
+lacks agenthub-home "$work/guard-agenthub-home.cmds" "+ rm "
 
 echo "== HOME unset is a message, not an unbound variable =="
 checks=$((checks + 1))
@@ -730,7 +732,16 @@ checks=$((checks + 1))
 # appends to is the owner's real one otherwise — and a PATH that cannot already
 # hold that HOME's bin directory.
 echo "== a default install puts ~/.local/bin on PATH =="
-bare_path="/usr/bin:/bin:/usr/sbin:/sbin"
+# systemctl and launchctl are shims on every PATH built from this: an
+# uninstall that finds a unit with no ah left takes it down with them, and the
+# machine running these tests has a real user manager of its own.
+svc_shim="$work/svc-shim"
+mkdir -p "$svc_shim"
+for manager in systemctl launchctl; do
+	printf '#!/bin/sh\necho "%s $*" >>"%s"\n' "$manager" "$work/svc-shim.log" >"$svc_shim/$manager"
+	chmod +x "$svc_shim/$manager"
+done
+bare_path="$svc_shim:/usr/bin:/bin:/usr/sbin:/sbin"
 path_home="$work/path-home"
 mkdir -p "$path_home"
 # shellcheck disable=SC2016 # the literal line the installer writes
@@ -872,6 +883,25 @@ EOF
 	chmod +x "$1"
 }
 
+# make_unit writes the registration `ah service install` would, starting
+# <node binary>: a launchd plist or a systemd unit, under <home>.
+make_unit() { # make_unit <home> <darwin|linux> <node binary> [db]
+	local home=$1 os=$2 node=$3 db=${4:-}
+	if [ "$os" = darwin ]; then
+		mkdir -p "$home/Library/LaunchAgents"
+		{
+			printf '<plist version="1.0">\n<dict>\n\t<key>ProgramArguments</key>\n\t<array>\n'
+			printf '\t\t<string>%s</string>\n' "$node"
+			[ -z "$db" ] || printf '\t\t<string>--db</string>\n\t\t<string>%s</string>\n' "$db"
+			printf '\t</array>\n</dict>\n</plist>\n'
+		} >"$home/Library/LaunchAgents/local.agenthub.node.plist"
+	else
+		mkdir -p "$home/.config/systemd/user"
+		printf '[Service]\nExecStart=%s%s\n' "$node" "${db:+ --db $db}" \
+			>"$home/.config/systemd/user/agenthub-node.service"
+	fi
+}
+
 echo "== --uninstall takes back what a real install put in place =="
 un_home="$work/un-home"
 mkdir -p "$un_home/.local/bin"
@@ -888,6 +918,7 @@ checks=$((checks + 1))
 un_run "$work/un-install.txt" --from "$good/agenthub-desktop_v0.1.0_linux_amd64.tar.gz" --no-service ||
 	fail "un: the install failed: $(cat "$work/un-install.txt")"
 uninstall_ah_script "$un_home/.local/share/agenthub/ah" "$work/un-ah.log" "$un_home/.config/agenthub/agenthub.db" 0
+make_unit "$un_home" linux "$un_home/.local/share/agenthub/agenthub-node" "$un_home/.config/agenthub/agenthub.db"
 mkdir -p "$un_home/.config/agenthub" "$un_home/.local/state/agenthub"
 echo key >"$un_home/.config/agenthub/node.key"
 echo db >"$un_home/.config/agenthub/agenthub.db"
@@ -913,6 +944,11 @@ checks=$((checks + 1))
 contains un "$work/un.txt" "--uninstall --purge"
 contains un "$work/un.txt" "ah revoke"
 checks=$((checks + 1))
+[ -x "$fake_applications/agenthub-desktop.app/Contents/MacOS/ah" ] || fail "un: a Linux uninstall removed a macOS app bundle"
+checks=$((checks + 1))
+[ ! -e "$work/fake-app-ah.log" ] || fail "un: a Linux uninstall ran the ah inside a macOS app bundle: $(cat "$work/fake-app-ah.log")"
+# With nothing installed and no service left, --purge takes the default data.
+checks=$((checks + 1))
 un_run "$work/un-purge.txt" --uninstall --purge || fail "un-purge: failed: $(cat "$work/un-purge.txt")"
 for gone in .config/agenthub .local/state/agenthub; do
 	checks=$((checks + 1))
@@ -921,22 +957,35 @@ done
 contains un-purge "$work/un-purge.txt" "installing again makes a new node"
 lacks un-purge "$work/un-purge.txt" "/Applications"
 
-checks=$((checks + 1))
-[ -x "$fake_applications/agenthub-desktop.app/Contents/MacOS/ah" ] || fail "un: a Linux uninstall removed a macOS app bundle"
-checks=$((checks + 1))
-[ ! -e "$work/fake-app-ah.log" ] || fail "un: a Linux uninstall ran the ah inside a macOS app bundle: $(cat "$work/fake-app-ah.log")"
+# tree_at puts a minimal unpacked install at <dir>: the two binaries
+# is_install_tree asks for, with <dir>/ah the given fake.
+tree_at() { # tree_at <dir> <log> <db> <status>
+	mkdir -p "$1"
+	uninstall_ah_script "$1/ah" "$2" "$3" "$4"
+	printf '#!/bin/sh\n' >"$1/agenthub-node"
+	chmod +x "$1/agenthub-node"
+}
+
+# mac_bundle puts a minimal AgentHub.app at <app path>, its ah the given fake.
+mac_bundle() { # mac_bundle <app path> <log>
+	mkdir -p "$1/Contents/MacOS"
+	uninstall_ah_script "$1/Contents/MacOS/ah" "$2" "" 0
+	printf '#!/bin/sh\n' >"$1/Contents/MacOS/agenthub-node"
+}
 
 echo "== --purge of a database outside the default takes only its files =="
 checkout="$work/checkout/agenthub"
-mkdir -p "$checkout" "$work/purge-home" "$work/purge-shim"
+purge_home="$work/purge-home"
+mkdir -p "$checkout"
 echo key >"$checkout/node.key"
 echo db >"$checkout/agenthub.db"
 echo db >"$checkout/agenthub.db-wal"
 echo mine >"$checkout/README.md"
-uninstall_ah_script "$work/purge-shim/ah" "$work/purge-ah.log" "$checkout/agenthub.db" 0
+tree_at "$purge_home/.local/share/agenthub" "$work/purge-ah.log" "$checkout/agenthub.db" 0
+make_unit "$purge_home" linux "$purge_home/.local/share/agenthub/agenthub-node" "$checkout/agenthub.db"
 checks=$((checks + 1))
-PATH="$work/purge-shim:$linux_shim:$bare_path" SHELL=/bin/bash \
-	isolated "$work/purge-home" sh "$installer" --uninstall --purge >"$work/purge.txt" 2>&1 || fail "purge: failed: $(cat "$work/purge.txt")"
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$purge_home" sh "$installer" --uninstall --purge >"$work/purge.txt" 2>&1 || fail "purge: failed: $(cat "$work/purge.txt")"
 for gone in node.key agenthub.db agenthub.db-wal; do
 	checks=$((checks + 1))
 	[ ! -e "$checkout/$gone" ] || fail "purge: $gone is still there"
@@ -944,10 +993,223 @@ done
 checks=$((checks + 1))
 [ -f "$checkout/README.md" ] || fail "purge: a file of the owner's beside the database was deleted"
 
+echo "== a service that is not this install's is left running =="
+# The owner's own node, registered from a source checkout's bin/ah, while an
+# install from this script is being removed: one registration per user, and it
+# is not this install's to take down — nor is its data --purge's to delete.
+foreign_home="$work/foreign-home"
+tree_at "$foreign_home/.local/share/agenthub" "$work/foreign-ah.log" "" 0
+make_unit "$foreign_home" linux "$work/src/agenthub/bin/agenthub-node"
+mkdir -p "$foreign_home/.config/agenthub"
+echo key >"$foreign_home/.config/agenthub/node.key"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$foreign_home" sh "$installer" --uninstall --purge >"$work/foreign.txt" 2>&1 || fail "foreign: failed: $(cat "$work/foreign.txt")"
+: >>"$work/foreign-ah.log"
+lacks foreign "$work/foreign-ah.log" "service uninstall"
+contains foreign "$work/foreign.txt" "left the registered background service alone"
+contains foreign "$work/foreign.txt" "left the node's identity and database alone"
+lacks foreign "$work/foreign.txt" "sh -s -- --uninstall --purge"
+checks=$((checks + 1))
+[ -f "$foreign_home/.config/systemd/user/agenthub-node.service" ] || fail "foreign: the owner's unit was removed"
+checks=$((checks + 1))
+[ -f "$foreign_home/.config/agenthub/node.key" ] || fail "foreign: --purge deleted the data of a node that is not this install's"
+checks=$((checks + 1))
+! exists_path "$foreign_home/.local/share/agenthub" || fail "foreign: this install's own tree was not removed"
+
+echo "== an ah on PATH is never the one that takes a service down =="
+path_ah_home="$work/path-ah-home"
+mkdir -p "$path_ah_home" "$work/path-ah-shim"
+uninstall_ah_script "$work/path-ah-shim/ah" "$work/path-ah.log" "" 0
+make_unit "$path_ah_home" linux "$work/src/agenthub/bin/agenthub-node"
+checks=$((checks + 1))
+PATH="$work/path-ah-shim:$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$path_ah_home" sh "$installer" --uninstall >"$work/path-ah.txt" 2>&1 || fail "path-ah: failed: $(cat "$work/path-ah.txt")"
+checks=$((checks + 1))
+[ ! -e "$work/path-ah.log" ] || fail "path-ah: the ah on PATH was run: $(cat "$work/path-ah.log")"
+
+echo "== AGENTHUB_HOME at a directory that is not an install is left alone =="
+# A source checkout has bin/ah, which holds_agenthub counts as an install.
+not_tree="$work/src-checkout"
+mkdir -p "$not_tree/bin" "$work/not-tree-home"
+echo src >"$not_tree/bin/ah"
+echo mine >"$not_tree/go.mod"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$not_tree" \
+	isolated "$work/not-tree-home" sh "$installer" --uninstall >"$work/not-tree.txt" 2>&1 || fail "not-tree: failed: $(cat "$work/not-tree.txt")"
+contains not-tree "$work/not-tree.txt" "left $not_tree alone"
+checks=$((checks + 1))
+[ -f "$not_tree/go.mod" ] || fail "not-tree: the checkout was removed"
+
+echo "== with no ah left, this install's unit is taken down directly =="
+# An install half-removed by hand: the tree's ah is gone, the unit is not.
+# systemctl is a shim, so the runner's own user manager is never asked.
+orphan_home="$work/orphan-home"
+mkdir -p "$orphan_home/.local/share/agenthub" "$work/orphan-shim"
+printf '#!/bin/sh\n' >"$orphan_home/.local/share/agenthub/agenthub-node"
+make_unit "$orphan_home" linux "$orphan_home/.local/share/agenthub/agenthub-node"
+printf '#!/bin/sh\necho "systemctl $*" >>"%s"\n' "$work/orphan-systemctl.log" >"$work/orphan-shim/systemctl"
+chmod +x "$work/orphan-shim/systemctl"
+# An ah on PATH is someone else's (a source build): even for a unit that is
+# ours, it is not the one to run.
+uninstall_ah_script "$work/orphan-shim/ah" "$work/orphan-path-ah.log" "" 0
+checks=$((checks + 1))
+PATH="$work/orphan-shim:$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$orphan_home" sh "$installer" --uninstall >"$work/orphan.txt" 2>&1 || fail "orphan: failed: $(cat "$work/orphan.txt")"
+contains orphan "$work/orphan-systemctl.log" "systemctl --user disable --now agenthub-node.service"
+checks=$((checks + 1))
+! exists_path "$orphan_home/.config/systemd/user/agenthub-node.service" || fail "orphan: the unit is still there"
+checks=$((checks + 1))
+[ ! -e "$work/orphan-path-ah.log" ] || fail "orphan: the ah on PATH was run: $(cat "$work/orphan-path-ah.log")"
+
+echo "== the unit is recognised however the path to this install is spelled =="
+# The unit holds the path the node runs from as os.Executable reports it:
+# symlinks resolved, no doubled or trailing slash. AGENTHUB_HOME here is a
+# link to the tree with a trailing slash, and the unit names the real place.
+spelled_home="$work/spelled-home"
+spelled_real="$work/spelled-real/agenthub"
+tree_at "$spelled_real" "$work/spelled-ah.log" "" 0
+mkdir -p "$spelled_home"
+ln -s "$spelled_real" "$work/spelled-link"
+make_unit "$spelled_home" linux "$(cd -P "$spelled_real" && pwd -P)/agenthub-node"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$work/spelled-link/" \
+	isolated "$spelled_home" sh "$installer" --uninstall >"$work/spelled.txt" 2>&1 || fail "spelled: failed: $(cat "$work/spelled.txt")"
+contains spelled "$work/spelled-ah.log" "service uninstall"
+lacks spelled "$work/spelled.txt" "left the registered background service alone"
+
+echo "== escaped spellings: launchd XML and systemd quoting =="
+# launchd: xml.EscapeText, so an apostrophe is &#39;. systemd: % doubled, and
+# a path with a space or $ quoted with $ doubled (internal/service systemdQuote).
+xml_home="$work/xml-home"
+xml_pfx="$work/o'b\"r	x pfx"
+mac_bundle "$xml_pfx/agenthub-desktop.app" "$work/xml-ah.log"
+mkdir -p "$xml_home/Library/LaunchAgents"
+printf '<plist>\n\t<array>\n\t\t<string>%s</string>\n\t</array>\n</plist>\n' \
+	"$work/o&#39;b&#34;r&#x9;x pfx/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
+	>"$xml_home/Library/LaunchAgents/local.agenthub.node.plist"
+checks=$((checks + 1))
+PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+	isolated "$xml_home" sh "$installer" --uninstall --prefix "$xml_pfx" >"$work/xml.txt" 2>&1 || fail "xml: failed: $(cat "$work/xml.txt")"
+contains xml "$work/xml-ah.log" "service uninstall"
+# The same escaped path, but not as the program: unit_mentions_install must
+# still see it and stop before the app a live service runs from is deleted.
+xml2_home="$work/xml2-home"
+mac_bundle "$xml_pfx/agenthub-desktop.app" "$work/xml2-ah.log"
+mkdir -p "$xml2_home/Library/LaunchAgents"
+# One <string> holding the program and a flag: not a form service_is_ours
+# reads, still a mention of the install.
+printf '<plist>\n\t<array>\n\t\t<string>%s --verbose</string>\n\t</array>\n</plist>\n' \
+	"$work/o&#39;b&#34;r&#x9;x pfx/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
+	>"$xml2_home/Library/LaunchAgents/local.agenthub.node.plist"
+checks=$((checks + 1))
+if PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+	isolated "$xml2_home" sh "$installer" --uninstall --prefix "$xml_pfx" >"$work/xml2.txt" 2>&1; then
+	fail "xml2: an escaped unit naming this install was carried past"
+fi
+contains xml2 "$work/xml2.txt" "nothing was removed"
+checks=$((checks + 1))
+[ -d "$xml_pfx/agenthub-desktop.app" ] || fail "xml2: the app a registered service runs from was deleted"
+sd_home="$work/sd-home"
+sd_tree="$work/pct%dir \$x/agenthub"
+tree_at "$sd_tree" "$work/sd-ah.log" "" 0
+mkdir -p "$sd_home/.config/systemd/user"
+printf '[Service]\nExecStart="%s/agenthub-node" --db x\n' "$(printf '%s' "$sd_tree" | sed 's/%/%%/g; s/\$/$$/g')" \
+	>"$sd_home/.config/systemd/user/agenthub-node.service"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$sd_tree" \
+	isolated "$sd_home" sh "$installer" --uninstall >"$work/sd.txt" 2>&1 || fail "sd: failed: $(cat "$work/sd.txt")"
+contains sd "$work/sd-ah.log" "service uninstall"
+checks=$((checks + 1))
+! exists_path "$sd_tree" || fail "sd: the tree is still there"
+
+echo "== a unit that names this install but cannot be read stops the uninstall =="
+unread_home="$work/unread-home"
+tree_at "$unread_home/.local/share/agenthub" "$work/unread-ah.log" "" 0
+mkdir -p "$unread_home/.config/systemd/user"
+printf '[Service]\nExecStart=/usr/bin/env %s\n' "$unread_home/.local/share/agenthub/agenthub-node" \
+	>"$unread_home/.config/systemd/user/agenthub-node.service"
+checks=$((checks + 1))
+if PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$unread_home" sh "$installer" --uninstall >"$work/unread.txt" 2>&1; then
+	fail "unread: an unreadable unit naming this install was carried past"
+fi
+contains unread "$work/unread.txt" "nothing was removed"
+checks=$((checks + 1))
+[ -x "$unread_home/.local/share/agenthub/ah" ] || fail "unread: the tree a registered service runs from was deleted"
+
+echo "== a checkout with both binaries built at its root is not an install =="
+built="$work/built-checkout"
+tree_at "$built" "$work/built-ah.log" "" 0
+echo "module x" >"$built/go.mod"
+mkdir -p "$work/built-home"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$built" \
+	isolated "$work/built-home" sh "$installer" --uninstall >"$work/built.txt" 2>&1 || fail "built: failed: $(cat "$work/built.txt")"
+checks=$((checks + 1))
+[ -f "$built/go.mod" ] || fail "built: the checkout was removed"
+
+git_checkout="$work/git-checkout"
+tree_at "$git_checkout" "$work/git-ah.log" "" 0
+mkdir -p "$git_checkout/.git"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$git_checkout" 	isolated "$work/built-home" sh "$installer" --uninstall >"$work/git-built.txt" 2>&1 || fail "git-built: failed: $(cat "$work/git-built.txt")"
+checks=$((checks + 1))
+[ -d "$git_checkout/.git" ] || fail "git-built: the checkout was removed"
+
+echo "== an app in an Applications this account cannot write is a warning =="
+# The app went to ~/Applications at install time... or another administrator
+# put one in /Applications. Either way it is looked at, and a directory this
+# account cannot write stops nothing else. Root writes anyway, so not as root.
+if [ "$(id -u)" -ne 0 ]; then
+	ro_apps_home="$work/ro-apps-home"
+	ro_apps="$work/ro-Applications"
+	mac_bundle "$ro_apps/agenthub-desktop.app" "$work/ro-apps-ah.log"
+	mkdir -p "$ro_apps_home"
+	chmod 555 "$ro_apps"
+	checks=$((checks + 1))
+	PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh 		isolated "$ro_apps_home" env AGENTHUB_APPLICATIONS="$ro_apps" sh "$installer" --uninstall >"$work/ro-apps.txt" 2>&1 ||
+		fail "ro-apps: a directory it cannot write ended the uninstall: $(cat "$work/ro-apps.txt")"
+	contains ro-apps "$work/ro-apps.txt" "could not remove $ro_apps/agenthub-desktop.app"
+	contains ro-apps "$work/ro-apps.txt" "done, except for what could not be removed"
+	lacks ro-apps "$work/ro-apps.txt" "done. AgentHub is uninstalled."
+	chmod 755 "$ro_apps"
+fi
+
+echo "== an old unquoted menu entry is still this install's =="
+old_entry_home="$work/old-entry-home"
+tree_at "$old_entry_home/.local/share/agenthub" "$work/old-entry-ah.log" "" 0
+mkdir -p "$old_entry_home/.local/share/applications"
+printf '[Desktop Entry]\nExec=%s\nStartupWMClass=agenthub-desktop\n' "$old_entry_home/.local/share/agenthub/agenthub-desktop" \
+	>"$old_entry_home/.local/share/applications/agenthub.desktop"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$old_entry_home" sh "$installer" --uninstall >"$work/old-entry.txt" 2>&1 || fail "old-entry: failed: $(cat "$work/old-entry.txt")"
+checks=$((checks + 1))
+! exists_path "$old_entry_home/.local/share/applications/agenthub.desktop" || fail "old-entry: the unquoted entry was left"
+
+echo "== a marker that is not the installer's line is left, dry run or not =="
+odd_home="$work/odd-home"
+mkdir -p "$odd_home"
+# shellcheck disable=SC2016 # literal startup-file lines
+printf 'alias keep=1\n#  # added by the AgentHub installer (old note)\nexport PATH="$HOME/bin:$PATH"' >"$odd_home/.bashrc"
+cp "$odd_home/.bashrc" "$work/odd-bashrc.before"
+for odd_mode in --dry-run ""; do
+	checks=$((checks + 1))
+	# shellcheck disable=SC2086 # the empty mode is meant to vanish
+	PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+		isolated "$odd_home" sh "$installer" --uninstall $odd_mode >"$work/odd.txt" 2>&1 || fail "odd: failed: $(cat "$work/odd.txt")"
+	contains "odd$odd_mode" "$work/odd.txt" "not as the line this script writes; left it as it is"
+	lacks "odd$odd_mode" "$work/odd.txt" "remove the AgentHub PATH lines"
+	lacks "odd$odd_mode" "$work/odd.txt" "removed the AgentHub PATH lines"
+	checks=$((checks + 1))
+	cmp -s "$odd_home/.bashrc" "$work/odd-bashrc.before" || fail "odd$odd_mode: .bashrc was rewritten"
+done
+
 echo "== a service that will not come down stops the uninstall =="
 refuse_home="$work/refuse-home"
-mkdir -p "$refuse_home/.local/share/agenthub" "$work/refuse-shim"
-uninstall_ah_script "$refuse_home/.local/share/agenthub/ah" "$work/refuse-ah.log" "" 1
+tree_at "$refuse_home/.local/share/agenthub" "$work/refuse-ah.log" "" 1
+make_unit "$refuse_home" linux "$refuse_home/.local/share/agenthub/agenthub-node"
 checks=$((checks + 1))
 if PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
 	isolated "$refuse_home" sh "$installer" --uninstall >"$work/refuse.txt" 2>&1; then
@@ -957,41 +1219,92 @@ contains refuse "$work/refuse.txt" "nothing else was removed"
 checks=$((checks + 1))
 [ -x "$refuse_home/.local/share/agenthub/ah" ] || fail "refuse: the install was deleted under a registered service"
 
-echo "== --uninstall on macOS: the app, its links and its caches =="
+echo "== --uninstall on macOS finds the app in either Applications =="
+# /Applications is where install goes when it can write there, ~/Applications
+# otherwise; an account made admin since the install changes which one that is.
 mac_home="$work/mac-home"
-mac_pfx="$work/mac-pfx"
-mkdir -p "$mac_pfx/agenthub-desktop.app/Contents/MacOS" "$mac_pfx/bin" \
-	"$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences"
-touch "$mac_pfx/.agenthub-install" "$mac_home/Library/Preferences/com.wails.agenthub-desktop.plist"
-uninstall_ah_script "$mac_pfx/agenthub-desktop.app/Contents/MacOS/ah" "$work/mac-ah.log" "" 0
-ln -s "$mac_pfx/agenthub-desktop.app/Contents/MacOS/ah" "$mac_pfx/bin/ah"
+mac_apps="$work/mac-Applications"
+mac_bundle "$mac_apps/agenthub-desktop.app" "$work/mac-ah.log"
+mac_bundle "$mac_home/Applications/agenthub-desktop.app" "$work/mac-home-ah.log"
+mkdir -p "$mac_home/.local/bin" "$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences"
+touch "$mac_home/Library/Preferences/com.wails.agenthub-desktop.plist"
+ln -s "$mac_home/Applications/agenthub-desktop.app/Contents/MacOS/ah" "$mac_home/.local/bin/ah"
+make_unit "$mac_home" darwin "$mac_home/Applications/agenthub-desktop.app/Contents/MacOS/agenthub-node"
+# shellcheck disable=SC2016 # the literal lines the installer writes
+printf 'alias keep=1\n\n# added by the AgentHub installer\nexport PATH="$HOME/.local/bin:$PATH"\n' >"$mac_home/.zshrc"
+printf 'alias keep=1\n' >"$work/mac-zshrc.after"
+cp "$mac_home/.zshrc" "$work/mac-zshrc.before"
 mac_un() { # mac_un <output file> [args...]
 	local out=$1
 	shift
 	PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
-		isolated "$mac_home" sh "$installer" --uninstall --prefix "$mac_pfx" "$@" >"$out" 2>&1
+		isolated "$mac_home" env AGENTHUB_APPLICATIONS="$mac_apps" sh "$installer" --uninstall "$@" >"$out" 2>&1
 }
 checks=$((checks + 1))
 mac_un "$work/mac-dry.txt" --dry-run || fail "mac-dry: failed: $(cat "$work/mac-dry.txt")"
 commands_only "$work/mac-dry.txt" "$work/mac-dry.cmds"
 contains mac-dry "$work/mac-dry.cmds" "service uninstall"
-contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_pfx/agenthub-desktop.app"
-contains mac-dry "$work/mac-dry.cmds" "rm -f $mac_pfx/bin/ah"
+contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_apps/agenthub-desktop.app"
+contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_home/Applications/agenthub-desktop.app"
+contains mac-dry "$work/mac-dry.cmds" "rm -f $mac_home/.local/bin/ah"
 contains mac-dry "$work/mac-dry.cmds" "rm -rf $mac_home/Library/Caches/com.wails.agenthub-desktop"
+contains mac-dry "$work/mac-dry.txt" "+ remove the AgentHub PATH lines from $mac_home/.zshrc"
+contains mac-dry "$work/mac-dry.txt" "nothing was removed"
+lacks mac-dry "$work/mac-dry.txt" "removed $mac_home"
+lacks mac-dry "$work/mac-dry.txt" "done. AgentHub is uninstalled."
 lacks mac-dry "$work/mac-dry.cmds" "sudo"
+for kept in "$mac_apps/agenthub-desktop.app" "$mac_home/.local/bin/ah" "$mac_home/Library/Caches/com.wails.agenthub-desktop"; do
+	checks=$((checks + 1))
+	exists_path "$kept" || fail "mac-dry: a dry run removed $kept"
+done
 checks=$((checks + 1))
-[ -d "$mac_pfx/agenthub-desktop.app" ] || fail "mac-dry: a dry run removed the app"
-[ -L "$mac_pfx/bin/ah" ] || fail "mac-dry: a dry run removed $mac_pfx/bin/ah"
+cmp -s "$mac_home/.zshrc" "$work/mac-zshrc.before" || fail "mac-dry: a dry run rewrote .zshrc"
 # Reading the registration is what a dry run is for; taking it down is not.
 : >>"$work/mac-ah.log"
+: >>"$work/mac-home-ah.log"
 lacks mac-dry "$work/mac-ah.log" "service uninstall"
+lacks mac-dry "$work/mac-home-ah.log" "service uninstall"
 checks=$((checks + 1))
 mac_un "$work/mac.txt" || fail "mac: failed: $(cat "$work/mac.txt")"
-for gone in "$mac_pfx/agenthub-desktop.app" "$mac_pfx/bin/ah" "$mac_pfx/.agenthub-install" \
+for gone in "$mac_apps/agenthub-desktop.app" "$mac_home/Applications/agenthub-desktop.app" "$mac_home/.local/bin/ah" \
 	"$mac_home/Library/Caches/com.wails.agenthub-desktop" "$mac_home/Library/Preferences/com.wails.agenthub-desktop.plist"; do
 	checks=$((checks + 1))
 	! exists_path "$gone" || fail "mac: $gone is still there"
 done
+checks=$((checks + 1))
+cmp -s "$mac_home/.zshrc" "$work/mac-zshrc.after" || fail "mac: .zshrc is not the owner's lines alone: $(cat "$mac_home/.zshrc")"
+
+echo "== a --prefix uninstall touches nothing outside the prefix =="
+# The real install is on this HOME — its service, its data, its PATH line, its
+# caches, an ah on PATH — and the run being made is for a --prefix install.
+real_home="$work/real-home"
+real_pfx="$work/real-pfx"
+mac_bundle "$real_pfx/agenthub-desktop.app" "$work/real-pfx-ah.log"
+mkdir -p "$real_pfx/bin" "$real_home/Library/Caches/com.wails.agenthub-desktop" \
+	"$real_home/Library/Application Support/agenthub" "$real_home/Library/Logs/agenthub" "$work/real-shim"
+touch "$real_pfx/.agenthub-install"
+ln -s "$real_pfx/agenthub-desktop.app/Contents/MacOS/ah" "$real_pfx/bin/ah"
+echo key >"$real_home/Library/Application Support/agenthub/node.key"
+make_unit "$real_home" darwin "/Applications/agenthub-desktop.app/Contents/MacOS/agenthub-node"
+cp "$work/mac-zshrc.before" "$real_home/.zshrc"
+uninstall_ah_script "$work/real-shim/ah" "$work/real-path-ah.log" "" 0
+checks=$((checks + 1))
+PATH="$work/real-shim:$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+	isolated "$real_home" sh "$installer" --uninstall --purge --prefix "$real_pfx" >"$work/real-pfx.txt" 2>&1 ||
+	fail "real-pfx: failed: $(cat "$work/real-pfx.txt")"
+for gone in "$real_pfx/agenthub-desktop.app" "$real_pfx/bin/ah" "$real_pfx/.agenthub-install"; do
+	checks=$((checks + 1))
+	! exists_path "$gone" || fail "real-pfx: $gone is still there"
+done
+for kept in "Library/Application Support/agenthub/node.key" "Library/Logs/agenthub" \
+	"Library/Caches/com.wails.agenthub-desktop" "Library/LaunchAgents/local.agenthub.node.plist"; do
+	checks=$((checks + 1))
+	exists_path "$real_home/$kept" || fail "real-pfx: the real install's $kept was removed"
+done
+checks=$((checks + 1))
+cmp -s "$real_home/.zshrc" "$work/mac-zshrc.before" || fail "real-pfx: the real .zshrc was rewritten"
+checks=$((checks + 1))
+[ ! -e "$work/real-path-ah.log" ] || fail "real-pfx: the ah on PATH was run: $(cat "$work/real-path-ah.log")"
 
 echo "== --uninstall refuses the flags that do not go with it =="
 checks=$((checks + 1))
