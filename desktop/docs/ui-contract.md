@@ -66,7 +66,7 @@
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 toast |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
-| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理**動手前先重讀** `ServiceStatus()`（`loadService()`，用讀到的狀態重算；畫面上的可能是好幾分鐘前的——有選取或對話框開著時 15 秒 tick 不讀——而 `ah service install` 會取代既有註冊，照舊狀態裝等於用預設資料庫換掉節點身分），重讀失敗就跳設定頁並用錯誤 toast 說明（`service.quickReadFailed`），什麼都不做；**節點在跑但不是服務**（`state.nodeReachable` 或狀態的 `nodeAnswering`，且未安裝）不直接裝，改去設定頁的服務表單（`goToService()` 會展開它）。其餘走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問）。服務表單在「節點在跑但不是服務」時資料庫說明改為 `service.dbNoteRunningNotService`（它若是用 --db 啟動的就填那個路徑；留空＝預設資料庫＝新身分、現有配對失效），欄位空白按安裝先 `askConfirm`（`service.runningNotServiceConfirm*`，danger、焦點在取消；有填路徑不問；測試 `inline-publish.mjs` §6） |
+| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理**動手前先重讀** `ServiceStatus()`（`loadService()`，用讀到的狀態重算；畫面上的可能是好幾分鐘前的——有選取或對話框開著時 15 秒 tick 不讀——而 `ah service install` 會取代既有註冊，照舊狀態裝等於用預設資料庫換掉節點身分），重讀失敗就跳設定頁並用錯誤 toast 說明（`service.quickReadFailed`），什麼都不做；**節點在跑但不是服務**（`state.nodeReachable` 或狀態的 `nodeAnswering`，且未安裝）不直接裝，改去設定頁的服務表單（`goToService()` 會展開它）。其餘走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問）。服務表單在「節點在跑但不是服務」時資料庫說明改為 `service.dbNoteRunningNotService`（它若是用 --db 啟動的就填那個路徑，這時留空＝預設資料庫＝對它而言是新身分、現有配對失效——後半句也在這個條件裡，用預設資料庫跑的節點留空不會換身分；測試 `service-panel.mjs`），欄位空白按安裝先 `askConfirm`（`service.runningNotServiceConfirm*`，danger、焦點在取消；有填路徑不問；測試 `inline-publish.mjs` §6） |
 | `UninstallService()` | `service-uninstall` | `askConfirm`；成功後 reload |
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
@@ -76,6 +76,7 @@
 | `NodeSettings()` | 進入設定頁的節點設定區 | 讀回 `settings`（執行中）與 `saved`（存下來的）兩份；規則見 §7.8 |
 | `SaveNodeSettings(patch)` | 節點設定區的「儲存」 | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
 | `RestartService()` | 節點設定區的「重新啟動服務」；一鍵處理「已安裝但沒在跑」（`restartNode({ service: true })`：直接呼叫這個綁定，不經 `RestartNode` 在 Go 端再判一次，其餘——等節點回答、degraded 的說法——與設定頁同一份） | 走 `ah service restart`；三平台都支援——macOS `launchctl kickstart -k`、Linux `systemctl --user restart`、Windows `taskkill` 掉 node 再 `schtasks /Run` 排程工作 |
+| `RestartNode()` | 服務區的「重新啟動／啟動」（`service-restart`）、首次啟動清單的節點那一步、節點設定儲存後（沒有服務管理員時） | 已安裝服務→`RestartService()`；否則 app 自己停掉再啟動節點（`desktop/nodeprocess.go`）。**帶著原本的資料庫重啟（#205）**：節點 API 不回報資料庫路徑，所以 Go 端讀正在跑的 agenthub-node 自己的命令列（macOS `kern.procargs2`、Linux `/proc/<pid>/cmdline`、Windows WMI），照節點的旗標表解析，用同一組參數啟動新的——只拿掉節點記住的五個設定（它們正是這次重啟要套用的存檔值，帶回舊旗標會蓋掉存檔）。**停之前**就判斷，下列情況拒絕且不碰節點：讀不到命令列、同時有兩個以上 agenthub-node、`--db`／`--claude-root`／`--codex-root` 是相對路徑、資料庫檔（沒帶 `--db` 時是這個 app 環境下的預設位置）不存在、旗標表不認得的旗標、節點在回答但 `GET /v1/node` 讀不到身分。啟動後比對 node id 與指紋，不同就回錯誤（兩個 id＋把舊節點帶回來的命令），不宣稱成功。沒有任何 agenthub-node 在跑＝首次啟動，照舊不帶參數。前端**不另外問**：Go 端能保證同一資料庫才動手、不能保證就拒絕，所以 `nodeRunningNotAService` 時按重新啟動也不 `askConfirm`；拒絕的原文照 `restartNode()` 的失敗路徑放進 `service-output`，不出「已重新啟動」（測試 `service-panel.mjs`） |
 | `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（錯誤 toast `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
 | `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
@@ -170,7 +171,9 @@
 
     **背景服務一鍵處理（2026-09-29）**：按下先重讀 `ServiceStatus()`，用讀到的算；讀失敗→設定頁＋錯誤 toast，不動手。`serviceQuickAction(status)` 只看狀態——沒有狀態、有 `toolError`、`supported !== true`、
     或已安裝且在跑 → `settings`；已安裝 → `restart`；其餘 → `install`。`install` 走設定頁按鈕的 `installService()`（資料庫路徑留空），
-    `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。重讀期間按下的那顆就轉圈並停用（`busy`＋`aria-busy`＋`disabled`；待處理列的按鈕帶 `busy` 時 render 不會把它解除停用），
+    `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。重讀期間按下的那顆就轉圈並停用（`busy`＋`aria-busy`＋`disabled`；待處理列的按鈕帶 `busy` 時 render 不會把它解除停用）；
+    整個一鍵處理由模組層旗標 `serviceQuickPending` 鎖住，pill 與待處理列同時按（或同一顆連按）只跑一次，另一下直接返回，
+
     重讀回來先放開再依結果決定；重讀期間另一個寫入開始了（`state.busy`）就什麼都不做、連表單都不開（測試 `inline-publish.mjs` §6）。之後都經 `withBusy` 讓按下的那顆轉圈；結果用 toast，
     失敗（丟錯、重啟後節點沒回答、degraded）的 toast 帶「開啟設定」（`withBusy` 的 `failureActions`；它走
     `goToService({ keepForm: true })`，不重開表單——重開會清掉資料庫欄位、藏起 ah 的錯誤原文）。成功後的 `load()` 重讀
@@ -391,7 +394,9 @@
   「自訂」（`audienceFormIsCustom()`）：mode 不是 `none`，**而且**旗標不是兩個 preset 之一——
   所以已公開但全部 off 的 session 開啟即展開進階區並顯示「自訂」，而 mode `none` 一律不算自訂、不展開；換 mode radio 會重算這一句。
   **mode `none` 套用時四個旗標一律寫 false**（`readAudienceForm()`，含 `exportCwd`，與選單的「不公開」相同）：單選照樣載入現值，
-  所以勾選框可能還勾著，此時 preset 下方多一句 `audience.noneClearsFlags`（套用時四個旗標一律關掉）。
+  所以勾選框可能還勾著，此時 preset 下方多一句 `audience.noneClearsFlags`（套用時四個旗標一律關掉）；
+  mode `none` 時兩個 preset radio 都不勾（`syncAudiencePreset()`：勾著的框湊巧符合某個 preset 也不勾——套用寫的是全關，
+  不是那個 preset；測試 `audience-dialog.mjs`）。
   mode 不是 `none`、`audience-cwd` 勾著、進階區收合時，preset 下方另有選單同一句「含工作目錄」（`popover.withCwd`）——
   符合 preset 的 session 開啟時進階區是收合的，工作目錄的勾選框在裡面看不到；展開進階區（`toggle` 事件）這句就收起，
   再收合又出現（測試 `inline-publish.mjs`：未公開但帶 `exportCwd` 的 session 從對話框公開、已公開帶 `exportCwd` 的 session 在對話框改不公開）。喚醒的說明 `audience-autowake-note` 在進階區**外面**，除了只有

@@ -540,7 +540,7 @@ export const TEXT = {
   "service.dbNoteDefault": "The service names no database, so the node uses its default location; a path here means a different node identity.",
   "service.dbNoteUnknown": "The service's database path could not be read; you will be asked before it installs.",
   "service.dbNoteFirstInstall": "First install: leave it empty to use the node's default location.",
-  "service.dbNoteRunningNotService": "A node is running, but not as a service. If it was started with --db, enter that path here; left empty, the service uses the default database instead, which is a new node identity, and every existing pairing stops working.",
+  "service.dbNoteRunningNotService": "A node is running, but not as a service. If it was started with --db, enter that path here: for such a node, leaving this empty starts the service on the default database instead, which is a new node identity, and every existing pairing stops working.",
   "service.runningNotServiceConfirmTitle": "Install the service on the node's default database?",
   "service.runningNotServiceConfirm": "A node is running on this machine, but not as a service, and the database field is empty. If that node was started with --db, the default database is a different node identity: every paired machine stops recognising this one and has to pair again. Press Cancel and enter its --db path to keep it.",
   "service.runningNotServiceConfirmAction": "Install on the default database",

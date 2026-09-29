@@ -201,6 +201,19 @@ if (el("audience-preset-note").textContent.includes("歸零") ||
   failures.push("a single selection was told its flags had been reset");
 }
 
+// Under 不公開 the boxes can still be ticked — a single session loads its own
+// values — and they can happen to spell a preset. 套用 writes every flag off
+// there, so neither radio is ticked: a ticked 「能留訊息」 over a dialog about to
+// write it off is the screen contradicting itself. Picking a publishing mode
+// again names the preset the boxes spell.
+setMode("none");
+module.applyAudiencePreset("messages");
+if (presetOf() !== "") failures.push(`under 不公開 the preset radio reads ${presetOf()}, want none ticked`);
+setMode("all_paired");
+if (presetOf() !== "messages") failures.push(`back on a publishing mode the preset radio reads ${presetOf()}, want messages`);
+setMode("none");
+if (presetOf() !== "") failures.push(`switching to 不公開 left the preset radio at ${presetOf()}`);
+
 // Two sessions can disagree, and there is no honest way to show one state for
 // many — so they open off, and the dialog says so.
 const second = { id: "codex:other", provider: "codex", audience: { mode: "none" } };
