@@ -179,7 +179,10 @@ jobs:
           npm ci
           npm run build
       # Each test is asserted to have PASSED, not merely not failed: a -run
-      # that stops matching a renamed test selects nothing and exits 0.
+      # that stops matching a renamed test selects nothing and exits 0. And
+      # every test in a file built only for Windows (or for Windows among
+      # others) has to be in the list: nothing else runs those, so one left
+      # out would be one nobody runs.
       - name: read a real agenthub-node.exe back
         working-directory: desktop
         run: |
@@ -193,13 +196,89 @@ jobs:
             TestSplitWindowsCommandLineReadsTheWayGoDoes
             TestPowerShellIsTheOneWindowsKeeps
             TestRunCommandOutputKeepsStderrApart
+            TestNodeDefaultPathsMatchTheStandardLibraryHere
+            TestShellCommandLineQuotesForEachShell
+            TestCommandLineSurvivesTheShell
           )
+          status=0
+          listed=" ${tests[*]} "
+          for file in $(grep -lE '^//go:build.*[^!]windows' -- *_test.go); do
+            for test in $(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //'); do
+              if [ "$test" != TestNodeProcessHelper ] && [[ "$listed" != *" $test "* ]]; then
+                echo "$file: $test is built for Windows and is not in this job's list"
+                status=1
+              fi
+            done
+          done
           pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
           go test -count=1 -v -run "$pattern" ./... | tee process-check.log
-          status=0
           for test in "${tests[@]}"; do
             if ! grep -q -- "--- PASS: ${test} " process-check.log; then
               echo "${test} did not pass: it was skipped, renamed, or removed"
+              status=1
+            fi
+          done
+          exit $status
+
+  # The same for macOS (desktop/nodeprocs_darwin.go): kern.procargs2 is read
+  # from a real process named agenthub-node, whose environment is followed by
+  # the kernel's own strings with nothing between them, and a misread there
+  # shows only some of the time — it depends on where the environment ends and
+  # on how soon after its start the process is read. So the real-process test
+  # runs twenty times. The ubuntu job runs the rest of the desktop suite; these
+  # are the tests nothing else runs on a Mac.
+  desktop-macos-processes:
+    name: desktop process reading (macos)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: desktop/go.mod
+          cache-dependency-path: desktop/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/frontend/package-lock.json
+      # main.go embeds all:frontend/dist, so the package's tests do not compile
+      # until the frontend is built.
+      - name: build frontend
+        working-directory: desktop/frontend
+        run: |
+          npm ci
+          npm run build
+      - name: read a real agenthub-node back
+        working-directory: desktop
+        run: |
+          tests=(
+            TestListNodeProcessesReadsARealProcess
+            TestParseProcargs2
+            TestParseProcargs2ReadsEmptyEnvironments
+            TestParseProcargs2RefusesWhatItCannotRead
+            TestNodeDefaultPathsMatchTheStandardLibraryHere
+            TestShellCommandLineQuotesForEachShell
+            TestCommandLineSurvivesTheShell
+            TestRunCommandOutputKeepsStderrApart
+          )
+          status=0
+          listed=" ${tests[*]} "
+          for file in $(grep -lE '^//go:build.*[^!]darwin' -- *_test.go); do
+            for test in $(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //'); do
+              if [ "$test" != TestNodeProcessHelper ] && [[ "$listed" != *" $test "* ]]; then
+                echo "$file: $test is built for macOS and is not in this job's list"
+                status=1
+              fi
+            done
+          done
+          pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
+          go test -count=20 -v -run "$pattern" ./... | tee process-check.log
+          for test in "${tests[@]}"; do
+            passed=$(grep -c -- "--- PASS: ${test} " process-check.log || true)
+            if [ "$passed" != 20 ]; then
+              echo "${test} passed ${passed} of 20 runs: it was skipped, renamed, or removed"
               status=1
             fi
           done
