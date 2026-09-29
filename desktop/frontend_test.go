@@ -534,6 +534,17 @@ func TestFrontendRowAudienceCells(t *testing.T) {
 	runNodeCheck(t, "row-audience.mjs")
 }
 
+// TestFrontendPublishesInAtMostThreePresses covers the inline audience menu,
+// the selection bar, the one-press service fix, the pairing drawer's steps and
+// the view tabs (2026-09-29). The menu decides which machines a press publishes
+// to without asking, so the check is mostly about that: an unpublished session
+// goes to every paired machine, a published one keeps its own, the working
+// directory is never touched, and an undo writes back each session's own
+// audience, machines included.
+func TestFrontendPublishesInAtMostThreePresses(t *testing.T) {
+	runNodeCheck(t, "inline-publish.mjs")
+}
+
 // TestFrontendInboxBadgesCountWhatIsHeld covers the per-row count (issue #146).
 //
 // Three rules the badge is worth nothing without: a count of zero is no badge
