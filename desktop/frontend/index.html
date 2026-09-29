@@ -32,7 +32,7 @@
             <p id="node-line" data-t="app.connecting"></p>
           </div>
         </div>
-        <nav class="tabs" id="view-switch">
+        <nav class="tabs" id="view-switch" role="tablist">
           <!-- Two numbers, and they count different things: `n` is how many
                sessions this machine has, `tab-local-inbox` is how many messages
                are still waiting across all of them (#146). The second is hidden
@@ -44,9 +44,9 @@
                word in either language. The glyph is aria-hidden, because the
                sentence a screen reader should get is the pill's title, not
                "envelope". -->
-          <span data-view="local" class="tab on"><span data-t="app.tab.local"></span> <span class="n" id="tab-local-n">–</span><span class="inboxbadge tabinbox hidden" id="tab-local-inbox"><span class="glyph" aria-hidden="true">✉</span><span id="tab-local-inbox-n"></span></span></span>
-          <span data-view="network" class="tab"><span data-t="app.tab.network"></span> <span class="n" id="tab-network-n">–</span></span>
-          <span data-view="settings" class="tab" data-t="app.tab.settings"></span>
+          <button type="button" role="tab" aria-selected="true" data-view="local" class="tab on"><span data-t="app.tab.local"></span> <span class="n" id="tab-local-n">–</span><span class="inboxbadge tabinbox hidden" id="tab-local-inbox"><span class="glyph" aria-hidden="true">✉</span><span id="tab-local-inbox-n"></span></span></button>
+          <button type="button" role="tab" aria-selected="false" tabindex="-1" data-view="network" class="tab"><span data-t="app.tab.network"></span> <span class="n" id="tab-network-n">–</span></button>
+          <button type="button" role="tab" aria-selected="false" tabindex="-1" data-view="settings" class="tab" data-t="app.tab.settings"></button>
         </nav>
         <div class="spacer"></div>
         <div class="actions">
@@ -124,12 +124,13 @@
             <p id="empty" class="empty hidden" data-t="local.empty"></p>
           </div>
 
-          <!-- Floats over the table once something is selected; hidden otherwise. -->
+          <!-- Floats over the table once something is selected; hidden otherwise.
+               "Publish" opens the same menu a row's audience button does,
+               for every selected session; the full dialog is its last entry. -->
           <div id="selectionbar" class="selectionbar hidden">
             <span id="selection-count" data-t="local.noneSelected"></span>
-            <label class="checkline muted"><input type="checkbox" id="select-all-visible" /><span id="select-label" data-t="local.selectAllFiltered"></span></label>
             <span class="vr"></span>
-            <button id="btn-audience" class="primary" disabled data-t="local.setAudience"></button>
+            <button id="btn-audience" class="primary menubtn" disabled aria-haspopup="menu" aria-expanded="false" data-t="local.publishMenu"></button>
             <button id="btn-unpublish" class="danger" disabled data-t="local.unpublish"></button>
             <button id="btn-deselect" class="ghost" data-t="local.deselect"></button>
           </div>
@@ -272,7 +273,7 @@
                   </label>
                   <label>
                     <input type="checkbox" id="node-autowake" />
-                    <span><span data-t="nodeSettings.autoWake"></span><span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block" data-t="nodeSettings.autoWakeWhy"></span></span>
+                    <span><span data-t="nodeSettings.autoWake"></span><span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block" data-t="nodeSettings.autoWakeWhy"></span><span class="why warn" style="display: block" data-t="wake.caveat"></span></span>
                   </label>
                 </div>
               </div>
@@ -405,6 +406,10 @@
           </div>
           <button id="pairing-close" class="ghost" data-t="common.close"></button>
         </header>
+        <!-- Where the two machines are: find the other one, send a request,
+             compare the fingerprints. Worked out from the exchange's rows by
+             renderPairStepper(); display only, nothing here can be pressed. -->
+        <ol id="pair-stepper" class="pairstepper"></ol>
         <div class="drawerbody" style="padding: 0">
           <div class="pairing-state">
             <div class="statusline">
@@ -585,13 +590,6 @@
         <div class="sectionlabel"><span data-t="audience.whatHeading"></span></div>
         <div class="options" id="audience-presets">
           <label class="option">
-            <input type="radio" name="audience-preset" value="view" checked />
-            <span>
-              <b data-t="audience.presetView"></b>
-              <em data-t="audience.presetViewWhy"></em>
-            </span>
-          </label>
-          <label class="option">
             <input type="radio" name="audience-preset" value="messages" />
             <span>
               <b data-t="audience.presetMessages"></b>
@@ -707,6 +705,13 @@
         </div>
       </div>
     </div>
+
+    <!-- ============ menu: the audience of a row or of the selection ======
+         Opened from a row's AUDIENCE button or the selection bar's
+         "Publish", filled by openAudiencePopover() in app.js, positioned
+         next to the button that opened it. Before #toasts, so a toast stays
+         above it. -->
+    <div id="audience-popover" class="popover hidden" role="menu"></div>
 
     <!-- ============ toasts ============
          The answer to the button just pressed, bottom right, newest at the

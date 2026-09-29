@@ -247,7 +247,22 @@ if (listenShape === "multi") {
   delete nodeSettings.peerListenProblem;
 }
 const overviewSessions = firstRun ? [] : sessions;
-const overviewNodes = onboarding ? [] : nodes;
+// `?paired=none`: every session and no paired machine, which is what the
+// inline audience menu's "nothing paired yet" line is for.
+const overviewNodes = onboarding || query.get("paired") === "none" ? [] : nodes;
+
+// `?service=` puts the background service in the state the one-press fix is
+// for, and the fix then changes it, so the attention row can be seen going:
+//
+//   ?service=stopped   installed, not running: the press runs RestartService
+//   ?service=none      a service manager and nothing registered: it installs
+//   ?service=noah      ah not found: the press opens the settings page
+let serviceShape = query.get("service") ?? "";
+const shapedService = () => ({
+  stopped: { tool: "/usr/local/bin/ah", supported: true, installed: true, running: false, pid: 0, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: [] },
+  none: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false },
+  noah: { toolError: "ah not found on PATH or beside the app", supported: true, installed: false, running: false },
+}[serviceShape]);
 const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
 
 configure({
@@ -389,20 +404,20 @@ configure({
   // build that no tag stamped really answers, so that is what the dev page
   // shows rather than a version number nothing produced.
   Version: async () => ({ release: "unreleased", goos: "darwin", goarch: "arm64" }),
-  RestartService: async () => { log("RestartService"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartService: async () => { log("RestartService"); await sleep(600); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // What the window actually calls. It was missing, so every save on this page
   // ended in "could not restart the node: api.RestartNode is not a function" — the dev
   // page showing a failure the real app does not have, which is the same wasted
   // hour as a bug, spent in the other direction.
-  RestartNode: async () => { log("RestartNode"); return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartNode: async () => { log("RestartNode"); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
   // Installed the old way, with the node's settings burned into the unit, so
   // the panel's offer to re-register it cleanly is visible here too.
-  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), unreachable
+  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), shapedService() ?? (unreachable
     ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
     : firstRun
     ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
-    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] }),
-  InstallService: async (form) => { log("InstallService", form); return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
+    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] })),
+  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => localAddresses,
   // The node filters by session (agenthub#132); the fake does the same, so the
@@ -466,10 +481,17 @@ globalThis.layoutCheck = async () => {
   $("#rows button.inbox").click(); await pause();
   results.push(measure("inbox drawer", $("#inbox-modal .drawer-card")));
   $("#inbox-close").click(); await pause();
+  $("#rows button.audbtn").click(); await pause();
+  results.push(measure("audience menu (row)", $("#audience-popover")));
+  $("#audience-popover").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   $("#rows input[type=checkbox]").click(); await pause();
   $("#btn-audience").click(); await pause();
+  results.push(measure("audience menu (selection)", $("#audience-popover")));
+  results.push(measure("selection bar", $("#selectionbar")));
+  [...document.querySelectorAll("#audience-popover button.popitem")].at(-1).click(); await pause();
   results.push(measure("audience modal", $("#audience-modal .modal-card")));
   $("#audience-close").click();
+  $("#btn-deselect").click();
   results.push(measure("document", document.documentElement));
   console.table(results);
   return results;

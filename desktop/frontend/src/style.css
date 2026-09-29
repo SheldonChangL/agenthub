@@ -172,8 +172,12 @@ body.mac .titlebar { padding-left: 78px; }
   font-size: 12.5px;
   cursor: pointer;
 }
+/* The tabs are <button role="tab"> (reachable by keyboard), drawn exactly as
+   the spans they replaced: none of the button's own box. */
+button.tab { border: 0; background: transparent; font: inherit; font-size: 12.5px; gap: 6px; }
+button.tab:hover:not(:disabled) { border: 0; background: rgba(255, 255, 255, 0.04); }
 .tab:hover { color: var(--text); }
-.tab.on { background: var(--accent-dim); color: var(--text); }
+.tab.on, button.tab.on:hover:not(:disabled) { background: var(--accent-dim); color: var(--text); }
 .tab .n {
   font-size: 10.5px; padding: 0 5px; min-width: 16px; text-align: center;
   border-radius: 999px; background: var(--line); color: var(--muted);
@@ -559,7 +563,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
    6px cell padding below): all four flag chips, both row buttons and every
-   audience pill the table uses fit. They add up to 644px, and SESSION and
+   audience pill the table uses fit. They add up to 652px, and SESSION and
    WORKING DIRECTORY carry no width, so they split what is left and clip with
    an ellipsis — the full title and path stay in the cells' titles. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
@@ -571,9 +575,15 @@ col.c-status { width: 76px; }
    and 「Chosen: none」 86px; 「All paired」 is 64px, 「所有已配對」 73px. At 96px
    the first two lost their last letters, and 「Every paired machine」 (124px),
    which the cell no longer uses, lost a whole word. The 5px over the widest
-   is for a WebView font that renders a little wider than the mock's. */
-col.c-audience { width: 104px; }
-col.c-flags { width: 156px; }
+   is for a WebView font that renders a little wider than the mock's.
+   108px since the cell became a button (2026-09-29): 「Not published」 with
+   the ▾ and the button's own padding is 89px of content (button.audbtn),
+   measured in dev/mock.html at 900x760; 4px over it for the WebView's font.
+   FLAGS went from 156px to 160px for the ⚠ beside the wake chip: the four
+   English chips are 131px, the ⚠ about 11px and its margin 2px. Every pixel
+   added here comes out of SESSION, the one column a person reads. */
+col.c-audience { width: 108px; }
+col.c-flags { width: 160px; }
 col.c-last { width: 104px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when
    there were three (63 + 83 + 67, two 4px gaps, 10px padding each side), with
@@ -687,6 +697,24 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 /* required by frontend_test.go: a contested or duplicate flag */
 .pill.bad { color: #f0908a; border-color: rgba(229, 84, 75, 0.45); }
 
+/* The AUDIENCE cell is a button that opens the inline menu: the pill's
+   colours, a control's height, and a caret that says it opens something.
+   The caret is ::after because ::before is withBusy's spinner. */
+button.audbtn {
+  height: var(--control-h);
+  max-width: 100%;
+  padding: 0 4px 0 7px;
+  gap: 3px;
+  border-radius: 999px;
+  font-size: 11px;
+  overflow: hidden;
+}
+button.audbtn::after, button.menubtn::after { content: "▾"; flex: none; font-size: 10px; opacity: 0.7; }
+/* The ⚠ beside the wake chip on a row that has waking on; the tooltip says
+   what waking cannot promise. */
+.wakecaveat { margin-left: 2px; color: var(--amber); font-size: 11px; cursor: help; }
+.wakecaveat-line { color: var(--amber); }
+
 /* The four audience flags, as small squares that are lit or dashed. */
 .flagchips { display: inline-flex; gap: 3px; }
 .flag {
@@ -780,6 +808,46 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   z-index: 2;
 }
 .selectionbar .vr { width: 1px; height: 20px; background: var(--line); }
+/* The toast stack rises above the bar while it is up: both sit at the bottom,
+   and a toast over 「公開 ▾」 would hide the button the toast is about. The bar
+   is 18px above the table card's foot, and under the card are its 12px margin
+   and the 26px status bar: 18 + 56 + 12 + 26 = 112px, plus a gap. */
+body.selecting .toasts { bottom: 124px; }
+
+/* ---------- the inline audience menu (openAudiencePopover) ---------- */
+
+.popover {
+  position: fixed;
+  z-index: 30;
+  width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 10px;
+  background: #1a2128;
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+}
+.popover .pophead { display: grid; gap: 2px; padding: 6px 8px 8px; font-size: 12px; }
+.popover .pophead .muted { font-size: 11.5px; }
+.popover .popnote { padding: 0 8px 8px; font-size: 12px; color: var(--amber); display: grid; gap: 6px; justify-items: start; }
+.popover .popnote span { color: var(--muted); }
+.popover button.popitem {
+  width: 100%;
+  height: auto; min-height: 48px;
+  padding: 8px 10px;
+  display: grid; grid-template-columns: 18px 1fr; gap: 2px 8px; align-items: start;
+  text-align: left; white-space: normal;
+  border: 0; border-radius: 6px;
+  background: transparent;
+}
+.popover button.popitem:hover:not(:disabled),
+.popover button.popitem:focus-visible { background: var(--panel-2); border: 0; }
+.popover .popitem .mk { grid-row: span 3; color: var(--accent); }
+.popover .popitem .poplabel { font-size: 13px; }
+.popover .popitem small { grid-column: 2; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.popover .popitem small.caveat { color: var(--amber); }
+.popover hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
 
 /* ---------- status bar ---------- */
 
@@ -911,6 +979,30 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 #pairing-note { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
 #pairing-note:empty { display: none; }
 #pairing-detail:empty { display: none; }
+
+/* Where the exchange is, at the top of the drawer: three steps, the done ones
+   ticked, the current one lit; "waiting" is the third step while the other
+   owner has not answered yet. Display only. */
+.pairstepper {
+  list-style: none; margin: 0; padding: 10px 18px;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+.pairstepitem {
+  display: grid; gap: 2px; min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+}
+.pairstepitem .n { font-size: 10.5px; color: var(--dim); letter-spacing: 0.04em; }
+.pairstepitem b { font-weight: 600; overflow-wrap: anywhere; }
+.pairstepitem.done { border-color: rgba(57, 224, 122, 0.35); }
+.pairstepitem.done .n { color: var(--accent); }
+.pairstepitem.now { border-color: var(--sev-info); background: rgba(94, 200, 255, 0.08); }
+.pairstepitem.now .n { color: var(--sev-info); }
+.pairstepitem.waiting { border-style: dashed; border-color: var(--line-strong); }
+.pairstepitem.waiting .n { color: var(--amber); }
 
 /* The three steps, numbered, in the order the two people act. The number is
    what says these are in order; the drawer scrolls through them rather than

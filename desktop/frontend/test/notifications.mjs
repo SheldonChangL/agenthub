@@ -256,15 +256,18 @@ if (!service) {
 } else {
   if (service.sev !== "alert") failures.push(`the service row is ${service.sev}, want alert`);
   if (!service.body.includes("~/agenthub.log")) failures.push(`the service row does not say where the log is: ${service.body}`);
-  service.action.onclick();
-  if (app.state.view !== "settings" || app.state.settingsSection !== "settings-service") {
-    failures.push(`前往設定 left the view at ${app.state.view} / ${app.state.settingsSection}`);
+  // The button does the fix itself now (inline-publish.mjs §service presses
+  // it and follows each branch); here, that it says which fix it is.
+  if (service.action.textContent !== ZH["attention.service.startAction"]) {
+    failures.push(`a stopped service's row offers ${service.action.textContent}, want ${ZH["attention.service.startAction"]}`);
   }
-  app.state.view = "local";
 }
 serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
 await loadWith(reachable());
 if (!byTitle(ZH["attention.service.noneTitle"])) failures.push("a node that is not a service put no row on the strip");
+else if (byTitle(ZH["attention.service.noneTitle"]).action.textContent !== ZH["attention.service.installAction"]) {
+  failures.push(`a node that is not a service is offered ${byTitle(ZH["attention.service.noneTitle"]).action.textContent}`);
+}
 // Not a service manager this machine has, and not a status this window could
 // read: nothing to do from here, so nothing on the strip.
 serviceAnswer = { supported: false };

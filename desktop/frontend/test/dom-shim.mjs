@@ -293,7 +293,7 @@ let keyed = null;
 // that resets the mode radios left the suite green.
 //
 // Only radios, and only by name: everything else the module queries for
-// (#view-switch, thead th.sortable, the node-picker boxes) is built by the
+// (thead th.sortable, the node-picker boxes) is built by the
 // renderers under test or genuinely absent here, and answering those from the
 // markup would hand back elements nothing in this shim can keep in step.
 const radioGroups = (() => {
@@ -315,6 +315,28 @@ const radioGroups = (() => {
       groups.get(name[1]).push(node);
     }
     return groups;
+  };
+})();
+
+// The three view tabs, as real nodes: the tag, the attributes and the
+// data-view the markup gives each. The tabs are buttons now (2026-09-29, so
+// the keyboard can reach them), and a check that they switch the view and say
+// which one is selected needs the elements the wiring was handed — built once,
+// so render() and the check read the same three.
+const viewTabs = (() => {
+  let tabs = null;
+  return () => {
+    if (tabs) return tabs;
+    tabs = [];
+    const nav = /<nav[^>]*id="view-switch"[^>]*>([\s\S]*?)<\/nav>/.exec(markupSource)?.[1] ?? "";
+    for (const [tag] of nav.matchAll(/<[a-zA-Z][^>]*\sdata-view="[^"]*"[^>]*>/g)) {
+      const node = new Node(/^<([a-zA-Z]+)/.exec(tag)[1].toLowerCase());
+      node.dataset.view = /\sdata-view="([^"]*)"/.exec(tag)[1];
+      node.className = (/\sclass="([^"]*)"/.exec(tag) ?? ["", ""])[1];
+      for (const [, name, value] of tag.matchAll(/\s(role|aria-selected|tabindex|type)="([^"]*)"/g)) node.setAttribute(name, value);
+      tabs.push(node);
+    }
+    return tabs;
   };
 })();
 
@@ -343,6 +365,7 @@ export const document = {
       keyed ??= keyedElements(markupSource);
       return keyed[attribute[1]];
     }
+    if (text === "#view-switch [data-view]") return viewTabs();
     const radio = /^input\[name="([^"]+)"\](:checked)?$/.exec(text);
     if (radio) {
       const group = radioGroups().get(radio[1]) ?? [];
