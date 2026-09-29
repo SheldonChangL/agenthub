@@ -103,6 +103,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Why the last read did not reach the node, for the attention row that
     // says so. Empty while it answers.
     nodeError: "",
+    // Whether any read has answered at all. nodeReachable starts false, which
+    // before the first answer means "not asked yet" rather than "down" — and
+    // the attention strip must not say the node is down on every launch.
+    nodeChecked: false,
     // Every notice since the window opened, newest first, in memory only and
     // at most NOTICE_LIMIT of them: the log behind the bell. A toast goes
     // away; this is where it can still be read.
@@ -1700,7 +1704,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // this machine being reachable, then a full inbox, then a request to pair.
   function attentionItems() {
     const items = [];
-    if (state.nodeReachable === false) {
+    if (state.nodeChecked && state.nodeReachable === false) {
       const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
       items.push({
         kind: "node",
@@ -2012,6 +2016,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // itself on the first read that answers.
     state.nodeError = reachable ? "" : (overview.error || "");
     state.nodeReachable = reachable;
+    state.nodeChecked = true;
     loadService().catch(() => {});
 
     // The scan that used to be step 2 of the checklist.
@@ -2082,6 +2087,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-line").textContent = line.reachable
       ? `${line.displayName} · ${line.platform} · ${line.nodeUrl}${version}`
       : t("app.unreachable", { url: line.nodeUrl, version });
+    // The bar clamps it to two lines at a narrow window; the whole of it here.
+    el("node-line").title = el("node-line").textContent;
   }
 
   // askConfirm asks one yes-or-no question in the window's own dialog, and
@@ -7024,6 +7031,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
     peerListensSupported, checkedPeerListens, samePeerListens, peerListenRowState, pairOpenAddresses, peerListensNotOpen,
     peerListenRows: () => peerListenRows,
+    notify, banner, withBusy, openNotices, closeNotices, renderAttention, attentionItems,
+    refreshIncomingPairRequests,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen.

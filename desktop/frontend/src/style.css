@@ -143,6 +143,16 @@ body.mac .titlebar { padding-left: 78px; }
 .brand > div { min-width: 0; }
 .brand h1 { font-size: 13px; margin: 0; font-weight: 600; line-height: 1.2; }
 .brand p { margin: 0; font-size: 11px; color: var(--muted); line-height: 1.2; }
+/* Two lines at most. With the bell added and body.mac's inset, a 900px window
+   left the node line four lines deep in a 52px bar, cut off top and bottom;
+   the whole line is on its tooltip (renderNodeLine). */
+.brand p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 
 .dot {
   width: 8px; height: 8px; border-radius: 50%;

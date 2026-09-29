@@ -912,6 +912,12 @@ func TestFrontendBackdropRainIsOptIn(t *testing.T) {
 	runNodeCheck(t, "backdrop-switches.mjs")
 }
 
+// TestFrontendNoticesStayUntilSeen covers the toasts, the bell and the
+// attention strip that replaced the banner (docs/ui-contract.md §3.1).
+func TestFrontendNoticesStayUntilSeen(t *testing.T) {
+	runNodeCheck(t, "notifications.mjs")
+}
+
 // TestFrontendMotionToggleStartsUnchecked keeps the markup agreeing with the
 // state it is supposed to show.
 //
