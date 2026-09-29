@@ -51,7 +51,7 @@
 | `Overview()` | 啟動、`btn-reload`、每次寫入後、待處理列「節點沒有回應」的「重試」 | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取；讀不到節點時在**待處理列**（§3.1）說明（保留上次清單或從未載入過），不再用 toast |
 | `Discover()` | `btn-discover`；視窗第一次**連得到節點**而且 0 筆 session 時自動呼叫一次（`state.busy` 時不算，留給下一次不忙的讀取） | 掃描後 reload；toast 報 claude/codex/total/skipped 數 |
 | `Heartbeat()` | `btn-heartbeat`（在設定頁的身分區 `settings-identity`） | 對話框顯示已簽章 envelope 純文字 |
-| `SetAudience(ids, audience)` | 公開對象對話框「套用」；行內公開選單（列上的公開對象按鈕、批次列「公開 ▾」，§3.2）的三個選項與它 toast 上的「復原」；`btn-unpublish` | 成功：清空選取（批次列與對話框；列上的選單不動選取）、關對話框、成功 toast；部分失敗：留著選取、錯誤 toast 顯示第一個錯誤（對話框開著時浮在對話框上方，§3.1）。選單與復原**依結果分組**：每個不同的 audience 呼叫一次，帶所有得到它的 session（`writeAudiences()`）；整次呼叫丟錯時該組全部算失敗，走同一條部分失敗規則 |
+| `SetAudience(ids, audience)` | 公開對象對話框「套用」；行內公開選單（列上的公開對象按鈕、批次列「公開 ▾」，§3.2）的三個選項與它 toast 上的「復原」；`btn-unpublish` | 成功：清空選取（批次列與對話框；列上的選單不動選取）、關對話框、成功 toast；部分失敗：留著選取、錯誤 toast 顯示第一個錯誤（對話框開著時浮在對話框上方，§3.1）；行內選單與 `btn-unpublish` 的部分失敗 toast 也帶「復原」（至少一個成功時；寫回每個 session 的原值，對失敗的那些是同值重寫、冪等），全部失敗時不帶。選單與復原**依結果分組**：每個不同的 audience 呼叫一次，帶所有得到它的 session（`writeAudiences()`）；整次呼叫丟錯時該組全部算失敗，走同一條部分失敗規則 |
 | `SetVisibility(ids, visibility)` | 目前**沒有** UI 入口 | 保留為未接綁定；不算缺功能 |
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、警告 toast（「對方那台也要做一次」，不自動消失） |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；toast 說明同時移除授權 |
@@ -66,7 +66,7 @@
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 toast |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
-| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問） |
+| `InstallService(form)` | 服務表單「安裝為背景服務」；待處理列服務那一列與標題列 `service-pill` 的一鍵處理（支援但未安裝時，§3.1） | 顯示 `$ command` + output；失敗把錯誤放進 output 區。一鍵處理**動手前先重讀** `ServiceStatus()`（`loadService()`，用讀到的狀態重算；畫面上的可能是好幾分鐘前的——有選取或對話框開著時 15 秒 tick 不讀——而 `ah service install` 會取代既有註冊，照舊狀態裝等於用預設資料庫換掉節點身分），重讀失敗就跳設定頁並用錯誤 toast 說明（`service.quickReadFailed`），什麼都不做；**節點在跑但不是服務**（`state.nodeReachable` 或狀態的 `nodeAnswering`，且未安裝）不直接裝，改去設定頁的服務表單（`goToService()` 會展開它）。其餘走**同一個** `installService()`：先 `openServiceForm()`（未安裝時資料庫欄位一定是空的＝節點預設），再照表單按鈕的路徑安裝，含它既有的 `askConfirm`（已安裝但讀不到／改了資料庫路徑，未安裝時兩者都不會問） |
 | `UninstallService()` | `service-uninstall` | `askConfirm`；成功後 reload |
 | `LocalAddresses()` | 開啟服務表單時 | 重建位址下拉；非私有網段自動帶入 `treatAsPrivate` 建議並說明 |
 | `NodeURL()` / `SetNodeURL()` | 目前**沒有** UI 入口（靠 `AGENTHUB_URL`） | 保留為未接綁定 |
@@ -100,7 +100,7 @@
   原本是 `<span>`，鍵盤到不了）：`render()` 寫 `tab on`／`aria-selected`／`tabindex`（選中的 0、其餘 -1），
   左右方向鍵與 Home/End 移到相鄰分頁並切換（`viewSwitchKey`）；程式以 `#view-switch [data-view]` 找它們，
   `dom-shim.mjs` 從 index.html 解出這三個節點（測試 `inline-publish.mjs` §8）。
-  右側三個控制項：**服務狀態 pill**（`service-pill`，**一鍵處理**：支援但未安裝 → 安裝、已安裝沒在跑 → `RestartService()`、
+  右側三個控制項：**服務狀態 pill**（`service-pill`，**一鍵處理**：支援但未安裝且沒有節點在跑 → 安裝（節點在跑但不是服務 → 服務表單）、已安裝沒在跑 → `RestartService()`、
   其餘〔找不到 ah、平台不支援、狀態還沒讀到、已在跑〕→ 跳設定頁的服務區；`runServiceQuickAction()`，與待處理列同一份）、
   重新掃描（`btn-discover`）、通知紀錄的鈴鐺（`btn-bell`，見下面「通知三層」）。`btn-reload` 保留在 DOM 但 `hidden`（15 秒背景輪詢取代它）；預覽 heartbeat
   移到設定頁的身分區（§2 `Heartbeat()`）。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
@@ -145,8 +145,8 @@
 - **通知三層（2026-09-29，取代 `#banner`）**。原本的 banner 只有一則：成功 4 秒就消失、錯誤被下一則蓋掉，
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
   - **Toast**（`#toasts`，`aria-live="polite"`，在 index.html 所有抽屜與對話框**之後**）：右下角堆疊，最多 3 則，
-    新的在下、超過時最舊的先走（仍在通知紀錄裡）。`notify(kind, title, {body, actions})`，kind 是
-    `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起（底部倒數條），`warn` 與 `error`
+    新的在下；超過時先擠掉最舊的**會自動消失**的（`ok`／`info`），沒有才擠掉最舊的警告或錯誤（都仍在通知紀錄裡）。`notify(kind, title, {body, actions})`，kind 是
+    `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起（底部倒數條；滑鼠停在上面或鍵盤焦點在它裡面時暫停——倒數條停住、加 `held`——兩者都離開後重新給足 6 秒，在它自己的按鈕之間移動焦點不算離開），`warn` 與 `error`
     **不自動消失**，要按 ✕；後兩種 `role="alert"`，前兩種 `role="status"`。`actions` 是 toast 上的按鈕，
     按了先收起再執行。舊的 `banner(message, ok)` 保留為 wrapper：`ok=true` → 成功，其餘 → 錯誤。
     配對抽屜等右側抽屜開著時整疊移到抽屜左邊；對話框（`.modal`）開著時只留最新一則、夾在卡片上方那條背景裡，
@@ -162,23 +162,34 @@
     | 項目 | 條件 | 嚴重度 | 按鈕 |
     |---|---|---|---|
     | 節點沒有回應 | 至少一次 `Overview()` 已回答（`state.nodeChecked`）且最後一次 `reachable` 為 false；說明沿用 `app.notConnected`（含錯誤原文與「上次成功載入」／「還沒有載入過」） | alert | 「重試」＝前景 `load()`（走 `withBusy`） |
-    | 背景服務 | `ServiceStatus().supported === true`、沒有 `toolError`、且不是「已安裝且執行中」 | alert | 未安裝「安裝為背景服務」、已安裝「啟動背景服務」，按了就做（`runServiceQuickAction()`，見下） |
+    | 背景服務 | `ServiceStatus().supported === true`、沒有 `toolError`、且不是「已安裝且執行中」 | alert | 未安裝「安裝為背景服務」（節點在跑但不是服務時「到設定頁安裝」，`attention.service.formAction`）、已安裝「啟動背景服務」，按了就做（`runServiceQuickAction()`，見下） |
     | 收件匣已滿 | `inboxCounts.ok` 且有 `full`（讀不到數字時不顯示，不拿舊數字說滿） | warn | 「開啟收件匣」開第一個滿的（依表格順序）；兩個以上時標題寫數量 |
-    | 有機器想配對 | 節點回報配對開放中，且最近一次讀到的交換裡有 `incoming`＋`pending`（讀取規則見 §2 `PairRequests`） | info | 「比對並核准」＝`goToPairing()` |
+    | 有機器想配對 | 節點回報配對開放中，且最近一次讀到的交換裡有 `incoming`＋`pending`（讀取規則見 §2 `PairRequests`） | info | 「比對並核准」＝`goToPairing()`。一件時標題是「自稱 {name} 的機器想和這台機器配對」：name 是對方自選的，放在 `class="claimed"` 的 span（同收件匣寄件者的自選那半），沒有名字時另一句（`attention.pair.titleOneNoName`） |
 
-    **背景服務一鍵處理（2026-09-29）**：`serviceQuickAction(status)` 只看狀態——沒有狀態、有 `toolError`、`supported !== true`、
+    **背景服務一鍵處理（2026-09-29）**：按下先重讀 `ServiceStatus()`，用讀到的算；讀失敗→設定頁＋錯誤 toast，不動手。`serviceQuickAction(status)` 只看狀態——沒有狀態、有 `toolError`、`supported !== true`、
     或已安裝且在跑 → `settings`；已安裝 → `restart`；其餘 → `install`。`install` 走設定頁按鈕的 `installService()`（資料庫路徑留空），
     `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。都經 `withBusy` 讓按下的那顆轉圈；結果用 toast，
     失敗（丟錯、重啟後節點沒回答、degraded）的 toast 帶「開啟設定」（`withBusy` 的 `failureActions`；它走
     `goToService({ keepForm: true })`，不重開表單——重開會清掉資料庫欄位、藏起 ah 的錯誤原文）。成功後的 `load()` 重讀
-    `ServiceStatus()`，這一列自己消失。兩種情況不照按：另一個寫入進行中（`state.busy`，連表單都不動）；設定頁的服務表單開著、
-    資料庫欄位有打字——空白是節點預設資料庫，等於新身分、所有配對作廢，所以改去表單，不替使用者清掉。pill 的 `busy` 轉圈
+    `ServiceStatus()`，這一列自己消失。三種情況不照按：另一個寫入進行中（`state.busy`，連表單都不動）；設定頁的服務表單開著、
+    資料庫欄位有打字——空白是節點預設資料庫，等於新身分、所有配對作廢，所以改去表單，不替使用者清掉；
+    節點在跑但不是服務（`nodeRunningNotAService()`：`install` 且 `state.nodeReachable` 或狀態的 `nodeAnswering`）——
+    那是手動帶起來的節點，資料庫可能不是預設的，改去服務表單。pill 的 `busy` 轉圈
     撐過中途落地的 `ServiceStatus()`（`renderServicePill` 保留 `busy`）。測試 `inline-publish.mjs` §6（三個分支、空資料庫路徑、RestartService 不是 RestartNode、
-    失敗 toast 的動作）、`notifications.mjs` §3b（按鈕文字）。
+    失敗 toast 的動作、過期狀態重讀後不裝、節點在跑非服務不裝、重讀失敗）、`notifications.mjs` §3b（按鈕文字）。
 
     「稍後」以項目的 key 收起（key 帶身分：哪幾個收件匣、哪幾個請求 id），**直到它消失後再出現才會回來**；
     換成不同的一組（又多一個收件匣滿了）就是新的一件。列元素以項目種類為 key 原地更新（`keepChildren`），
-    15 秒 tick 不會換掉游標下的按鈕。首次啟動清單 `#onboarding` 不變。
+    15 秒 tick 不會換掉游標下的按鈕。
+
+    **首次啟動清單在時**：`#onboarding` 顯示著「把節點跑成背景服務」而且那一步沒完成（步驟帶 `fixesService`），
+    而且目前在本機視圖（卡片所在）時，待處理列**不顯示**服務那一列——同一件事兩顆按鈕。仍照常記進通知紀錄；
+    換到別的視圖或卡片收起後就回來。「啟動節點」那一步（節點沒回應）不算，那是另一件事。
+
+    **超過 2 件時收合**：依嚴重度（alert > warn > info，同級照上表順序）只顯示前 2 件，第三列是一顆
+    「還有 N 件」（`attention.more`），按了全部展開、按鈕變「收起」。展開狀態只在這個視窗的記憶體裡，不存。
+    兩件（含）以下沒有這顆。收合是為了 900×760 下表格仍看得到至少 5 列（有首次啟動清單時除外）。
+    測試 `notifications.mjs` §3b、§3f。
 - **首次啟動清單**（`#onboarding`，見 §3.2）：只出現在本機視圖，但它的觸發條件橫跨三個視圖的狀態。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。**按下去的那一顆**另外轉圈並停用自己到呼叫回來為止
@@ -218,23 +229,26 @@
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
 - **浮動批次列**（`#selectionbar`，有選取才出現，表格卡片底部中間）：「已選取 N 個 session」、`btn-audience`「公開 ▾」
-  （開**同一個**行內公開選單，對象是全部選取）、`btn-unpublish`「收回公開」（＝選單的「不公開」，同樣帶復原）、`btn-deselect`「取消選取」。
+  （開**同一個**行內公開選單，對象是全部選取）、`btn-unpublish`「收回公開」（＝選單的「不公開」，同樣清掉 `exportCwd`、同樣帶復原）、`btn-deselect`「取消選取」。
   全選只在表頭（`#select-all`，含 indeterminate）；原本列上的 `select-all-visible` 已移除。批次列出現時 `body.selecting`
   把 toast 疊往上推 124px（18 + 56 的列、12 的卡片外距、26 的狀態列），toast 不蓋住它。批次套用成功後清空選取；部分失敗留著。
 - **行內公開選單**（`#audience-popover`，`role="menu"`，2026-09-29）。表格的公開對象欄是一顆按鈕（`button.audbtn`，
   文字與 tooltip 同原本的 pill，▾ 由 CSS 畫；`aria-haspopup`／`aria-expanded`），點了在按鈕旁邊（下方放不下改上方，
   兩邊都放不下取大的那邊並捲動）打開，選了**立即套用**：
-  - 選項：「不公開」（`mode: none`，三個訊息旗標 off）、「能留訊息」（`acceptMessages`）、「留訊息並喚醒」
+  - 選項：「不公開」（`mode: none`，`exportCwd` 與三個訊息旗標全 off——同 main 原本的收回公開；復原會寫回原值）、「能留訊息」（`acceptMessages`）、「留訊息並喚醒」
     （`acceptMessages`＋`allowOutbound`＋`autoWake`，下方 amber 小字是喚醒備註 `wake.caveat`）、分隔線、
     「指定機器、進階旗標…」（開 `audience-modal`；從列上來時那一列暫時成為選取，對話框關掉——套用或取消——就還原原本的選取）。
   - **對象不問**：未公開（`describeAudience().published` 為 false：`none`，或 `selected` 且 0 個節點）→ `all_paired, nodes: []`；
-    已公開 → **保留原本的 mode 與 nodes**，只改旗標。`exportCwd` 一律保留現值（`audienceForChoice()`）。
-    頂端一行寫這次公開給誰（所有已配對機器／原本指定的 N 台／多選時各自或混合的說法）＋「選了立即套用」。
+    已公開 → **保留原本的 mode 與 nodes**，只改旗標。兩個公開選項的 `exportCwd` 保留現值（`audienceForChoice()`）；
+    「不公開」把它清掉，因為未公開的列不顯示旗標，留著的 `exportCwd` 會在下一次「能留訊息」時在使用者看不到的情況下公開工作目錄。
+    頂端一行寫這次公開給誰（所有已配對機器／原本指定的 N 台／多選時各自或混合的說法）；按下公開會帶上 `exportCwd` 時
+    （例如舊資料或進階對話框留下的、未公開卻勾著的）多一句「含工作目錄」（`popover.withCwd`，多選時只有部分帶上寫數量
+    `popover.withCwdSome`）＋「選了立即套用」。
   - 打勾：這一列（或全部選取）目前正是哪一個情境就勾哪一個；已公開但旗標不是兩個 preset 之一（全 off 也是）→ 不勾＋「目前是自訂設定。」；
     多選且不一致 → 不勾＋「選取的 session 目前設定不一樣。」
   - 還沒有配對任何機器（`state.nodes` 空且 `nodesError` 為空）時照樣能用，頂端多一句「公開後配對的機器才看得到」＋「配對另一台機器」（`goToPairing()`）。
   - 只有 Claude Code 的選取，「留訊息並喚醒」disabled 並說明——與對話框的喚醒 preset 同一條規則（§3.5）。
-  - 成功 toast 帶「復原」：把每個 session **原本的** audience 物件寫回（旗標、mode、nodes；不同的原值分批呼叫）。唯一不是原樣的：
+  - 成功 toast 帶「復原」（部分失敗的錯誤 toast 也帶，§2）：把每個 session **原本的** audience 物件寫回（旗標、mode、nodes；不同的原值分批呼叫）。唯一不是原樣的：
     `selected` 且 0 個節點 `SetAudience` 會拒絕，寫回成 `none`＋同樣的旗標（兩者一樣沒人看得到）。套用喚醒時 toast 內文加喚醒備註。
   - 鍵盤：按鈕本身 Enter/Space 開、再按一次關；方向鍵上下（循環）、Home/End；Esc 與 Tab 關並把焦點還給按鈕；點外面關；
     頁面捲動或視窗縮放關。選了之後寫入期間按鈕 disabled，寫完焦點回到那顆按鈕。另一個寫入進行中時按「復原」不會被靜默吞掉：
