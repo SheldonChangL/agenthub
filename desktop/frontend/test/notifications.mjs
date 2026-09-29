@@ -119,6 +119,9 @@ await settle();
 // Nothing has answered yet: a node nobody has asked is not a node that is
 // down, whatever the initial state says (state.nodeReachable starts false).
 if (app.state.nodeReachable !== false) failures.push("the check meant to run before the first read ran after it");
+// Anything that renders in that time — a view switch, a pairing read — paints
+// the strip from the state as it is.
+app.render();
 if (attentionRows(document).some((entry) => entry.title === ZH["attention.nodeDown.title"])) {
   failures.push("the strip said the node is not answering before the first read answered");
 }
