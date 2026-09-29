@@ -70,8 +70,13 @@ const overview = () => ({
 // and the call itself is recorded.
 const setCalls = [];
 let setAudienceFails = null;
+// A browser drops the keyboard from a button that is disabled under it, which
+// withBusy does for the length of the write; the shim does not, so the write
+// drops it here, and a check can see whether it is given back.
+let blurDuringWrite = false;
 const SetAudience = async (ids, audience) => {
   setCalls.push({ ids: [...ids], audience: JSON.parse(JSON.stringify(audience)) });
+  if (blurDuringWrite) document.activeElement?.blur();
   if (setAudienceFails) return setAudienceFails(ids, audience);
   for (const s of sessions) if (ids.includes(s.id)) s.audience = JSON.parse(JSON.stringify(audience));
   return { changed: ids.length, failed: 0, errors: [] };
@@ -238,6 +243,9 @@ await reload();
     }
   }
   // Picking an entry gives the keyboard back to the row's button afterwards.
+  blurDuringWrite = true;
+  await pick("codex:chosen", "none");
+  blurDuringWrite = false;
   if (document.activeElement !== audienceButton("codex:chosen")) failures.push("after a menu choice the keyboard is not on the row's button");
   // An undo pressed while something else is being written says it was not done.
   await pick("codex:chosen", "messages");
@@ -606,11 +614,19 @@ if (el("service-db").value !== "/data/custom.db") failures.push(`the pill reset 
 if (app.state.view !== "settings") failures.push(`with a path typed the pill went to ${app.state.view}, want the form`);
 el("service-db").value = "";
 el("service-form").classList.add("hidden");
-// And nothing happens while something else is being written.
+// And nothing happens while something else is being written — not even the
+// form being reset under that write, which is what opening it does.
+app.state.service = { supported: true, installed: false, running: false, pid: 0 };
+el("service-output").textContent = "the write in flight";
+el("service-output").classList.remove("hidden");
+app.state.view = "local";
 app.state.busy = true;
 serviceCalls.length = 0;
 await press(el("service-pill"));
 if (serviceCalls.length !== 0) failures.push(`the pill ran ${JSON.stringify(serviceCalls)} while another write was out`);
+if (el("service-output").classList.contains("hidden") || app.state.view !== "local") {
+  failures.push("a press while another write was out still opened the service form");
+}
 app.state.busy = false;
 // The pill keeps its spinner through a status read that lands mid-press.
 el("service-pill").classList.add("busy");
