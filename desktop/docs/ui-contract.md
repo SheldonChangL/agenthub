@@ -169,8 +169,11 @@
     **背景服務一鍵處理（2026-09-29）**：`serviceQuickAction(status)` 只看狀態——沒有狀態、有 `toolError`、`supported !== true`、
     或已安裝且在跑 → `settings`；已安裝 → `restart`；其餘 → `install`。`install` 走設定頁按鈕的 `installService()`（資料庫路徑留空），
     `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。都經 `withBusy` 讓按下的那顆轉圈；結果用 toast，
-    失敗（丟錯、重啟後節點沒回答、degraded）的 toast 帶「開啟設定」（`withBusy` 的 `failureActions`）。成功後的 `load()` 重讀
-    `ServiceStatus()`，這一列自己消失。測試 `inline-publish.mjs` §6（三個分支、空資料庫路徑、RestartService 不是 RestartNode、
+    失敗（丟錯、重啟後節點沒回答、degraded）的 toast 帶「開啟設定」（`withBusy` 的 `failureActions`；它走
+    `goToService({ keepForm: true })`，不重開表單——重開會清掉資料庫欄位、藏起 ah 的錯誤原文）。成功後的 `load()` 重讀
+    `ServiceStatus()`，這一列自己消失。兩種情況不照按：另一個寫入進行中（`state.busy`，連表單都不動）；設定頁的服務表單開著、
+    資料庫欄位有打字——空白是節點預設資料庫，等於新身分、所有配對作廢，所以改去表單，不替使用者清掉。pill 的 `busy` 轉圈
+    撐過中途落地的 `ServiceStatus()`（`renderServicePill` 保留 `busy`）。測試 `inline-publish.mjs` §6（三個分支、空資料庫路徑、RestartService 不是 RestartNode、
     失敗 toast 的動作）、`notifications.mjs` §3b（按鈕文字）。
 
     「稍後」以項目的 key 收起（key 帶身分：哪幾個收件匣、哪幾個請求 id），**直到它消失後再出現才會回來**；
@@ -233,8 +236,9 @@
   - 只有 Claude Code 的選取，「留訊息並喚醒」disabled 並說明——與對話框的喚醒 preset 同一條規則（§3.5）。
   - 成功 toast 帶「復原」：把每個 session **原本的** audience 物件寫回（旗標、mode、nodes；不同的原值分批呼叫）。唯一不是原樣的：
     `selected` 且 0 個節點 `SetAudience` 會拒絕，寫回成 `none`＋同樣的旗標（兩者一樣沒人看得到）。套用喚醒時 toast 內文加喚醒備註。
-  - 鍵盤：按鈕本身 Enter/Space 開、再按一次關；方向鍵上下（循環）、Home/End；Esc 關並把焦點還給按鈕；Tab 關；點外面關；
-    頁面捲動或視窗縮放關。開著時 `interactionInProgress()` 為真，15 秒 tick 不讀清單、不動列（它是畫在那一列旁邊的）。
+  - 鍵盤：按鈕本身 Enter/Space 開、再按一次關；方向鍵上下（循環）、Home/End；Esc 與 Tab 關並把焦點還給按鈕；點外面關；
+    頁面捲動或視窗縮放關。選了之後寫入期間按鈕 disabled，寫完焦點回到那顆按鈕。另一個寫入進行中時按「復原」不會被靜默吞掉：
+    警告 toast 說這次沒有復原（`popover.undoBusy`）。開著時 `interactionInProgress()` 為真，15 秒 tick 不讀清單、不動列（它是畫在那一列旁邊的）。
   - 測試 `inline-publish.mjs` §1–§5。
 - **旗標欄的喚醒 ⚠**：已公開且 `autoWake` 的列，醒 chip 旁邊一個 amber `⚠`（`.wakecaveat`），`title`／`aria-label` 是喚醒備註全文。
 - **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象（表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 與篩選 chip 用完整說法；欄寬 108px——2026-09-29 它成了按鈕，加上 ▾ 與按鈕內距，量過「Not published」要 89px 內容；旗標欄 156→160px 放 ⚠；900px 下每個標籤都放得下，#194）、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
