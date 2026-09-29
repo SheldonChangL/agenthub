@@ -1082,16 +1082,34 @@ echo "== escaped spellings: launchd XML and systemd quoting =="
 # launchd: xml.EscapeText, so an apostrophe is &#39;. systemd: % doubled, and
 # a path with a space or $ quoted with $ doubled (internal/service systemdQuote).
 xml_home="$work/xml-home"
-xml_pfx="$work/o'brien pfx"
+xml_pfx="$work/o'b\"r	x pfx"
 mac_bundle "$xml_pfx/agenthub-desktop.app" "$work/xml-ah.log"
 mkdir -p "$xml_home/Library/LaunchAgents"
 printf '<plist>\n\t<array>\n\t\t<string>%s</string>\n\t</array>\n</plist>\n' \
-	"$(printf '%s' "$xml_pfx" | sed "s/'/\&#39;/g")/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
+	"$work/o&#39;b&#34;r&#x9;x pfx/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
 	>"$xml_home/Library/LaunchAgents/local.agenthub.node.plist"
 checks=$((checks + 1))
 PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
 	isolated "$xml_home" sh "$installer" --uninstall --prefix "$xml_pfx" >"$work/xml.txt" 2>&1 || fail "xml: failed: $(cat "$work/xml.txt")"
 contains xml "$work/xml-ah.log" "service uninstall"
+# The same escaped path, but not as the program: unit_mentions_install must
+# still see it and stop before the app a live service runs from is deleted.
+xml2_home="$work/xml2-home"
+mac_bundle "$xml_pfx/agenthub-desktop.app" "$work/xml2-ah.log"
+mkdir -p "$xml2_home/Library/LaunchAgents"
+# One <string> holding the program and a flag: not a form service_is_ours
+# reads, still a mention of the install.
+printf '<plist>\n\t<array>\n\t\t<string>%s --verbose</string>\n\t</array>\n</plist>\n' \
+	"$work/o&#39;b&#34;r&#x9;x pfx/agenthub-desktop.app/Contents/MacOS/agenthub-node" \
+	>"$xml2_home/Library/LaunchAgents/local.agenthub.node.plist"
+checks=$((checks + 1))
+if PATH="$(fake_uname Darwin arm64):$bare_path" SHELL=/bin/zsh \
+	isolated "$xml2_home" sh "$installer" --uninstall --prefix "$xml_pfx" >"$work/xml2.txt" 2>&1; then
+	fail "xml2: an escaped unit naming this install was carried past"
+fi
+contains xml2 "$work/xml2.txt" "nothing was removed"
+checks=$((checks + 1))
+[ -d "$xml_pfx/agenthub-desktop.app" ] || fail "xml2: the app a registered service runs from was deleted"
 sd_home="$work/sd-home"
 sd_tree="$work/pct%dir \$x/agenthub"
 tree_at "$sd_tree" "$work/sd-ah.log" "" 0

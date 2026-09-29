@@ -1384,8 +1384,11 @@ uninstall() {
 	fi
 
 	PURGED=0
+	PURGE_SKIPPED=0
 	if [ "$PURGE" -eq 1 ]; then
+		purge_before="$REMOVE_SKIPPED"
 		purge_data
+		[ "$REMOVE_SKIPPED" = "$purge_before" ] || PURGE_SKIPPED=1
 	fi
 
 	say ""
@@ -1398,7 +1401,7 @@ uninstall() {
 	else
 		say "done. AgentHub is uninstalled."
 	fi
-	if [ "$PURGED" -eq 1 ] && [ -n "$REMOVE_SKIPPED" ]; then
+	if [ "$PURGED" -eq 1 ] && [ "$PURGE_SKIPPED" -eq 1 ]; then
 		say "Some of what --purge was asked to delete is still there (see the warnings above)."
 	elif [ "$PURGED" -eq 1 ]; then
 		say "The node's identity and database are deleted too; installing again makes a new node,"
