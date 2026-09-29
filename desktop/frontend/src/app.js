@@ -1845,8 +1845,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const first = incoming[0];
       // The name is the other machine's word for itself, and nothing has
       // checked it yet — comparing fingerprints is what this row asks for — so
-      // it is marked as that, the way an inbox sender's chosen half is.
-      const name = String(first.displayName || first.nodeId || "");
+      // it is marked as that, the way an inbox sender's chosen half is. A
+      // machine that gave no name gets the sentence that says so, as a
+      // candidate row does (candidateName): its node id is not a name it
+      // chose, and 「自稱 node_…」 put words in its mouth.
+      const name = String(first.displayName ?? "").trim();
       let title = plural(incoming.length, "attention.pair.titleMany");
       let titleParts = null;
       if (incoming.length === 1 && name === "") title = t("attention.pair.titleOneNoName");
@@ -1897,7 +1900,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // landing in the middle of it must not take the spinner away.
     entry.action.classList.toggle("primary", item.sev === "alert");
     entry.action.textContent = item.label;
-    entry.action.disabled = state.busy;
+    // A button carrying `busy` is one whose press is still being worked out
+    // (runServiceQuickAction's re-read, before withBusy), and stays unpressable
+    // through a render that lands in the middle of it.
+    entry.action.disabled = state.busy || entry.action.classList.contains("busy");
     entry.action.onclick = () => item.run(entry.action);
     entry.later.textContent = t("attention.later");
     entry.later.title = t("attention.laterTitle");
@@ -1952,6 +1958,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
     }
     const folded = shown.length > ATTENTION_VISIBLE;
+    // Unfolded is about the rows that were folded then. Once there is nothing
+    // left to fold, the next time there is starts folded again, rather than
+    // unfolding rows the owner never asked to see.
+    if (!folded) attentionExpanded = false;
     const rows = folded && !attentionExpanded ? shown.slice(0, ATTENTION_VISIBLE) : shown;
     const children = rows.map(attentionRow);
     if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
@@ -5919,14 +5929,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // that is running but is not a service (nodeRunningNotAService): the form.
   async function runServiceQuickAction({ button = null } = {}) {
     if (state.busy) return;
+    // The re-read can take the status command's whole timeout, and a button
+    // that shows nothing for that long is pressed again. So it spins and
+    // cannot be pressed from the moment it is pressed — withBusy's own
+    // spinner takes over once there is something to do — and is let go the
+    // moment the read has answered, before anything is decided from it.
+    const pressed = button?.classList ? button : null;
+    const hold = (on) => {
+      if (!pressed) return;
+      pressed.classList.toggle("busy", on);
+      pressed.setAttribute("aria-busy", String(on));
+      pressed.disabled = on;
+      // Let go, a strip button goes back to what the strip says, which is
+      // still unpressable if another write started during the read.
+      if (!on) renderAttention();
+    };
     let status;
+    hold(true);
     try {
       status = await loadService();
     } catch (error) {
+      hold(false);
       goToService({ keepForm: true });
       notify("error", t("service.quickReadFailed", { error }));
       return;
     }
+    hold(false);
     // Something may have started while the status was being read.
     if (state.busy) return;
     const action = serviceQuickAction(status);

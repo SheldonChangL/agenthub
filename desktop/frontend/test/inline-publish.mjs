@@ -103,6 +103,13 @@ const SetAudience = async (ids, audience) => {
 let serviceAnswer = { supported: true, installed: true, running: true, pid: 7 };
 // Set to an error to make the next ServiceStatus read throw.
 let serviceReadFails = null;
+// Set to { promise, open } to hold the next ServiceStatus reads until open().
+let serviceReadGate = null;
+const gate = () => {
+  let open;
+  const promise = new Promise((resolve) => { open = resolve; });
+  return { promise, open };
+};
 let serviceReads = 0;
 const serviceCalls = [];
 let installFails = false;
@@ -115,6 +122,7 @@ configure({
   Overview: async () => { overviewCalls++; return overview(); },
   ServiceStatus: async () => {
     serviceReads++;
+    if (serviceReadGate) await serviceReadGate.promise;
     if (serviceReadFails) throw serviceReadFails;
     return serviceAnswer;
   },
@@ -980,6 +988,64 @@ if (el("service-output").classList.contains("hidden") || app.state.view !== "loc
   failures.push("a press while another write was out still opened the service form");
 }
 app.state.busy = false;
+// The re-read is the press's first wait, and can be the status command's
+// whole timeout: the button spins and cannot be pressed from the moment it is
+// pressed, through a strip render landing mid-read, and is let go once the
+// read has answered.
+el("service-output").classList.add("hidden");
+for (const [name, button] of [["the pill", () => el("service-pill")], ["the strip's row", () => serviceRow()?.action]]) {
+  serviceAnswer = { supported: true, installed: true, running: true, pid: 7 };
+  app.state.service = { supported: true, installed: true, running: false, pid: 0 };
+  app.state.ui.onboardingDismissed = true;
+  app.state.view = "local";
+  app.render();
+  const pressed = button();
+  if (!pressed) {
+    failures.push(`${name}: no button to press`);
+    continue;
+  }
+  serviceReadGate = gate();
+  const done = app.runServiceQuickAction({ button: pressed });
+  await settle();
+  if (!pressed.classList.contains("busy") || !pressed.disabled) {
+    failures.push(`${name} shows nothing while the status is read again (busy ${pressed.classList.contains("busy")}, disabled ${pressed.disabled})`);
+  }
+  app.renderAttention();
+  if (!pressed.disabled) failures.push(`${name}: a render during the re-read made the button pressable again`);
+  serviceReadGate.open();
+  serviceReadGate = null;
+  await done;
+  await settle();
+  if (pressed.classList.contains("busy") || pressed.disabled) failures.push(`${name} still spins after the re-read found nothing to do`);
+}
+app.state.ui.onboardingDismissed = false;
+// And a write that starts while the status is being read wins: the press does
+// nothing with what it read — not even open the form under that write.
+serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
+app.state.service = { supported: true, installed: false, running: false, pid: 0 };
+reachable = false;
+app.state.nodeReachable = false;
+app.state.view = "local";
+el("service-form").classList.add("hidden");
+el("service-output").textContent = "the write in flight";
+el("service-output").classList.remove("hidden");
+serviceCalls.length = 0;
+serviceReadGate = gate();
+{
+  const done = app.runServiceQuickAction({ button: el("service-pill") });
+  await settle();
+  app.state.busy = true;
+  serviceReadGate.open();
+  serviceReadGate = null;
+  await done;
+  await settle();
+  app.state.busy = false;
+}
+if (serviceCalls.length !== 0) failures.push(`a write started during the re-read, and the press still ran ${JSON.stringify(serviceCalls)}`);
+if (el("service-output").classList.contains("hidden") || !el("service-form").classList.contains("hidden") || app.state.view !== "local") {
+  failures.push("a write started during the re-read, and the press still opened the service form");
+}
+el("service-output").classList.add("hidden");
 // The pill keeps its spinner through a status read that lands mid-press.
 el("service-pill").classList.add("busy");
 await app.loadService();

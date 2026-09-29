@@ -497,6 +497,19 @@ if (pair) {
   await app.dismissPairingDrawer();
   app.state.view = "local";
 }
+// A machine that gave no name is said to have given none — its node id is
+// not a name it chose, and 「自稱 node_ub」 would put one in its mouth.
+{
+  pairRequestsAnswer = [{ ...incoming, displayName: "" }];
+  tick15.fn();
+  await settle();
+  const titles = attentionRows(document).map((entry) => entry.title);
+  if (!titles.includes(ZH["attention.pair.titleOneNoName"])) failures.push(`a nameless request's row reads ${JSON.stringify(titles)}`);
+  if (titles.some((title) => title.includes("node_ub"))) failures.push(`a nameless request is called by its node id: ${JSON.stringify(titles)}`);
+  pairRequestsAnswer = [incoming, outgoing];
+  tick15.fn();
+  await settle();
+}
 // Decided elsewhere: the next read has nothing waiting, and the row goes.
 pairRequestsAnswer = [outgoing];
 el("pairing-modal").classList.add("hidden");
@@ -586,11 +599,22 @@ await settle();
   if (titles().length !== 3) failures.push("a render folded the strip back up");
   button?.onclick();
   if (titles().length !== 2) failures.push("收起 did not fold the strip");
-  // Two or fewer: no button at all.
+  // Two or fewer: no button at all — and unfolded is forgotten, so a third
+  // thing arriving later starts folded again.
+  button?.onclick();
   pairRequestsAnswer = [];
   tick15.fn();
   await settle();
   if (attentionRows(document).some((entry) => !entry.title)) failures.push("two rows still carry the fold button");
+  pairRequestsAnswer = [incoming];
+  tick15.fn();
+  await settle();
+  if (titles().length !== 2 || more()?.children?.[0]?.textContent !== fill(ZH["attention.more.one"], { n: 1 })) {
+    failures.push(`a strip that went down to two and back to three came back unfolded: ${JSON.stringify(titles())}`);
+  }
+  pairRequestsAnswer = [];
+  tick15.fn();
+  await settle();
 }
 serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
 countsAnswer = { ok: true, counts: {} };

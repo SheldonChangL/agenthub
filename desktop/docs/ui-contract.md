@@ -166,11 +166,12 @@
     | 節點沒有回應 | 至少一次 `Overview()` 已回答（`state.nodeChecked`）且最後一次 `reachable` 為 false；說明沿用 `app.notConnected`（含錯誤原文與「上次成功載入」／「還沒有載入過」） | alert | 「重試」＝前景 `load()`（走 `withBusy`） |
     | 背景服務 | `ServiceStatus().supported === true`、沒有 `toolError`、且不是「已安裝且執行中」 | alert | 未安裝「安裝為背景服務」（節點在跑但不是服務時「到設定頁安裝」，`attention.service.formAction`）、已安裝「啟動背景服務」，按了就做（`runServiceQuickAction()`，見下） |
     | 收件匣已滿 | `inboxCounts.ok` 且有 `full`（讀不到數字時不顯示，不拿舊數字說滿） | warn | 「開啟收件匣」開第一個滿的（依表格順序）；兩個以上時標題寫數量 |
-    | 有機器想配對 | 節點回報配對開放中，且最近一次讀到的交換裡有 `incoming`＋`pending`（讀取規則見 §2 `PairRequests`） | info | 「比對並核准」＝`goToPairing()`。一件時標題是「自稱 {name} 的機器想和這台機器配對」：name 是對方自選的，放在 `class="claimed"` 的 span（同收件匣寄件者的自選那半），沒有名字時另一句（`attention.pair.titleOneNoName`） |
+    | 有機器想配對 | 節點回報配對開放中，且最近一次讀到的交換裡有 `incoming`＋`pending`（讀取規則見 §2 `PairRequests`） | info | 「比對並核准」＝`goToPairing()`。一件時標題是「自稱 {name} 的機器想和這台機器配對」：name 是對方自選的 `displayName`，放在 `class="claimed"` 的 span（同收件匣寄件者的自選那半），沒有名字（空白或只有空格）時另一句（`attention.pair.titleOneNoName`），**不拿 nodeId 當自稱名稱**（同候選列的「（未提供名稱）」，`candidateName()`；測試 `notifications.mjs` 3d） |
 
     **背景服務一鍵處理（2026-09-29）**：按下先重讀 `ServiceStatus()`，用讀到的算；讀失敗→設定頁＋錯誤 toast，不動手。`serviceQuickAction(status)` 只看狀態——沒有狀態、有 `toolError`、`supported !== true`、
     或已安裝且在跑 → `settings`；已安裝 → `restart`；其餘 → `install`。`install` 走設定頁按鈕的 `installService()`（資料庫路徑留空），
-    `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。都經 `withBusy` 讓按下的那顆轉圈；結果用 toast，
+    `restart` 走 `restartNode({ service: true })`，`settings` 是 `goToService()`。重讀期間按下的那顆就轉圈並停用（`busy`＋`aria-busy`＋`disabled`；待處理列的按鈕帶 `busy` 時 render 不會把它解除停用），
+    重讀回來先放開再依結果決定；重讀期間另一個寫入開始了（`state.busy`）就什麼都不做、連表單都不開（測試 `inline-publish.mjs` §6）。之後都經 `withBusy` 讓按下的那顆轉圈；結果用 toast，
     失敗（丟錯、重啟後節點沒回答、degraded）的 toast 帶「開啟設定」（`withBusy` 的 `failureActions`；它走
     `goToService({ keepForm: true })`，不重開表單——重開會清掉資料庫欄位、藏起 ah 的錯誤原文）。成功後的 `load()` 重讀
     `ServiceStatus()`，這一列自己消失。三種情況不照按：另一個寫入進行中（`state.busy`，連表單都不動）；設定頁的服務表單開著、
@@ -190,7 +191,8 @@
     換到別的視圖或卡片收起後就回來。「啟動節點」那一步（節點沒回應）不算，那是另一件事。
 
     **超過 2 件時收合**：依嚴重度（alert > warn > info，同級照上表順序）只顯示前 2 件，第三列是一顆
-    「還有 N 件」（`attention.more`），按了全部展開、按鈕變「收起」。展開狀態只在這個視窗的記憶體裡，不存。
+    「還有 N 件」（`attention.more`），按了全部展開、按鈕變「收起」。展開狀態只在這個視窗的記憶體裡，不存；
+    項目降到 2 件以下（沒東西可收）就重置為收合，之後再超過時從收合開始（測試 `notifications.mjs` 3f）。
     兩件（含）以下沒有這顆。收合是為了 900×760 下表格仍看得到至少 5 列（有首次啟動清單時除外）。
     測試 `notifications.mjs` §3b、§3f。
 - **首次啟動清單**（`#onboarding`，見 §3.2）：只出現在本機視圖，但它的觸發條件橫跨三個視圖的狀態。
