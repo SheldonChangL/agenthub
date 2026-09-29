@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -624,5 +625,38 @@ func TestParseNodeArgsReadsTheWayTheNodeDoes(t *testing.T) {
 		if _, _, err := parseNodeArgs(bad); err == nil {
 			t.Errorf("%q was read, want an error: the node would have refused it", bad)
 		}
+	}
+}
+
+// TestCommandOutputHelper is not a test: it is the command
+// TestRunCommandOutputKeepsStderrApart runs, writing to both streams the way
+// PowerShell writes its answer to stdout and its progress records to stderr.
+func TestCommandOutputHelper(t *testing.T) {
+	if os.Getenv("AGENTHUB_COMMAND_OUTPUT_HELPER") != "1" {
+		t.Skip("helper process")
+	}
+	fmt.Fprint(os.Stderr, "#< CLIXML\n<Objs><Obj S=\"progress\"/></Objs>\n")
+	fmt.Fprint(os.Stdout, `[{"pid":1,"commandLine":"agenthub-node"}]`)
+	os.Exit(0)
+}
+
+// The Windows process list is JSON on stdout. Anything PowerShell writes to
+// stderr — a CLIXML progress record, a warning — is not part of it, and read
+// as part of it would make every restart refuse.
+func TestRunCommandOutputKeepsStderrApart(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENTHUB_COMMAND_OUTPUT_HELPER", "1")
+	stdout, stderr, err := runCommandOutput(context.Background(), self, "-test.run=^TestCommandOutputHelper$")
+	if err != nil {
+		t.Fatalf("%v\n%s%s", err, stdout, stderr)
+	}
+	if stdout != `[{"pid":1,"commandLine":"agenthub-node"}]` {
+		t.Errorf("stdout = %q, want the JSON alone", stdout)
+	}
+	if !strings.Contains(stderr, "CLIXML") {
+		t.Errorf("stderr = %q, want the progress record kept apart", stderr)
 	}
 }

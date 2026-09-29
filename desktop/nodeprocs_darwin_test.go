@@ -61,16 +61,22 @@ func TestParseProcargs2RefusesWhatItCannotRead(t *testing.T) {
 		binary.LittleEndian.PutUint32(raw, argc)
 		return raw
 	}
-	for name, raw := range map[string][]byte{
-		"too short":          {1, 0},
-		"argc past the end":  lies(uint32(len(good))),
-		"argc negative":      lies(0xffffffff),
-		"no end to the path": append(binary.LittleEndian.AppendUint32(nil, 1), "/bin/agenthub-node"...),
-		"padding not zero":   append(binary.LittleEndian.AppendUint32(nil, 1), "/bin/x\x00zz\x00"...),
-		"fewer arguments":    lies(40),
+	for name, tc := range map[string]struct {
+		raw  []byte
+		want string
+	}{
+		"too short": {[]byte{1, 0}, "answered 2 bytes"},
+		// More arguments than bytes is a count to refuse before it sizes
+		// anything, not one to discover the end of.
+		"argc past the end":  {lies(uint32(len(good))), "arguments in"},
+		"argc huge":          {lies(0x7fffffff), "arguments in"},
+		"argc negative":      {lies(0xffffffff), "arguments in"},
+		"no end to the path": {append(binary.LittleEndian.AppendUint32(nil, 1), "/bin/agenthub-node"...), "no end"},
+		"padding not zero":   {append(binary.LittleEndian.AppendUint32(nil, 1), "/bin/x\x00zz\x00"...), "no padding"},
+		"fewer arguments":    {lies(40), "ended after"},
 	} {
-		if argv, _, _, err := parseProcargs2(raw); err == nil {
-			t.Errorf("%s: read %q, want an error", name, argv)
+		if argv, _, _, err := parseProcargs2(tc.raw); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: read %q, err %v; want an error saying %q", name, argv, err, tc.want)
 		}
 	}
 	// A command line that reads with an environment that does not is still a
