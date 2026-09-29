@@ -957,6 +957,13 @@ BUNDLE_ID="com.wails.agenthub-desktop"
 # remove_path deletes one file or directory when it exists, and says so.
 remove_path() { # remove_path <path>
 	if exists "$1"; then
+		# Removing an entry needs its directory writable: /Applications after an
+		# account stopped being an admin is the case. Under set -e a failing rm
+		# would end the uninstall halfway; this says what is left instead.
+		if [ ! -w "$(dirname "$1")" ]; then
+			warn "could not remove $1: $(dirname "$1") is not writable by this account; delete it yourself (from Finder, or with an administrator's help)"
+			return 0
+		fi
 		run rm -rf "$1"
 		[ "$DRY_RUN" -eq 1 ] || say "removed $1"
 	fi
@@ -1001,6 +1008,42 @@ unit_file() {
 	fi
 }
 
+# physical_path prints a path with its directory resolved the way the node
+# records it: `ah service install` writes os.Executable's answer, which is
+# symlink-free on Linux and has no doubled or trailing slashes. The directory
+# must exist; a path whose directory does not is printed as given.
+physical_path() { # physical_path <path>
+	physical_dir="$(cd -P "$(dirname "$1")" 2>/dev/null && pwd -P)" || physical_dir=""
+	if [ -n "$physical_dir" ]; then
+		printf '%s/%s' "$physical_dir" "$(basename "$1")"
+	else
+		printf '%s' "$1"
+	fi
+}
+
+# node_forms prints, one per line, every way the unit can spell this install's
+# agenthub-node: as given and resolved, each as launchd writes it (XML-escaped
+# inside <string>) and as systemd does (% doubled; quoted, with \ " $ escaped,
+# when the path needs it — internal/service SystemdUnit).
+node_forms() {
+	for forms_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" \
+		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
+		[ -n "$forms_node" ] || continue
+		for forms_path in "$forms_node" "$(physical_path "$forms_node")"; do
+			forms_xml="$(printf '%s' "$forms_path" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')"
+			printf '<string>%s</string>\n' "$forms_xml"
+			forms_pct="$(printf '%s' "$forms_path" | sed 's/%/%%/g')"
+			# systemdQuote quotes a path holding a space, tab, quote, \ or $.
+			if printf '%s' "$forms_pct" | grep -q '[[:space:]"'"'"'\\$]'; then
+				forms_quoted="$(printf '%s' "$forms_pct" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\$/$$/g')"
+				printf 'ExecStart="%s"\n' "$forms_quoted"
+			else
+				printf 'ExecStart=%s\n' "$forms_pct"
+			fi
+		done
+	done
+}
+
 # service_is_ours says yes when the registered unit starts the agenthub-node of
 # this install. There is one registration per user whoever made it — a source
 # checkout's bin/ah, the real install while this is a --prefix run — so the
@@ -1009,17 +1052,32 @@ unit_file() {
 service_is_ours() {
 	ours_unit="$(unit_file)"
 	[ -f "$ours_unit" ] || return 1
-	for ours_node in "${APP_PATH:+$APP_PATH/Contents/MacOS/agenthub-node}" \
-		"${OTHER_APP_PATH:+$OTHER_APP_PATH/Contents/MacOS/agenthub-node}" "$AGENTHUB_DIR/agenthub-node"; do
-		[ -n "$ours_node" ] || continue
-		# launchd: the first <string> of ProgramArguments. systemd: the first
-		# word of ExecStart, quoted when the path has a space in it.
-		if grep -qF "<string>$ours_node</string>" "$ours_unit" 2>/dev/null ||
-			grep -qF "ExecStart=$ours_node " "$ours_unit" 2>/dev/null ||
-			grep -qxF "ExecStart=$ours_node" "$ours_unit" 2>/dev/null ||
-			grep -qF "ExecStart=\"$ours_node\"" "$ours_unit" 2>/dev/null; then
-			return 0
-		fi
+	node_forms >"$TEMP_DIR/node-forms"
+	while IFS= read -r ours_form; do
+		case "$ours_form" in
+		"<string>"*)
+			grep -qF "$ours_form" "$ours_unit" 2>/dev/null && return 0
+			;;
+		*)
+			# The first word of ExecStart: followed by a space, or the whole line.
+			grep -qF "$ours_form " "$ours_unit" 2>/dev/null && return 0
+			grep -qxF "$ours_form" "$ours_unit" 2>/dev/null && return 0
+			;;
+		esac
+	done <"$TEMP_DIR/node-forms"
+	return 1
+}
+
+# unit_mentions_install says yes when the unit names a directory this run is
+# about to delete, in any form. A unit that does and still is not recognised
+# as ours is one this script cannot read — and deleting the files a registered
+# service runs from is the one outcome remove_service exists to prevent.
+unit_mentions_install() {
+	for mention_dir in "$APP_PATH" "$OTHER_APP_PATH" "$AGENTHUB_DIR"; do
+		[ -n "$mention_dir" ] || continue
+		for mention_form in "$mention_dir" "$(physical_path "$mention_dir")"; do
+			grep -qF "$mention_form/" "$(unit_file)" 2>/dev/null && return 0
+		done
 	done
 	return 1
 }
@@ -1033,6 +1091,9 @@ remove_service() {
 		return 0
 	fi
 	if ! service_is_ours; then
+		if unit_mentions_install; then
+			die "$(unit_file) names a path inside this install, but not in a form this script can read as this install's agenthub-node, so nothing was removed: deleting what a registered service runs from leaves it failing at every login. Take the service down first (\"ah service uninstall\" with the ah it was registered by), then run this again."
+		fi
 		say "left the registered background service alone: $(unit_file) starts an agenthub-node that is not this install's"
 		return 0
 	fi
@@ -1080,6 +1141,10 @@ stop_window_node() {
 unpath_file() { # unpath_file <file>
 	[ -f "$1" ] || return 0
 	grep -qF "$PATH_MARK" "$1" 2>/dev/null || return 0
+	if ! grep -qxF "$PATH_MARK" "$1" 2>/dev/null; then
+		warn "$1 mentions \"$PATH_MARK\" but not as the line this script writes; left it as it is"
+		return 0
+	fi
 	case "$1" in
 	*/fish/conf.d/agenthub.fish)
 		# The whole file is this script's.
@@ -1104,9 +1169,7 @@ unpath_file() { # unpath_file <file>
 			print
 		}
 		END { if (held) print "" }' "$1" >"$unpath_tmp"
-	if cmp -s "$unpath_tmp" "$1"; then
-		warn "$1 mentions \"$PATH_MARK\" but not as the line this script writes; left it as it is"
-	elif (cat "$unpath_tmp" >"$1") 2>/dev/null; then
+	if (cat "$unpath_tmp" >"$1") 2>/dev/null; then
 		say "removed the AgentHub PATH lines from $1"
 	else
 		warn "could not write $1; remove the \"$PATH_MARK\" line and the one under it yourself"
@@ -1181,6 +1244,11 @@ is_install_tree() { # is_install_tree <directory>
 	[ "$tree_dir" != "/" ] || return 1
 	[ "$tree_dir" != "$tree_home" ] || return 1
 	case "$tree_home" in "$tree_dir"/*) return 1 ;; esac
+	# A checkout with both binaries built at its root (`go build ./cmd/ah`)
+	# has them too; its go.mod or .git says what it is.
+	if exists "$tree_dir/go.mod" || exists "$tree_dir/.git"; then
+		return 1
+	fi
 	[ -f "$tree_dir/ah" ] && [ -f "$tree_dir/agenthub-node" ]
 }
 
@@ -1209,7 +1277,9 @@ uninstall() {
 		# account made admin). Both are looked at, so the app is found where it
 		# is rather than where it would go today.
 		OTHER_APP_PATH="$HOME/Applications/agenthub-desktop.app"
-		[ "$OTHER_APP_PATH" != "$APP_PATH" ] || OTHER_APP_PATH=""
+		if [ "$OTHER_APP_PATH" = "$APP_PATH" ]; then
+			OTHER_APP_PATH="${AGENTHUB_APPLICATIONS:-/Applications}/agenthub-desktop.app"
+		fi
 	fi
 
 	AH="$(uninstall_ah)"
@@ -1280,7 +1350,9 @@ uninstall() {
 	# one written by a --prefix install and one by the real install share the
 	# same file name.
 	uninstall_entry="${XDG_DATA_HOME:-$HOME/.local/share}/applications/agenthub.desktop"
-	if [ -f "$uninstall_entry" ] && grep -qxF "Exec=\"$AGENTHUB_DIR/agenthub-desktop\"" "$uninstall_entry" 2>/dev/null; then
+	# Entries from before Exec= was quoted spell it bare.
+	if [ -f "$uninstall_entry" ] && { grep -qxF "Exec=\"$AGENTHUB_DIR/agenthub-desktop\"" "$uninstall_entry" 2>/dev/null ||
+		grep -qxF "Exec=$AGENTHUB_DIR/agenthub-desktop" "$uninstall_entry" 2>/dev/null; }; then
 		remove_path "$uninstall_entry"
 	elif [ -f "$uninstall_entry" ]; then
 		say "left $uninstall_entry alone: it launches some other AgentHub install"
@@ -1315,6 +1387,8 @@ uninstall() {
 	if [ "$PURGED" -eq 1 ]; then
 		say "The node's identity and database are deleted too; installing again makes a new node,"
 		say "so machines paired with this one need to pair again."
+	elif [ "$PURGE" -eq 1 ]; then
+		say "Kept: the node's identity and database, which belong to a node that is not this install's (see above)."
 	else
 		say "Kept: the node's identity and database in $(data_directory), and its logs."
 		say "Installing again brings the same node back with its pairings. To delete them as well:"

@@ -156,7 +156,9 @@ In this order, and each only when it is this install's:
    never an `ah` found on `PATH`; if that fails nothing else is removed, because
    an app deleted under a registered service fails at every login. With this
    install's `ah` already gone, the unit is taken down directly (`launchctl
-   bootout` or `systemctl --user disable --now`, then the file).
+   bootout` or `systemctl --user disable --now`, then the file). A unit that
+   names a path inside this install but cannot be read as starting its
+   `agenthub-node` stops the uninstall before anything is removed.
 2. On macOS, a running `agenthub-desktop` is asked to quit. A node the window
    started on its own, and on Linux a running window, is stopped, matched by the
    full path of this install's binary.
@@ -169,7 +171,7 @@ In this order, and each only when it is this install's:
    it holds `Contents/MacOS/ah` or `desktop`. On Linux `~/.local/share/agenthub/`
    (or `AGENTHUB_HOME`), only when `ah` and `agenthub-node` are at its top level
    and it is neither `/`, your home, nor a directory containing it — a source
-   checkout, which has `bin/ah`, is left. The Linux menu entry goes when its
+   checkout, which has `bin/ah` or a `go.mod`, is left. The Linux menu entry goes when its
    `Exec=` launches this install's app.
 5. The PATH lines: the `# added by the AgentHub installer` comment, the
    `export` under it and the blank line above them, from every startup file in
@@ -197,8 +199,10 @@ else's, or on a `--prefix` run without a unit of its own, `--purge` leaves the
 data and says so. After `--purge` a reinstall is a new node. Either way the machines paired with this one still list it until they
 revoke it (`ah revoke <node-id>`, or from their app).
 
-With `--prefix`, the run removes that prefix's app, tree, links and marker and
-nothing outside it: no startup file (a `--prefix` install never writes one), no
+With `--prefix`, the run removes that prefix's app, tree, links and marker.
+Outside the prefix it touches only what the prefix install itself wrote there —
+on Linux the menu entry, which a `--prefix` install also writes, when its
+`Exec=` is the prefix's app — and nothing else: no startup file (a `--prefix` install never writes one), no
 `~/Library` caches (they are named by bundle id, so the real install's are the
 same ones), no skill, and a service or data only when they are the prefix's
 own. `--dry-run` prints every command and removes nothing; its last line says

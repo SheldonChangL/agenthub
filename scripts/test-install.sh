@@ -683,7 +683,7 @@ fi
 unset AGENTHUB_HOME
 commands_only "$work/guard-agenthub-home.txt" "$work/guard-agenthub-home.cmds"
 contains agenthub-home "$work/guard-agenthub-home.txt" "holds no AgentHub install"
-lacks agenthub-home "$work/guard-agenthub-home.cmds" "rm"
+lacks agenthub-home "$work/guard-agenthub-home.cmds" "+ rm "
 
 echo "== HOME unset is a message, not an unbound variable =="
 checks=$((checks + 1))
@@ -1000,6 +1000,7 @@ PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
 lacks foreign "$work/foreign-ah.log" "service uninstall"
 contains foreign "$work/foreign.txt" "left the registered background service alone"
 contains foreign "$work/foreign.txt" "left the node's identity and database alone"
+lacks foreign "$work/foreign.txt" "sh -s -- --uninstall --purge"
 checks=$((checks + 1))
 [ -f "$foreign_home/.config/systemd/user/agenthub-node.service" ] || fail "foreign: the owner's unit was removed"
 checks=$((checks + 1))
@@ -1051,6 +1052,78 @@ checks=$((checks + 1))
 ! exists_path "$orphan_home/.config/systemd/user/agenthub-node.service" || fail "orphan: the unit is still there"
 checks=$((checks + 1))
 [ ! -e "$work/orphan-path-ah.log" ] || fail "orphan: the ah on PATH was run: $(cat "$work/orphan-path-ah.log")"
+
+echo "== the unit is recognised however the path to this install is spelled =="
+# The unit holds the path the node runs from as os.Executable reports it:
+# symlinks resolved, no doubled or trailing slash. AGENTHUB_HOME here is a
+# link to the tree with a trailing slash, and the unit names the real place.
+spelled_home="$work/spelled-home"
+spelled_real="$work/spelled-real/agenthub"
+tree_at "$spelled_real" "$work/spelled-ah.log" "" 0
+mkdir -p "$spelled_home"
+ln -s "$spelled_real" "$work/spelled-link"
+make_unit "$spelled_home" linux "$(cd -P "$spelled_real" && pwd -P)/agenthub-node"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$work/spelled-link/" \
+	isolated "$spelled_home" sh "$installer" --uninstall >"$work/spelled.txt" 2>&1 || fail "spelled: failed: $(cat "$work/spelled.txt")"
+contains spelled "$work/spelled-ah.log" "service uninstall"
+lacks spelled "$work/spelled.txt" "left the registered background service alone"
+
+echo "== a unit that names this install but cannot be read stops the uninstall =="
+unread_home="$work/unread-home"
+tree_at "$unread_home/.local/share/agenthub" "$work/unread-ah.log" "" 0
+mkdir -p "$unread_home/.config/systemd/user"
+printf '[Service]\nExecStart=/usr/bin/env %s\n' "$unread_home/.local/share/agenthub/agenthub-node" \
+	>"$unread_home/.config/systemd/user/agenthub-node.service"
+checks=$((checks + 1))
+if PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$unread_home" sh "$installer" --uninstall >"$work/unread.txt" 2>&1; then
+	fail "unread: an unreadable unit naming this install was carried past"
+fi
+contains unread "$work/unread.txt" "nothing was removed"
+checks=$((checks + 1))
+[ -x "$unread_home/.local/share/agenthub/ah" ] || fail "unread: the tree a registered service runs from was deleted"
+
+echo "== a checkout with both binaries built at its root is not an install =="
+built="$work/built-checkout"
+tree_at "$built" "$work/built-ah.log" "" 0
+echo "module x" >"$built/go.mod"
+mkdir -p "$work/built-home"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash AGENTHUB_HOME="$built" \
+	isolated "$work/built-home" sh "$installer" --uninstall >"$work/built.txt" 2>&1 || fail "built: failed: $(cat "$work/built.txt")"
+checks=$((checks + 1))
+[ -f "$built/go.mod" ] || fail "built: the checkout was removed"
+
+echo "== an old unquoted menu entry is still this install's =="
+old_entry_home="$work/old-entry-home"
+tree_at "$old_entry_home/.local/share/agenthub" "$work/old-entry-ah.log" "" 0
+mkdir -p "$old_entry_home/.local/share/applications"
+printf '[Desktop Entry]\nExec=%s\nStartupWMClass=agenthub-desktop\n' "$old_entry_home/.local/share/agenthub/agenthub-desktop" \
+	>"$old_entry_home/.local/share/applications/agenthub.desktop"
+checks=$((checks + 1))
+PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+	isolated "$old_entry_home" sh "$installer" --uninstall >"$work/old-entry.txt" 2>&1 || fail "old-entry: failed: $(cat "$work/old-entry.txt")"
+checks=$((checks + 1))
+! exists_path "$old_entry_home/.local/share/applications/agenthub.desktop" || fail "old-entry: the unquoted entry was left"
+
+echo "== a marker that is not the installer's line is left, dry run or not =="
+odd_home="$work/odd-home"
+mkdir -p "$odd_home"
+# shellcheck disable=SC2016 # literal startup-file lines
+printf 'alias keep=1\n#  # added by the AgentHub installer (old note)\nexport PATH="$HOME/bin:$PATH"' >"$odd_home/.bashrc"
+cp "$odd_home/.bashrc" "$work/odd-bashrc.before"
+for odd_mode in --dry-run ""; do
+	checks=$((checks + 1))
+	# shellcheck disable=SC2086 # the empty mode is meant to vanish
+	PATH="$linux_shim:$bare_path" SHELL=/bin/bash \
+		isolated "$odd_home" sh "$installer" --uninstall $odd_mode >"$work/odd.txt" 2>&1 || fail "odd: failed: $(cat "$work/odd.txt")"
+	contains "odd$odd_mode" "$work/odd.txt" "not as the line this script writes; left it as it is"
+	lacks "odd$odd_mode" "$work/odd.txt" "remove the AgentHub PATH lines"
+	lacks "odd$odd_mode" "$work/odd.txt" "removed the AgentHub PATH lines"
+	checks=$((checks + 1))
+	cmp -s "$odd_home/.bashrc" "$work/odd-bashrc.before" || fail "odd$odd_mode: .bashrc was rewritten"
+done
 
 echo "== a service that will not come down stops the uninstall =="
 refuse_home="$work/refuse-home"
