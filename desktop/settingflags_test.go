@@ -82,3 +82,40 @@ func flagSpelling(field string) string {
 	}
 	return out.String()
 }
+
+// nodeFlagTakesValue is a copy too, and the restart reads a running node's
+// command line with it (#205). A flag the node gained and this table lacks
+// makes every node started with it one the restart refuses; one whose kind is
+// wrong here makes the restart misread where a --db value ends.
+func TestNodeFlagTableMatchesTheNode(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "cmd", "agenthub-node", "main.go"))
+	if err != nil {
+		t.Fatalf("read the node's main: %v", err)
+	}
+	definition := regexp.MustCompile(`flag\.(String|Bool|Duration|Int|Int64|Uint|Uint64|Float64|Var|Func|BoolFunc|TextVar)\(\s*(?:&\w+,\s*)?"([^"]+)"`)
+	found := map[string]bool{}
+	for _, match := range definition.FindAllStringSubmatch(string(content), -1) {
+		found[match[2]] = match[1] != "Bool" && match[1] != "BoolFunc"
+	}
+	if len(found) == 0 {
+		t.Fatal("no flag definitions were read from the node's main; this check would pass on nothing")
+	}
+	for name, takesValue := range found {
+		mine, ok := nodeFlagTakesValue[name]
+		if !ok {
+			t.Errorf("the node defines -%s and nodeFlagTakesValue does not: a node started with it cannot be restarted", name)
+		} else if mine != takesValue {
+			t.Errorf("-%s: takes a value = %v here, %v in the node", name, mine, takesValue)
+		}
+	}
+	for name := range nodeFlagTakesValue {
+		if _, ok := found[name]; !ok {
+			t.Errorf("nodeFlagTakesValue has -%s, which the node does not define", name)
+		}
+	}
+	for _, flag := range nodeSettingFlags {
+		if _, ok := nodeFlagTakesValue[flag]; !ok {
+			t.Errorf("remembered setting -%s is not in nodeFlagTakesValue", flag)
+		}
+	}
+}

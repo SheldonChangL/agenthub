@@ -29,7 +29,7 @@ func stopNodeProcesses(ctx context.Context) (string, error) {
 // DETACHED_PROCESS gives it no console of its own, which is also why the
 // output has to go to a file: there is no window left for it to print to.
 // CREATE_NEW_PROCESS_GROUP keeps a Ctrl+C aimed at this app from reaching it.
-func startNodeDetached(binary, logPath string) error {
+func startNodeDetached(binary, logPath string, args []string) error {
 	log, err := openNodeLog(logPath)
 	if err != nil {
 		return err
@@ -37,8 +37,11 @@ func startNodeDetached(binary, logPath string) error {
 	defer log.Close()
 	// #nosec G204 -- binary is what findNode resolved: named by the owner in
 	// the environment, or sitting beside this executable where the packaging
-	// step put it. PATH is deliberately not among the places it looks.
-	command := exec.Command(binary)
+	// step put it. PATH is deliberately not among the places it looks. args
+	// are the stopped node's own command line, parsed against the node's flag
+	// table and less its remembered settings (planNodeRestart); nothing the
+	// window or the network supplies reaches them.
+	command := exec.Command(binary, args...)
 	command.Dir = filepath.Dir(binary)
 	command.Stdout = log
 	command.Stderr = log
