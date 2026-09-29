@@ -702,8 +702,8 @@ export const TEXT = {
 
   "attention.later": "Later",
   "attention.laterTitle": "Put this away; it comes back only if it clears and then happens again, and the notification log keeps it",
-  "attention.more.one": "{n} more",
-  "attention.more.other": "{n} more",
+  "attention.more.one": "{n} more item",
+  "attention.more.other": "{n} more items",
   "attention.less": "Show fewer",
   "attention.nodeDown.title": "The node is not answering",
   "attention.nodeDown.action": "Retry",
