@@ -57,10 +57,20 @@
                handler and the language check both still reach for it. -->
           <button id="btn-reload" class="ghost hidden" data-t="app.reload"></button>
           <button id="btn-discover" class="ghost" data-t="app.rescan"></button>
+          <!-- The log of every notice this window has shown since it opened.
+               The number is only the errors and warnings not yet looked at;
+               opening the drawer is looking at them. The label is its own
+               element because the button also holds the number. -->
+          <button id="btn-bell" class="ghost iconbtn bell" data-t-title="notify.bellTitle"><span class="srlabel" data-t="notify.bellLabel"></span><span id="bell-n" class="bellbadge hidden"></span></button>
         </div>
       </header>
 
-      <div id="banner" class="banner hidden"></div>
+      <!-- Things waiting on the owner, one row each, on every view: a node
+           that is not answering, a service that is not running, a full
+           inbox, a machine asking to pair. Each row carries the button that
+           deals with it and a 「later」 that puts it away until it has gone
+           and come back. Rows are built by renderAttention() in app.js. -->
+      <div id="attention" class="attention hidden" aria-live="polite"></div>
 
       <!-- ============ local sessions ============ -->
       <main id="local-view" class="view">
@@ -99,7 +109,7 @@
               </colgroup>
               <thead>
                 <tr>
-                  <th class="col-check"><input type="checkbox" id="select-all" data-t-title="local.selectAllTitle" /></th>
+                  <th class="col-check" id="select-all-cell"><input type="checkbox" id="select-all" data-t-title="local.selectAllTitle" /></th>
                   <th class="sortable" data-sort="id">SESSION</th>
                   <th class="sortable" data-sort="status" data-t="local.colStatus"></th>
                   <th class="sortable" data-sort="audience" data-t="local.colAudience"></th>
@@ -308,6 +318,10 @@
               <div class="cardbody" style="display: flex; flex-direction: column; gap: 12px">
                 <label class="toggle"><input type="checkbox" id="toggle-backdrop" checked /><span><span data-t="appearance.backdrop"></span><span class="why" style="display: block" data-t="appearance.backdropWhy"></span></span></label>
                 <label class="toggle"><input type="checkbox" id="toggle-motion" /><span><span data-t="appearance.motion"></span><span class="why" style="display: block" data-t="appearance.motionWhy"></span></span></label>
+                <!-- Why the switch above is greyed out, said where it can be
+                     read rather than in a tooltip: the rain is drawn over the
+                     photo, so it has nothing to fall on while that is off. -->
+                <p id="motion-why" class="disabledwhy hidden" data-t="appearance.motionNeedsPhoto"></p>
                 <!-- What is actually being drawn, and what the moving half
                      costs: the rain is off until it is asked for. -->
                 <p id="appearance-state" class="muted" style="margin: 0"></p>
@@ -675,6 +689,33 @@
         </div>
       </div>
     </div>
+
+    <!-- ============ drawer: the notice log behind the bell ============
+         Every toast and every attention row since the window opened, newest
+         first, kept in memory only. Opening it marks them all read. -->
+    <div id="notify-modal" class="drawer hidden">
+      <div class="drawer-card">
+        <header>
+          <div>
+            <h2 data-t="notify.title"></h2>
+            <div class="sub muted" data-t="notify.sub"></div>
+          </div>
+          <button id="notify-close" class="ghost" data-t="common.close"></button>
+        </header>
+        <div class="drawerbody">
+          <div id="notify-list" class="noticelist"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ toasts ============
+         The answer to the button just pressed, bottom right, newest at the
+         bottom, three at most. Successes go by themselves after six seconds;
+         errors and warnings stay until closed. After every drawer and dialog
+         on purpose: a toast has to be readable over the thing it answers, and
+         the stylesheet moves the stack clear of an open drawer with a
+         sibling selector that only looks backwards. -->
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script type="module" src="./src/main.js"></script>
   </body>

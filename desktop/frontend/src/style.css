@@ -27,7 +27,12 @@
   --red: #e5544b;
   --radius: 8px;
   --mono: "SF Mono", ui-monospace, Menlo, monospace;
-  --control-h: 28px;
+  /* 36px for every control, 40px for a primary one, and never a click target
+     smaller than 36x36 (2026-09-29 redesign, docs/ui-contract.md §3.1). It
+     was 28px: small enough to miss on a laptop trackpad. */
+  --control-h: 36px;
+  --primary-h: 40px;
+  --focus: #5ec8ff;
 }
 
 * { box-sizing: border-box; }
@@ -151,7 +156,7 @@ body.mac .titlebar { padding-left: 78px; }
 .tab {
   display: inline-flex; align-items: center; gap: 6px;
   white-space: nowrap; flex: none;
-  height: 30px; padding: 0 12px;
+  height: var(--control-h); padding: 0 12px;
   border-radius: 6px;
   color: var(--muted);
   font-size: 12.5px;
@@ -197,16 +202,43 @@ button {
 }
 button:hover:not(:disabled) { border-color: var(--line-strong); background: #212934; }
 button:disabled { opacity: 0.4; cursor: default; }
-button.primary { background: #23b866; border-color: #23b866; color: #061a0f; font-weight: 600; }
+/* A keyboard focus that can be seen from across the room: the default ring
+   was the accent green on the accent-green primary buttons. */
+button:focus-visible,
+.tab:focus-visible,
+summary:focus-visible,
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button.primary { height: var(--primary-h); padding: 0 16px; background: #23b866; border-color: #23b866; color: #061a0f; font-weight: 600; }
+/* An icon on its own: a square exactly one control high. */
+button.iconbtn { width: var(--control-h); min-width: var(--control-h); padding: 0; justify-content: center; }
+/* In flight: the pressed button spins and cannot be pressed again (withBusy in
+   app.js). Less faded than an ordinary disabled button, because this is the
+   one the owner is watching. */
+button.busy { cursor: progress; }
+button.busy:disabled { opacity: 0.75; }
+button.busy::before {
+  content: "";
+  flex: none;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: busy-spin 0.7s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
 button.primary:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
 button.danger { background: transparent; border-color: #5a3330; color: #f0908a; }
 button.danger:hover:not(:disabled) { background: #2a1c1b; border-color: #7a413d; }
 button.ghost { background: transparent; }
 button.ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); }
 button.link {
+  position: relative;
   border: none; background: none; padding: 0; height: auto;
   color: var(--accent); font-size: 12px;
 }
+/* A text link keeps its size and gets a 36px-high target around it. */
+button.link::after { content: ""; position: absolute; inset: -10px -4px; }
 button.link:hover:not(:disabled) { background: none; text-decoration: underline; }
 
 input[type="text"], input[type="search"], select, textarea {
@@ -220,25 +252,142 @@ input[type="text"], input[type="search"], select, textarea {
   user-select: text;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent-line); }
+input:focus-visible, select:focus-visible, textarea:focus-visible { box-shadow: 0 0 0 2px var(--focus); }
 input::placeholder { color: var(--dim); }
-input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 16px; height: 16px; }
 
 .checkline { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 
-/* ---------- banner ---------- */
+/* ---------- notices: attention strip, toasts, the bell ---------- */
 
-.banner {
-  margin: 10px 16px 0;
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(229, 84, 75, 0.45);
-  background: rgba(229, 84, 75, 0.12);
-  font-size: 12.5px;
-  line-height: 1.55;
+/* Severity colours, shared by the three layers: a strip row, a toast and a
+   line in the log all mark themselves with the same 4px bar. */
+:root {
+  --sev-ok: var(--green);
+  --sev-info: #5ec8ff;
+  --sev-warn: var(--amber);
+  --sev-error: var(--red);
 }
-.banner.ok {
-  border-color: rgba(53, 192, 122, 0.4);
-  background: rgba(53, 192, 122, 0.1);
+
+/* What is waiting on the owner, right under the title bar on every view. One
+   row per thing, the button that deals with it on the row. */
+.attention {
+  flex: none;
+  display: flex; flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.attnrow {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 52px;
+  padding: 8px 16px;
+  background: var(--panel-solid);
+}
+.attnrow .sev { flex: none; align-self: stretch; width: 4px; border-radius: 2px; background: var(--sev-info); }
+.attnrow.warn .sev { background: var(--sev-warn); }
+.attnrow.alert .sev { background: var(--sev-error); }
+.attnmsg { flex: 1; min-width: 0; }
+.attntitle { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attnbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.attnrow button { flex: none; }
+
+/* Toasts: the answer to the button just pressed. Bottom right, above every
+   drawer and dialog, newest at the bottom. */
+.toasts {
+  position: fixed;
+  right: 16px; bottom: 16px;
+  z-index: 40;
+  width: min(360px, calc(100vw - 32px));
+  display: flex; flex-direction: column; gap: 8px;
+  pointer-events: none;
+}
+/* Clear of an open drawer: the drawers sit on the right, and a toast on top of
+   one would hide the drawer's own footer buttons. The drawers come before
+   #toasts in index.html, which is what lets a sibling selector see them. */
+.drawer:not(.hidden) ~ .toasts {
+  right: calc(min(560px, 92vw) + 16px);
+  width: min(360px, calc(100vw - min(560px, 92vw) - 32px));
+}
+.toast {
+  pointer-events: auto;
+  position: relative;
+  overflow: hidden;
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 8px 12px 0;
+  border-radius: 10px;
+  background: #1e262e;
+  border: 1px solid var(--line-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  animation: toast-rise 0.18s ease-out;
+}
+.toast .sev { flex: none; align-self: stretch; width: 4px; background: var(--sev-ok); }
+.toast.info .sev { background: var(--sev-info); }
+.toast.warn .sev { background: var(--sev-warn); }
+.toast.error .sev { background: var(--sev-error); }
+.toastmain { flex: 1; min-width: 0; padding-top: 2px; }
+.toasttitle { font-size: 12.5px; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+.toastbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; margin-top: 2px; }
+.toastacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.toast .toastclose { flex: none; margin-top: -4px; }
+/* The six seconds a success or a piece of information stays, draining. */
+.toast .timer {
+  position: absolute; left: 0; bottom: 0;
+  height: 2px; width: 100%;
+  background: var(--sev-ok);
+  animation: toast-drain 6s linear forwards;
+}
+.toast.info .timer { background: var(--sev-info); }
+@keyframes toast-drain { from { width: 100%; } to { width: 0; } }
+@keyframes toast-rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+  /* The bar still says how long is left; it just does not slide in. */
+}
+
+/* The bell: an icon, a number for what has not been looked at. */
+.bell { position: relative; }
+.bell::before {
+  content: "";
+  width: 18px; height: 18px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/><path d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9'/><path d='M10.3 21a1.94 1.94 0 0 0 3.4 0'/></svg>") center / contain no-repeat;
+}
+.bellbadge {
+  position: absolute; top: -5px; right: -5px;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px;
+  background: var(--red); color: #fff;
+  font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The log behind the bell. */
+.noticelist { display: flex; flex-direction: column; }
+.noticerow { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.noticerow:first-child { border-top: none; }
+.noticerow .sev { flex: none; width: 4px; border-radius: 2px; background: var(--sev-ok); }
+.noticerow.info .sev { background: var(--sev-info); }
+.noticerow.warn .sev { background: var(--sev-warn); }
+.noticerow.error .sev { background: var(--sev-error); }
+.noticemain { flex: 1; min-width: 0; }
+.noticetitle { font-size: 12.5px; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+.noticebody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; user-select: text; }
+.noticewhen { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+/* A reason a control is greyed out, in words beside it rather than only in
+   its tooltip (docs/ui-contract.md §12). */
+.disabledwhy { font-size: 11.5px; color: var(--amber); line-height: 1.5; margin: 6px 0 0; }
+.disabledwhy:empty { display: none; }
+
+/* Hidden from sight, still the button's accessible name. */
+.srlabel {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ---------- views ---------- */
@@ -328,8 +477,9 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 }
 .chips { display: flex; gap: 6px; }
 .chip {
+  position: relative;
   display: inline-flex; align-items: center; gap: 6px;
-  height: 24px; padding: 0 10px;
+  height: 28px; padding: 0 10px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: transparent;
@@ -341,6 +491,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .chip.on { border-color: var(--accent); background: var(--accent-dim); color: var(--text); }
 .chip.on .n { color: var(--accent); }
 .chip.zero { opacity: 0.45; }
+/* 28px of pill, 36px of target: the four extra pixels above and below. */
+.chip::after { content: ""; position: absolute; inset: -4px 0; }
 #match-count { font-size: 12px; color: var(--muted); }
 
 /* ---------- local view: table card ---------- */
@@ -380,7 +532,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
    WORKING DIRECTORY carry no width, so they split what is left and clip with
    an ellipsis — the full title and path stay in the cells' titles. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
-col.c-check { width: 32px; }
+/* 40px: the whole cell toggles its checkbox (app.js), so this is the target. */
+col.c-check { width: 40px; }
 col.c-status { width: 76px; }
 /* 104px: 92px of pill inside 6px of padding each side. Measured in
    dev/mock.html (#194): the widest table wordings are 「Not published」 87px
@@ -436,7 +589,7 @@ thead th .sortmark.hint { opacity: 0.3; }
 thead th.sortable:hover .sortmark.hint { opacity: 0.7; }
 
 tbody td {
-  padding: 8px 6px;
+  padding: 6px 6px;
   border-bottom: 1px solid rgba(38, 46, 55, 0.7);
   white-space: nowrap;
   max-width: 420px;
@@ -444,11 +597,12 @@ tbody td {
   text-overflow: ellipsis;
   vertical-align: middle;
 }
-tbody tr { height: 38px; }
+tbody tr { height: 48px; }
 tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
 tbody tr.sel { background: var(--accent-dim); }
 
-.col-check { width: 32px; text-align: center; }
+.col-check { width: 40px; text-align: center; cursor: pointer; }
+.col-check input { vertical-align: middle; }
 /* Pinned to the right edge of the scroller: the row can scroll horizontally
    under it, and the three actions stay where they can be clicked however narrow
    the window is. Opaque because scrolled content passes beneath. */
@@ -525,8 +679,9 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
    MainHacker.dc.html, the row's actions cell): in a 38px row the inbox button
    is a 24x24 square, the same box as the resume button beside it, holding a
    14x14 inbox-tray icon — the icon is 14/24 of its button. The row buttons
-   here are --control-h (28px) tall, the resume button included, so the
-   compact button is a 28px square and the icon 16px (14/24 x 28 = 16.3).
+   here are --control-h tall, the resume button included, so the compact
+   button is a --control-h square; the icon is 16px (14/24 x 28 = 16.3, sized
+   when that was 28px — it is 36px since 2026-09-29 and the icon was kept).
    The icon is the design's own two paths, painted in currentColor through a
    mask; the ✉ glyph it replaces was 13px of font whose ink was about half of
    that. The square is narrower than the old glyph-plus-padding, so the actions
@@ -585,7 +740,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   left: 50%; bottom: 18px;
   transform: translateX(-50%);
   display: flex; align-items: center; gap: 14px;
-  height: 44px; padding: 0 8px 0 16px;
+  height: 56px; padding: 0 8px 0 16px;
   border-radius: 10px;
   background: var(--panel-2);
   border: 1px solid var(--line-strong);
@@ -626,7 +781,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   border-bottom: 1px solid var(--line);
   font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted);
 }
-.nodelist-head button { height: 24px; font-size: 12px; }
+.nodelist-head button { font-size: 12px; }
 .nodelist-foot {
   margin-top: auto;
   padding: 12px 14px;
@@ -721,7 +876,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
   font-variant-numeric: tabular-nums;
 }
 .countdown:empty { display: none; }
-.pairing-state button { height: 24px; font-size: 12px; }
+.pairing-state button { font-size: 12px; }
 #pairing-note { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
 #pairing-note:empty { display: none; }
 #pairing-detail:empty { display: none; }
@@ -784,7 +939,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 .candidaterow .meta { font-size: 11.5px; color: var(--muted); }
 .candidaterow .fingerprint { font-family: var(--mono); letter-spacing: 0.06em; font-size: 12px; user-select: text; }
 .candidaterow .decide { display: flex; gap: 8px; justify-content: flex-end; }
-.candidaterow button { height: 24px; font-size: 12px; }
+.candidaterow button { font-size: 12px; }
 
 /* ---------- the pairing exchange (#63) ---------- */
 
@@ -856,7 +1011,7 @@ td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
 /* Below the fingerprints, never beside them: a button level with the values
    is one that can be pressed before they have been read. */
 .pairrow .decide { display: flex; gap: 8px; justify-content: flex-end; }
-.pairrow .decide button { height: 26px; font-size: 12px; }
+.pairrow .decide button { font-size: 12px; }
 
 /* required by frontend_test.go: a notice explaining an absence */
 .stale {
@@ -1281,7 +1436,7 @@ details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
 .warnmore p { margin: 6px 0 0; line-height: 1.6; }
 .drawertabs { display: flex; gap: 2px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
 .dtab {
-  height: 32px; padding: 0 12px;
+  height: var(--control-h); padding: 0 12px;
   border: none; border-bottom: 2px solid transparent; border-radius: 0;
   background: none; color: var(--muted); font-size: 12.5px;
 }

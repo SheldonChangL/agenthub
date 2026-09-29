@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as EN } from "../src/i18n/en.js";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
@@ -40,6 +41,8 @@ answerConfirms(document, () => true);
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 const PUBLIC_KEY = "cS2bH1mQ9pR4tV7xZ0aD3fG6jK9nQ2sU5wY8bE1hL4o=";
@@ -218,7 +221,7 @@ await settle();
 if (trusted.length !== 1) {
   failures.push(`pair-submit called TrustNode ${trusted.length} times, want 1`);
 }
-const bannerText = el("banner").textContent;
+const bannerText = toast().textContent;
 if (!bannerText.includes("對方那台也要")) {
   failures.push(`the success banner does not say the other machine must pair too: ${bannerText}`);
 }
@@ -227,7 +230,7 @@ if (!bannerText.includes("心跳")) {
 }
 // Not the four-second self-dismissing kind: "you are half done" that vanishes
 // is "you are half done" that was never read.
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("the pairing banner is the self-dismissing success kind, so the warning disappears on its own");
 }
 
@@ -366,8 +369,8 @@ if (!field || !button) {
   if (addressCalls.length !== 1) {
     failures.push(`an empty field was sent to the node as ${JSON.stringify(addressCalls[1])}`);
   }
-  if (!el("banner").textContent.includes("host:port")) {
-    failures.push(`an empty field gave no usable message: ${el("banner").textContent}`);
+  if (!toast().textContent.includes("host:port")) {
+    failures.push(`an empty field gave no usable message: ${toast().textContent}`);
   }
 
   // What is wrong with an address is something only the node knows — it holds
@@ -376,8 +379,8 @@ if (!field || !button) {
   field.value = "8.8.8.8:7463";
   await button.onclick();
   await settle();
-  if (!el("banner").textContent.includes("outside the ranges this node delivers to")) {
-    failures.push(`the node's refusal did not reach the banner: ${el("banner").textContent}`);
+  if (!toast().textContent.includes("outside the ranges this node delivers to")) {
+    failures.push(`the node's refusal did not reach the banner: ${toast().textContent}`);
   }
   addressFails = null;
 }

@@ -17,6 +17,7 @@
 //   node frontend/test/onboarding.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast, toastNodes } from "./fixtures/toasts.mjs";
 import { inEnglish } from "./fixtures/in-english.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
@@ -35,6 +36,8 @@ globalThis.localStorage = {
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const noop = async () => ({});
 
 let calls = { Discover: 0, InstallService: 0, SaveNodeSettings: 0, RestartNode: 0, Pairing: 0 };
@@ -304,8 +307,8 @@ if (calls.SaveNodeSettings !== 0) {
 if (app.state.view !== "settings" || app.state.settingsSection !== "settings-node") {
   failures.push(`the refusal did not take the owner to the form it is about: ${app.state.view}/${app.state.settingsSection}`);
 }
-if (!el("banner").textContent.includes(ZH["pair.formDirty"])) {
-  failures.push(`the refusal was silent: ${el("banner").textContent}`);
+if (!toast().textContent.includes(ZH["pair.formDirty"])) {
+  failures.push(`the refusal was silent: ${toast().textContent}`);
 }
 el("node-private").value = (SETTINGS.saved.treatAsPrivate ?? []).join(", ");
 app.state.view = "local";
@@ -367,25 +370,26 @@ if (openPairingCalls.length !== 0) {
   failures.push(`a repair pressed with the drawer closed opened a pairing window: ${JSON.stringify(openPairingCalls)}`);
 }
 // A window the node refuses to reopen after the repair is said after what the
-// repair did, not instead of it: the banner still says the save went through.
+// repair did, not instead of it: the toast that says the save went through is
+// still on screen when the refusal arrives as a toast of its own.
 el("pairing-modal").classList.remove("hidden");
 openPairingCalls.length = 0;
-const savedSaid = el("banner").textContent;
-if (savedSaid === "" || el("banner").classList.contains("hidden")) {
-  failures.push("the repair left nothing on the banner to keep");
+const savedToast = toast();
+if (!savedToast.shown || savedToast.textContent === "") {
+  failures.push("the repair left nothing on screen to keep");
 }
 openPairingRefusal = "pairing window: node refused";
 await app.applyPeerListenRepairFromCard(lanRepair);
 openPairingRefusal = null;
-const afterRefusal = el("banner").textContent;
+const afterRefusal = toast().textContent;
 if (openPairingCalls.length !== 1) failures.push(`the refused reopen was tried ${openPairingCalls.length} times, want 1`);
-if (!afterRefusal.startsWith(savedSaid)) {
-  failures.push(`a refused reopen replaced what the save said: ${afterRefusal}`);
+if (savedToast.node && !toastNodes(document).includes(savedToast.node)) {
+  failures.push(`a refused reopen took away what the save said: ${savedToast.textContent}`);
 }
 if (!afterRefusal.includes("node refused")) {
   failures.push(`a refused reopen was not said: ${afterRefusal}`);
 }
-if (el("banner").className.includes("ok")) failures.push("a banner carrying a failure is drawn as a success");
+if (toast().className.includes("ok")) failures.push("a toast carrying a failure is drawn as a success");
 el("pairing-modal").classList.add("hidden");
 pairingAnswer = { availability: "unknown", candidates: [] };
 app.state.pairing = pairingBefore;
@@ -554,8 +558,8 @@ configure(bindings);
   }
   // A scan that found nothing says where AgentHub looks, in the banner, which
   // is where the answer is. That sentence used to be the step's own body.
-  if (!el("banner").textContent.includes(ZH["app.rescanNothingFound"].trim())) {
-    failures.push(`an empty scan did not explain where AgentHub looks: ${el("banner").textContent}`);
+  if (!toast().textContent.includes(ZH["app.rescanNothingFound"].trim())) {
+    failures.push(`an empty scan did not explain where AgentHub looks: ${toast().textContent}`);
   }
 }
 
@@ -848,11 +852,11 @@ await suggesting.applyPeerListenRepairFromCard(refused);
 if (calls.SaveNodeSettings !== 0) {
   failures.push("the drawer carried an unsaved auto-wake tick into a save about a listening address");
 }
-if (!el("banner").textContent.includes(ZH["nodeSettings.autoWake"])) {
-  failures.push(`the refusal did not name the dirty field: ${el("banner").textContent}`);
+if (!toast().textContent.includes(ZH["nodeSettings.autoWake"])) {
+  failures.push(`the refusal did not name the dirty field: ${toast().textContent}`);
 }
-if (!el("banner").textContent.includes(ZH["pair.formDirty"])) {
-  failures.push(`the refusal did not say which two buttons undo it: ${el("banner").textContent}`);
+if (!toast().textContent.includes(ZH["pair.formDirty"])) {
+  failures.push(`the refusal did not say which two buttons undo it: ${toast().textContent}`);
 }
 el("node-autowake").checked = false;
 bindings.LocalAddresses = async () => ADDRESSES;

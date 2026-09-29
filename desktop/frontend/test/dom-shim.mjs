@@ -90,10 +90,49 @@ class Node {
   }
 
   append(...kids) {
-    for (const kid of kids) this.children.push(kid);
+    for (const kid of kids) {
+      // An element lives in one place, as in a browser: appending it here takes
+      // it out of wherever it was, which is what remove() below relies on.
+      if (kid && typeof kid === "object") {
+        if (kid.parentNode) kid.remove();
+        kid.parentNode = this;
+      }
+      this.children.push(kid);
+    }
+  }
+
+  // Takes this element out of its parent, as Element.remove() does. The toast
+  // stack removes one toast at a time so the others keep their countdowns; a
+  // shim without it could only rebuild the whole stack.
+  //
+  // remove(index) is the other remove: it drops one option, as
+  // HTMLSelectElement's does. The two share a name in the DOM too, told apart
+  // by whether an index was given.
+  remove(index) {
+    if (index !== undefined) {
+      const option = this.options[index];
+      if (!option) return;
+      this.children = this.children.filter((child) => child !== option);
+      return;
+    }
+    const parent = this.parentNode;
+    if (!parent) return;
+    parent.children = parent.children.filter((child) => child !== this);
+    this.parentNode = null;
+  }
+
+  // Attributes other than class and title (role, aria-*), serialized with the
+  // rest, so a check can read what a screen reader would be told.
+  setAttribute(name, value) {
+    this.attrs[name] = String(value);
+  }
+
+  getAttribute(name) {
+    return Object.prototype.hasOwnProperty.call(this.attrs, name) ? this.attrs[name] : null;
   }
 
   replaceChildren(...kids) {
+    for (const child of this.children) if (child && typeof child === "object") child.parentNode = null;
     this.children = [];
     this._text = "";
     this._raw = undefined;
@@ -117,12 +156,6 @@ class Node {
     return options.findIndex((option) => option.value === this._value);
   }
 
-  // remove(index) drops one option, as HTMLSelectElement does.
-  remove(index) {
-    const option = this.options[index];
-    if (!option) return;
-    this.children = this.children.filter((child) => child !== option);
-  }
 
   get value() {
     if (this._value === undefined) {

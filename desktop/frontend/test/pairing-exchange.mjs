@@ -24,6 +24,7 @@
 //   node frontend/test/pairing-exchange.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
@@ -31,6 +32,8 @@ globalThis.document = document;
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 
 const ticks = [];
@@ -371,7 +374,7 @@ if (decisions.at(-1)?.[0] !== "reject") {
 // English and names `ah` subcommands; shown alone it is the one reply in the
 // whole window nobody here can read, and dropped it takes with it the one thing
 // this window cannot work out — whether the other machine could be told.
-const rejectBanner = el("banner").textContent;
+const rejectBanner = toast().textContent;
 if (!/[\u4e00-\u9fff]/.test(rejectBanner)) {
   failures.push(`a decision was answered only in the node's English: ${rejectBanner}`);
 }
@@ -407,8 +410,8 @@ await settle();
 if (started.length !== before) {
   failures.push("an empty address field was sent to the node");
 }
-if (!el("banner").textContent.includes("host:port")) {
-  failures.push(`an empty field gave no usable message: ${el("banner").textContent}`);
+if (!toast().textContent.includes("host:port")) {
+  failures.push(`an empty field gave no usable message: ${toast().textContent}`);
 }
 
 // A candidate row can pick who is dialled. It carries the announced address and
@@ -442,8 +445,8 @@ for (const [code, expected] of Object.entries(PAIR_TEXT.errors)) {
   el("pair-address").value = "192.168.1.5:7463";
   await el("btn-pair-send").onclick();
   await settle();
-  if (el("banner").textContent !== expected) {
-    failures.push(`${code} was shown as ${JSON.stringify(el("banner").textContent)}`);
+  if (toast().textContent !== expected) {
+    failures.push(`${code} was shown as ${JSON.stringify(toast().textContent)}`);
   }
 }
 startThrow = "";
@@ -458,11 +461,11 @@ el("pair-address").value = "192.168.1.5:7463";
 await el("btn-pair-send").onclick();
 await settle();
 for (const fragment of ["no more than 3 pairing requests from one address", "Reject what is waiting"]) {
-  if (!el("banner").textContent.includes(fragment)) {
-    failures.push(`the peer's own reason for refusing was lost: ${el("banner").textContent}`);
+  if (!toast().textContent.includes(fragment)) {
+    failures.push(`the peer's own reason for refusing was lost: ${toast().textContent}`);
   }
 }
-if (el("banner").textContent.startsWith("PEER_PAIRING_BUSY")) {
+if (toast().textContent.startsWith("PEER_PAIRING_BUSY")) {
   failures.push("the error code was shown to the owner; it is for a log, not for a person");
 }
 startThrow = "";
@@ -472,8 +475,8 @@ startThrow = "SOMETHING_NEW: the node explained itself";
 el("pair-address").value = "192.168.1.5:7463";
 await el("btn-pair-send").onclick();
 await settle();
-if (!el("banner").textContent.includes("the node explained itself")) {
-  failures.push(`an untranslated refusal was swallowed: ${el("banner").textContent}`);
+if (!toast().textContent.includes("the node explained itself")) {
+  failures.push(`an untranslated refusal was swallowed: ${toast().textContent}`);
 }
 startThrow = "";
 

@@ -14,6 +14,7 @@
 //   node frontend/test/node-addresses.mjs
 
 import { document } from "./dom-shim.mjs";
+import { latestToast } from "./fixtures/toasts.mjs";
 import { answerConfirms } from "./fixtures/confirm-dialog.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
@@ -23,6 +24,8 @@ answerConfirms(document, () => true);
 
 const failures = [];
 const el = (id) => document.getElementById(id);
+// The newest toast, which is where a write says what it did.
+const toast = () => latestToast(document);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
 const fill = (text, values) => text.replace(/\{(\w+)\}/g, (_, key) => values[key]);
 const find = (node, className, found = []) => {
@@ -111,8 +114,8 @@ if (calls.length !== 1 || !same(calls[0], ["node_peer0000000000", [PREFERRED, BA
 if (singleCalls.length !== 0) {
   failures.push("the page recorded through the one-address binding, which would keep the typo as a backup");
 }
-if (!el("banner").textContent.includes(`${PREFERRED}, ${BACKUP}`) || !el("banner").className.includes("ok")) {
-  failures.push(`the saved list is not what the banner reports: ${el("banner").textContent}`);
+if (!toast().textContent.includes(`${PREFERRED}, ${BACKUP}`) || !toast().className.includes("ok")) {
+  failures.push(`the saved list is not what the banner reports: ${toast().textContent}`);
 }
 if (state.addressDraft !== null) failures.push("a saved list left its draft behind");
 
@@ -184,8 +187,8 @@ fields(page)[0].value = "   ";
 await find(page, "setaddress")[0].onclick();
 await settle();
 if (calls.length !== 0) failures.push(`an empty list was sent: ${JSON.stringify(calls)}`);
-if (el("banner").textContent !== ZH["network.addressEmpty"]) {
-  failures.push(`an empty list gave ${JSON.stringify(el("banner").textContent)}`);
+if (toast().textContent !== ZH["network.addressEmpty"]) {
+  failures.push(`an empty list gave ${JSON.stringify(toast().textContent)}`);
 }
 
 /* ---------- 7. an older node records the first address and the page says so ---------- */
@@ -202,10 +205,10 @@ if (!same(calls[0], ["node_peer0000000000", [PREFERRED, BACKUP]])) {
   failures.push(`the page sent ${JSON.stringify(calls[0])} to an older node; the binding decides the fallback`);
 }
 const olderText = fill(ZH["network.addressSavedOlderNode"], { name: "ubuntu-lab", address: PREFERRED });
-if (el("banner").textContent !== olderText) {
-  failures.push(`an older node's fallback was reported as ${JSON.stringify(el("banner").textContent)}`);
+if (toast().textContent !== olderText) {
+  failures.push(`an older node's fallback was reported as ${JSON.stringify(toast().textContent)}`);
 }
-if (el("banner").className.includes("ok")) {
+if (toast().className.includes("ok")) {
   failures.push("an older node's fallback was shown as a plain success, which promises the backups were kept");
 }
 answer = async () => ({ olderNode: false });

@@ -85,7 +85,7 @@ if (!row.includes("AAAA BBBB CCCC DDDD EEEE FFFF")) {
 }
 // Nothing a sender chose may decide a class name.
 for (const cls of row.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(candidaterow|line|name|meta|fingerprint|muted|pill bad|ghost|primary|decide)"$/.test(cls)) {
+  if (!/^class="(candidaterow|line|name|meta|fingerprint|muted|pill bad|ghost|primary|decide|disabledwhy)"$/.test(cls)) {
     failures.push(`a candidate-supplied value reached a class name: ${cls}`);
   }
 }

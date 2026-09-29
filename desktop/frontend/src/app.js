@@ -100,6 +100,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // reason: the option labels are part translation, and rebuilding them
     // after a switch must not mean another round trip to the node.
     nodeAddresses: { list: [], failure: "" },
+    // Why the last read did not reach the node, for the attention row that
+    // says so. Empty while it answers.
+    nodeError: "",
+    // Every notice since the window opened, newest first, in memory only and
+    // at most NOTICE_LIMIT of them: the log behind the bell. A toast goes
+    // away; this is where it can still be read.
+    notices: [],
+    // Requests from another machine that are waiting for this one to approve,
+    // as the last read of the exchange said. Read by the pairing drawer while
+    // it is open, and otherwise once per fifteen-second tick — and only while
+    // the node last reported the pairing window open, since no request can be
+    // waiting on a closed one (docs/ui-contract.md §2 PairRequests).
+    pairIncoming: [],
     // ---- redesign state ----
     // Grouped filters: a Set of chosen values per group (docs/ui-contract.md
     // §5.1). Empty means "no restriction". Search, filters and sort are kept in
@@ -455,6 +468,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
     checkCell.append(checkbox);
+    // The cell is the target, not the 13px box: a press anywhere in it
+    // toggles the box, which then fires its own change handler.
+    checkCell.onclick = (event) => {
+      if (event?.target === checkCell) checkbox.click?.();
+    };
 
     // The name the session's own app gives the conversation is what a person
     // recognises a row by; the UUID is only ever needed to resume or to quote
@@ -1190,6 +1208,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       selected: state.counts.selected ?? 0,
       none: state.counts.none ?? 0,
     });
+
+    // On every view, so last: every read above may have changed what is
+    // waiting on the owner.
+    renderAttention();
+    renderBell();
   }
 
   /* ---------------- settings view ---------------- */
@@ -1202,6 +1225,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
     el("toggle-motion").disabled = !state.ui.backdrop;
+    el("motion-why").classList.toggle("hidden", state.ui.backdrop);
     el("appearance-state").textContent = describeBackdropState();
     // The control shows the language in use, not the stored override: with no
     // override stored the window is following the OS, and a blank box over a
@@ -1291,12 +1315,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     await openPairingWindowIfNeeded();
   }
 
-  // keepBanner is for a caller whose own result is already on the banner — the
-  // repair from step 1, whose save and restart said what they did. A refused
-  // OpenPairing used to replace that sentence, so the owner learned the window
-  // did not open and lost whether the address they had just fixed was saved.
-  // The failure is added after it instead.
-  async function openPairingWindowIfNeeded({ keepBanner = false } = {}) {
+  // A refused OpenPairing is its own toast. It used to replace the one banner,
+  // which after the repair from step 1 held what the save and restart had
+  // done — so the owner learned the window did not open and lost whether the
+  // address they had just fixed was saved. Toasts stack, and an error stays,
+  // so both are on screen without being glued into one sentence.
+  async function openPairingWindowIfNeeded() {
     // The drawer can be dismissed while loadPairing is still on its way: a
     // window opened after that is one nobody asked for, and nothing on screen
     // would then close it.
@@ -1311,10 +1335,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // No duration: the node's own default is the one the node documents.
       await api.OpenPairing(0);
     } catch (error) {
-      const failure = pairErrorMessage(error);
-      const shown = el("banner");
-      const before = keepBanner && !shown.classList.contains("hidden") ? shown.textContent : "";
-      banner(before ? `${before} ${failure}` : failure);
+      banner(pairErrorMessage(error));
       return;
     }
     await loadPairing();
@@ -1480,19 +1501,360 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
 
-  /* ---------------- banner ---------------- */
+  /* ---------------- notices: toasts, the bell, the attention strip ---------------- */
 
-  let bannerTimer = null;
-  function banner(message, ok = false) {
-    const node = el("banner");
-    node.textContent = message;
-    node.className = ok ? "banner ok" : "banner";
-    clearTimeout(bannerTimer);
-    if (ok) bannerTimer = setTimeout(() => node.classList.add("hidden"), 4000);
+  // Three layers, because they answer three different questions.
+  //
+  // A toast answers the button just pressed. There used to be one banner under
+  // the title bar for that: a success went after four seconds, and every new
+  // message replaced the last — so an error was gone the moment anything else
+  // was said, and the load() that follows most writes hid whatever the write
+  // had just reported. Toasts stack instead (three at most, newest at the
+  // bottom); successes and plain information still go by themselves, but after
+  // six seconds and with a bar that shows it happening, and errors and
+  // warnings stay until someone closes them.
+  //
+  // The bell answers "what did I miss": every toast and every attention row
+  // since the window opened, with the time. Its number is the errors and
+  // warnings nobody has opened the drawer to look at.
+  //
+  // The attention strip answers "what is waiting on me", on every view: a node
+  // that is not answering, a service that is not running, a full inbox, a
+  // machine asking to pair. Each row has the button that deals with it.
+  const TOAST_LIMIT = 3;
+  const TOAST_MS = 6000;
+  const NOTICE_LIMIT = 100;
+  const NOTICE_KINDS = new Set(["ok", "info", "warn", "error"]);
+  // The ones that stay on screen until closed, and the ones the bell counts.
+  const lasting = (kind) => kind === "error" || kind === "warn";
+
+  // What is on screen, oldest first. Kept here rather than read back from the
+  // container, so dismissing one toast never has to rebuild the others: a
+  // re-inserted element restarts its countdown bar.
+  const toastsShown = [];
+
+  function noticeTime(date) {
+    return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
   }
 
-  function hideBanner() {
-    el("banner").classList.add("hidden");
+  // notify is the one way anything in this window tells the owner something.
+  //
+  // title is the sentence; body is an optional second line; actions are
+  // buttons on the toast, each { label, run }, and pressing one closes the
+  // toast before it runs. Answers the toast's record, which dismissToast takes.
+  function notify(kind, title, { body = "", actions = [] } = {}) {
+    const known = NOTICE_KINDS.has(kind) ? kind : "error";
+    logNotice(known, title, body);
+    return showToast(known, String(title ?? ""), String(body ?? ""), actions);
+  }
+
+  // banner is what the forty-odd call sites that predate toasts still say:
+  // ok true is a success, anything else is an error. The name is kept because
+  // the question each caller answers — did this work — has not changed.
+  function banner(message, ok = false) {
+    return notify(ok ? "ok" : "error", message);
+  }
+
+  function logNotice(kind, title, body = "") {
+    const open = noticeDrawerOpen();
+    state.notices.unshift({
+      kind,
+      title: String(title ?? ""),
+      body: String(body ?? ""),
+      at: new Date(),
+      // Read already when the drawer is open to see it arrive.
+      unread: lasting(kind) && !open,
+    });
+    if (state.notices.length > NOTICE_LIMIT) state.notices.length = NOTICE_LIMIT;
+    renderBell();
+    if (open) renderNotices();
+  }
+
+  function showToast(kind, title, body, actions) {
+    const node = element("div", `toast ${kind}`);
+    // alert for the two that stay: those interrupt a screen reader, the rest
+    // wait their turn behind the container's aria-live="polite".
+    node.setAttribute("role", lasting(kind) ? "alert" : "status");
+    const record = { node, kind, timer: null };
+    const main = element("div", "toastmain");
+    main.append(element("div", "toasttitle", title));
+    if (body) main.append(element("div", "toastbody", body));
+    if (actions.length > 0) {
+      const row = element("div", "toastacts");
+      for (const action of actions) {
+        const button = element("button", "", action.label);
+        button.onclick = () => {
+          dismissToast(record);
+          action.run();
+        };
+        row.append(button);
+      }
+      main.append(row);
+    }
+    const close = element("button", "ghost iconbtn toastclose", "✕");
+    close.title = t("notify.close");
+    close.setAttribute("aria-label", t("notify.close"));
+    close.onclick = () => dismissToast(record);
+    node.append(element("i", "sev"), main, close);
+    if (!lasting(kind)) {
+      node.append(element("i", "timer"));
+      record.timer = setTimeout(() => dismissToast(record), TOAST_MS);
+      // A pending toast is not a reason for a test process to stay alive for
+      // six more seconds; a browser's handle is a number and has no unref.
+      record.timer?.unref?.();
+    }
+    toastsShown.push(record);
+    el("toasts").append(node);
+    // The oldest goes when a fourth arrives, whatever its kind: it is still in
+    // the bell's log, and a column of errors taller than the window is one
+    // nobody reads.
+    while (toastsShown.length > TOAST_LIMIT) dismissToast(toastsShown[0]);
+    return record;
+  }
+
+  function dismissToast(record) {
+    const at = toastsShown.indexOf(record);
+    if (at === -1) return;
+    toastsShown.splice(at, 1);
+    clearTimeout(record.timer);
+    record.node.remove();
+  }
+
+  /* ---- the bell and its drawer ---- */
+
+  function noticeDrawerOpen() {
+    return !el("notify-modal").classList.contains("hidden");
+  }
+
+  function renderBell() {
+    const unread = state.notices.filter((notice) => notice.unread).length;
+    const badge = el("bell-n");
+    badge.textContent = unread > 0 ? String(unread) : "";
+    badge.classList.toggle("hidden", unread === 0);
+    el("btn-bell").title = unread > 0 ? plural(unread, "notify.bellUnread") : t("notify.bellTitle");
+  }
+
+  function openNotices() {
+    el("notify-modal").classList.remove("hidden");
+    // Opening it is reading it.
+    for (const notice of state.notices) notice.unread = false;
+    renderBell();
+    renderNotices();
+    el("notify-close").focus?.();
+  }
+
+  function closeNotices() {
+    el("notify-modal").classList.add("hidden");
+  }
+
+  function renderNotices() {
+    const list = el("notify-list");
+    if (state.notices.length === 0) {
+      list.replaceChildren(element("p", "empty", t("notify.empty")));
+      return;
+    }
+    list.replaceChildren(...state.notices.map((notice) => {
+      const row = element("div", `noticerow ${notice.kind}`);
+      const main = element("div", "noticemain");
+      main.append(element("div", "noticetitle", notice.title));
+      if (notice.body) main.append(element("div", "noticebody", notice.body));
+      // The severity in words as well as in colour, beside the time.
+      main.append(element("div", "noticewhen", `${noticeTime(notice.at)} · ${t("notify.kind." + notice.kind)}`));
+      row.append(element("i", "sev"), main);
+      return row;
+    }));
+  }
+
+  /* ---- the attention strip ---- */
+
+  // Which severity of row is logged as which kind of notice.
+  const ATTENTION_KIND = { alert: "error", warn: "warn", info: "info" };
+
+  // Put away with 「later」, by key. A key leaves this set the first time the
+  // thing it names is no longer there, so the same thing coming back later is
+  // shown again rather than staying hidden for the rest of the session.
+  const attentionDismissed = new Set();
+  // The keys on the strip at the last render, dismissed or not, so a row is
+  // logged once when it appears rather than on every render.
+  let attentionKeys = new Set();
+  // One row element per kind, kept across renders for the reason every other
+  // row in this window is: the fifteen-second tick must not replace the button
+  // under the pointer.
+  const attentionRows = new Map();
+
+  function pairWindowReportedOpen() {
+    return Boolean(state.pairing?.state?.open) && pairingRemaining() > 0;
+  }
+
+  function pendingIncoming(rows) {
+    return (Array.isArray(rows) ? rows : [])
+      .filter((row) => row?.direction === "incoming" && row?.state === "pending");
+  }
+
+  function sessionLabel(id) {
+    const session = state.sessions.find((candidate) => candidate.id === id);
+    return session?.title || id;
+  }
+
+  // attentionItems is state in, rows out. Order is severity: the two that stop
+  // this machine being reachable, then a full inbox, then a request to pair.
+  function attentionItems() {
+    const items = [];
+    if (state.nodeReachable === false) {
+      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
+      items.push({
+        kind: "node",
+        key: "node",
+        sev: "alert",
+        title: t("attention.nodeDown.title"),
+        body: t("app.notConnected", { error: state.nodeError || "unknown error", shown }),
+        label: t("attention.nodeDown.action"),
+        run: (button) => withBusy(t("app.reload"), load, { button }),
+      });
+    }
+
+    const status = state.service;
+    if (status && status.supported === true && !status.toolError && !(status.installed && status.running)) {
+      items.push({
+        kind: "service",
+        key: status.installed ? "service:stopped" : "service:none",
+        sev: "alert",
+        title: status.installed ? t("attention.service.stoppedTitle") : t("attention.service.noneTitle"),
+        body: status.installed
+          ? t("service.lineInstalledStopped", { log: status.logHint || t("service.logHintFallback") })
+          : (state.nodeReachable ? t("service.lineNotAService") : t("service.lineNothing")),
+        label: t("attention.service.action"),
+        run: () => goToService(),
+      });
+    }
+
+    // Unknown counts say nothing, so a read that failed hides this row rather
+    // than repeating the last numbers as if they were current.
+    if (state.inboxCounts.ok) {
+      const order = new Map(state.sessions.map((session, index) => [session.id, index]));
+      const full = Object.entries(state.inboxCounts.counts ?? {})
+        .filter(([, count]) => count?.full)
+        .map(([id, count]) => ({ id, held: count.held ?? 0, capacity: count.capacity ?? 0 }))
+        .sort((a, b) => (order.get(a.id) ?? Infinity) - (order.get(b.id) ?? Infinity) || a.id.localeCompare(b.id));
+      if (full.length > 0) {
+        const first = full[0];
+        items.push({
+          kind: "inbox",
+          key: `inbox:${full.map((entry) => entry.id).sort().join(",")}`,
+          sev: "warn",
+          title: full.length === 1
+            ? t("attention.inboxFull.titleOne", { session: sessionLabel(first.id) })
+            : plural(full.length, "attention.inboxFull.titleMany"),
+          body: full.length === 1
+            ? t("attention.inboxFull.body", { held: first.held, capacity: first.capacity })
+            : t("attention.inboxFull.bodyMany", { session: sessionLabel(first.id) }),
+          label: t("attention.inboxFull.action"),
+          run: () => openInbox(first.id).catch((error) => banner(t("inbox.readFailed", { error }))),
+        });
+      }
+    }
+
+    const incoming = pairWindowReportedOpen() ? state.pairIncoming : [];
+    if (incoming.length > 0) {
+      const first = incoming[0];
+      items.push({
+        kind: "pair",
+        key: `pair:${incoming.map((row) => row.id).sort().join(",")}`,
+        sev: "info",
+        title: incoming.length === 1
+          ? t("attention.pair.titleOne", { name: first.displayName || first.nodeId || t("pair.noName") })
+          : plural(incoming.length, "attention.pair.titleMany"),
+        body: t("attention.pair.body"),
+        label: t("attention.pair.action"),
+        run: () => goToPairing(),
+      });
+    }
+    return items;
+  }
+
+  function attentionRow(item) {
+    let entry = attentionRows.get(item.kind);
+    if (!entry) {
+      const row = element("div", "attnrow");
+      const sev = element("i", "sev");
+      const msg = element("div", "attnmsg");
+      const title = element("div", "attntitle");
+      const body = element("div", "attnbody");
+      msg.append(title, body);
+      const action = element("button", "attnaction");
+      const later = element("button", "ghost attnlater");
+      row.append(sev, msg, action, later);
+      entry = { row, title, body, action, later, key: "" };
+      later.onclick = () => {
+        attentionDismissed.add(entry.key);
+        renderAttention();
+      };
+      attentionRows.set(item.kind, entry);
+    }
+    entry.key = item.key;
+    entry.row.className = `attnrow ${item.sev}`;
+    entry.title.textContent = item.title;
+    entry.body.textContent = item.body;
+    // classList, not className: a retry in flight carries `busy`, and a render
+    // landing in the middle of it must not take the spinner away.
+    entry.action.classList.toggle("primary", item.sev === "alert");
+    entry.action.textContent = item.label;
+    entry.action.disabled = state.busy;
+    entry.action.onclick = () => item.run(entry.action);
+    entry.later.textContent = t("attention.later");
+    entry.later.title = t("attention.laterTitle");
+    return entry.row;
+  }
+
+  function renderAttention() {
+    const items = attentionItems();
+    const keys = new Set(items.map((item) => item.key));
+    for (const key of [...attentionDismissed]) if (!keys.has(key)) attentionDismissed.delete(key);
+    for (const item of items) {
+      if (!attentionKeys.has(item.key)) logNotice(ATTENTION_KIND[item.sev], item.title, item.body);
+    }
+    attentionKeys = keys;
+    const shown = items.filter((item) => !attentionDismissed.has(item.key));
+    for (const kind of [...attentionRows.keys()]) {
+      if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
+    }
+    const box = el("attention");
+    keepChildren(box, shown.map(attentionRow));
+    box.classList.toggle("hidden", shown.length === 0);
+  }
+
+  // The fifteen-second tick's one read of the exchange, for the attention row.
+  //
+  // PairRequests is not free — the node dials the far side of every pending
+  // outgoing request before it answers — which is why the drawer reads it only
+  // while open. This is the one other read, and it is bounded twice: once per
+  // tick, and only while the node's last answer said the pairing window is
+  // open, because a request from another machine can only be waiting on an open
+  // one. Never while the drawer is open: its own two-second poll is reading
+  // the same rows, and loadPairRequests hands them on.
+  let incomingRequest = 0;
+  let incomingApplied = 0;
+  async function refreshIncomingPairRequests() {
+    if (pairingDrawerOpen()) return;
+    if (!pairWindowReportedOpen()) {
+      if (state.pairIncoming.length > 0) {
+        state.pairIncoming = [];
+        renderAttention();
+      }
+      return;
+    }
+    const sequence = ++incomingRequest;
+    let rows;
+    try {
+      rows = await api.PairRequests(false);
+    } catch {
+      // Not a fact about the other machine; the row keeps what it last knew.
+      return;
+    }
+    if (sequence <= incomingApplied) return;
+    incomingApplied = sequence;
+    state.pairIncoming = pendingIncoming(rows);
+    renderAttention();
   }
 
   /* ---------------- data ---------------- */
@@ -1642,14 +2004,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderNodeLine();
     el("footer-right").textContent = reachable ? overview.node.id : "";
 
-    if (!reachable) {
-      // The banner has to say which of the two situations this is, or a stale
-      // list reads as the current truth.
-      const shown = state.loadedOnce ? t("app.showingStale") : t("app.neverLoaded");
-      banner(t("app.notConnected", { error: overview.error || "unknown error", shown }));
-    } else {
-      hideBanner();
-    }
+    // Said by the attention strip rather than a toast: this is a state, not an
+    // answer to a button, and a toast every fifteen seconds that stays until
+    // closed is a column of the same error. The row says which of the two
+    // situations this is — the last lists kept, or none ever read — because
+    // a stale list otherwise reads as the current truth, and it goes away by
+    // itself on the first read that answers.
+    state.nodeError = reachable ? "" : (overview.error || "");
     state.nodeReachable = reachable;
     loadService().catch(() => {});
 
@@ -1828,7 +2189,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   if (typeof document.addEventListener === "function") document.addEventListener("keydown", confirmKey, true);
 
-  async function withBusy(label, fn) {
+  // button is the one that was pressed, when there is one: it turns into a
+  // spinner and cannot be pressed again until the call has answered, so the
+  // press visibly did something even while the node takes its time. The rest
+  // of the window's write buttons are held off by state.busy through render().
+  async function withBusy(label, fn, { button = null } = {}) {
     // Ignored while another one is running. Disabling buttons covers only the
     // ids render() knows about, and the repair buttons are created on the fly —
     // so the ones most likely to be pressed twice were the ones not covered.
@@ -1837,6 +2202,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // first one has already replaced.
     if (state.busy) return;
     state.busy = true;
+    const pressed = button && typeof button === "object" && button.classList ? button : null;
+    if (pressed) {
+      pressed.classList.add("busy");
+      pressed.setAttribute("aria-busy", "true");
+      pressed.disabled = true;
+    }
     render();
     try {
       await fn();
@@ -1844,6 +2215,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(t("busy.failed", { action: label, error }));
     } finally {
       state.busy = false;
+      if (pressed) {
+        pressed.classList.remove("busy");
+        pressed.setAttribute("aria-busy", "false");
+        // Back to pressable; the render below disables it again if something
+        // else still says it should be.
+        pressed.disabled = false;
+      }
       render();
     }
   }
@@ -1851,7 +2229,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // mode is the audience's own mode, not a sentence: the two languages put the
   // verb and the count in different places, so each one gets its own key rather
   // than a noun glued to a template.
-  async function applyAudience(audience, mode) {
+  async function applyAudience(audience, mode, { button = null } = {}) {
     const ids = [...state.selected];
     await withBusy(t("audience.verb." + mode), async () => {
       const result = await api.SetAudience(ids, audience);
@@ -1868,7 +2246,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         closeAudienceModal();
         banner(plural(result.changed, "audience.applied." + mode), true);
       }
-    });
+    }, { button });
   }
 
   /* ---------------- network view ---------------- */
@@ -2022,7 +2400,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // invent one. It is not validated here — the node holds the ranges this build
   // will talk to, and a second rule in this process could only disagree with
   // the one that actually decides.
-  async function sendPairRequest(address) {
+  async function sendPairRequest(address, { button = null } = {}) {
     const wanted = String(address ?? "").trim();
     if (wanted === "") {
       banner(PAIR_TEXT.addressEmpty);
@@ -2038,7 +2416,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("pair-address").value = "";
       banner(PAIR_TEXT.sent, true);
       await loadPairRequests();
-    });
+    }, { button });
   }
 
   // decidePairRequest is approve, confirm and reject, which differ only in
@@ -2046,7 +2424,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   //
   // The id comes from the row the button was built on, never from a field: an
   // id typed or pasted is an id that can name somebody else's request.
-  async function decidePairRequest(id, verb) {
+  async function decidePairRequest(id, verb, { button = null } = {}) {
     const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
     if (!call) return;
     const label = t("pair.busy." + verb);
@@ -2071,7 +2449,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Approving or confirming writes the trust store, so the node list is
       // now out of date.
       if (verb !== "reject") await load();
-    });
+    }, { button });
   }
 
   // pairDecisionMessage is the answer to a button press: this window's sentence
@@ -2250,12 +2628,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (verb !== "") {
       parts.primary.textContent = verb === "confirm" ? PAIR_TEXT.confirm : PAIR_TEXT.approve;
       parts.primary.disabled = state.busy;
-      parts.primary.onclick = () => decidePairRequest(request.id, verb);
+      parts.primary.onclick = () => decidePairRequest(request.id, verb, { button: parts.primary });
       wanted.push(parts.primary);
     }
     if (undecided) {
       parts.reject.disabled = state.busy;
-      parts.reject.onclick = () => decidePairRequest(request.id, "reject");
+      parts.reject.onclick = () => decidePairRequest(request.id, "reject", { button: parts.reject });
       wanted.push(parts.reject);
     }
     // A finished row carries no button at all, so the box is emptied rather than
@@ -3031,7 +3409,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const use = element("button", "ghost", PAIR_TEXT.sendManual);
     actions.append(use);
     row.append(actions);
-    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use };
+    // Why 送出 is greyed out, when it is: said beside it, because a disabled
+    // button with its reason in a tooltip is a button that does nothing.
+    const why = element("div", "disabledwhy");
+    row.append(why);
+    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use, why };
     // No flags yet, which is what the empty string means: a row that does carry
     // one differs from this and gets its line written on the first update.
     row.candidateFlags = "";
@@ -3067,7 +3449,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       last: relative(candidate.lastSeen),
     });
     parts.send.disabled = state.busy || !candidate.address;
-    parts.send.onclick = () => sendPairRequest(candidate.address);
+    // Empty is hidden (.disabledwhy:empty), so no class of this row is ever
+    // decided by what the candidate sent.
+    parts.why.textContent = candidate.address ? "" : t("candidate.noAddressWhy");
+    parts.send.onclick = () => sendPairRequest(candidate.address, { button: parts.send });
     parts.use.onclick = () => prefillPairFrom(candidate);
   }
 
@@ -3353,7 +3738,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
 
     const revoke = element("button", "btn danger", t("network.revoke"));
-    revoke.onclick = () => revokeSelected(node);
+    revoke.onclick = () => revokeSelected(node, { button: revoke });
     const revokeNote = element("p", "muted", t("network.revokeNote"));
 
     const grid = element("div", "detailgrid");
@@ -3456,7 +3841,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const add = element("button", "btn addaddress", t("network.addAddress"));
     add.onclick = () => reshape(() => values.push(""));
     const submit = element("button", "btn setaddress", t("network.recordAddress"));
-    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value));
+    submit.onclick = () => recordAddresses(node, inputs.map((input) => input.value), { button: submit });
     fill();
 
     const actions = element("div", "addressactions");
@@ -3466,7 +3851,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return parts;
   }
 
-  async function recordAddresses(node, raw) {
+  async function recordAddresses(node, raw, { button = null } = {}) {
     // Trimmed, and an emptied row is a row the owner did not fill rather than
     // an address: a stray space typed into a field reaches the node as a
     // refusal otherwise.
@@ -3492,7 +3877,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         return;
       }
       banner(t("network.addressSaved", { name: node.displayName, address: addresses.join(", ") }), true);
-    });
+    }, { button });
   }
 
   // A node's reach is the owner's real question, so count it rather than making
@@ -3511,7 +3896,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // does not bring them back. docs/ui-contract.md had always said 「confirm 後
   // 執行」 and the button went straight to RevokeNode. A dangerous question,
   // so the keyboard starts on 取消.
-  async function revokeSelected(node) {
+  async function revokeSelected(node, { button = null } = {}) {
     if (state.busy) return;
     const ok = await askConfirm({
       title: t("network.revokeConfirmTitle", { name: node.displayName }),
@@ -3525,7 +3910,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       state.selectedNode = null;
       await load();
       banner(t("network.revoked", { name: node.displayName }), true);
-    });
+    }, { button });
   }
 
   function openPairModal() {
@@ -4441,6 +4826,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // yet" — while the title bar's pill, painted by renderService above,
     // already says the service is running.
     renderOnboarding();
+    // And the attention strip's service row, for the same reason.
+    renderAttention();
   }
 
   // renderServicePill is the title bar's one-line version of the panel below.
@@ -4715,7 +5102,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("service-form").classList.add("hidden");
       banner(t("service.installed"), true);
       await load();
-    });
+    }, { button: el("service-install") });
   }
 
   // restartNode applies settings the node only reads at start-up, by whatever
@@ -4723,7 +5110,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // app stopping and starting the node itself. Which of the two happened is
   // the Go side's decision (desktop/nodeprocess.go); what comes back names the
   // command either way, and it goes on screen verbatim.
-  async function restartNode() {
+  async function restartNode({ button = null } = {}) {
     // Read before anything is asked of the service manager: it is what says
     // whether the node answering afterwards is a new one.
     const previousPid = state.service?.pid ?? 0;
@@ -4757,7 +5144,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         seconds: up.seconds,
         log: state.service?.logHint ?? t("service.logHintFallback"),
       }));
-    });
+    }, { button });
   }
 
   // waitForNode asks the node whether it is there, for a few seconds, because
@@ -4807,7 +5194,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       showServiceOutput(result);
       banner(t("service.uninstalled"), true);
       await load();
-    });
+    }, { button: el("service-uninstall") });
   }
 
   for (const segment of document.querySelectorAll("#view-switch span[data-view]")) {
@@ -4851,8 +5238,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // banner is how "you are half done" gets missed, and half-done pairing is
       // exactly what happened on 2026-09-10: the mac was paired, the Ubuntu box
       // still answered `No paired nodes`, and nothing said so.
-      banner(t("pairManual.trusted", { name: node.displayName }));
-    });
+      notify("warn", t("pairManual.trusted", { name: node.displayName }));
+    }, { button: el("pair-submit") });
 
   el("btn-audience").onclick = openAudienceModal;
   el("audience-close").onclick = closeAudienceModal;
@@ -4876,22 +5263,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       banner(t("audience.needsANode"));
       return;
     }
-    applyAudience(audience, audience.mode);
+    applyAudience(audience, audience.mode, { button: el("audience-apply") });
   };
 
   el("btn-unpublish").onclick = () =>
     applyAudience(
       { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false },
       "none",
+      { button: el("btn-unpublish") },
     );
 
-  el("btn-reload").onclick = () => withBusy(t("app.reload"), load);
+  el("btn-reload").onclick = () => withBusy(t("app.reload"), load, { button: el("btn-reload") });
 
   // discoverSessions is a named function rather than a handler body because the
   // first-launch checklist presses the same button. A second copy of this would
   // be a second rescan with its own banner, its own skipped count and its own
   // bugs.
-  async function discoverSessions() {
+  async function discoverSessions({ button = null } = {}) {
     return withBusy(t("app.rescan"), async () => {
       const counts = await api.Discover();
       await load();
@@ -4905,16 +5293,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         claude: counts.claude, codex: counts.codex, total: counts.total,
       }) + (skipped > 0 ? t("app.rescanSkipped", { skipped }) : "")
         + (total === 0 ? t("app.rescanNothingFound") : ""), skipped === 0 && total > 0);
-    });
+    }, { button });
   }
 
-  el("btn-discover").onclick = () => discoverSessions().catch(() => {});
+  el("btn-discover").onclick = () => discoverSessions({ button: el("btn-discover") }).catch(() => {});
 
   el("btn-heartbeat").onclick = () =>
     withBusy(t("heartbeat.busy"), async () => {
       el("modal-body").textContent = await api.Heartbeat();
       el("modal").classList.remove("hidden");
-    });
+    }, { button: el("btn-heartbeat") });
 
   el("modal-close").onclick = () => el("modal").classList.add("hidden");
   el("modal").onclick = (event) => {
@@ -5002,6 +5390,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     state.pairRequests = Array.isArray(rows) ? rows : [];
     state.pairRequestsError = "";
     state.pairRequestsLoaded = true;
+    // The attention strip's request row reads the same answer. Numbered past
+    // any read the fifteen-second tick still has in flight, which describes an
+    // earlier moment than this one.
+    incomingApplied = ++incomingRequest;
+    state.pairIncoming = pendingIncoming(state.pairRequests);
+    renderAttention();
     if (render) renderPairRequests();
   }
 
@@ -5035,7 +5429,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // and a failure has to be visible there, or the owner is left with an
       // unchanged list and no sign the action did not happen.
       await openInbox(session, cleared);
-    });
+    }, { button: el("inbox-clear") });
   };
 
   el("btn-pairing-on").onclick = () =>
@@ -5044,22 +5438,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // sending a number from here would make this window disagree with `ah`.
       await api.OpenPairing(0);
       await loadPairing();
-    });
+    }, { button: el("btn-pairing-on") });
 
   el("btn-pairing-off").onclick = () =>
     withBusy(t("pair.busyClose"), async () => {
       await api.ClosePairing();
       await loadPairing();
-    });
+    }, { button: el("btn-pairing-off") });
 
   /* ---------------- the pairing exchange's own controls ---------------- */
 
   el("copy-pair-address").onclick = () => copyPairAddress();
-  el("btn-pair-send").onclick = () => sendPairRequest(el("pair-address").value);
+  el("btn-pair-send").onclick = () => sendPairRequest(el("pair-address").value, { button: el("btn-pair-send") });
   el("pair-address").onkeydown = (event) => {
     // Enter in the address field sends, because that is what a field with one
     // button beside it is for.
-    if (event?.key === "Enter") sendPairRequest(el("pair-address").value);
+    if (event?.key === "Enter") sendPairRequest(el("pair-address").value, { button: el("btn-pair-send") });
   };
   el("pair-requests-all").onchange = () => {
     state.pairRequestsAll = Boolean(el("pair-requests-all").checked);
@@ -5468,7 +5862,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // nothing on screen would close.
     if (!pairingDrawerOpen()) return;
     await loadPairing();
-    await openPairingWindowIfNeeded({ keepBanner: true });
+    await openPairingWindowIfNeeded();
   }
 
   const NODE_SETTINGS_FIELD_LABELS = {
@@ -6137,20 +6531,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
     }
     if (Object.keys(patch).length === 0) {
-      banner(skippedNote);
+      notify("warn", skippedNote);
       return;
     }
-    await saveNodeSettingsPatch(patch);
-    // After the save's own report, which is a single banner that each outcome
-    // replaces: said last, so the fields that were left out are not overwritten
-    // by the sentence about the ones that were saved.
-    if (skippedNote) {
-      const said = el("banner").classList.contains("hidden") ? "" : el("banner").textContent;
-      banner([said, skippedNote].filter(Boolean).join(" "));
-    }
+    await saveNodeSettingsPatch(patch, { button: el("node-settings-save") });
+    // After the save's own report, as a toast of its own: said last, so it is
+    // the newest thing on screen, and a warning, so it stays until read even
+    // when the save beside it was a success that goes by itself.
+    if (skippedNote) notify("warn", skippedNote);
   }
 
-  async function saveNodeSettingsPatch(patch) {
+  async function saveNodeSettingsPatch(patch, { button = null } = {}) {
     await withBusy(t("nodeSettings.busySave"), async () => {
       const sequence = ++nodeSettingsRequest;
       let view;
@@ -6312,7 +6703,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
           : t("nodeSettings.savedServiceDown",
             { log: back.logHint || t("nodeSettings.noLogPath") }),
       );
-    });
+    }, { button });
   }
 
   // readNodeSettingsAfterRestart re-reads the node once it has been restarted.
@@ -6466,6 +6857,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   /* ---------------- redesign wiring ---------------- */
+
+  el("btn-bell").onclick = () => (noticeDrawerOpen() ? closeNotices() : openNotices());
+  el("notify-close").onclick = closeNotices;
+  el("notify-modal").onclick = (event) => {
+    if (event.target === el("notify-modal")) closeNotices();
+  };
+  // The header checkbox is 13px of a 40px cell; the whole cell toggles it, so
+  // the target is the cell and not the box inside it.
+  el("select-all-cell").onclick = (event) => {
+    if (event?.target === el("select-all-cell")) el("select-all").click?.();
+  };
 
   el("select-all-visible").onchange = setSelectionForVisible;
   el("btn-deselect").onclick = () => {
@@ -6694,9 +7096,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The same check runs again inside load() before a background answer is
   // applied, because the owner can start any of those while the read is in the
   // air.
+  //
+  // The same tick is the only place, besides the open pairing drawer, that
+  // reads the exchange's rows — once, and only while the node last said the
+  // pairing window is open — so a machine asking to pair shows on the
+  // attention strip from whatever view the owner is on
+  // (refreshIncomingPairRequests says why that read is bounded).
   setInterval(() => {
     if (interactionInProgress()) return;
-    load({ background: true }).catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
+    load({ background: true })
+      .then(() => refreshIncomingPairRequests())
+      .catch((error) => banner(t("busy.failed", { action: t("app.busyLoad"), error })));
   }, 15000);
 
   load()
@@ -6710,7 +7120,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   el("service-cancel").onclick = () => el("service-form").classList.add("hidden");
   el("service-install").onclick = installService;
   el("service-uninstall").onclick = uninstallService;
-  el("service-restart").onclick = restartNode;
+  el("service-restart").onclick = () => restartNode({ button: el("service-restart") });
 
   return internals;
 }
