@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -23,14 +24,24 @@ type fakeRestart struct {
 	probes   int
 	startErr error
 
-	running []nodeProcess // what listNodes finds
-	listErr error
+	// running is what listNodes finds until the stop; after it, nothing,
+	// unless survivesStop. A process with neither Env nor EnvErr is given
+	// nodeEnv, an environment whose default database exists.
+	running      []nodeProcess
+	listErr      error
+	survivesStop bool
+	stopped      bool
 	// identities is what readNodeIdentity answers, one per call, the last
 	// repeating; a zero NodeIdentity is a failed read.
 	identities []NodeIdentity
 	reads      int
 	started    [][]string
-	defaultDB  string
+	// appDB is the database appPaths names — this app's environment's
+	// default — made to exist unless a test sets it.
+	appDB string
+
+	nodeEnv   []string
+	nodePaths nodePaths
 }
 
 var sameNode = NodeIdentity{ID: "node_same", Fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF"}
@@ -38,19 +49,30 @@ var sameNode = NodeIdentity{ID: "node_same", Fingerprint: "AAAA BBBB CCCC DDDD E
 func (f *fakeRestart) install(t *testing.T) {
 	t.Helper()
 	stopWas, startWas, probeWas := stopNode, startNode, probeNode
-	listWas, identityWas, defaultWas := listNodes, readNodeIdentity, defaultDB
+	listWas, identityWas, pathsWas := listNodes, readNodeIdentity, appPaths
 	t.Cleanup(func() {
 		stopNode, startNode, probeNode = stopWas, startWas, probeWas
-		listNodes, readNodeIdentity, defaultDB = listWas, identityWas, defaultWas
+		listNodes, readNodeIdentity, appPaths = listWas, identityWas, pathsWas
 	})
 	if f.identities == nil {
 		f.identities = []NodeIdentity{sameNode}
 	}
-	if f.defaultDB == "" {
-		f.defaultDB = existingFile(t, "default", "agenthub.db")
+	if f.appDB == "" {
+		f.appDB = existingFile(t, "app default", "agenthub.db")
+	}
+	f.nodeEnv, f.nodePaths = nodeEnvironment(t)
+	for index := range f.running {
+		if f.running[index].Env == nil && f.running[index].EnvErr == nil {
+			f.running[index].Env = f.nodeEnv
+		}
+	}
+	appHome := filepath.Dir(f.appDB)
+	appPaths = func() (nodePaths, error) {
+		return nodePaths{database: f.appDB, claude: filepath.Join(appHome, ".claude"), codex: filepath.Join(appHome, ".codex")}, nil
 	}
 	stopNode = func(context.Context) (string, error) {
 		f.steps = append(f.steps, "stop")
+		f.stopped = true
 		return "SUCCESS: the process agenthub-node.exe has been terminated.", nil
 	}
 	startNode = func(binary, logPath string, args []string) error {
@@ -73,6 +95,9 @@ func (f *fakeRestart) install(t *testing.T) {
 	}
 	listNodes = func(context.Context) ([]nodeProcess, error) {
 		f.steps = append(f.steps, "list")
+		if f.stopped && !f.survivesStop {
+			return nil, nil
+		}
 		return f.running, f.listErr
 	}
 	readNodeIdentity = func(context.Context, *client) (NodeIdentity, error) {
@@ -87,7 +112,28 @@ func (f *fakeRestart) install(t *testing.T) {
 		}
 		return identity, nil
 	}
-	defaultDB = func() (string, error) { return f.defaultDB, nil }
+}
+
+// nodeEnvironment is the environment of a node started from somewhere this
+// app was not: a home and a config directory of its own, which on Linux is
+// XDG_CONFIG_HOME and on macOS HOME. Its default database is made to exist,
+// and is not this app's.
+func nodeEnvironment(t *testing.T) ([]string, nodePaths) {
+	t.Helper()
+	home := filepath.Join(t.TempDir(), "node home")
+	config := filepath.Join(home, "set by the shell")
+	env := []string{"PATH=/usr/bin", "HOME=" + home, "USERPROFILE=" + home, "XDG_CONFIG_HOME=" + config, "APPDATA=" + config}
+	paths, err := nodeDefaultPaths(runtime.GOOS, environmentLookup(runtime.GOOS, env))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.database), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.database, []byte("sqlite"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return env, paths
 }
 
 // existingFile makes a file under a fresh directory whose name has a space in
@@ -244,7 +290,8 @@ func restartAppProcess(t *testing.T) (ServiceResult, error) {
 // #205: a node started by hand with --db is started again with that --db. The
 // settings the node remembers are left off, because they are what the restart
 // is applying: passed back, the old --peer-listen would win over the save that
-// asked for this restart. Everything else goes back as it was.
+// asked for this restart. Everything else goes back as it was, and the one path
+// it did not name — its Codex root — is named, as its own environment put it.
 func TestRestartNodeStartsItOnTheDatabaseItWasStartedWith(t *testing.T) {
 	node := withFakeNode(t)
 	database := existingFile(t, "hand", "mine.db")
@@ -261,11 +308,12 @@ func TestRestartNodeStartsItOnTheDatabaseItWasStartedWith(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart: %v\n%s", err, result.Output)
 	}
-	want := []string{"--db", database, "-claude-root=/Users/me/.claude", "-display-name", "-looks-like-a-flag"}
+	want := []string{"--db", database, "-claude-root=/Users/me/.claude", "-display-name", "-looks-like-a-flag",
+		"--codex-root", fake.nodePaths.codex}
 	if len(fake.started) != 1 || !slices.Equal(fake.started[0], want) {
 		t.Fatalf("started with %q, want %q", fake.started, want)
 	}
-	want = []string{"list", "identity", "stop", "probe:gone", "start " + node, "probe:answering", "identity"}
+	want = []string{"list", "identity", "stop", "probe:gone", "list", "start " + node, "probe:answering", "identity"}
 	if !slices.Equal(fake.steps, want) {
 		t.Errorf("sequence = %v, want %v", fake.steps, want)
 	}
@@ -277,8 +325,9 @@ func TestRestartNodeStartsItOnTheDatabaseItWasStartedWith(t *testing.T) {
 }
 
 // The node the app starts itself — no arguments, the default database — is
-// restarted as it always was, with no arguments and no fuss.
-func TestRestartNodeOnTheDefaultDatabaseStartsItWithNoArguments(t *testing.T) {
+// started again on that same database, named: the path its own environment
+// gave it, not one this app works out from its own.
+func TestRestartNodeOnTheDefaultDatabaseNamesIt(t *testing.T) {
 	withFakeNode(t)
 	fake := &fakeRestart{
 		answers: []bool{false, true},
@@ -290,16 +339,45 @@ func TestRestartNodeOnTheDefaultDatabaseStartsItWithNoArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restart: %v\n%s", err, result.Output)
 	}
-	if len(fake.started) != 1 || len(fake.started[0]) != 0 {
-		t.Errorf("started with %q, want no arguments", fake.started)
+	want := []string{"--db", fake.nodePaths.database, "--claude-root", fake.nodePaths.claude, "--codex-root", fake.nodePaths.codex}
+	if len(fake.started) != 1 || !slices.Equal(fake.started[0], want) {
+		t.Errorf("started with %q, want %q", fake.started, want)
 	}
-	if !strings.Contains(result.Output, "its default database") {
-		t.Errorf("output does not say which database:\n%s", result.Output)
+	if !strings.Contains(result.Output, fake.nodePaths.database) || !strings.Contains(result.Output, "its own environment") {
+		t.Errorf("output does not say which database, or where that came from:\n%s", result.Output)
+	}
+}
+
+// The case the review found: a node started from a shell whose environment
+// put its default database somewhere else (XDG_CONFIG_HOME on Linux, HOME on
+// macOS), restarted from a window whose environment has a default database of
+// its own that also exists. The restart has to follow the node's, or it brings
+// up the other identity and nothing on screen says so.
+func TestRestartNodeFollowsTheNodesEnvironmentNotTheApps(t *testing.T) {
+	withFakeNode(t)
+	fake := &fakeRestart{
+		answers: []bool{false, true},
+		running: []nodeProcess{{PID: 8, Argv: []string{"/usr/bin/agenthub-node"}}},
+	}
+	fake.install(t)
+	if fake.appDB == fake.nodePaths.database {
+		t.Fatal("the fixture gives the app and the node the same database; the test would prove nothing")
+	}
+
+	if result, err := restartAppProcess(t); err != nil {
+		t.Fatalf("restart: %v\n%s", err, result.Output)
+	}
+	if len(fake.started) != 1 || !slices.Contains(fake.started[0], fake.nodePaths.database) {
+		t.Fatalf("started with %q, want --db %s, the node's own default", fake.started, fake.nodePaths.database)
+	}
+	if slices.Contains(fake.started[0], fake.appDB) {
+		t.Errorf("started on this app's default database %s: %q", fake.appDB, fake.started[0])
 	}
 }
 
 // Answering is not being the same node. One that came back as someone else is
-// a failure, named with both ids and the command that brings the old one back.
+// a failure, named with both ids and the command that brings the old one back
+// — which names its database, so it works typed into any shell.
 func TestRestartNodeReportsANodeThatCameBackAsSomeoneElse(t *testing.T) {
 	for name, after := range map[string]NodeIdentity{
 		"another id":  {ID: "node_new", Fingerprint: sameNode.Fingerprint},
@@ -307,10 +385,9 @@ func TestRestartNodeReportsANodeThatCameBackAsSomeoneElse(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			withFakeNode(t)
-			database := existingFile(t, "hand", "mine.db")
 			fake := &fakeRestart{
 				answers:    []bool{false, true},
-				running:    []nodeProcess{{PID: 9, Argv: []string{"/opt/agenthub-node", "-db", database}}},
+				running:    []nodeProcess{{PID: 9, Argv: []string{"/opt/agenthub-node", "-peer-listen", "10.0.0.1:7463"}}},
 				identities: []NodeIdentity{sameNode, after},
 			}
 			fake.install(t)
@@ -319,7 +396,9 @@ func TestRestartNodeReportsANodeThatCameBackAsSomeoneElse(t *testing.T) {
 			if err == nil {
 				t.Fatalf("a node that came back as %+v was reported as restarted:\n%s", after, result.Output)
 			}
-			for _, phrase := range []string{after.ID, sameNode.ID, "different database", database} {
+			recovery := commandLine("/opt/agenthub-node", []string{"-peer-listen", "10.0.0.1:7463",
+				"--db", fake.nodePaths.database, "--claude-root", fake.nodePaths.claude, "--codex-root", fake.nodePaths.codex})
+			for _, phrase := range []string{after.ID, sameNode.ID, "different database", recovery} {
 				if !strings.Contains(err.Error(), phrase) {
 					t.Errorf("error does not say %q: %v", phrase, err)
 				}
@@ -332,11 +411,11 @@ func TestRestartNodeReportsANodeThatCameBackAsSomeoneElse(t *testing.T) {
 // stopped. A refusal after the stop is the outage this exists to prevent.
 func TestRestartNodeRefusesBeforeStoppingWhatItCannotStartAgain(t *testing.T) {
 	cases := []struct {
-		name    string
-		running func(t *testing.T) []nodeProcess
-		listErr error
-		noDB    bool
-		want    string
+		name     string
+		running  func(t *testing.T) []nodeProcess
+		listErr  error
+		fallback bool
+		want     string
 	}{
 		{name: "command line unreadable", listErr: errors.New("operation not permitted"), want: "operation not permitted"},
 		{name: "two nodes", want: "2 agenthub-node processes", running: func(*testing.T) []nodeProcess {
@@ -348,28 +427,50 @@ func TestRestartNodeRefusesBeforeStoppingWhatItCannotStartAgain(t *testing.T) {
 		{name: "database not there", want: "is not there", running: func(t *testing.T) []nodeProcess {
 			return []nodeProcess{{PID: 4, Argv: []string{"agenthub-node", "--db", filepath.Join(t.TempDir(), "gone.db")}}}
 		}},
-		{name: "default database not there", noDB: true, want: "default database", running: func(*testing.T) []nodeProcess {
-			return []nodeProcess{{PID: 5, Argv: []string{"agenthub-node"}}}
+		{name: "default database not there", want: "is not there", running: func(t *testing.T) []nodeProcess {
+			home := t.TempDir()
+			return []nodeProcess{{PID: 5, Argv: []string{"agenthub-node"},
+				Env: []string{"HOME=" + home, "USERPROFILE=" + home, "APPDATA=" + home}}}
 		}},
 		{name: "unknown flag", want: "-from-the-future", running: func(t *testing.T) []nodeProcess {
 			return []nodeProcess{{PID: 6, Argv: []string{"agenthub-node", "-from-the-future", "x"}}}
+		}},
+		{name: "environment unreadable", want: "environment could not be read", running: func(t *testing.T) []nodeProcess {
+			return []nodeProcess{{PID: 10, Argv: []string{"agenthub-node"}, EnvErr: errors.New("permission denied")}}
+		}},
+		{name: "environment unreadable, only the roots missing", want: "-claude-root, -codex-root", running: func(t *testing.T) []nodeProcess {
+			database := existingFile(t, "hand", "mine.db")
+			return []nodeProcess{{PID: 11, Argv: []string{"agenthub-node", "--db", database}, EnvErr: errors.New("permission denied")}}
+		}},
+		{name: "environment without a home", want: "HOME", running: func(t *testing.T) []nodeProcess {
+			return []nodeProcess{{PID: 12, Argv: []string{"agenthub-node"}, Env: []string{"PATH=/usr/bin"}}}
+		}},
+		{name: "a relative home", want: "relative path", running: func(t *testing.T) []nodeProcess {
+			return []nodeProcess{{PID: 13, Argv: []string{"agenthub-node"},
+				Env: []string{"HOME=home", "USERPROFILE=home", "APPDATA=home"}}}
+		}},
+		{name: "listening elsewhere", want: "-listen 127.0.0.1:7999", running: func(t *testing.T) []nodeProcess {
+			database := existingFile(t, "hand", "mine.db")
+			return []nodeProcess{{PID: 14, Argv: []string{"agenthub-node", "--db", database, "-listen", "127.0.0.1:7999"}}}
+		}},
+		{name: "fallback, another user", fallback: true, want: "runs as S-1-5-21-2", running: func(t *testing.T) []nodeProcess {
+			return []nodeProcess{{PID: 15, Argv: []string{"agenthub-node"}, EnvErr: errors.New("access denied"),
+				UserErr: errors.New("pid 15 runs as S-1-5-21-2, and this app as S-1-5-21-1")}}
 		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			withFakeNode(t)
+			withEnvironmentFallback(t, tc.fallback)
 			fake := &fakeRestart{answers: []bool{false, true}, listErr: tc.listErr}
 			if tc.running != nil {
 				fake.running = tc.running(t)
-			}
-			if tc.noDB {
-				fake.defaultDB = filepath.Join(t.TempDir(), "agenthub", "agenthub.db")
 			}
 			fake.install(t)
 
 			_, err := restartAppProcess(t)
 			if err == nil {
-				t.Fatal("restarted a node it could not start again as it was")
+				t.Fatalf("restarted a node it could not start again as it was: started %q", fake.started)
 			}
 			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "will not restart it") {
 				t.Errorf("error = %v, want it to say %q and that it will not restart it", err, tc.want)
@@ -381,10 +482,61 @@ func TestRestartNodeRefusesBeforeStoppingWhatItCannotStartAgain(t *testing.T) {
 	}
 }
 
+func withEnvironmentFallback(t *testing.T, on bool) {
+	t.Helper()
+	was := nodeEnvironmentFallback
+	t.Cleanup(func() { nodeEnvironmentFallback = was })
+	nodeEnvironmentFallback = on
+}
+
+// Windows, where the node's environment may not be readable: this app's own
+// default stands in, for a node of this app's user, and only while the node
+// can be asked afterwards who it is.
+func TestRestartNodeLetsTheAppsEnvironmentStandInOnlyWhereItMayAndIsChecked(t *testing.T) {
+	unreadable := func() []nodeProcess {
+		return []nodeProcess{{PID: 21, Argv: []string{`C:\agenthub\agenthub-node.exe`}, EnvErr: errors.New("access is denied")}}
+	}
+
+	withFakeNode(t)
+	withEnvironmentFallback(t, true)
+	fake := &fakeRestart{answers: []bool{false, true}, running: unreadable()}
+	fake.install(t)
+	result, err := restartAppProcess(t)
+	if err != nil {
+		t.Fatalf("restart: %v\n%s", err, result.Output)
+	}
+	if len(fake.started) != 1 || !slices.Contains(fake.started[0], fake.appDB) {
+		t.Fatalf("started with %q, want --db %s", fake.started, fake.appDB)
+	}
+	if !strings.Contains(result.Output, "this app's environment") || !strings.Contains(result.Output, "the node that was stopped") {
+		t.Errorf("output does not say the database was this app's inference, checked by id:\n%s", result.Output)
+	}
+
+	// The same node, not answering: an inferred database with nothing to
+	// check it against afterwards is not restarted.
+	hung := &fakeRestart{answers: []bool{false}, running: unreadable(), identities: []NodeIdentity{{}, sameNode}}
+	hung.install(t)
+	if _, err := restartAppProcess(t); err == nil || !strings.Contains(err.Error(), "not answering") {
+		t.Errorf("err = %v, want a refusal: a hung node on an inferred database", err)
+	}
+	if hung.stoppedOrStarted() {
+		t.Errorf("stopped a hung node on an inferred database: %v", hung.steps)
+	}
+
+	// Off — macOS and Linux — the same unreadable environment is a refusal.
+	withEnvironmentFallback(t, false)
+	off := &fakeRestart{answers: []bool{false, true}, running: unreadable()}
+	off.install(t)
+	if _, err := restartAppProcess(t); err == nil || off.stoppedOrStarted() {
+		t.Errorf("err = %v, steps %v; want a refusal before anything is touched", err, off.steps)
+	}
+}
+
 // A node that answers but will not say who it is leaves nothing to check the
 // restarted one against, so it is not restarted. One that is not answering at
 // all — hung — is restarted on its own arguments, which is the point of the
-// button on a dead node.
+// button on a dead node; with nothing to compare, the output says so and what
+// it rested on instead.
 func TestRestartNodeNeedsToKnowWhoIsAnswering(t *testing.T) {
 	withFakeNode(t)
 	fake := &fakeRestart{answers: []bool{true}, identities: []NodeIdentity{{}}}
@@ -396,10 +548,46 @@ func TestRestartNodeNeedsToKnowWhoIsAnswering(t *testing.T) {
 		t.Errorf("stopped a node it could not identify: %v", fake.steps)
 	}
 
-	hung := &fakeRestart{answers: []bool{false, false, true}, identities: []NodeIdentity{{}, sameNode}}
+	hung := &fakeRestart{
+		answers:    []bool{false, false, true},
+		identities: []NodeIdentity{{}, sameNode},
+		running:    []nodeProcess{{PID: 31, Argv: []string{"/usr/bin/agenthub-node"}}},
+	}
 	hung.install(t)
-	if result, err := restartAppProcess(t); err != nil {
-		t.Errorf("a hung node was not restarted: %v\n%s", err, result.Output)
+	result, err := restartAppProcess(t)
+	if err != nil {
+		t.Fatalf("a hung node was not restarted: %v\n%s", err, result.Output)
+	}
+	if !strings.Contains(result.Output, "no id to compare") || !strings.Contains(result.Output, hung.nodePaths.database) {
+		t.Errorf("a restart with nothing to compare did not say so, and on what database:\n%s", result.Output)
+	}
+}
+
+// The port closing is not the process exiting. A node that stops answering
+// and does not go — hung, or slow to let go of its database — is not joined
+// by a second one.
+func TestRestartNodeWaitsForTheProcessToExit(t *testing.T) {
+	for name, identities := range map[string][]NodeIdentity{
+		"answering, then closes the port": {sameNode},
+		"hung from the start":             {{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withFakeNode(t)
+			fake := &fakeRestart{
+				answers:      []bool{false},
+				identities:   identities,
+				running:      []nodeProcess{{PID: 41, Argv: []string{"/usr/bin/agenthub-node"}}},
+				survivesStop: true,
+			}
+			fake.install(t)
+			_, err := restartAppProcess(t)
+			if err == nil || !strings.Contains(err.Error(), "pid 41") || !strings.Contains(err.Error(), "has not exited") {
+				t.Fatalf("err = %v, want it to say pid 41 has not exited", err)
+			}
+			if len(fake.started) != 0 {
+				t.Errorf("started a second node beside one that had not exited: %v", fake.steps)
+			}
+		})
 	}
 }
 

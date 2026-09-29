@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -108,14 +110,28 @@ func parseNodeArgs(args []string) ([]nodeArgument, []string, error) {
 // nodeRestartPlan is what a restart will start the node with, decided before
 // anything is stopped.
 type nodeRestartPlan struct {
-	// args are the running node's own arguments less its remembered settings.
+	// args are the running node's own arguments less its remembered settings,
+	// with every path it resolved from its environment given explicitly.
 	args []string
-	// db is the database the node was started on, or "" for its default.
+	// db is the database the node runs on: an absolute path to a file that is
+	// there.
 	db string
+	// dbFrom says where db was read from, for a person: its --db, its own
+	// environment, or this app's standing in for it.
+	dbFrom string
+	// confirmed is whether db was read from the running node itself — its
+	// command line or its environment — rather than inferred from this app's
+	// environment. An inferred one is checked afterwards by the node id, so a
+	// node that cannot be asked who it is is not restarted on one.
+	confirmed bool
+	// recovery is the running node's whole command line with the same paths
+	// made explicit: what starts that node again from anywhere, whatever the
+	// environment it is typed into.
+	recovery []string
 }
 
-// planNodeRestart turns the running node's arguments into the ones its
-// replacement is started with, or says why it cannot.
+// planNodeRestart turns the running node's command line and environment into
+// the arguments its replacement is started with, or says why it cannot.
 //
 // Everything is kept except the node's five remembered settings. Those are the
 // thing a restart from this window exists to apply: the settings page wrote
@@ -124,8 +140,15 @@ type nodeRestartPlan struct {
 // silently undo the save that asked for the restart. Left off, the node takes
 // what was saved, which is what the start without arguments this replaces did
 // too. --db and everything else that is not a setting goes back as it was.
-func planNodeRestart(args []string, defaultDB func() (string, error)) (nodeRestartPlan, error) {
-	parsed, rest, err := parseNodeArgs(args)
+//
+// A path the command line did not name — --db above all — is the one the node
+// worked out from its own environment (nodeenv.go), and it is passed to the
+// replacement explicitly, because the replacement inherits this app's
+// environment instead. When the node's environment could not be read, this
+// app's stands in for it only where nodeEnvironmentFallback allows and only
+// for a node running as this app's user; otherwise the restart refuses.
+func planNodeRestart(running nodeProcess, appPaths func() (nodePaths, error)) (nodeRestartPlan, error) {
+	parsed, rest, err := parseNodeArgs(running.args())
 	if err != nil {
 		return nodeRestartPlan{}, fmt.Errorf("its command line could not be read: %w", err)
 	}
@@ -133,58 +156,122 @@ func planNodeRestart(args []string, defaultDB func() (string, error)) (nodeResta
 	for _, flag := range nodeSettingFlags {
 		remembered[flag] = true
 	}
-	var plan nodeRestartPlan
+	given := map[string]string{}
+	listen := ""
+	var kept, all []string
 	for _, argument := range parsed {
+		all = append(all, argument.words...)
 		for _, pathFlag := range nodePathFlags {
-			if argument.name == pathFlag && !filepath.IsAbs(argument.value) {
+			if argument.name != pathFlag {
+				continue
+			}
+			if !filepath.IsAbs(argument.value) {
 				return nodeRestartPlan{}, fmt.Errorf(
 					"it was started with -%s %s, a relative path, and this app cannot see the directory that path was relative to",
 					argument.name, argument.value)
 			}
-		}
-		if argument.name == "db" {
 			// Last one wins, as it does for the node.
-			plan.db = argument.value
+			given[pathFlag] = argument.value
+		}
+		if argument.name == "listen" {
+			listen = argument.value
 		}
 		if remembered[argument.name] {
 			continue
 		}
-		plan.args = append(plan.args, argument.words...)
+		kept = append(kept, argument.words...)
 	}
-	plan.args = append(plan.args, rest...)
+
+	// The restart stops every agenthub-node by name and waits on this app's
+	// address; a node listening somewhere else is not the one this window
+	// talks to, and the one started in its place would not be either.
+	if want := defaultNodeListen(); listen != "" && listen != want {
+		return nodeRestartPlan{}, fmt.Errorf(
+			"it was started with -listen %s, not %s, so it is not the node this app starts or talks to", listen, want)
+	}
+
+	plan := nodeRestartPlan{confirmed: true, dbFrom: "its --db"}
+	var missing []string
+	for _, pathFlag := range nodePathFlags {
+		if _, ok := given[pathFlag]; !ok {
+			missing = append(missing, pathFlag)
+		}
+	}
+	var defaults nodePaths
+	if len(missing) > 0 {
+		from := "its own environment"
+		switch {
+		case running.EnvErr == nil:
+			defaults, err = nodeDefaultPaths(runtime.GOOS, environmentLookup(runtime.GOOS, running.Env))
+			if err != nil {
+				return nodeRestartPlan{}, fmt.Errorf(
+					"it was started without -%s, and its own environment does not say where that is: %w",
+					strings.Join(missing, ", -"), err)
+			}
+		case nodeEnvironmentFallback && running.UserErr == nil:
+			defaults, err = appPaths()
+			if err != nil {
+				return nodeRestartPlan{}, fmt.Errorf(
+					"it was started without -%s, its environment could not be read (%v), and this app could not "+
+						"work out the default from its own either: %w", strings.Join(missing, ", -"), running.EnvErr, err)
+			}
+			from = "this app's environment (the node's own could not be read: " + running.EnvErr.Error() + ")"
+			if _, ok := given["db"]; !ok {
+				plan.confirmed = false
+			}
+		case nodeEnvironmentFallback:
+			return nodeRestartPlan{}, fmt.Errorf(
+				"it was started without -%s, so it uses the default its own environment names; that environment "+
+					"could not be read (%v), and this app's own stands in for it only for a node running as this "+
+					"app's user, which this one could not be confirmed to be (%v)",
+				strings.Join(missing, ", -"), running.EnvErr, running.UserErr)
+		default:
+			return nodeRestartPlan{}, fmt.Errorf(
+				"it was started without -%s, so it uses the default its own environment names, and that "+
+					"environment could not be read (%v)", strings.Join(missing, ", -"), running.EnvErr)
+		}
+		if _, ok := given["db"]; !ok {
+			plan.dbFrom = from
+		}
+	}
+
+	var added []string
+	for _, pathFlag := range missing {
+		path := defaults.pathFor(pathFlag)
+		if !filepath.IsAbs(path) {
+			return nodeRestartPlan{}, fmt.Errorf(
+				"its default -%s works out to %q, a relative path, which names a different place from another directory",
+				pathFlag, path)
+		}
+		added = append(added, "--"+pathFlag, path)
+	}
+	plan.db = given["db"]
+	if plan.db == "" {
+		plan.db = defaults.database
+	}
+	plan.args = append(append(append(plan.args, kept...), added...), rest...)
+	plan.recovery = append(append(append([]string{}, all...), added...), rest...)
 
 	// The database has to be there. A running node holds it open, so a path
-	// that names nothing means the command line was misread — or, for the
-	// default, that the node resolved its default somewhere this app does not
-	// (another HOME or XDG_CONFIG_HOME) — and either way the node started from
-	// here would open a different one.
-	database := plan.db
-	if database == "" {
-		database, err = defaultDB()
-		if err != nil {
-			return nodeRestartPlan{}, fmt.Errorf("it runs on the default database, and this app could not work out where that is: %w", err)
-		}
-	}
-	info, err := os.Stat(database)
+	// that names nothing means the command line or the environment was
+	// misread, and either way the node started from here would open a
+	// different one.
+	info, err := os.Stat(plan.db)
 	if err != nil || !info.Mode().IsRegular() {
-		which := "its database " + database
-		if plan.db == "" {
-			which = "the default database this app would start it on, " + database + ","
-		}
-		return nodeRestartPlan{}, fmt.Errorf("%s is not there, so this app cannot tell it would come back on the same one", which)
+		return nodeRestartPlan{}, fmt.Errorf(
+			"its database %s (from %s) is not there, so this app cannot tell it would come back on the same one",
+			plan.db, plan.dbFrom)
 	}
 	return plan, nil
 }
 
-// defaultNodeDB is where the node puts its database when it is given no --db:
-// cmd/agenthub-node/main.go defaultPaths, from this process's environment —
-// which the node this app starts inherits.
-func defaultNodeDB() (string, error) {
-	config, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+// defaultNodeListen is the -listen address of the node this app talks to:
+// defaultNodeURL's host and port, which is also the node's own default.
+func defaultNodeListen() string {
+	if parsed, err := url.Parse(defaultNodeURL); err == nil {
+		return parsed.Host
 	}
-	return filepath.Join(config, "agenthub", "agenthub.db"), nil
+	return strings.TrimPrefix(defaultNodeURL, "http://")
 }
 
 // commandLine renders a program and its arguments for a person to read, with
