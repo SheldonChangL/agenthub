@@ -20,7 +20,9 @@ const sessions = [
   S("c2b8d114-thread-serialwrap-000000003", "codex", "active", "/home/alex/projects/serialwrap", aud("none"), 180, "unmanaged", "Build frontend testing workflows"),
   S("7e02aa93-1a2b-4c3d-8e9f-desktop00004", "claude", "idle", "/home/alex/projects/agenthub/desktop", aud("all_paired", [], { cwd: 1 }), 18 * 60, "managed", "Show the conversation title in the main column, fall back to the session id"),
   S("b61f0d5c-2b3c-4d4e-9f0a-patents00005", "claude", "idle", "/home/alex/projects/patent-search", aud("selected", []), 42 * 60),
-  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/home/alex/projects/fw-bootloader", aud("none"), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
+  // Unpublished but still holding exportCwd — older data, or the full dialog —
+  // so the menu and the dialog can be seen saying the directory goes with it.
+  S("9a4c77e8-thread-firmware-000000000006", "codex", "idle", "/home/alex/projects/fw-bootloader", aud("none", [], { cwd: 1 }), 2 * 3600, "unmanaged", "Improve auth flows and profile"),
   S("d05e3b21-3c4d-4e5f-a0b1-docs00000007", "claude", "idle", "", aud("selected", ["node_a91c3e7b2d5f8046c0e1"], { cwd: 1 }), 5 * 3600, "managed", "Docs version, branch state and progress"),
   S("e17f4c32-4d5e-4f60-b1c2-inactive0008", "claude", "inactive", "/home/alex/projects/archive/thing", aud("none"), 3 * 86400, "managed", "OTA update .bin files"),
   S("f28a5d43-thread-inactive-00000000009", "codex", "inactive", "/home/alex/projects/archive/other", aud("none"), 9 * 86400, "unmanaged"),
