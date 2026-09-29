@@ -89,4 +89,14 @@ func TestEnvironmentLookupFollowsEachPlatformsNames(t *testing.T) {
 	if got := unix("NOEQUALS"); got != "" {
 		t.Errorf("an entry without = named something: %q", got)
 	}
+	// The first entry for a name wins, as syscall.copyenv has it — and on
+	// macOS the kernel's own strings come after every environment entry, so
+	// first-wins is also what keeps them from standing in for one.
+	duplicated := environmentLookup("darwin", []string{"PATH=/usr/bin", "HOME=/first", "XDG_CONFIG_HOME=/a", "HOME=/second", "XDG_CONFIG_HOME=/b"})
+	if got := duplicated("HOME"); got != "/first" {
+		t.Errorf("duplicated HOME = %q, want /first: the first entry wins", got)
+	}
+	if got := duplicated("XDG_CONFIG_HOME"); got != "/a" {
+		t.Errorf("duplicated XDG_CONFIG_HOME = %q, want /a: the first entry wins", got)
+	}
 }

@@ -288,15 +288,72 @@ func defaultNodeListen() string {
 	return strings.TrimPrefix(defaultNodeURL, "http://")
 }
 
-// commandLine renders a program and its arguments for a person to read, with
-// anything that would not survive being pasted into a shell quoted.
+// commandLine renders a program and its arguments for a person to paste into
+// the shell this platform puts in front of them: PowerShell on Windows, a
+// POSIX shell (sh, bash, zsh) elsewhere. cmd.exe and fish are not these.
 func commandLine(program string, args []string) string {
-	words := make([]string, 0, len(args)+1)
+	return shellCommandLine(runtime.GOOS, program, args)
+}
+
+// shellCommandLine is commandLine for goos.
+//
+// POSIX: a word with anything but letters, digits and _ . / : = @ % + , - in
+// it, or one starting with = (zsh expands =name), is single-quoted, and a
+// single quote inside it closes the quoting, is written escaped, and opens it
+// again. Nothing is expanded between single quotes — not
+// $, not a backquote, not a backslash — which is what makes a path with any of
+// them in it arrive as it is written.
+//
+// PowerShell: the program is single-quoted behind the call operator &, which
+// is how PowerShell runs a command whose name is a quoted path; each argument
+// with anything but letters, digits and _ . / \ - in it is single-quoted, with
+// every quote PowerShell reads as a single quote (' and the typographic ones)
+// doubled. $ and ` are literal between single quotes. What PowerShell then
+// hands the program is its own business: Windows PowerShell 5.1 drops an empty
+// argument and does not escape a " inside one, and PowerShell 7.3 and later
+// pass both intact. Neither can appear in a Windows path.
+func shellCommandLine(goos, program string, args []string) string {
+	words := make([]string, 0, len(args)+2)
+	if goos == "windows" {
+		words = append(words, "&", powerShellQuote(program))
+		for _, word := range args {
+			// -- bare is PowerShell's own end of parameters, which some
+			// versions swallow rather than pass on.
+			if word == "" || word == "--" || strings.IndexFunc(word, notPowerShellBare) >= 0 {
+				word = powerShellQuote(word)
+			}
+			words = append(words, word)
+		}
+		return strings.Join(words, " ")
+	}
 	for _, word := range append([]string{program}, args...) {
-		if word == "" || strings.ContainsAny(word, " \t\n\"'\\$`") {
-			word = strconv.Quote(word)
+		if word == "" || strings.HasPrefix(word, "=") || strings.IndexFunc(word, notPOSIXBare) >= 0 {
+			word = "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 		}
 		words = append(words, word)
 	}
 	return strings.Join(words, " ")
+}
+
+func notPOSIXBare(r rune) bool {
+	return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./:=@%+,-", r))
+}
+
+func notPowerShellBare(r rune) bool {
+	return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(`_./\-`, r))
+}
+
+// powerShellQuote is word as a PowerShell single-quoted string.
+func powerShellQuote(word string) string {
+	var quoted strings.Builder
+	quoted.WriteByte('\'')
+	for _, r := range word {
+		switch r {
+		case '\'', '\u2018', '\u2019', '\u201a', '\u201b':
+			quoted.WriteRune(r)
+		}
+		quoted.WriteRune(r)
+	}
+	quoted.WriteByte('\'')
+	return quoted.String()
 }
