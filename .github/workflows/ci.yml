@@ -202,14 +202,14 @@ jobs:
           )
           status=0
           listed=" ${tests[*]} "
-          for file in $(grep -lE '^//go:build.*[^!]windows' -- *_test.go); do
-            for test in $(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //'); do
+          while IFS= read -r file; do
+            while IFS= read -r test; do
               if [ "$test" != TestNodeProcessHelper ] && [[ "$listed" != *" $test "* ]]; then
                 echo "$file: $test is built for Windows and is not in this job's list"
                 status=1
               fi
-            done
-          done
+            done < <(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //')
+          done < <(grep -lE '^//go:build.*[^!]windows' -- *_test.go)
           pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
           go test -count=1 -v -run "$pattern" ./... | tee process-check.log
           for test in "${tests[@]}"; do
@@ -265,14 +265,14 @@ jobs:
           )
           status=0
           listed=" ${tests[*]} "
-          for file in $(grep -lE '^//go:build.*[^!]darwin' -- *_test.go); do
-            for test in $(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //'); do
+          while IFS= read -r file; do
+            while IFS= read -r test; do
               if [ "$test" != TestNodeProcessHelper ] && [[ "$listed" != *" $test "* ]]; then
                 echo "$file: $test is built for macOS and is not in this job's list"
                 status=1
               fi
-            done
-          done
+            done < <(grep -oE '^func Test[A-Za-z0-9_]+' "$file" | sed 's/^func //')
+          done < <(grep -lE '^//go:build.*[^!]darwin' -- *_test.go)
           pattern="^($(IFS='|'; echo "${tests[*]}"))\$"
           go test -count=20 -v -run "$pattern" ./... | tee process-check.log
           for test in "${tests[@]}"; do
