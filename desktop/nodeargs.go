@@ -305,10 +305,9 @@ func commandLine(program string, args []string) string {
 // them in it arrive as it is written.
 //
 // PowerShell: the program is single-quoted behind the call operator &, which
-// is how PowerShell runs a command whose name is a quoted path; each argument
-// with anything but letters, digits and _ . / \ - in it is single-quoted, with
-// every quote PowerShell reads as a single quote (' and the typographic ones)
-// doubled. $ and ` are literal between single quotes. What PowerShell then
+// is how PowerShell runs a command whose name is a quoted path; every argument
+// but a flag's name (powerShellFlagName) is single-quoted, with every quote
+// PowerShell reads as a single quote (' and the typographic ones) doubled. $ and ` are literal between single quotes. What PowerShell then
 // hands the program is its own business: Windows PowerShell 5.1 drops an empty
 // argument and does not escape a " inside one, and PowerShell 7.3 and later
 // pass both intact. Neither can appear in a Windows path.
@@ -317,9 +316,7 @@ func shellCommandLine(goos, program string, args []string) string {
 	if goos == "windows" {
 		words = append(words, "&", powerShellQuote(program))
 		for _, word := range args {
-			// -- bare is PowerShell's own end of parameters, which some
-			// versions swallow rather than pass on.
-			if word == "" || word == "--" || strings.IndexFunc(word, notPowerShellBare) >= 0 {
+			if !powerShellFlagName(word) {
 				word = powerShellQuote(word)
 			}
 			words = append(words, word)
@@ -339,8 +336,19 @@ func notPOSIXBare(r rune) bool {
 	return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("_./:=@%+,-", r))
 }
 
-func notPowerShellBare(r rune) bool {
-	return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(`_./\-`, r))
+// powerShellFlagName is whether word is a flag's name — one or two dashes, a
+// letter, then letters, digits and dashes — which PowerShell passes on as it
+// is written. Nothing else is left bare: an unquoted argument is PowerShell
+// syntax, and Windows PowerShell 5.1 splits one as ordinary as -a.b at the
+// dot, reads -- as its own end of parameters, and --% as stop-parsing.
+func powerShellFlagName(word string) bool {
+	name := strings.TrimPrefix(strings.TrimPrefix(word, "-"), "-")
+	if name == word || name == "" || !(name[0] >= 'a' && name[0] <= 'z' || name[0] >= 'A' && name[0] <= 'Z') {
+		return false
+	}
+	return strings.IndexFunc(name, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-')
+	}) < 0
 }
 
 // powerShellQuote is word as a PowerShell single-quoted string.

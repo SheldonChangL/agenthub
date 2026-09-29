@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -33,8 +34,9 @@ func TestShellCommandLineQuotesForEachShell(t *testing.T) {
 			[]string{"--db", `C:\Users\me\My Data\agenthub.db`, "--display-name", "it's $me `now` \u2019q", "--", "-discover"},
 			`& 'C:\Program Files\AgentHub\agenthub-node.exe' --db 'C:\Users\me\My Data\agenthub.db' --display-name 'it''s $me ` +
 				"`now`" + ` ` + "\u2019\u2019" + `q' '--' -discover`},
-		{"windows", `C:\agenthub\agenthub-node.exe`, []string{"--db", `C:\a\x.db`, "--db=C:\\x", "--%"},
-			`& 'C:\agenthub\agenthub-node.exe' --db 'C:\a\x.db' '--db=C:\x' '--%'`},
+		{"windows", `C:\agenthub\agenthub-node.exe`,
+			[]string{"--db", `C:\a\x.db`, "--db=C:\\x", "--%", "-a.b", "1e5", "-listen", "127.0.0.1:7462", "", "---x", "-"},
+			`& 'C:\agenthub\agenthub-node.exe' --db 'C:\a\x.db' '--db=C:\x' '--%' '-a.b' '1e5' -listen '127.0.0.1:7462' '' '---x' '-'`},
 	} {
 		if got := shellCommandLine(tc.goos, tc.program, tc.args); got != tc.want {
 			t.Errorf("%s %q:\n  got  %s\n  want %s", tc.goos, tc.args, got, tc.want)
@@ -48,8 +50,10 @@ func TestPrintArgsHelper(t *testing.T) {
 	if os.Getenv("AGENTHUB_PRINT_ARGS_HELPER") != "1" {
 		t.Skip("helper process")
 	}
+	// Hex, so that no console code page between here and the test can
+	// change a byte of it.
 	line, _ := json.Marshal(os.Args[1:])
-	fmt.Printf("ARGS %s\n", line)
+	fmt.Printf("ARGS %x\n", line)
 }
 
 // The quoting above, handed to the real shell: this test's own binary is the
@@ -63,7 +67,7 @@ func TestCommandLineSurvivesTheShell(t *testing.T) {
 	}
 	args := []string{"-test.run=^TestPrintArgsHelper$", "--",
 		"--db", filepath.Join("a dir", "Application Support", "agenthub.db"), "$HOME", "`whoami`", "it's",
-		"\u2019curly\u2018", "%PATH%", "a;b", "(x)", "@y", "a&b", "a|b", "*", "~", "-listen", "127.0.0.1:7462"}
+		"\u2019curly\u2018", "%PATH%", "a;b", "(x)", "@y", "a&b", "a|b", "*", "~", "-a.b", "1e5", "-listen", "127.0.0.1:7462"}
 	var shells [][]string
 	if runtime.GOOS == "windows" {
 		// Windows PowerShell 5.1 drops an empty argument and passes a " inside
@@ -103,7 +107,11 @@ func TestCommandLineSurvivesTheShell(t *testing.T) {
 		var got []string
 		for _, printed := range strings.Split(string(output), "\n") {
 			if rest, ok := strings.CutPrefix(strings.TrimRight(printed, "\r"), "ARGS "); ok {
-				if err := json.Unmarshal([]byte(rest), &got); err != nil {
+				decoded, err := hex.DecodeString(rest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(decoded, &got); err != nil {
 					t.Fatal(err)
 				}
 			}
