@@ -342,10 +342,14 @@ tick15.fn();
 await settle();
 if (pairRequestsCalls.length !== 1) failures.push("the tick read the exchange while rows were selected");
 app.state.selected.clear();
-// With the drawer open the drawer's own poll reads these rows; the tick does not.
+// With the drawer open the drawer's own poll reads these rows; the tick does
+// not. The drawer is a modal, so the tick is held off whole — and the read
+// refuses on its own as well, for a drawer opened while the tick's overview
+// read was still on its way.
 el("pairing-modal").classList.remove("hidden");
 tick15.fn();
 await settle();
+await app.refreshIncomingPairRequests();
 if (pairRequestsCalls.length !== 1) failures.push("the tick read the exchange while the pairing drawer was open");
 el("pairing-modal").classList.add("hidden");
 // 比對並核准 goes to the view the drawer belongs to and opens it.

@@ -319,6 +319,27 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   right: calc(min(560px, 92vw) + 16px);
   width: min(360px, calc(100vw - min(560px, 92vw) - 32px));
 }
+/* Over an open dialog, only the newest toast, clamped into the strip of
+   backdrop above the card. A dialog's card is 88vw wide and up to 80vh tall,
+   centred, so at 900x760 the one free place is the top 10vh; the stack in its
+   usual corner covered the card's own action bar — 套用 — and an error there
+   stays until closed. The rest of the stack is still in the bell's log. */
+.modal:not(.hidden) ~ .toasts {
+  top: 4px; bottom: auto;
+  left: 50%; right: auto;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+}
+.modal:not(.hidden) ~ .toasts .toast:not(:last-child),
+.modal:not(.hidden) ~ .toasts .toastbody,
+.modal:not(.hidden) ~ .toasts .toastacts { display: none; }
+.modal:not(.hidden) ~ .toasts .toast { padding-top: 8px; padding-bottom: 8px; max-height: calc(10vh - 8px); }
+.modal:not(.hidden) ~ .toasts .toasttitle {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
 .toast {
   pointer-events: auto;
   position: relative;
