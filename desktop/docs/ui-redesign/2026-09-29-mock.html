@@ -696,9 +696,11 @@ td.act .btn + .btn { margin-left: 6px; }
     }
     if (st === 3) {
       const c = document.createElement('div'); c.className = 'card';
-      c.innerHTML = `<div class="card-head"><h3>和 ${state.pair.sent} 比對指紋</h3><span class="pill ok">對方已核准</span></div>
+      c.innerHTML = `<div class="card-head"><h3 class="fp-title"></h3><span class="pill ok">對方已核准</span></div>
         <p class="muted" style="font-size:13px">下面兩組指紋，上面是發起方（這台）、下面是對方。請看對方螢幕，兩組都要一模一樣。</p>
-        <div class="fpgrid"><div><label>發起方 · 這台機器</label><div class="fp">7F3A 91C2 0B4E D5A8</div></div><div><label>對方 · ${state.pair.sent}</label><div class="fp">2B91 6E07 AC33 F14D</div></div></div>`;
+        <div class="fpgrid"><div><label>發起方 · 這台機器</label><div class="fp">7F3A 91C2 0B4E D5A8</div></div><div><label class="fp-peer"></label><div class="fp">2B91 6E07 AC33 F14D</div></div></div>`;
+      c.querySelector('.fp-title').textContent = `和 ${state.pair.sent} 比對指紋`;
+      c.querySelector('.fp-peer').textContent = `對方 · ${state.pair.sent}`;
       const row = document.createElement('div'); row.className = 'row';
       const ok = document.createElement('button'); ok.className = 'btn primary'; ok.textContent = '指紋一致，確認';
       ok.onclick = () => busy(ok, 900, () => {
