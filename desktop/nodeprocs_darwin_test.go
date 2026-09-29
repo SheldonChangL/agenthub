@@ -100,6 +100,16 @@ func TestParseProcargs2ReadsEmptyEnvironments(t *testing.T) {
 			}
 		}
 	}
+	// A process that has been running a while has wiped the apple strings it
+	// read at start-up to NULs — a long run of empty entries, then the ones it
+	// left, as a long-running agenthub-node gives them.
+	wiped := binary.LittleEndian.AppendUint32(nil, 1)
+	wiped = append(wiped, "/bin/agenthub-node\x00\x00\x00\x00\x00\x00agenthub-node\x00HOME=/Users/me\x00"...)
+	wiped = append(wiped, make([]byte, 61)...)
+	wiped = append(wiped, "th_port=\x00\x00\x00\x00\x00\x00security_config=0x0\x00\x00\x00\x00"...)
+	if _, env, err := parseProcargs2(wiped); err != nil || !slices.Equal(env, []string{"HOME=/Users/me", "th_port=", "security_config=0x0"}) {
+		t.Errorf("wiped apple strings: env %q, err %v", env, err)
+	}
 	// A platform binary's environment is withheld: the buffer ends at the
 	// arguments.
 	raw := procargs2("/bin/agenthub-node", []string{"agenthub-node"}, nil, false)

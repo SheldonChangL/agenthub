@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -589,6 +590,63 @@ func TestRestartNodeWaitsForTheProcessToExit(t *testing.T) {
 				t.Errorf("started a second node beside one that had not exited: %v", fake.steps)
 			}
 		})
+	}
+}
+
+// A listing that catches an agenthub-node on its way out fails — macOS
+// answers EINVAL for a process that is exiting and not yet a zombie. That is
+// asked again rather than refused at once, and the process is not taken for
+// gone: a failure that lasts is a refusal, and a failure of another kind is
+// not asked again.
+func TestRestartNodeAsksAgainAListingThatCaughtANodeExiting(t *testing.T) {
+	attemptsWas, intervalWas := nodeListAttempts, nodeListRetryInterval
+	t.Cleanup(func() { nodeListAttempts, nodeListRetryInterval = attemptsWas, intervalWas })
+	nodeListRetryInterval = time.Millisecond
+	exiting := fmt.Errorf("read the command line of agenthub-node (pid 52): %w", syscall.EINVAL)
+	running := func() []nodeProcess { return []nodeProcess{{PID: 51, Argv: []string{"/usr/bin/agenthub-node"}}} }
+
+	withFakeNode(t)
+	fake := &fakeRestart{answers: []bool{false, true}, running: running()}
+	fake.install(t)
+	failures, listed := 2, listNodes
+	listNodes = func(ctx context.Context) ([]nodeProcess, error) {
+		if failures > 0 {
+			failures--
+			return nil, exiting
+		}
+		return listed(ctx)
+	}
+	result, err := restartAppProcess(t)
+	if err != nil {
+		t.Fatalf("a listing that failed twice on an exiting process was not asked again: %v\n%s", err, result.Output)
+	}
+	if len(fake.started) != 1 || !slices.Contains(fake.started[0], fake.nodePaths.database) {
+		t.Errorf("started with %q, want --db %s", fake.started, fake.nodePaths.database)
+	}
+
+	for name, tc := range map[string]struct {
+		err   error
+		calls int
+	}{
+		"exiting, and it lasts": {exiting, nodeListAttempts},
+		"another failure":       {errors.New("operation not permitted"), 1},
+	} {
+		stuck := &fakeRestart{answers: []bool{false, true}, running: running()}
+		stuck.install(t)
+		calls := 0
+		listNodes = func(context.Context) ([]nodeProcess, error) {
+			calls++
+			return nil, tc.err
+		}
+		if _, err := restartAppProcess(t); err == nil || !strings.Contains(err.Error(), "will not restart it") {
+			t.Errorf("%s: err = %v, want a refusal", name, err)
+		}
+		if stuck.stoppedOrStarted() {
+			t.Errorf("%s: a listing that did not succeed was taken for no node running: %v", name, stuck.steps)
+		}
+		if calls != tc.calls {
+			t.Errorf("%s: listed %d times, want %d", name, calls, tc.calls)
+		}
 	}
 }
 

@@ -109,7 +109,8 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	// what a node this app started and then stopped stays until the app
 	// exits. It is not a running node, and it must not stop the listing. On
 	// its way there a process can be caught exiting and not yet a zombie,
-	// which macOS answers with an error: that is asked again, not failed.
+	// which macOS answers with EINVAL: that error, and only that kind
+	// (transientListError), is asked again rather than failed.
 	for _, command := range commands {
 		if err := command.Process.Kill(); err != nil {
 			t.Fatal(err)
@@ -118,6 +119,9 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second) // PowerShell again
 	for {
 		processes, err := listNodeProcesses(context.Background())
+		if err != nil && !transientListError(err) {
+			t.Fatalf("list with exited nodes about: %v", err)
+		}
 		if err == nil && !slices.ContainsFunc(processes, func(p nodeProcess) bool { _, ours := fills[p.PID]; return ours }) {
 			break
 		}
@@ -129,13 +133,20 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 }
 
 // waitForListed lists agenthub-node processes until every pid in want is
-// among them. A listing that fails is asked again until the deadline: another
-// agenthub-node on this machine may be on its way out.
+// among them. A listing that fails the way one fails on a process caught
+// exiting — another agenthub-node on this machine may be on its way out — is
+// asked again until the deadline; any other failure is the test's. Asking
+// again on every error would hide a misread: the kernel's strings after a new
+// process's environment are wiped by the process itself moments after it
+// starts, and a parse that fails only before that would pass on the retry.
 func waitForListed(t *testing.T, want map[int]string) []nodeProcess {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second) // PowerShell can take seconds to start cold
 	for {
 		processes, err := listNodeProcesses(context.Background())
+		if err != nil && !transientListError(err) {
+			t.Fatalf("list: %v", err)
+		}
 		var found []nodeProcess
 		for _, process := range processes {
 			if _, ok := want[process.PID]; ok {

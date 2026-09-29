@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -243,7 +244,7 @@ func planFromRunningNodes(ctx context.Context) (nodeRestartPlan, *nodeProcess, e
 	refuse := func(reason string) error {
 		return fmt.Errorf("%s, so this app will not restart it: stop and start the node the way it was started", reason)
 	}
-	processes, err := listNodes(ctx)
+	processes, err := listNodesSettled(ctx)
 	if err != nil {
 		return nodeRestartPlan{}, nil, refuse(fmt.Sprintf(
 			"could not read how the running node was started (%v), and a node started without its --db "+
@@ -270,6 +271,40 @@ func planFromRunningNodes(ctx context.Context) (nodeRestartPlan, *nodeProcess, e
 	}
 	return plan, &running, nil
 }
+
+// listNodesSettled is listNodes, asked again a few times when it fails the
+// way a listing fails that caught an agenthub-node on its way out: macOS
+// answers kern.procargs2 for a process that is exiting and not yet a zombie
+// with EINVAL, and a process gone between being listed and being read is
+// ESRCH. That process is not taken for gone — nothing is known about it until
+// a listing succeeds — so the listing is asked again, briefly, and a failure
+// that persists is a refusal like any other.
+func listNodesSettled(ctx context.Context) ([]nodeProcess, error) {
+	for attempt := 1; ; attempt++ {
+		processes, err := listNodes(ctx)
+		if err == nil || attempt >= nodeListAttempts || !transientListError(err) {
+			return processes, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, err
+		case <-time.After(nodeListRetryInterval):
+		}
+	}
+}
+
+// transientListError is whether a listing failed on a process caught
+// exiting (listNodesSettled).
+func transientListError(err error) bool {
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ESRCH)
+}
+
+// nodeListAttempts and nodeListRetryInterval bound listNodesSettled: long
+// enough for a process on its way out to finish, short enough not to be felt.
+var (
+	nodeListAttempts      = 6
+	nodeListRetryInterval = 50 * time.Millisecond
+)
 
 // nodeListTimeout bounds reading the running node's command line. Windows
 // answers it through PowerShell, which can take seconds to start cold.

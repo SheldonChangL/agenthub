@@ -69,8 +69,10 @@ const zombie = 5
 // kernel pads the environment's end with NULs to a multiple of the pointer
 // size — so when it ends on that boundary there is no empty entry between the
 // two — and the buffer itself may end on the last string's NUL with no padding
-// after it (measured on Darwin 25.6). An empty entry is therefore padding, not
-// the end of anything, and the end of the buffer is the end of the strings.
+// after it (measured on Darwin 25.6). A process also wipes some of those
+// strings to NULs moments after it starts, so what follows the environment
+// depends on when it is read. An empty entry is therefore padding, not the end
+// of anything, and the end of the buffer is the end of the strings.
 // The apple strings are kept rather than filtered by a list of names the
 // kernel is free to extend: they come after every environment entry, and a
 // lookup takes the first entry for a name (environmentLookup), so none of them
