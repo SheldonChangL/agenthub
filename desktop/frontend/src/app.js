@@ -147,6 +147,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // every render (firstRunChecks), so a step that regresses comes back.
     firstRun: {
       engaged: false, forced: false, suspended: false, touched: false, running: false,
+      // seen: it has been on screen in this window. settled: the launch's first
+      // picture of the machine is complete, and it no longer comes up by
+      // itself. reads: how many Overview reads have been rendered.
+      seen: false, settled: false, reads: 0,
       step: 1, localOnly: false, pairSkipped: false, shareSkipped: false,
       phase: {}, failed: {}, addresses: null, choice: "",
       picked: new Set(), preset: "messages", showAll: false, shared: null,
@@ -949,14 +953,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // second and third steps with it. The one exception is a wizard nobody has
   // touched, on a machine where every trigger has gone by itself: the node was
   // simply slow to answer at launch, and a set-up machine is not a first run.
+  //
+  // And it comes up by itself only at launch, while the window is still
+  // forming its first picture of the machine: until the service status has
+  // landed as well as the first Overview (or a second read has come, for a
+  // status command that keeps failing). After that the owner has the main
+  // window, and a node that stops answering, a service stopped from a
+  // terminal or the last pairing revoked is the attention strip's to say —
+  // covering the settings page an owner is working in with the whole wizard
+  // is not a first run either.
   function syncFirstRun() {
     const wizard = state.firstRun;
     const triggered = firstRunTriggered();
-    if (!wizard.engaged && !state.ui.onboardingDismissed && !state.ui.firstRunFinished && triggered) {
+    if (!wizard.settled && !wizard.engaged && !state.ui.onboardingDismissed && !state.ui.firstRunFinished && triggered) {
       wizard.engaged = true;
+      wizard.seen = true;
       wizard.step = 1;
       readForFirstRun();
     }
+    if (state.nodeChecked && (state.service || wizard.reads >= 2)) wizard.settled = true;
     if (wizard.engaged && !wizard.forced && !wizard.touched && !wizard.running && !triggered) {
       wizard.engaged = false;
     }
@@ -985,6 +1000,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       wizard.shared = null;
     }
     wizard.engaged = true;
+    wizard.seen = true;
     wizard.forced = true;
     wizard.suspended = false;
     wizard.touched = true;
@@ -1158,8 +1174,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     wizard.phase = {};
     // The status as it is now, not as the load() above left it: that load
     // fires its status read and does not wait for it.
+    // Its own answer, not state.service: a read that a newer one overtook is
+    // not stored (loadService), and the stored one can be from before the
+    // install.
+    let after = state.service;
     try {
-      await loadService();
+      after = await loadService();
     } catch {
       // Judged on the last status read; the line below says what it shows.
     }
@@ -1167,7 +1187,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // node, the install or the start is the login line's, and the node line
     // keeps saying only that nothing is running.
     const detail = noticesSince(mark);
-    const after = state.service;
     if (managed && !(after?.installed && after?.running)) {
       failFirstRun("login", t("firstRun.login.failed"), detail);
       return false;
@@ -1752,8 +1771,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("app").classList.toggle("firstrun-on", on);
     // 「繼續設定」 for as long as setup is not finished and there is something
     // left to set up — not a primary button: the main window is the owner's.
+    // Only for an owner who has met the wizard — this window, or a launch that
+    // put it away — so a set-up machine whose node drops later is not told to
+    // go back to a setup it never started.
+    const met = state.firstRun.seen || state.ui.onboardingDismissed;
     el("btn-resume-setup").classList.toggle("hidden",
-      on || state.ui.firstRunFinished || !(state.firstRun.suspended || firstRunTriggered()));
+      on || state.ui.firstRunFinished || !(state.firstRun.suspended || (met && firstRunTriggered())));
     el("btn-resume-setup").disabled = state.busy;
     if (!on) return;
     renderFirstRunRail();
@@ -2824,6 +2847,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const alive = new Set(state.sessions.map((s) => s.id));
     for (const id of [...state.selected]) if (!alive.has(id)) state.selected.delete(id);
 
+    state.firstRun.reads += 1;
     render();
     return true;
   }

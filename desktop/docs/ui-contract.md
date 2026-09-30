@@ -229,6 +229,9 @@
     `Overview()` 已回答）——第一次讀取回來前 `nodeReachable` 是「還沒問」不是「連不到」，而精靈跟清單不同、出現後就留著。
     另外要 `UI_PREFS_KEY` 裡 `onboardingDismissed` 與 `firstRunFinished` 都不是 true（沿用清單的鍵名，所以清單時代關掉的
     設定照樣有效）。
+  - **只在啟動時自己出現**：視窗對這台機器的第一個完整認識（第一次 `Overview()` 回答**而且** `ServiceStatus()` 也回來了；
+    狀態一直讀不到就以第二次 `Overview()` 為準）形成之後（`settled`），觸發條件再成立也不自己出現——之後節點掉線、在終端機停掉服務、
+    撤銷最後一台配對，都是待處理列的事，不能把整個精靈蓋在使用者正在用的設定頁上（fresh-context 審查 2026-09-30 找到的）。
   - **出現後就留著**（`syncFirstRun()`）：觸發條件正是第 1 步會關掉的東西，精靈不能在第一顆按鈕成功時自己消失。唯一例外：
     沒人碰過（`touched`）、不是手動打開（`forced`）、沒在跑、而觸發條件全都消失了——啟動時節點慢了一點的已設定機器——才自己收起。
   - **每步的完成狀態每次 render 從 state 重算，不存**（`firstRunChecks()`、`firstRunStepComplete()`）：
@@ -246,7 +249,8 @@
       精靈自己在呼叫之前也先判一次 `nodeRunningNotAService()`，是的話直接 `goToService()` 並用 info toast `firstRun.toServiceForm`
       說為什麼到了設定頁——兩道守衛任一道都擋得下安裝（測試 `first-run.mjs` §5 各自變異過）。沒有服務管理員（不支援、找不到 ah）
       而節點沒回應 → `restartNode()`（`RestartNode`）。之後節點還沒回答就 `waitForNode()` + `load()`，並**再讀一次**
-      `ServiceStatus()` 才判定（`load()` 發出狀態讀取但不等它）。服務那一步失敗記在「開機後自動啟動」那一行，節點那行只說還沒執行。
+      `ServiceStatus()` 才判定，並且用**那次讀取自己的回答**（`load()` 發出狀態讀取但不等它；被更新的讀取超車的那次不會存進
+    `state.service`，存著的可能還是安裝前的狀態）。服務那一步失敗記在「開機後自動啟動」那一行，節點那行只說還沒執行。
     - 區網（`prepareFirstRunLan()`）：節點設定表單有使用者沒存的修改（`unsavedNodeSettingsFields()`，配對抽屜同一條）就停，
       列出欄位、不替他存；否則 `loadNodeSettings()` 取新基準，再走 `applyPeerListenRepairFromCard({ peerListen, peerListens: [位址], allowLan: true })`
       ——配對抽屜第 1 步同一條路：表單填好按儲存、單元固定的旗標照 §7.8 問、存完 `RestartNode()`（已安裝服務時 Go 端走
@@ -271,7 +275,8 @@
   - **完成畫面**：一句結果（分享了幾個、給誰〔`describeTargets()`〕／只在這台用／還沒分享），「開始使用」＝寫入
     `onboardingDismissed` 與 `firstRunFinished`、回主視窗。主視窗「公開對象」欄的一次性提示**沒有做**（規格標為可選）。
   - **稍後再設定**：收起、寫入 `onboardingDismissed`、回主視窗、info toast 說「繼續設定」在哪。之後只要 `firstRunFinished` 不是 true
-    且（精靈被暫時讓開，或觸發條件仍成立），標題列就有「繼續設定」：按了重新打開並跳到第一個未完成（也沒被略過）的步驟
+    且（精靈被暫時讓開，或使用者見過精靈〔這個視窗出現過，或 `onboardingDismissed`〕而觸發條件仍成立），標題列就有「繼續設定」
+    ——沒見過精靈的已設定機器，節點掉線時不會冒出這顆：按了重新打開並跳到第一個未完成（也沒被略過）的步驟
     （`firstIncompleteStep()`）。設定 → 外觀的「顯示首次設定」（`settings-show-onboarding`）清掉兩個偏好、清掉略過的選擇，同樣打開。
   - **讓開**：`goToService()`、`goToNodeSettings()`、`goToPairing()`、`goToPublish()` 會先 `stepOutOfFirstRun()`——精靈蓋住三個視圖，
     它送使用者去的地方不能被它自己蓋住。只在這個視窗讓開（`suspended`），不寫偏好。

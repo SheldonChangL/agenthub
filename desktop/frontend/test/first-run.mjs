@@ -71,6 +71,9 @@ const blank = () => ({
   installError: "",
 });
 let machine = blank();
+// The window the bindings are answering, for a fake that has to start a read
+// of its own in the middle of one.
+let current = null;
 // Every write binding, in the order the window called it.
 const writes = [];
 const audienceCalls = [];
@@ -115,6 +118,16 @@ const bindings = {
     // already queued: a caller that fires it and moves on does not have it
     // yet (load() does exactly that).
     await new Promise((resolve) => setImmediate(resolve));
+    // A newer read started while this one is in flight, which then answers
+    // late: this one is overtaken, and loadService does not store it.
+    if (machine.parkThis) {
+      machine.parkThis = false;
+      await machine.gate;
+    }
+    if (machine.installed && typeof machine.overtakeAfterInstall === "number" && --machine.overtakeAfterInstall === 0) {
+      machine.parkThis = true;
+      current.loadService().catch(() => {});
+    }
     // A node somebody starts by hand between two reads of the status.
     if (typeof machine.upAfterReads === "number" && --machine.upAfterReads < 0) machine.nodeUp = true;
     return serviceStatus();
@@ -185,6 +198,7 @@ async function start(setup = {}, { prefs = null, read = true } = {}) {
   writes.length = 0;
   audienceCalls.length = 0;
   const app = boot({ start: false });
+  current = app;
   if (read) {
     await app.load();
     await flush();
@@ -286,6 +300,29 @@ const ready = { nodeUp: true, installed: true, running: true };
   await slow.load();
   await flush();
   if (shown()) failures.push("an untouched wizard stayed over a machine with nothing to set up");
+}
+
+{
+  // It comes up by itself only at launch. A set-up machine whose node stops
+  // answering later, or whose last pairing is revoked, is the main window's to
+  // say (the attention strip): covering the page the owner is working in with
+  // the whole wizard would be the checklist's noise again, louder.
+  const settled = await start({ ...ready, sessions: [session("a", "claude")], nodes: [{ nodeId: "n" }] });
+  settled.state.view = "settings";
+  settled.render();
+  machine.nodeUp = false;
+  await settled.load();
+  await flush();
+  if (shown()) failures.push("a node that stopped answering mid-session put the wizard over a set-up window");
+  if (el("settings-view").classList.contains("hidden")) failures.push("the settings page was hidden by a node dropping out");
+  if (!el("btn-resume-setup").classList.contains("hidden")) {
+    failures.push("a set-up machine whose node dropped was offered 繼續設定 for a setup it never started");
+  }
+  machine.nodeUp = true;
+  machine.nodes = [];
+  await settled.load();
+  await flush();
+  if (shown()) failures.push("revoking the last pairing mid-session put the wizard up");
 }
 
 /* ---------------- 2. the parts it replaces are gone while it is up ---------------- */
@@ -404,6 +441,27 @@ const ready = { nodeUp: true, installed: true, running: true };
   await button(ZH["firstRun.retry"]).onclick();
   await flush();
   if (!writeNames().includes("SaveNodeSettings")) failures.push("重試 did not carry on to the address once the install went through");
+}
+
+{
+  // The service step is judged on its own read's answer. A newer status read
+  // started while that one is out — the fifteen-second tick's — overtakes it,
+  // and loadService stores only the newest: state.service is then the status
+  // from before the install, and a service that installed was reported as one
+  // that did not.
+  const app = await start({ addresses: ONE });
+  let release = () => {};
+  machine.gate = new Promise((resolve) => { release = resolve; });
+  // The install's own load() reads once; the wizard's read is the next one.
+  machine.overtakeAfterInstall = 2;
+  await primary().onclick();
+  await flush();
+  release();
+  await flush();
+  if (app.state.firstRun.failed.login) {
+    failures.push(`a service that installed was reported as not registered: ${app.state.firstRun.failed.login.text}`);
+  }
+  if (!writeNames().includes("SaveNodeSettings")) failures.push("an overtaken status read stopped the flow before the address");
 }
 
 /* ---------------- 5. the identity guards hold ---------------- */
