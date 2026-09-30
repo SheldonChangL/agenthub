@@ -295,6 +295,10 @@
       （`syncFirstRunPairing()`），進入時 `enterFirstRunPairing()`（讀請求、`loadPairing()`、`openPairingWindowIfNeeded()`＝`OpenPairing(0)`），
       離開時（任何方式，含 `stepOutOfFirstRun()`）`releasePairingWindow()`。5 秒與 2 秒兩個既有 interval 的條件延伸到它（§4），1 秒倒數在它上面也跑，
       不顯示數字；歸零時問節點、第 2 步還在就重開（`keepFirstRunWindowOpen()`）。15 秒 tick 的 `refreshIncomingPairRequests()` 在它開著時不讀（同抽屜）。
+      2 秒 tick 跟抽屜一樣之後接 `load({ background: true, exceptPairingDrawer: true })`（Overview，以及它帶出的 `ServiceStatus()`）——
+      第 2 步靠它看到 `state.nodes` 多了一台。第 2 步讀的一律是 `PairRequests(false)`：抽屜的「顯示已結束」勾著也一樣。
+      讀取失敗時不畫任何請求卡片（上一份清單也不算數，同抽屜的 `renderPairRequests()`），只說讀取失敗；有寫入在進行時「稍後再設定」disabled
+      （那時離開，`releasePairingWindow()` 會因 `state.busy` 跳過而沒有人再回來關視窗）。
       只在這台用時第 2 步是略過狀態（`firstRun.step2.localOnly`＋「下一步」），不開視窗、不輪詢。
     - 測試 `first-run-pairing.mjs`（§0 四個 interval、§1 進入與 `[0]`、§2 輪詢、§3 候選列、§4 等待與取消、§5 位址欄、§6 比對與三個動詞、§7 沒有陣列、
       §8 沒有自動決定、§9 element identity 與 `replaceChildren` 次數、§10 結束方式、§11 到期重開、§12 離開的四種情況、§13 只在這台用、§14 pill）；
