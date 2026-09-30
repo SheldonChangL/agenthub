@@ -59,37 +59,50 @@ let pairingOpen = true;
 const query = new URLSearchParams(globalThis.location?.search ?? "");
 const pairShape = query.get("pair") ?? "";
 
-// The first-launch checklist, which the finished window above can never show:
-// every one of its triggers is a thing this preview already has. `?onboarding=`
+// The first-run wizard, which the finished window above can never show: every
+// one of its triggers is a thing this preview already has. `?onboarding=`
 // takes them away.
 //
-//   ?onboarding=fresh   nothing done at all — what the installer leaves behind
-//   ?onboarding=mixed   the shape worth looking at: two steps ticked, the node
-//                       still on loopback and nobody paired
+//   ?onboarding=fresh   what dragging the .dmg in leaves behind: no node
+//                       running, nothing registered, no session scanned yet.
+//                       「準備好這台電腦」 installs the service (which starts the
+//                       node), opens the network address and restarts; the
+//                       sessions appear once the window has scanned.
+//   ?onboarding=mixed   what install.sh leaves: the node running as a service,
+//                       the sessions found, the node still on loopback and
+//                       nobody paired — step 1 is down to 「開放區網並繼續」
 //   ?onboarding=unreachable
-//                       the node does not answer at all. This is the one
-//                       situation the card exists for, and it was the one this
-//                       preview could not show: Overview rejects, so the window
-//                       never learns an address, a session or a peer, and the
-//                       card has to offer a way to start the node rather than a
-//                       tick over a machine showing "cannot reach".
+//                       the service says it is running and the node answers
+//                       nothing. Step 1 must say 「AgentHub 還沒在這台執行」 and
+//                       keep the dial error under 說明; its button restarts
+//                       the service.
 //   ?onboarding=slow    the same as `fresh`, except ServiceStatus takes three
 //                       seconds. The window renders before that read lands, so
 //                       this is what every real launch looks like for its first
-//                       seconds — the state in which the step used to read
-//                       "Install the service" on a machine that already had one.
+//                       seconds — the login line has to say it is checking.
 //
-// Both put the node's peer listener back on 127.0.0.1 and drop the bind
+//   &addresses=two      two private networks (Ethernet and Wi-Fi), so step 1
+//                       has to ask which one other machines should use.
+//   &service=none       with `mixed`: the node answering without being a
+//                       service, which the wizard sends to the service form
+//                       rather than installing over.
+//
+// All of them put the node's peer listener back on 127.0.0.1 and drop the bind
 // failure, because "this machine cannot be reached" and "the address it was
 // given is gone" are different screens and only the first one is a first run.
 const onboarding = query.get("onboarding") ?? "";
-// Anything other than "fresh" keeps the sessions and the service, so the card
-// shows with two steps ticked and three still open, which is the state worth
-// looking at: a tick that never appears proves nothing about the tick.
+// `fresh` and `slow` start with nothing at all; the others keep the sessions.
 const firstRun = onboarding === "fresh" || onboarding === "slow";
 // `?service=down` is a node not answering with nothing registered either:
 // the one shape the one-press fix installs straight away (see below).
-let unreachable = onboarding === "unreachable" || query.get("service") === "down";
+let unreachable = firstRun || onboarding === "unreachable" || query.get("service") === "down";
+// What `fresh` has done so far: the service the wizard installed, and the
+// scan that found the sessions.
+let installedHere = false;
+let scanned = !firstRun;
+// The service's process, which a restart replaces: the window tells a node
+// that came back from one that never went by the pid (waitForNode).
+let servicePid = 41872;
 // ServiceStatus behind a delay, because the defect it uncovers is a race: the
 // first render happens with no status at all, and what the card says then is
 // only visible if something answers slower than the first paint.
@@ -111,12 +124,21 @@ const PAIR_ADDRESS = {
   announceable: 1,
   address: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true },
 };
+// On a first run the address follows what was saved: a node the wizard has
+// opened to the network answers with the address it now serves, as a real one
+// does after its restart.
+const pairAddress = () => {
+  if (!onboarding) return PAIR_ADDRESS;
+  const saved = nodeSettings.saved ?? {};
+  const lan = saved.allowLan && [saved.peerListen, ...(saved.peerListens ?? [])].find((address) => address && !address.startsWith("127."));
+  return lan ? { announceable: 1, address: { peerAddress: lan, peerAddressReachable: true } } : PAIR_ADDRESS;
+};
 const pairing = () => ({
   availability: "on",
   windowAvailable: true,
   state: { open: pairingOpen, remainingSeconds: 252, displayName: "studio-mac", nameIsChosen: false,
-    ...PAIR_ADDRESS.address,
-    announcing: { announceableAddresses: PAIR_ADDRESS.announceable, lastAnnouncedAt: ago(3) } },
+    ...pairAddress().address,
+    announcing: { announceableAddresses: pairAddress().announceable, lastAnnouncedAt: ago(3) } },
   candidates: pairingOpen ? [
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
     { nodeId: "node_a91c3e7b2d5f8046c0e1", address: "192.168.50.22:7463", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF 0011 2233", firstSeen: ago(120), lastSeen: ago(5), contested: true, duplicate: true },
@@ -230,7 +252,12 @@ if (onboarding) {
 // same machine before anything was opened, which is where pairing step 1
 // offers 「全部開放」.
 const listenShape = query.get("listen") ?? "";
-const localAddresses = listenShape === "multi"
+const localAddresses = query.get("addresses") === "two"
+  ? [
+    { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
+    { interface: "en1", address: "10.0.0.5", subnet: "10.0.0.0/24", private: true },
+  ]
+  : listenShape === "multi"
   ? [
     { interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true },
     { interface: "en7", address: "10.0.0.5", subnet: "10.0.0.0/24", private: true },
@@ -250,7 +277,7 @@ if (listenShape === "multi") {
   nodeSettings.peerListeners = listenersFor(list);
   delete nodeSettings.peerListenProblem;
 }
-const overviewSessions = firstRun ? [] : sessions;
+const overviewSessions = () => (scanned ? sessions : []);
 // `?paired=none`: every session and no paired machine, which is what the
 // inline audience menu's "nothing paired yet" line is for.
 const overviewNodes = onboarding || query.get("paired") === "none" ? [] : nodes;
@@ -275,7 +302,16 @@ const shapedService = () => ({
   down: { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: false, dbPathKnown: false },
   noah: { toolError: "ah not found on PATH or beside the app", supported: true, installed: false, running: false },
 }[serviceShape]);
-const overviewCounts = firstRun ? { total: 0, all_paired: 0, selected: 0, none: 0 } : counts;
+// A first run has published nothing yet, so the counts follow the sessions the
+// wizard's step 3 shares rather than the finished preview's fixed numbers.
+if (firstRun) for (const s of sessions) s.audience = aud("none");
+const liveCounts = () => ({
+  ...counts,
+  all_paired: sessions.filter((s) => s.audience.mode === "all_paired").length,
+  selected: sessions.filter((s) => s.audience.mode === "selected").length,
+  none: sessions.filter((s) => s.audience.mode === "none").length,
+});
+const overviewCounts = () => (!scanned ? { total: 0, all_paired: 0, selected: 0, none: 0 } : firstRun ? liveCounts() : counts);
 
 configure({
   // A node that is not answering: `reachable` false and the dial error, shaped
@@ -284,8 +320,13 @@ configure({
   // unreachable path here as it does in the built app.
   Overview: async () => (unreachable
     ? { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: "Get \"http://127.0.0.1:7462/v1/node\": dial tcp 127.0.0.1:7462: connect: connection refused", sessions: [], nodes: [], peers: [], counts: {} }
-    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions, nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts }),
-  Discover: async () => ({ claude: 7, codex: 3, total: 10, skipped: 0 }),
+    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions(), nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts() }),
+  Discover: async () => {
+    // A node that is not running cannot scan anything.
+    if (unreachable) throw new Error("dial tcp 127.0.0.1:7462: connect: connection refused");
+    scanned = true;
+    return { claude: 7, codex: 3, total: 10, skipped: 0 };
+  },
   SetAudience: async (ids, audience) => { log("SetAudience", ids, audience); for (const s of sessions) if (ids.includes(s.id)) s.audience = { ...audience }; return { changed: ids.length, failed: 0 }; },
   SetVisibility: async () => ({ changed: 0, failed: 0 }),
   TrustNode: async (id, name) => ({ nodeId: id, displayName: name || id }),
@@ -299,7 +340,9 @@ configure({
     return { olderNode: false };
   },
   Heartbeat: async () => JSON.stringify({ type: "heartbeat", node: "node_7f2e…", sessions: 3 }, null, 2),
-  Pairing: async () => pairing(),
+  Pairing: async () => (unreachable
+    ? { availability: "unknown", candidates: [], error: "dial tcp 127.0.0.1:7462: connect: connection refused" }
+    : pairing()),
   OpenPairing: async () => { pairingOpen = true; return pairing().state; },
   ClosePairing: async () => { pairingOpen = false; return pairing().state; },
   // The exchange (#63). Decided rows are hidden unless asked for, exactly as
@@ -416,20 +459,22 @@ configure({
   // build that no tag stamped really answers, so that is what the dev page
   // shows rather than a version number nothing produced.
   Version: async () => ({ release: "unreleased", goos: "darwin", goarch: "arm64" }),
-  RestartService: async () => { log("RestartService"); await sleep(600); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartService: async () => { log("RestartService"); await sleep(600); serviceShape = ""; unreachable = false; servicePid += 1; return { command: "ah service restart", output: `restarted (pid ${servicePid})` }; },
   // What the window actually calls. It was missing, so every save on this page
   // ended in "could not restart the node: api.RestartNode is not a function" — the dev
   // page showing a failure the real app does not have, which is the same wasted
   // hour as a bug, spent in the other direction.
-  RestartNode: async () => { log("RestartNode"); serviceShape = ""; return { command: "ah service restart", output: "restarted (pid 41999)" }; },
+  RestartNode: async () => { log("RestartNode"); await sleep(400); serviceShape = ""; unreachable = false; servicePid += 1; return { command: "ah service restart", output: `restarted (pid ${servicePid})` }; },
   // Installed the old way, with the node's settings burned into the unit, so
   // the panel's offer to re-register it cleanly is visible here too.
-  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), shapedService() ?? (unreachable
-    ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
-    : firstRun
-    ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: true, dbPathKnown: false }
-    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: 41872, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: ["peer-listen", "allow-lan"] })),
-  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; unreachable = false; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
+  // A first run's service is the one the wizard installs, with no setting
+  // baked into it; the finished preview's is the old kind.
+  ServiceStatus: async () => (await sleep(serviceStatusDelayMs), shapedService() ?? (firstRun && !installedHere
+    ? { tool: "/usr/local/bin/ah", supported: true, installed: false, running: false, pid: 0, unitPath: "", logHint: "", nodeAnswering: !unreachable, dbPathKnown: false }
+    : unreachable
+    ? { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: servicePid, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: false, dbPathKnown: false }
+    : { tool: "/usr/local/bin/ah", supported: true, installed: true, running: true, pid: servicePid, unitPath: "~/Library/LaunchAgents/local.agenthub.node.plist", logHint: "~/Library/Logs/agenthub-node.log", nodeAnswering: true, node: "http://127.0.0.1:7462", dbPath: "~/.local/share/agenthub/agenthub.db", dbPathKnown: true, pinnedSettings: onboarding ? [] : ["peer-listen", "allow-lan"] })),
+  InstallService: async (form) => { log("InstallService", form); await sleep(600); serviceShape = ""; unreachable = false; installedHere = true; return { command: `ah service install --db ${form.dbPath || "(the node's default location)"}`, output: "installed (pid 41872)" }; },
   UninstallService: async () => ({ command: "ah service uninstall", output: "removed" }),
   LocalAddresses: async () => localAddresses,
   // The node filters by session (agenthub#132); the fake does the same, so the
@@ -450,6 +495,20 @@ configure({
     { id: "w2", messageId: "m9", sourceNodeId: "node_a91c3e7b2d5f8046c0e1", sourceSession: "codex:77ab-serial-bench", destinationSession: session, hops: 1, outcome: "refused_session_rate", detail: "3 wakes in 10m", at: ago(200) },
   ], limits: { hops: 3, pair: 6, pairWindow: "10m0s", session: 3, sessionWindow: "10m0s", node: 30, nodeWindow: "1h0m0s" } }),
 });
+// A first-run preview is looked at again and again from the same browser, and
+// its 「稍後再設定」 / 「開始使用」 are remembered there like the app's: forgotten
+// before each `?onboarding=` load, so the wizard is what the page opens on.
+if (onboarding) {
+  try {
+    const key = "agenthub.desktop.ui.v1";
+    const ui = JSON.parse(localStorage.getItem(key) ?? "{}") ?? {};
+    delete ui.onboardingDismissed;
+    delete ui.firstRunFinished;
+    localStorage.setItem(key, JSON.stringify(ui));
+  } catch {
+    // Storage disabled: nothing was remembered either.
+  }
+}
 const preview = boot({ backdropUrl: backdrop });
 // Changes what the next ServiceStatus read answers without telling the window,
 // which is how a service installed from a terminal looks from here.
