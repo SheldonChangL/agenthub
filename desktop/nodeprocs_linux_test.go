@@ -309,3 +309,127 @@ func TestLinuxWaitForProcessGoneWaitsOutAnEmptyCommandLine(t *testing.T) {
 		}
 	})
 }
+
+// A /proc file is read in more than one read, and a read made after the node
+// let go of its memory answers 0 bytes, which os.ReadFile takes for the end:
+// an environment or a command line cut short, with no error. A cut
+// environment that still has HOME and not XDG_CONFIG_HOME names another
+// database. Such a listing is asked again, and one that stays that way is a
+// refusal; a node whose command line reads the same after its environment is
+// listed whole, however long either is.
+func TestLinuxListingAsksAgainANodeReadCutShort(t *testing.T) {
+	attemptsWas, intervalWas := nodeListAttempts, nodeListRetryInterval
+	t.Cleanup(func() { nodeListAttempts, nodeListRetryInterval = attemptsWas, intervalWas })
+	nodeListRetryInterval = time.Millisecond
+
+	const pid = 500
+	longArgv := []string{"/usr/local/bin/agenthub-node", "--display-name", strings.Repeat("n", 600),
+		"--db", "/home/me/a b/agenthub.db"}
+	longEnv := []string{"HOME=/home/me", "FILLER=" + strings.Repeat("f", 600), "XDG_CONFIG_HOME=/home/me/.config"}
+	newProc := func(t *testing.T) *fakeProc {
+		proc := newFakeProc(t)
+		proc.add(pid, nodeExecutable, 'S', longArgv, longEnv)
+		return proc
+	}
+	// reader answers this node's environ, and the second cmdline read of
+	// each listing, with what change makes of the whole file; every other
+	// read is the file as it is.
+	reader := func(proc *fakeProc, change func(name string, whole []byte) ([]byte, error)) func(string) ([]byte, error) {
+		cmdlineReads := 0
+		return func(path string) ([]byte, error) {
+			whole, err := os.ReadFile(path) // #nosec G304 -- a file this test made
+			if err != nil || filepath.Dir(path) != proc.dir(pid) {
+				return whole, err
+			}
+			switch filepath.Base(path) {
+			case "environ":
+				return change("environ", whole)
+			case "cmdline":
+				cmdlineReads++
+				if cmdlineReads%2 == 0 { // the second of a listing
+					return change("cmdline", whole)
+				}
+			}
+			return whole, nil
+		}
+	}
+	// cut is what os.ReadFile returns when its first read, 512 bytes
+	// (os.readFileContents), came back whole and the next answered 0.
+	cut := func(whole []byte) []byte { return whole[:512] }
+	exited := func(name string, whole []byte) ([]byte, error) {
+		if name == "environ" {
+			return cut(whole), nil
+		}
+		return nil, nil // gone by then: an empty command line
+	}
+
+	t.Run("whole", func(t *testing.T) {
+		processes, err := newProc(t).list()
+		if err != nil || len(processes) != 1 || !slices.Equal(processes[0].Argv, longArgv) ||
+			!slices.Equal(processes[0].Env, longEnv) || processes[0].EnvErr != nil {
+			t.Fatalf("listed %+v, %v; want pid %d with argv %q and env %q", processes, err, pid, longArgv, longEnv)
+		}
+	})
+
+	t.Run("environment cut short as it exits", func(t *testing.T) {
+		proc := newProc(t)
+		processes, err := listNodeProcessesIn(proc.root, reader(proc, exited))
+		if err == nil || !transientListError(err) {
+			t.Fatalf("listed %+v, err = %v; want one listNodesSettled asks again", processes, err)
+		}
+		if processes != nil || !strings.Contains(err.Error(), fmt.Sprintf("pid %d", pid)) {
+			t.Errorf("listed %+v, err = %v; want nothing and the exiting node named", processes, err)
+		}
+	})
+
+	t.Run("environment cut short and it stays that way", func(t *testing.T) {
+		proc := newProc(t)
+		read := reader(proc, exited)
+		calls := 0
+		listWas := listNodes
+		t.Cleanup(func() { listNodes = listWas })
+		listNodes = func(context.Context) ([]nodeProcess, error) {
+			calls++
+			return listNodeProcessesIn(proc.root, read)
+		}
+		plan, running, err := planFromRunningNodes(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "will not restart it") {
+			t.Fatalf("plan = %+v, running = %+v, err = %v; want a refusal", plan, running, err)
+		}
+		if running != nil {
+			t.Errorf("a refusal named a running node: %+v", running)
+		}
+		if calls != nodeListAttempts {
+			t.Errorf("listed %d times, want %d", calls, nodeListAttempts)
+		}
+	})
+
+	t.Run("command line read again cut short", func(t *testing.T) {
+		proc := newProc(t)
+		changed := func(name string, whole []byte) ([]byte, error) {
+			if name == "cmdline" {
+				return cut(whole), nil
+			}
+			return whole, nil
+		}
+		processes, err := listNodeProcessesIn(proc.root, reader(proc, changed))
+		if err == nil || !transientListError(err) {
+			t.Fatalf("listed %+v, err = %v; want one listNodesSettled asks again", processes, err)
+		}
+	})
+
+	t.Run("command line read again fails another way", func(t *testing.T) {
+		proc := newProc(t)
+		denied := func(name string, whole []byte) ([]byte, error) {
+			if name == "cmdline" {
+				return nil, &os.PathError{Op: "read", Path: name, Err: syscall.EACCES}
+			}
+			return whole, nil
+		}
+		processes, err := listNodeProcessesIn(proc.root, reader(proc, denied))
+		if err == nil || transientListError(err) || strings.Contains(err.Error(), "on its way out") ||
+			!errors.Is(err, syscall.EACCES) {
+			t.Errorf("listed %+v, err = %v; want the read's own failure, not asked again", processes, err)
+		}
+	})
+}
