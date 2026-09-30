@@ -93,6 +93,15 @@ const nodeView = () => ({
 });
 const lanAddress = () => machine.saved.peerListens.find((address) => !address.startsWith("127."));
 
+const serviceStatus = () => (machine.toolError
+    ? { toolError: machine.toolError, supported: false, installed: false, running: false }
+    : {
+      tool: "/usr/local/bin/ah", supported: machine.supported, installed: machine.installed,
+      running: machine.installed && machine.running, pid: machine.installed && machine.running ? 41 : 0,
+      nodeAnswering: machine.nodeUp, logHint: "~/agenthub.log", unitPath: "~/unit",
+      dbPath: machine.installed ? "~/agenthub.db" : "", dbPathKnown: machine.installed, pinnedSettings: [],
+    });
+
 const bindings = {
   Overview: async () => (machine.nodeUp
     ? {
@@ -101,14 +110,11 @@ const bindings = {
       sessions: JSON.parse(JSON.stringify(machine.sessions)), nodes: [...machine.nodes], peers: [], counts: counts(),
     }
     : { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: DIAL, sessions: [], nodes: [], peers: [], counts: {} }),
-  ServiceStatus: async () => (machine.toolError
-    ? { toolError: machine.toolError, supported: false, installed: false, running: false }
-    : {
-      tool: "/usr/local/bin/ah", supported: machine.supported, installed: machine.installed,
-      running: machine.installed && machine.running, pid: machine.installed && machine.running ? 41 : 0,
-      nodeAnswering: machine.nodeUp, logHint: "~/agenthub.log", unitPath: "~/unit",
-      dbPath: machine.installed ? "~/agenthub.db" : "", dbPathKnown: machine.installed, pinnedSettings: [],
-    }),
+  ServiceStatus: async () => {
+    // A node somebody starts by hand between two reads of the status.
+    if (typeof machine.upAfterReads === "number" && --machine.upAfterReads < 0) machine.nodeUp = true;
+    return serviceStatus();
+  },
   InstallService: async (form) => {
     writes.push(["InstallService", form]);
     if (machine.installError) throw new Error(machine.installError);
@@ -411,6 +417,10 @@ const ready = { nodeUp: true, installed: true, running: true };
   }
   if (el("service-form").classList.contains("hidden")) failures.push("the service form was not opened to ask about the database");
   if (shown()) failures.push("the wizard stayed on top of the form it sent the owner to");
+  // Said, too: the owner pressed 「準備好這台電腦」 and is looking at Settings.
+  if (!latestToast(document).textContent.includes(ZH["firstRun.toServiceForm"])) {
+    failures.push(`nothing said why the wizard went to the service form: ${latestToast(document).textContent}`);
+  }
   if (el("btn-resume-setup").classList.contains("hidden")) failures.push("no 繼續設定 to come back by");
   if (writeNames().includes("SaveNodeSettings")) failures.push("the address was saved while the service question was open");
 
@@ -421,6 +431,17 @@ const ready = { nodeUp: true, installed: true, running: true };
   await primary().onclick();
   await flush();
   if (writeNames().includes("InstallService")) failures.push("a stale 「nothing is running」 installed over a node that had since started");
+
+  // And when the node starts between the wizard's own read and the press:
+  // the install goes through the pill's quick action, which reads the status
+  // once more itself before installing anything.
+  await start({});
+  machine.upAfterReads = 1;
+  await primary().onclick();
+  await flush();
+  if (writeNames().includes("InstallService")) {
+    failures.push("a node started between the wizard's read and the install was installed over: the quick action's own re-read was skipped");
+  }
 
   // Installed and stopped is started, not installed again.
   await start({ installed: true, running: false });
