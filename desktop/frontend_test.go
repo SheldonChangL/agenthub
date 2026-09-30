@@ -697,6 +697,18 @@ func TestFrontendFirstRunWizardPressesOnlyWhatTheWindowAlreadyPresses(t *testing
 	runNodeCheck(t, "first-run.mjs")
 }
 
+// TestFrontendFirstRunPairsByTheDrawersRules covers the wizard's step 2, which
+// is the pairing drawer in different clothes: the window opened with
+// OpenPairing(0) by being on screen and closed by the drawer's rule when the
+// step is left, the two polls running for it with no fifth interval, only the
+// address sent, the node's fingerprints as they came with the decision below
+// them and nothing decided without a press, kept rows across ticks — and the
+// title bar's pill, which called a service running while its node answered
+// nothing.
+func TestFrontendFirstRunPairsByTheDrawersRules(t *testing.T) {
+	runNodeCheck(t, "first-run-pairing.mjs")
+}
+
 // runNodeCheck runs one check under frontend/test.
 func runNodeCheck(t *testing.T, name string) {
 	t.Helper()
