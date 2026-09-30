@@ -760,11 +760,16 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   await flush();
   if (!laterBusy) failures.push("稍後再設定 was pressable while a write was in flight");
 
-  // A read that fails cannot say nobody is waiting.
+  // A read that fails cannot say nobody is waiting — even when the last read
+  // that did answer said nobody was.
   machine.requests = [];
   state.firstRun.step = 2;
   app.render();
   await flush();
+  await app.loadPairRequests();
+  await flush();
+  if ((state.pairRequests ?? []).length !== 0) failures.push("the failed-read case did not start from an empty list, so it proves nothing");
+  if (!state.pairing?.state?.open) failures.push("the failed-read case has no open window to keep, so it proves nothing");
   machine.requestsThrow = "dial tcp: refused";
   calls.length = 0;
   el("first-run-later").onclick();
