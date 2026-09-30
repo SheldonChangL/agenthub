@@ -55,14 +55,14 @@
 | `SetVisibility(ids, visibility)` | 目前**沒有** UI 入口 | 保留為未接綁定；不算缺功能 |
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、警告 toast（「對方那台也要做一次」，不自動消失） |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；toast 說明同時移除授權 |
-| `Pairing()` | 進入區網視圖時、每 5 秒（僅在區網視圖）、倒數歸零時 | 序號守衛：慢的回覆不能覆蓋快的 |
-| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫；呼叫還在飛時抽屜被關掉，回來後照關抽屜的規則再判斷一次要不要 `ClosePairing`）；抽屜第 1 步的修復鈕存檔重啟節點後，抽屜仍開著就重讀並再開一次、`btn-pairing-on`（標籤「與另一台機器配對」） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
-| `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時 | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開就**不關**（節點關視窗會作廢所有未決請求） |
-| `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後 | 序號守衛；抽屜開著時照舊（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定。**唯一的例外**（2026-09-29，待處理列）：15 秒背景 tick 在 `load()` 之後讀**一次** `PairRequests(false)`，而且只在：節點最後一次 `Pairing()` 回報配對開放中且倒數未歸零、配對抽屜**沒開**（開著時交給它自己的 2 秒輪詢）、tick 本身沒被 `interactionInProgress()` 擋下。收件的 pending 只可能在開放中的配對上等，所以關著時不讀；不新增 `setInterval`（`refreshIncomingPairRequests()`，測試 `notifications.mjs` §3d） |
-| `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」 | 只送位址，不送金鑰/指紋/節點 ID；失敗走錯誤 toast，錯誤碼翻成中文（§4.3） |
-| `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」 | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
-| `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」 | 同上 |
-| `RejectPairRequest(id)` | 任一未決請求列「拒絕」 | 成功後把節點回的 `nextStep` 放進 toast——推不出去的拒絕只有這裡會說 |
+| `Pairing()` | 進入區網視圖時、每 5 秒（區網視圖，**或首次設定精靈第 2 步在畫面上**〔`firstRunPairingActive()`〕）、倒數歸零時（同樣兩種情況）、進入精靈第 2 步時 | 序號守衛：慢的回覆不能覆蓋快的 |
+| `OpenPairing(0)` | 開啟配對抽屜時自動呼叫（傳 0；抽屜在節點回答前已被關掉就不呼叫；呼叫還在飛時抽屜被關掉，回來後照關抽屜的規則再判斷一次要不要 `ClosePairing`）；抽屜第 1 步的修復鈕存檔重啟節點後，抽屜仍開著就重讀並再開一次、`btn-pairing-on`（標籤「與另一台機器配對」）；**進入首次設定精靈第 2 步時**（同一個 `openPairingWindowIfNeeded()`，規則與抽屜相同：「抽屜開著」換成 `pairingWanted()`＝抽屜開著或精靈第 2 步在畫面上），以及第 2 步還在畫面上時視窗到期後（`keepFirstRunWindowOpen()`：每個第 2 步見過開著的視窗只重開一次，節點拒絕時不會每 5 秒報一次錯） | **一定傳 0**（用節點預設時長）；**不論有沒有 -discover 都可按**，節點已不再拒絕開不了廣播的視窗 |
+| `ClosePairing()` | `btn-pairing-off`；關掉配對抽屜時；離開首次設定精靈第 2 步時（下一步、上一步、先跳過、稍後再設定、`goTo*()` 讓開；`releasePairingWindow()`，關抽屜走的也是它） | 關抽屜時先重讀 `PairRequests`，還有 pending／awaiting-confirm、讀取失敗或抽屜又被打開（或精靈又回到第 2 步）就**不關**（節點關視窗會作廢所有未決請求）。關掉 app 視窗時不處理（抽屜也沒有），留給節點自己的時限 |
+| `PairRequests(all)` | 開啟配對抽屜時、抽屜開著時每 2 秒、每次決定之後；首次設定精靈第 2 步：進入時、在畫面上時每 2 秒（同一個 interval，`state.busy` 時同樣跳過）、離開時的重讀；第 2 步畫過的未決請求不是因為這個視窗的決定而從 `all=false` 的清單消失時，讀**一次** `PairRequests(true)` 找出它怎麼結束的（`readFirstRunPairEnding()`） | 序號守衛；抽屜開著時照舊（節點會替每個 pending outgoing 去對端輪詢）；`all` 由「顯示已結束」勾選框決定。**唯一的例外**（2026-09-29，待處理列）：15 秒背景 tick 在 `load()` 之後讀**一次** `PairRequests(false)`，而且只在：節點最後一次 `Pairing()` 回報配對開放中且倒數未歸零、配對抽屜**沒開**（開著時交給它自己的 2 秒輪詢）、tick 本身沒被 `interactionInProgress()` 擋下。收件的 pending 只可能在開放中的配對上等，所以關著時不讀；不新增 `setInterval`（`refreshIncomingPairRequests()`，測試 `notifications.mjs` §3d） |
+| `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」；首次設定精靈第 2 步的候選列與「找不到另一台？」的位址欄（都走同一個 `sendPairRequest()`） | 只送位址，不送金鑰/指紋/節點 ID；失敗走錯誤 toast，錯誤碼翻成中文（§4.3） |
+| `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」；首次設定精靈第 2 步比對畫面的「一樣，核准」（同一個 `decidePairRequest()`） | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
+| `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」；首次設定精靈第 2 步的「一樣，完成配對」 | 同上 |
+| `RejectPairRequest(id)` | 任一未決請求列「拒絕」；首次設定精靈第 2 步等待畫面的「取消這次請求」與比對畫面的「不一樣，取消」 | 成功後把節點回的 `nextStep` 放進 toast——推不出去的拒絕只有這裡會說 |
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 toast |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
@@ -102,7 +102,10 @@
   左右方向鍵與 Home/End 移到相鄰分頁並切換（`viewSwitchKey`）；程式以 `#view-switch [data-view]` 找它們，
   `dom-shim.mjs` 從 index.html 解出這三個節點（測試 `inline-publish.mjs` §8）。
   右側三個控制項：**服務狀態 pill**（`service-pill`，**一鍵處理**：支援但未安裝且沒有節點在跑 → 安裝（節點在跑但不是服務 → 服務表單）、已安裝沒在跑 → `RestartService()`、
-  其餘〔找不到 ah、平台不支援、狀態還沒讀到、已在跑〕→ 跳設定頁的服務區；`runServiceQuickAction()`，與待處理列同一份）、
+  其餘〔找不到 ah、平台不支援、狀態還沒讀到、已在跑〕→ 跳設定頁的服務區；`runServiceQuickAction()`，與待處理列同一份。
+  綠色「背景服務執行中」只在服務已裝、在跑**而且節點有回答**時；服務在跑但節點沒回應（`state.nodeChecked` 且 `!state.nodeReachable`）
+  是 amber 的 `service.pillRunningNoAnswer`「背景服務在跑，但節點沒回應」，按下同一個一鍵處理——它重讀狀態，已在跑就到設定頁的服務區，
+  那裡有「重新啟動」；測試 `first-run-pairing.mjs` §14）、
   重新掃描（`btn-discover`）、「繼續設定」（`btn-resume-setup`，ghost 不是主按鈕；首次設定精靈收著而設定沒完成時才出現，§3.2）、通知紀錄的鈴鐺（`btn-bell`，見下面「通知三層」）。
   **首次設定精靈開著時**（`#app.firstrun-on`）標題列只留 app 名稱、連線點、鈴鐺與 toast：三個分頁、服務 pill、重新掃描、`node-line` 與底部狀態列都隱藏。`btn-reload` 保留在 DOM 但 `hidden`（15 秒背景輪詢取代它）；預覽 heartbeat
   移到設定頁的身分區（§2 `Heartbeat()`）。標題列是 Wails 拖曳區；macOS 下 `body.mac` 讓左側留出視窗按鈕的位置。
@@ -264,8 +267,38 @@
   - **「只在這台用，不開放區網」**：不寫任何節點設定（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
     「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。
   - 節點連不到時「AgentHub 在背景執行」那一行的主文是 `firstRun.node.down`，`dial tcp…` 原文只在它的 `<details>` 裡。
-  - **第 2 步（佔位）**：標題「連到另一台電腦」、一句說明、暫時的「（開發中）略過這一步」（`pairSkipped`，步驟欄標「已略過」）；
-    已配對時改說配了幾台並給「下一步」。下一段會換成真正的配對步驟。
+  - **第 2 步「連到另一台電腦」**（2026-09-30 第二段）：配對抽屜換了外觀與順序，**安全邏輯一條都是抽屜的**——
+    送出走 `sendPairRequest()`（只帶位址）、決定走 `decidePairRequest()`（id 來自畫出那張卡的請求）、指紋區塊走 `writeFingerprintBlock()`
+    （節點 `fingerprints` 陣列原樣，標籤走固定對照表，沒有陣列時照 §3.3 說去用 `ah pair pending`）、候選與請求都走 `reconcileRows()`
+    （抽屜的候選列與請求列也改走它：空 key 與重複 key 一律新建，請求的指紋簽章變了就丟掉重建〔`fingerprintsChanged()`〕）、
+    notice 走 `candidateNoticeText()`、錯誤翻譯走 `pairErrorMessage()`。由上而下：
+    - 標題；已配對時一句「已經和 N 台電腦配對。」，**「下一步」（主要按鈕）移到這句下面**，候選列的「送出配對請求」降為 ghost（一次一顆主要按鈕），仍可再配對一台。
+    - 怎麼結束的（`frended`，見下）。
+    - 虛線提示框：「**在另一台電腦也打開 AgentHub**，做到這一步。兩台都在這個畫面時，會互相出現在下面。」
+    - **有未決請求（pending／awaiting-confirm）時**，每個請求一張卡（`frrequest`，以 request id 為 key），提示框與下面的尋找區隱藏：
+      outgoing pending ＝等待畫面（轉圈、「等 X 按『核准』」、對方畫面會看到什麼、「對方核准之後，這裡會換成兩組指紋，你也要在這台比對一次」、
+      「取消這次請求」→ `RejectPairRequest`，沒有指紋）；incoming pending 或 awaiting-confirm ＝比對畫面（標題「X（自稱）想和這台配對」／
+      「和 X（自稱）比對指紋」、「看著另一台的螢幕…」、`PAIR_TEXT.compare` 警語＋說明〔指紋之上〕、放大的指紋區塊、
+      **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，取消」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
+      成功 toast 同抽屜（`pairStepText()` 的句子＋「（節點回報：…）」），但**不帶「去公開 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
+    - 沒有未決請求時：「同一個網路上找到的電腦」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
+      `contested`／`duplicate` pill、平台 · 最後看到；完整 nodeId、宣告的指紋、位址、首次／最後看到收進該列的 `<details>`
+      （§4 的候選列斷言是對抽屜的 `candidate-rows`，在 DOM 裡就算數；精靈這份在 details 裡，也在 DOM 裡）；「送出配對請求」。
+      清單狀態同抽屜：讀取中、沒在看（`firstRun.pair.notLooking`）、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
+    - `<details class="frmanual">`「找不到另一台？」：位址欄＋「送出」（Enter 同按、trim、空的不送並給錯誤 toast——都是 `sendPairRequest()` 的）、
+      這台的位址（`pairHereState()`，節點說了就聽節點的；多個開放位址時列出每個）＋「複製」（`copyPairAddress(address, 狀態列)`），
+      不可達時不印位址、複製 disabled、說明並給「回到第 1 步」（不重複修復按鈕）、何時需要手動的一句、「手動輸入配對資料…」（`openPairModal()`）。
+    - 底部：「先跳過，之後再配對」（`pairSkipped`，步驟欄標「已略過」；取代開發用的佔位鈕）、「上一步」（到第 1 步）；已配對時只有「下一步」與「上一步」。
+    - **怎麼結束的**：第 2 步畫過的未決請求從清單消失、而不是這個視窗自己決定的（`pairDecided`，決定前記下、失敗時移除），讀一次 `PairRequests(true)`，
+      用 `pairStepText()` 說（`fingerprint_mismatch` 是專屬句），節點的 `nextStep` 以「（節點回報：…）」跟在後面（已結束的列才顯示它，§3.3），「知道了」收起。
+    - **生命週期**：第 2 步在畫面上（`firstRunPairingActive()`：精靈可見、`step === 2`、不是只在這台用）＝配對抽屜開著。`renderFirstRun()` 每次比對前後狀態
+      （`syncFirstRunPairing()`），進入時 `enterFirstRunPairing()`（讀請求、`loadPairing()`、`openPairingWindowIfNeeded()`＝`OpenPairing(0)`），
+      離開時（任何方式，含 `stepOutOfFirstRun()`）`releasePairingWindow()`。5 秒與 2 秒兩個既有 interval 的條件延伸到它（§4），1 秒倒數在它上面也跑，
+      不顯示數字；歸零時問節點、第 2 步還在就重開（`keepFirstRunWindowOpen()`）。15 秒 tick 的 `refreshIncomingPairRequests()` 在它開著時不讀（同抽屜）。
+      只在這台用時第 2 步是略過狀態（`firstRun.step2.localOnly`＋「下一步」），不開視窗、不輪詢。
+    - 測試 `first-run-pairing.mjs`（§0 四個 interval、§1 進入與 `[0]`、§2 輪詢、§3 候選列、§4 等待與取消、§5 位址欄、§6 比對與三個動詞、§7 沒有陣列、
+      §8 沒有自動決定、§9 element identity 與 `replaceChildren` 次數、§10 結束方式、§11 到期重開、§12 離開的四種情況、§13 只在這台用、§14 pill）；
+      dev mock `?onboarding=mixed&lan=open` 加 `&pair=none|outgoing|confirm|incoming|mismatch`（沒有 `&pair=` 時是兩台候選，送出後 6 秒對方「核准」）。
   - **第 3 步**：本機 session 依最後活動新到舊，先顯示 8 個、多的「顯示全部 N 個」；每列 checkbox＋標題（沒有就用 id）＋工作目錄
     （`<bdi>`、從左邊裁）＋provider badge，全部 `textContent`；預設全不勾。兩個情境卡片（`first-run-preset`：能留訊息／留訊息並喚醒，
     喚醒下是 `wake.caveat`）；勾的全是 Claude Code 時喚醒 disabled 並寫 `popover.wakeClaudeOnly`（與選單、對話框同一條）。
@@ -519,14 +552,16 @@
   （`load({ background: true, exceptPairingDrawer: true })`）：抽屜是 modal，會把 15 秒的
   背景重讀擋住，於是在終端機跑 `ah revoke` 之後，抽屜後面那份已配對節點清單會一直停在舊的。
   其餘的守衛（`state.busy`、有選取的列、游標在輸入框裡）照舊生效。
-- 模組只能註冊**四個** `setInterval`：5 秒 pairing 輪詢（僅區網視圖）、2 秒配對請求輪詢
-  （僅區網視圖**且配對抽屜開著**，`state.busy` 時跳過——每次讀都會讓節點去對端輪詢）、1 秒倒數、
+- 模組只能註冊**四個** `setInterval`：5 秒 pairing 輪詢（僅區網視圖，或首次設定精靈第 2 步在畫面上）、2 秒配對請求輪詢
+  （僅區網視圖**且配對抽屜開著**，或精靈第 2 步在畫面上；`state.busy` 時跳過——每次讀都會讓節點去對端輪詢）、1 秒倒數（同 5 秒的兩種情況；精靈裡不顯示數字，只處理歸零）、
   15 秒背景重讀清單（`interactionInProgress()` 為真時跳過；#114 曾經整個視窗停在 0 筆而節點正服務 1083 筆）。
   待處理列的配對請求讀取騎在這個 15 秒 tick 上（§2 `PairRequests`），**不是**第五個 interval；
   toast 的 6 秒自動收起是 `setTimeout`，不是 interval（`notifications.mjs` 斷言仍然只有四個）。
 - `OpenPairing` 呼叫參數必須是 `[0]`。
 - 首次設定精靈（§3.2）不新增 interval、不新增寫入綁定的呼叫路徑：它的每個寫入都是既有函式（`runServiceQuickAction`、`restartNode`、
-  `applyPeerListenRepairFromCard`、`applyAudienceChoice`、`discoverSessions`）。開著時待處理列整個隱藏；`state.busy` 期間它的每顆寫入按鈕 disabled；
+  `applyPeerListenRepairFromCard`、`applyAudienceChoice`、`discoverSessions`，第 2 步的 `openPairingWindowIfNeeded`、`releasePairingWindow`、
+  `sendPairRequest`、`decidePairRequest`、`openPairModal`）。第 2 步的候選列與請求卡片套上面候選列／請求列的同一條 element identity 規則與指紋例外
+  （同一個 `reconcileRows()`），「任何地方都不得有自動核准或略過比對的入口」也包括它。開著時待處理列整個隱藏；`state.busy` 期間它的每顆寫入按鈕 disabled；
   它顯示的 session 標題、工作目錄、provider 與節點的原始錯誤都以 `textContent` 進 DOM。
 - `inbox-clear` 在 `askConfirm` 回 false（取消／Esc／背景）時不呼叫 `ClearInbox`；回 true 時呼叫並把結果畫在抽屜內（測試 `confirm-dialog.mjs`）。app.js 不得呼叫 `window.confirm`／`alert`／`prompt`（同一個測試逐字檢查原始碼）。
 - 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。mode 為 `none` 時 `readAudienceForm()` 不論勾選框一律回傳四個 false（與選單「不公開」相同）。
