@@ -112,7 +112,12 @@ const bindings = {
       },
     };
   },
-  OpenPairing: async (...args) => { calls.push(["OpenPairing", ...args]); machine.windowOpen = true; return { open: true }; },
+  OpenPairing: async (...args) => {
+    calls.push(["OpenPairing", ...args]);
+    if (machine.openThrows) throw new Error("PAIRING_EXCHANGE_DISABLED: pairing exchange is disabled");
+    machine.windowOpen = true;
+    return { open: true };
+  },
   ClosePairing: async (...args) => {
     calls.push(["ClosePairing", ...args]);
     if (machine.closeThrows) throw new Error("PAIRING_STATE: no window");
@@ -603,6 +608,38 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   await flush();
 }
 
+/* ---------------- 9b. a failed read, and the drawer's checkbox ---------------- */
+
+{
+  // A read that fails is not a fact about the other machine, and neither is
+  // the last good list any more: nothing is offered to decide on.
+  machine.requests = [incoming("pair_in000000011")];
+  await app.loadPairRequests();
+  await flush();
+  if (cards().length !== 1) failures.push("the card for the failed-read case is not up");
+  machine.requestsThrow = "dial tcp: refused";
+  tick(2000).fn();
+  await flush();
+  if (cards().length !== 0) failures.push("a failed read left the last list's cards on screen");
+  if (buttons().some((node) => node.textContent === ZH["firstRun.pair.approve"])) failures.push("a failed read left 一樣，核准 pressable");
+  if (!shownText().includes(ZH["pair.requestsFailed"])) failures.push("a failed read was not said");
+  machine.requestsThrow = "";
+  tick(2000).fn();
+  await flush();
+  if (cards().length !== 1) failures.push("the card did not come back once a read answered");
+  // The drawer's 「顯示已結束」 is the drawer's: step 2 still reads live rows.
+  state.pairRequestsAll = true;
+  calls.length = 0;
+  tick(2000).fn();
+  await flush();
+  const reads = named("PairRequests").map((entry) => entry[1]);
+  state.pairRequestsAll = false;
+  if (JSON.stringify(reads) !== "[false]") failures.push(`with the drawer's box ticked step 2 polled ${JSON.stringify(reads)}, want [false]`);
+  machine.requests = [];
+  await app.loadPairRequests();
+  await flush();
+}
+
 /* ---------------- 10. an ending somebody else caused ---------------- */
 
 {
@@ -650,6 +687,33 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   if (reopened.length !== 1 || JSON.stringify(reopened[0].slice(1)) !== "[0]") {
     failures.push(`an expired window on step 2 was reopened ${JSON.stringify(reopened)}, want one OpenPairing(0)`);
   }
+
+  // A node that refuses is told about once, not on every poll. The window
+  // reopened above is seen open by a poll first, as it would be.
+  tick(5000).fn();
+  await flush();
+  machine.openThrows = true;
+  state.pairingReadAt = performance.now() - 10_000_000;
+  machine.windowOpen = false;
+  calls.length = 0;
+  tick(1000).fn();
+  await flush();
+  for (let round = 0; round < 3; round++) {
+    tick(5000).fn();
+    await flush();
+  }
+  const refused = named("OpenPairing").length;
+  machine.openThrows = false;
+  if (refused !== 1) failures.push(`a node refusing the window was asked ${refused} times, want once`);
+  // Open again for what follows.
+  await app.loadPairing();
+  state.firstRun.step = 1;
+  app.render();
+  await flush();
+  state.firstRun.step = 2;
+  app.render();
+  await flush();
+  if (!state.pairing?.state?.open) failures.push("re-entering step 2 did not open the window again");
 }
 
 /* ---------------- 12. leaving ---------------- */
@@ -682,6 +746,19 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   await flush();
   if (step() !== 1) failures.push(`上一步 went to step ${step()}, want 1`);
   if (named("ClosePairing").length !== 0) failures.push("leaving with a request pending closed the window under it");
+
+  // 稍後再設定 is not pressable while a write is in flight: leaving then
+  // would skip closing the window, and nothing would come back to close it.
+  state.firstRun.step = 2;
+  app.render();
+  await flush();
+  state.busy = true;
+  app.render();
+  const laterBusy = el("first-run-later").disabled;
+  state.busy = false;
+  app.render();
+  await flush();
+  if (!laterBusy) failures.push("稍後再設定 was pressable while a write was in flight");
 
   // A read that fails cannot say nobody is waiting.
   machine.requests = [];
