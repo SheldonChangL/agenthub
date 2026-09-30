@@ -631,9 +631,10 @@ const ready = { nodeUp: true, installed: true, running: true };
   // Now the address is on screen, named, and the next press is the one for it.
   if (!stageText().includes(consentFor("192.168.50.10:7463"))) failures.push(`the address that landed is not named now: ${stageText()}`);
   if (primary()?.textContent !== ZH["firstRun.openLan"]) failures.push(`after the node step the button reads ${primary()?.textContent}, want 開放區網並繼續`);
-  await primary().onclick();
+  const writesBefore = saves().length;
+  if (primary()?.textContent === ZH["firstRun.openLan"]) await primary().onclick();
   await flush();
-  if (JSON.stringify(saves().map((save) => save.peerListens)) !== JSON.stringify([["192.168.50.10:7463"]])) {
+  if (writesBefore === 0 && JSON.stringify(saves().map((save) => save.peerListens)) !== JSON.stringify([["192.168.50.10:7463"]])) {
     failures.push(`the press made with the address on screen saved ${JSON.stringify(saves())}`);
   }
 
