@@ -54,12 +54,22 @@ func listNodeProcesses(context.Context) ([]nodeProcess, error) {
 // database. So the command line is read again after the environment, and the
 // entry is listed only if that second reading is not empty and is the first
 // one byte for byte. That shows neither was cut: the kernel answers
-// /proc/<pid>/cmdline from task->mm, and exit_mm (kernel/exit.c) sets that to
-// NULL before its mmput, so a command line read with anything in it means the
-// memory was still in use then; environ_read (fs/proc/base.c) answers from
-// the same memory while mmget_not_zero succeeds on it, and a count of users
-// that has reached zero never rises again. Every read before the second
-// command line was therefore a whole one.
+// /proc/<pid>/cmdline from task->mm of the thread group leader, which is the
+// task /proc/<pid> is, and exit_mm (kernel/exit.c) sets that to NULL before
+// its mmput, so a command line read with anything in it means the memory was
+// still in use then; environ_read (fs/proc/base.c) answers from the same
+// memory while mmget_not_zero succeeds on it, and a count of users that has
+// reached zero never rises again. Every read before the second command line
+// was therefore a whole one. The order is what the argument rests on: the
+// environment is read between the two command lines, never after both.
+//
+// That holds only for a node that does not exec itself. An exec gives the
+// process new memory: the environment, read from memory taken when the file
+// was opened, is cut short once the old memory's last user lets go of it,
+// while the command line is read from the new memory and can be the same
+// word for word. Nothing in this repository execs in place — there is no
+// syscall.Exec, unix.Exec or Execve in it — so an agenthub-node's memory is
+// the one it started with until it exits.
 func listNodeProcessesIn(root string, readFile func(string) ([]byte, error)) ([]nodeProcess, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {

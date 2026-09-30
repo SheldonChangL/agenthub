@@ -331,22 +331,31 @@ func TestLinuxListingAsksAgainANodeReadCutShort(t *testing.T) {
 		proc.add(pid, nodeExecutable, 'S', longArgv, longEnv)
 		return proc
 	}
-	// reader answers this node's environ, and the second cmdline read of
-	// each listing, with what change makes of the whole file; every other
-	// read is the file as it is.
+	// reader answers this node's environ, and every cmdline read made after
+	// it, with what change makes of the whole file; every other read is the
+	// file as it is. What a read gets is set by when it is made, not by how
+	// many reads came before it: the node lets go of its memory as its
+	// environment is read, so a command line read before that is whole and
+	// one read after it is not. A listing that read the command line again
+	// before the environment would find it whole, and list what the
+	// environment was cut to. Reading the node's comm, which each listing
+	// does first, starts this over, so that every listing catches the node
+	// the same way.
 	reader := func(proc *fakeProc, change func(name string, whole []byte) ([]byte, error)) func(string) ([]byte, error) {
-		cmdlineReads := 0
+		environRead := false
 		return func(path string) ([]byte, error) {
 			whole, err := os.ReadFile(path) // #nosec G304 -- a file this test made
 			if err != nil || filepath.Dir(path) != proc.dir(pid) {
 				return whole, err
 			}
 			switch filepath.Base(path) {
+			case "comm":
+				environRead = false
 			case "environ":
+				environRead = true
 				return change("environ", whole)
 			case "cmdline":
-				cmdlineReads++
-				if cmdlineReads%2 == 0 { // the second of a listing
+				if environRead {
 					return change("cmdline", whole)
 				}
 			}
