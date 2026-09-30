@@ -1852,6 +1852,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.mineLead.textContent = here.reachable ? t("firstRun.pair.mine") : t("firstRun.pair.mineUnreachable");
     parts.mineBack.textContent = t("firstRun.pair.backToStep1");
     parts.mineBack.classList.toggle("hidden", here.reachable);
+    // A way off step 2, so not while a write is in flight (稍後再設定 says why).
+    parts.mineBack.disabled = state.busy;
     const signature = JSON.stringify([addresses, t("common.copy"), t("firstRun.pair.noAddressToCopy")]);
     if (parts.mineList.signature === signature) return;
     parts.mineList.signature = signature;
