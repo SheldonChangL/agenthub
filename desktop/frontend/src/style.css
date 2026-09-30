@@ -577,6 +577,75 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   background: var(--accent); color: #062312; font-size: 28px; font-weight: 700;
 }
 
+/* Step 2: the other machine's half first, then what was found, then the
+ * exchange itself with the two values large and the decision under them. */
+.frhint {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px; border-radius: 10px; border: 1px dashed var(--line-strong);
+  color: var(--muted); font-size: 13.5px; line-height: 1.6;
+}
+.frhint b { color: var(--text); font-weight: 600; }
+.frhintmark { flex: none; color: var(--sev-info); }
+.frcard {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-solid);
+}
+.frcard h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.frcard .say { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frmachines { display: flex; flex-direction: column; }
+.frmachines > .empty, .frmachines > .frlooking { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frmachine {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; align-items: start;
+  padding: 12px 0; border-top: 1px solid var(--line);
+}
+.frmachine:first-child { border-top: 0; padding-top: 0; }
+.fravatar {
+  width: 40px; height: 40px; border-radius: 10px; background: var(--panel-2);
+  display: grid; place-items: center; font-size: 18px;
+}
+.frmachinewho { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.frmachineline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.frmachineline b { font-weight: 600; overflow-wrap: anywhere; }
+.claimed.frclaimed { font-family: inherit; font-size: 11.5px; }
+.frmachinewho small { color: var(--muted); font-size: 12.5px; }
+.frmachinedetails .frfield { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.frmachinedetails .fingerprint { overflow-wrap: anywhere; }
+.frmachine > button { white-space: nowrap; }
+.frnotice { margin: 0; font-size: 12px; line-height: 1.55; }
+.frmanual { font-size: 13px; color: var(--muted); }
+.frmanual > summary { cursor: pointer; color: var(--text); }
+.frmanual > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.frmanual > * + * { margin-top: 10px; }
+.frmanual p { margin: 0; line-height: 1.6; }
+.frsendrow { display: flex; gap: 8px; }
+.frinput { flex: 1; min-width: 0; }
+.frmine { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.frmineaddrs { display: flex; flex-direction: column; gap: 6px; }
+.frmineaddr { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.frmineaddr .keyvalue { margin: 0; font-size: 14px; }
+.frwait {
+  display: flex; gap: 14px; align-items: center;
+  padding: 16px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+}
+.frspin {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--sev-info); border-right-color: transparent;
+  animation: busy-spin 0.8s linear infinite;
+}
+.frwaittext { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.55; }
+.frwaittext b { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.frcomparenote .stale { margin: 0; }
+/* The two values, large: two people read them off two screens. */
+.fingerprints.frfingerprints { gap: 6px; padding: 14px; }
+.fingerprints.frfingerprints .who { font-size: 12.5px; }
+.fingerprints.frfingerprints .fingerprint { font-size: 19px; line-height: 1.4; font-weight: 500; }
+.frended { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0; }
+.frended.ok {
+  padding: 8px 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.55;
+  border: 1px solid rgba(53, 192, 122, 0.35); background: rgba(53, 192, 122, 0.07);
+}
+.frended > div { overflow-wrap: anywhere; }
+
 /* The way back into the wizard from the main window. An offer, not a
  * primary: the main window is the owner's once the wizard is put away. */
 .resumesetup { flex: none; padding: 0 10px; font-size: 12px; color: var(--sev-info); border-color: rgba(94, 200, 255, 0.35); }

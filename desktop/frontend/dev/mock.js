@@ -49,7 +49,7 @@ const candidateNotice = "Every field here was chosen by whoever sent the packet,
   "of which machine it is. What settles that is comparing the fingerprint on both machines when " +
   "pairing.";
 
-let pairingOpen = true;
+let pairingOpen = !globalThis.location?.search?.includes("onboarding=");
 // The preview node announces and has a LAN address, which is the finished
 // state. What a fresh install is actually in is the opposite one — no
 // -allow-lan, a peer listener on loopback, and therefore NO peerAddress key at
@@ -86,6 +86,22 @@ const pairShape = query.get("pair") ?? "";
 //   &service=none       with `mixed`: the node answering without being a
 //                       service, which the wizard sends to the service form
 //                       rather than installing over.
+//   &lan=open           with `mixed`: the network already open, so step 1 is
+//                       done and its 下一步 goes straight to step 2.
+//
+// Step 2 (connecting to the other machine), with `&pair=` — which means
+// something else without `?onboarding=`, where the address shape is its job:
+//
+//   (none)              two machines found on the network, one with no name
+//                       and one flagged contested and duplicate. 送出配對請求
+//                       sends; six seconds later the other side "approves" and
+//                       the compare screen comes up.
+//   &pair=none          nobody found
+//   &pair=outgoing      a request this machine sent, waiting on the other one
+//   &pair=confirm       the other one approved ours: compare, then 完成配對
+//   &pair=incoming      the other one asked first: compare, then 核准
+//   &pair=mismatch      a request waiting on the other one, which it refuses
+//                       on the fingerprints eight seconds in
 //
 // All of them put the node's peer listener back on 127.0.0.1 and drop the bind
 // failure, because "this machine cannot be reached" and "the address it was
@@ -139,7 +155,7 @@ const pairing = () => ({
   state: { open: pairingOpen, remainingSeconds: 252, displayName: "studio-mac", nameIsChosen: false,
     ...pairAddress().address,
     announcing: { announceableAddresses: pairAddress().announceable, lastAnnouncedAt: ago(3) } },
-  candidates: pairingOpen ? [
+  candidates: pairingOpen && !(onboarding && pairShape === "none") ? [
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
     { nodeId: "node_a91c3e7b2d5f8046c0e1", address: "192.168.50.22:7463", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF 0011 2233", firstSeen: ago(120), lastSeen: ago(5), contested: true, duplicate: true },
   ] : [],
@@ -242,10 +258,68 @@ const nodeSettings = {
 // service but nothing to send them to.
 if (onboarding) {
   nodeSettings.settings = { ...nodeSettings.settings, peerListen: "127.0.0.1:7463", allowLan: false };
+  if (query.get("lan") === "open") nodeSettings.settings = { ...nodeSettings.settings, peerListen: "192.168.50.10:7463", allowLan: true };
   nodeSettings.saved = { ...nodeSettings.settings };
   nodeSettings.restartRequired = false;
   delete nodeSettings.peerListenProblem;
 }
+
+// The wizard's step 2 exchange (`&pair=`, above). Its own list, so the drawer's
+// three demonstration rows never appear in a first run.
+const wizardPeer = (id, extra) => ({
+  id, direction: "outgoing", nodeId: "node_9c22f0e7b45a138d6e02", displayName: "Demo-MacBook",
+  platform: "darwin/arm64", address: "192.168.50.31:7463",
+  fingerprint: "2B91 6E07 AC33 F14D 58E2 0C9A 71BD 4F36", localFingerprint: LOCAL_FP,
+  fingerprints: [
+    fp("requester", LOCAL_NAME, "this machine", LOCAL_FP),
+    fp("receiver", "Demo-MacBook", "the other machine", "2B91 6E07 AC33 F14D 58E2 0C9A 71BD 4F36"),
+  ],
+  state: "pending", expiresAt: ago(-300), notice: pairNotice,
+  nextStep: `On Demo-MacBook, run: ah pair approve ${id}`,
+  ...extra,
+});
+let wizardRequests = !onboarding ? [] : {
+  outgoing: [wizardPeer("pair_w0a1b2c3d4e5f607")],
+  mismatch: [wizardPeer("pair_w1a1b2c3d4e5f607")],
+  confirm: [wizardPeer("pair_w2a1b2c3d4e5f607", { state: "awaiting-confirm", nextStep: "Demo-MacBook approved it. On this machine, run: ah pair confirm pair_w2a1b2c3d4e5f607" })],
+  incoming: [wizardPeer("pair_w3a1b2c3d4e5f607", {
+    direction: "incoming",
+    fingerprints: [
+      fp("requester", "Demo-MacBook", "the other machine", "2B91 6E07 AC33 F14D 58E2 0C9A 71BD 4F36"),
+      fp("receiver", LOCAL_NAME, "this machine", LOCAL_FP),
+    ],
+    nextStep: "Compare the two fingerprints, then on this machine run: ah pair approve pair_w3a1b2c3d4e5f607",
+  })],
+}[pairShape] ?? [];
+// Counted from the first read of the rows — step 2 coming up — not from the
+// page load, so there is time to see the waiting screen first.
+let mismatchArmed = !(onboarding && pairShape === "mismatch");
+const armMismatch = () => {
+  if (mismatchArmed) return;
+  mismatchArmed = true;
+  setTimeout(() => {
+    const row = wizardRequests[0];
+    Object.assign(row, { state: "rejected", reason: "fingerprint_mismatch", nextStep: "Demo-MacBook rejected it: the fingerprints did not match. Nothing was trusted." });
+    delete row.notice;
+  }, 8000);
+};
+// The machines a first run pairs with, which the wizard's step 2 is waiting
+// to see appear.
+const wizardNodes = [];
+const wizardSettle = (id, state, reason = "") => {
+  const row = wizardRequests.find((r) => r.id === id);
+  if (!row) throw new Error("NOT_FOUND: no such pairing request");
+  row.state = state;
+  if (reason) row.reason = reason;
+  delete row.notice;
+  row.nextStep = state === "approved"
+    ? (row.direction === "incoming" ? "Trusted. Demo-MacBook still has to confirm on its side." : "Paired. Both machines trust each other.")
+    : "Rejected. Nothing was trusted on either machine.";
+  if (state === "approved") {
+    wizardNodes.push({ nodeId: row.nodeId, displayName: row.displayName, platform: row.platform, fingerprint: row.fingerprint, pairedAt: ago(0), lastSeenAt: ago(0), address: row.address });
+  }
+  return { ...row };
+};
 // A node that takes the address list (ADR-005): `?listen=multi` — Ethernet and
 // Wi-Fi both private, a saved address whose network is gone, and a direct
 // cable on a non-private range left unticked. With `&pair=loopback` it is the
@@ -280,7 +354,7 @@ if (listenShape === "multi") {
 const overviewSessions = () => (scanned ? sessions : []);
 // `?paired=none`: every session and no paired machine, which is what the
 // inline audience menu's "nothing paired yet" line is for.
-const overviewNodes = onboarding || query.get("paired") === "none" ? [] : nodes;
+const overviewNodes = () => (onboarding ? wizardNodes : query.get("paired") === "none" ? [] : nodes);
 
 // `?service=` puts the background service in the state the one-press fix is
 // for, and the fix then changes it, so the attention row can be seen going:
@@ -320,7 +394,7 @@ configure({
   // unreachable path here as it does in the built app.
   Overview: async () => (unreachable
     ? { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: "Get \"http://127.0.0.1:7462/v1/node\": dial tcp 127.0.0.1:7462: connect: connection refused", sessions: [], nodes: [], peers: [], counts: {} }
-    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions(), nodes: overviewNodes, peers: onboarding ? [] : peers, counts: overviewCounts() }),
+    : { reachable: true, nodeUrl: "http://127.0.0.1:7462", node: { id: "node_7f2e9c41a0b3d8e6f1c2", displayName: "studio-mac", platform: "darwin/arm64", fingerprint: "9F02 1C7A 44D1 0B3E 77A2 C5D9 1E8F 6B30", publicKey: "MCowBQYDK2VwAyEA7sK3f9Q2m1vXo8Zp4hR6bT0cN5wLd2eGyU9aIjKqRsE=", autoWake: true }, sessions: overviewSessions(), nodes: overviewNodes(), peers: onboarding ? [] : peers, counts: overviewCounts() }),
   Discover: async () => {
     // A node that is not running cannot scan anything.
     if (unreachable) throw new Error("dial tcp 127.0.0.1:7462: connect: connection refused");
@@ -349,8 +423,9 @@ configure({
   // the node filters them, so the "show finished" toggle does something here.
   PairRequests: async (all) => {
     log("PairRequests", { all });
-    // A first run has nobody waiting at another keyboard.
-    if (onboarding) return [];
+    // A first run has only the exchange its `&pair=` sets up.
+    if (onboarding) armMismatch();
+    if (onboarding) return all ? wizardRequests.map((r) => ({ ...r })) : wizardRequests.filter((r) => r.state === "pending" || r.state === "awaiting-confirm").map((r) => ({ ...r }));
     return all ? pairRequests : pairRequests.filter((r) => r.state === "pending" || r.state === "awaiting-confirm");
   },
   StartPairRequest: async (address) => {
@@ -359,6 +434,16 @@ configure({
       throw new Error("INVALID_REQUEST: address must be host:port, as in 192.168.1.42:7463");
     }
     const id = `pair_${Math.random().toString(16).slice(2, 18)}`;
+    if (onboarding) {
+      // The other side approves six seconds later, so the compare screen can
+      // be walked to without a second machine.
+      const row = wizardPeer(id, { address: String(address).trim() });
+      wizardRequests = [row, ...wizardRequests.filter((r) => r.state !== "pending" && r.state !== "awaiting-confirm")];
+      setTimeout(() => {
+        if (row.state === "pending") Object.assign(row, { state: "awaiting-confirm", nextStep: `Demo-MacBook approved it. On this machine, run: ah pair confirm ${id}` });
+      }, 6000);
+      return { ...row };
+    }
     const row = {
       id, direction: "outgoing", nodeId: "node_9c22f0e7b45a138d6e02", displayName: "new-machine",
       platform: "linux/arm64", fingerprint: "55AA 11BB 22CC 33DD 44EE 55FF 6600 7711",
@@ -373,9 +458,9 @@ configure({
     pairRequests = [row, ...pairRequests];
     return row;
   },
-  ApprovePairRequest: async (id) => { log("ApprovePairRequest", id); return settle(id, "approved"); },
-  ConfirmPairRequest: async (id) => { log("ConfirmPairRequest", id); return settle(id, "approved"); },
-  RejectPairRequest: async (id) => { log("RejectPairRequest", id); return settle(id, "rejected", "declined"); },
+  ApprovePairRequest: async (id) => { log("ApprovePairRequest", id); return onboarding ? wizardSettle(id, "approved") : settle(id, "approved"); },
+  ConfirmPairRequest: async (id) => { log("ConfirmPairRequest", id); return onboarding ? wizardSettle(id, "approved") : settle(id, "approved"); },
+  RejectPairRequest: async (id) => { log("RejectPairRequest", id); return onboarding ? wizardSettle(id, "rejected", "declined") : settle(id, "rejected", "declined"); },
   // The badge spread (#146): one session holding a few, one at the bound, and
   // every other row absent — which is how the node says "holding nothing".
   // A first run has nothing waiting anywhere, and an unreachable node cannot

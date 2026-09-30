@@ -681,9 +681,9 @@ const ready = { nodeUp: true, installed: true, running: true };
   el("first-run-later").onclick();
   el("btn-resume-setup").onclick();
   if (app.state.firstRun.step !== 2) failures.push(`繼續設定 with step 1 done went to step ${app.state.firstRun.step}, want 2`);
-  // The step 2 stand-in walks on to step 3.
-  button(ZH["firstRun.step2.skipDev"]).onclick();
-  if (app.state.firstRun.step !== 3) failures.push("the step 2 stand-in did not go on to step 3");
+  // Step 2's 先跳過 walks on to step 3.
+  button(ZH["firstRun.step2.skip"]).onclick();
+  if (app.state.firstRun.step !== 3) failures.push("step 2's skip did not go on to step 3");
   if (railRows()[1]?.children[2]?.textContent !== ZH["firstRun.rail.skipped"]) failures.push("the skipped pairing step is not marked");
   // A paired machine is step 2 done, from state.
   app.state.nodes = [{ nodeId: "n" }];
