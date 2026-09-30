@@ -109,8 +109,9 @@ func TestListNodeProcessesReadsARealProcess(t *testing.T) {
 	// what a node this app started and then stopped stays until the app
 	// exits. It is not a running node, and it must not stop the listing. On
 	// its way there a process can be caught exiting and not yet a zombie,
-	// which macOS answers with EINVAL: that error, and only that kind
-	// (transientListError), is asked again rather than failed.
+	// which macOS answers with EINVAL and Linux with an empty command line
+	// (nodeprocs_linux.go, an error wrapping ESRCH): that error, and only that
+	// kind (transientListError), is asked again rather than failed.
 	for _, command := range commands {
 		if err := command.Process.Kill(); err != nil {
 			t.Fatal(err)
