@@ -191,6 +191,16 @@ const hasClass = (node, name) => String(node?.className ?? "").split(/\s+/).incl
 const byClass = (name, root) => all((node) => hasClass(node, name), root);
 const buttons = (root) => all((node) => node.tagName === "button", root);
 const button = (label, root) => buttons(root).find((node) => node.textContent === label);
+// A press on a button that has to be there; one that is not is a failure
+// said in words rather than a TypeError.
+const press = (label, root) => {
+  const found = button(label, root);
+  if (!found) {
+    failures.push(`no 「${label}」 to press; the buttons are ${buttons(root).map((node) => node.textContent).join(" | ")}`);
+    return;
+  }
+  found.onclick();
+};
 const shownText = (root = stage()) => {
   const parts = [];
   walk(root, (node) => { if (node._text) parts.push(node._text); });
@@ -325,7 +335,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
 
   // Send carries the address and nothing else.
   calls.length = 0;
-  button(ZH["pair.sendFromCandidate"], flagged).onclick();
+  press(ZH["pair.sendFromCandidate"], flagged);
   await flush();
   const sent = named("StartPairRequest");
   if (sent.length !== 1 || JSON.stringify(sent[0].slice(1)) !== JSON.stringify(["192.168.50.22:7463"])) {
@@ -347,7 +357,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
     // While a request is out, the list of machines is off screen.
     if (machines().length !== 0) failures.push("the machine list is still shown during the exchange");
     calls.length = 0;
-    button(ZH["firstRun.pair.cancel"], card).onclick();
+    press(ZH["firstRun.pair.cancel"], card);
     await flush();
     const rejects = named("RejectPairRequest");
     if (rejects.length !== 1 || rejects[0][1] !== "pair_sent000001") failures.push(`取消這次請求 called ${JSON.stringify(rejects)}, want RejectPairRequest(pair_sent000001)`);
@@ -434,7 +444,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   await app.loadPairRequests();
   await flush();
   calls.length = 0;
-  button(ZH["firstRun.pair.approve"], cards()[0]).onclick();
+  press(ZH["firstRun.pair.approve"], cards()[0]);
   await flush();
   const approves = named("ApprovePairRequest");
   if (approves.length !== 1 || approves[0][1] !== "pair_in000000002") failures.push(`一樣，核准 called ${JSON.stringify(approves)}`);
@@ -618,7 +628,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   await app.loadPairRequests();
   await flush();
   calls.length = 0;
-  button(ZH["firstRun.pair.cancel"], cards()[0]).onclick();
+  press(ZH["firstRun.pair.cancel"], cards()[0]);
   await flush();
   if (named("PairRequests").some((entry) => entry[1] === true)) failures.push("the window looked up the ending of a request it cancelled itself");
   button(ZH["firstRun.pair.dismissEnded"])?.onclick();
@@ -649,7 +659,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   machine.requests = [];
   await app.loadPairing();
   calls.length = 0;
-  button(ZH["firstRun.step2.skip"]).onclick();
+  press(ZH["firstRun.step2.skip"]);
   await flush();
   if (step() !== 3) failures.push(`先跳過 went to step ${step()}, want 3`);
   const seq = calls.map((entry) => entry[0]).filter((name) => name === "PairRequests" || name === "ClosePairing");
@@ -668,7 +678,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   machine.requests = [incoming("pair_in000000010")];
   await app.loadPairRequests();
   calls.length = 0;
-  button(ZH["firstRun.back"]).onclick();
+  press(ZH["firstRun.back"]);
   await flush();
   if (step() !== 1) failures.push(`上一步 went to step ${step()}, want 1`);
   if (named("ClosePairing").length !== 0) failures.push("leaving with a request pending closed the window under it");
@@ -693,7 +703,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   let release;
   machine.requestsGate = new Promise((resolve) => { release = resolve; });
   calls.length = 0;
-  button(ZH["firstRun.back"]).onclick();
+  press(ZH["firstRun.back"]);
   await flush();
   state.firstRun.step = 2;
   app.render();
