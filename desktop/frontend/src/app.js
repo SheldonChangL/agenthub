@@ -2031,8 +2031,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       ? [parts.heading, parts.say, parts.actions, parts.ended, parts.hint, parts.requestsError, parts.live, parts.find]
       : [parts.heading, parts.say, parts.ended, parts.hint, parts.requestsError, parts.live, parts.find, parts.actions]);
 
-    const live = (state.pairRequests ?? []).filter(livePairRequest);
+    // A failed read is not a fact about the other machine, and the last
+    // good list is not one either any more: nothing is offered to decide on
+    // until a read answers again, and the kept cards are forgotten — the
+    // drawer's own rule (renderPairRequests).
+    const failed = Boolean(state.pairRequestsError);
+    const live = failed ? [] : (state.pairRequests ?? []).filter(livePairRequest);
     noteFirstRunPairEndings(live);
+    if (failed) parts.requestCards.clear();
     const cards = reconcileRows(parts.requestCards, live, {
       key: (request) => request.id,
       make: firstRunRequestCard,
@@ -2280,7 +2286,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("first-run-rail").setAttribute("aria-label", t("firstRun.railLabel"));
     const later = el("first-run-later");
     later.classList.toggle("hidden", wizard.step === 4);
-    later.disabled = wizard.running;
+    // Not while a write is in flight either: leaving step 2 then would skip
+    // closing the pairing window (releasePairingWindow waits for no write),
+    // and nothing would come back to close it.
+    later.disabled = wizard.running || state.busy;
   }
 
   // renderFirstRun draws the wizard, or puts it away, and says so to the parts
@@ -7433,7 +7442,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // here as well wrote the rows twice per tick over data nothing had changed.
   async function loadPairRequests({ render = true } = {}) {
     const sequence = ++pairRequestsRequest;
-    const all = state.pairRequestsAll;
+    // The drawer's 「顯示已結束」 is the drawer's: the wizard's step 2 reads
+    // the live rows only, whatever that box was left at.
+    const all = state.pairRequestsAll && !firstRunPairingActive();
     let rows;
     try {
       rows = await api.PairRequests(all);
