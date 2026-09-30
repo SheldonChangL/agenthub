@@ -57,6 +57,10 @@
                handler and the language check both still reach for it. -->
           <button id="btn-reload" class="ghost hidden" data-t="app.reload"></button>
           <button id="btn-discover" class="ghost" data-t="app.rescan"></button>
+          <!-- Back into the first-run wizard after "Set up later", for as long as
+               setup is not finished. Deliberately not a primary button: the
+               main window is the owner's now, and this is an offer. -->
+          <button id="btn-resume-setup" class="ghost resumesetup hidden" data-t="firstRun.resume"></button>
           <!-- The log of every notice this window has shown since it opened.
                The number is only the errors and warnings not yet looked at;
                opening the drawer is looking at them. The label is its own
@@ -72,25 +76,22 @@
            and come back. Rows are built by renderAttention() in app.js. -->
       <div id="attention" class="attention hidden" aria-live="polite"></div>
 
+      <!-- ============ the first-run wizard ============ -->
+      <!-- The whole window on a fresh install: three steps down the left, the
+           one being done on the right, one primary button at a time. While it
+           is up the table, the filters and the attention strip are hidden
+           (renderFirstRun in app.js); the steps and their contents are built
+           there, from state, on every render. -->
+      <main id="first-run" class="view firstrun hidden">
+        <nav id="first-run-rail" class="frrail">
+          <ol id="first-run-steps" class="frsteps"></ol>
+          <button id="first-run-later" class="ghost frlater" data-t="firstRun.later"></button>
+        </nav>
+        <section id="first-run-stage" class="frstage" aria-live="polite"></section>
+      </main>
+
       <!-- ============ local sessions ============ -->
       <main id="local-view" class="view">
-        <!-- The first screen a stranger sees. Every step below is computed
-             from state on each render, so one that regresses comes back; the
-             card as a whole is dismissible and never reopens itself. -->
-        <section id="onboarding" class="card onboarding hidden">
-          <div class="cardhead">
-            <span data-t="onboarding.title"></span>
-            <span class="muted" data-t="onboarding.subtitle"></span>
-            <span class="spacer"></span>
-            <button id="onboarding-dismiss" class="link" data-t="onboarding.dismiss"></button>
-          </div>
-          <div class="cardbody">
-            <div id="onboarding-steps"></div>
-            <!-- Shown on the one render that carries every tick, just before the
-                 card puts itself away: ticks alone do not say it is going. -->
-            <p id="onboarding-alldone" class="muted hidden" data-t="onboarding.allDone"></p>
-          </div>
-        </section>
         <section class="filters">
           <input id="search" type="search" data-t-placeholder="local.searchPlaceholder" autocomplete="off" />
           <div class="filtergroup"><span class="grouplabel">PROVIDER</span><div class="chips" id="chips-provider"></div></div>

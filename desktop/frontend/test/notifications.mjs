@@ -115,6 +115,10 @@ configure({
   LocalAddresses: async () => [],
 });
 const app = boot();
+// The strip is the main window's. The first-run wizard hides it whole while it
+// is up (first-run.mjs asserts that, and 3b below), so this check has the
+// wizard put away, as an owner who pressed 「稍後再設定」 has.
+app.state.ui.onboardingDismissed = true;
 await settle();
 // Nothing has answered yet: a node nobody has asked is not a node that is
 // down, whatever the initial state says (state.nodeReachable starts false).
@@ -365,20 +369,21 @@ if (app.state.notices.find((notice) => notice.title === ZH["attention.nodeDown.t
 // 3b. The service: supported, not running.
 serviceAnswer = { supported: true, installed: true, running: false, pid: 0, logHint: "~/agenthub.log" };
 await loadWith(reachable());
-// The first-launch checklist is up with 「把節點跑成背景服務」 not done, and
-// that step is the same fix: on the local view, where the card is, the strip
-// leaves it to the card. Logged all the same, and on another view it is back.
-if (el("onboarding").classList.contains("hidden")) failures.push("the checklist did not come up for a stopped service");
-if (byTitle(ZH["attention.service.stoppedTitle"])) failures.push("the strip repeats the checklist's service step beside it");
-if (!app.state.notices.some((notice) => notice.title === ZH["attention.service.stoppedTitle"])) {
-  failures.push("the service row the card stands in for was not logged");
+// With the first-run wizard up the strip is hidden whole: the wizard's first
+// step is this very fix, and one thing with two buttons is what the checklist
+// it replaced did. Logged all the same, and back once the wizard goes.
+app.openFirstRun();
+if (!app.firstRunVisible()) failures.push("the wizard did not come up when asked, so the next assertion covers nothing");
+if (!el("attention").classList.contains("hidden")) {
+  failures.push("the strip stands beside the first-run wizard, which offers the same fix");
 }
-app.state.view = "settings";
+if (!app.state.notices.some((notice) => notice.title === ZH["attention.service.stoppedTitle"])) {
+  failures.push("the service row the wizard stands in for was not logged");
+}
+app.state.firstRun.engaged = false;
+app.state.firstRun.forced = false;
 app.render();
-if (!byTitle(ZH["attention.service.stoppedTitle"])) failures.push("away from the checklist the strip does not say the service is stopped");
-app.state.view = "local";
-app.state.ui.onboardingDismissed = true;
-app.render();
+if (el("attention").classList.contains("hidden")) failures.push("the strip did not come back once the wizard was put away");
 let service = byTitle(ZH["attention.service.stoppedTitle"]);
 if (!service) {
   failures.push("a stopped service put no row on the strip");
