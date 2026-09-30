@@ -593,6 +593,17 @@ for (const [name, table] of [["en", EN], ["zh-Hant", ZH]]) {
   if (/docsRef\(/.test(source)) failures.push("app.js still builds docsRef tooltips");
 }
 
+// The English table reads as English: no full-width punctuation. The node's
+// detail after a pairing decision was once wrapped as （The node reported：…）.
+for (const [key, value] of Object.entries(EN)) {
+  if (/[（）：，。「」]/.test(value)) failures.push(`en ${key} carries full-width punctuation: ${value}`);
+}
+if (setLanguage("en"), t("pair.nodeSaidWrap", { detail: "x" }) !== " (The node reported: x)") {
+  failures.push(`en pair.nodeSaidWrap reads ${JSON.stringify(t("pair.nodeSaidWrap", { detail: "x" }))}`);
+}
+setLanguage("zh-Hant");
+if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（節點回報：x）") failures.push(`zh pair.nodeSaidWrap reads ${t("pair.nodeSaidWrap", { detail: "x" })}`);
+
 if (failures.length > 0) {
   console.error(failures.map((line) => ` - ${line}`).join("\n"));
   process.exit(1);

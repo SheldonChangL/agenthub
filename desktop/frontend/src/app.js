@@ -2062,7 +2062,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       parts.endedText.textContent = pairStepText(ending) || PAIR_TEXT.state[pairStateKey(ending)] || String(ending.state ?? "");
       // A finished row is where the node's own next step is shown (§3.3).
       const detail = String(ending.nextStep ?? "").trim();
-      parts.endedNode.textContent = detail ? `（${PAIR_TEXT.nodeSaid}：${detail}）` : "";
+      parts.endedNode.textContent = detail ? t("pair.nodeSaidWrap", { detail }) : "";
       parts.endedOk.textContent = t("firstRun.pair.dismissEnded");
     }
 
@@ -4317,7 +4317,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const local = (answer ? pairStepText(answer) : "") || PAIR_TEXT.decided[verb] || "";
     const detail = String(answer?.nextStep ?? "").trim();
     if (local === "") return detail;
-    return detail === "" ? local : `${local}（${PAIR_TEXT.nodeSaid}：${detail}）`;
+    return detail === "" ? local : `${local}${t("pair.nodeSaidWrap", { detail })}`;
   }
 
   // pairStateKey is the row's state as this panel talks about it: the two
