@@ -755,6 +755,11 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   state.busy = true;
   app.render();
   const laterBusy = el("first-run-later").disabled;
+  // Every other way off step 2 as well, 回到第 1 步 included (shown only when
+  // this machine cannot be reached, so looked for among the hidden too).
+  const exits = [ZH["firstRun.next"], ZH["firstRun.step2.skip"], ZH["firstRun.back"], ZH["firstRun.pair.backToStep1"]];
+  const liveExits = all((node) => node.tagName === "button" && exits.includes(node.textContent) && !node.disabled, stage(), false);
+  if (liveExits.length !== 0) failures.push(`ways off step 2 stayed pressable during a write: ${liveExits.map((node) => node.textContent).join(" | ")}`);
   state.busy = false;
   app.render();
   await flush();
