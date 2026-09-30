@@ -1,0 +1,393 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentHub 首次設定</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&display=swap">
+<style>
+/* Layout: 上方是提案的首次設定精靈（可點），切換兩種安裝方式；下方是「現在 vs 提案」對照。
+   沿用 app 的深色色票與 2026-09-29 mock 的控制項尺寸。 */
+:root {
+  color-scheme: dark;
+  --bg: #0b0f12; --canvas: #080b0d; --panel: #12171c; --panel-2: #1a2027;
+  --line: #262e37; --line-strong: #3a4552;
+  --text: #e3ebe6; --muted: #8f9ca8; --dim: #5d6873;
+  --accent: #39e07a; --accent-ink: #062312; --accent-dim: rgba(57,224,122,.14);
+  --info: #5ec8ff; --info-dim: rgba(94,200,255,.13);
+  --amber: #e8ad4a; --amber-dim: rgba(232,173,74,.14);
+  --red: #ef5d53; --red-dim: rgba(239,93,83,.14);
+  --sans: "IBM Plex Sans", "Noto Sans TC", "PingFang TC", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --r: 8px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--canvas); color: var(--text); font: 14px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+.page { padding: 32px 20px 64px; max-width: 1180px; margin: 0 auto; display: grid; gap: 36px; }
+h1, h2, h3 { margin: 0; font-weight: 600; text-wrap: balance; }
+h1 { font-size: 26px; } h2 { font-size: 19px; } h3 { font-size: 15px; }
+p { margin: 0; }
+.eyebrow { font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.lede { color: var(--muted); max-width: 70ch; }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+.btn { height: 36px; min-width: 36px; padding: 0 14px; border-radius: var(--r); border: 1px solid var(--line-strong); background: var(--panel-2); color: var(--text); font: inherit; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer; white-space: nowrap; }
+.btn:hover { border-color: var(--muted); }
+.btn:focus-visible, .choice:focus-within, .sess:focus-within { outline: 2px solid var(--info); outline-offset: 2px; }
+.btn.primary { height: 44px; padding: 0 22px; background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 15px; }
+.btn.primary:hover { background: #52ea8c; }
+.btn.ghost { background: none; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { color: var(--text); background: var(--panel-2); }
+.btn.danger { color: var(--red); border-color: rgba(239,93,83,.45); background: var(--red-dim); }
+.btn[disabled] { opacity: .45; cursor: not-allowed; }
+.btn.busy { pointer-events: none; }
+.btn.busy::before { content: ""; width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.sim { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 13px; color: var(--muted); }
+.seg { display: flex; border: 1px solid var(--line-strong); border-radius: var(--r); overflow: hidden; }
+.seg button { height: 34px; padding: 0 12px; background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent-dim); color: var(--text); }
+
+.scroller { overflow-x: auto; border-radius: 12px; }
+.win { position: relative; min-width: 900px; height: 720px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+.titlebar { height: 44px; flex: none; display: flex; align-items: center; gap: 12px; padding: 0 16px 0 84px; border-bottom: 1px solid var(--line); background: var(--panel); position: relative; }
+.lights { position: absolute; left: 16px; top: 16px; display: flex; gap: 8px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: var(--line-strong); }
+.brand { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.logo { width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(135deg, #22d3ee, #6366f1 55%, #f97316); }
+
+.wiz { flex: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
+.rail { border-right: 1px solid var(--line); padding: 28px 20px; display: flex; flex-direction: column; gap: 6px; }
+.rstep { display: grid; grid-template-columns: 28px 1fr; gap: 2px 12px; padding: 10px 8px; border-radius: 8px; align-items: center; }
+.rstep .n { grid-row: span 2; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line-strong); display: grid; place-items: center; font: 500 13px var(--mono); color: var(--muted); }
+.rstep small { color: var(--dim); font-size: 12px; }
+.rstep.now { background: var(--panel-2); }
+.rstep.now .n { border-color: var(--info); color: var(--info); }
+.rstep.done .n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.rail .skip { margin-top: auto; }
+.stage { padding: 40px 48px; overflow: auto; display: grid; align-content: start; gap: 22px; max-width: 720px; }
+.stage h2 { font-size: 24px; }
+.stage .say { color: var(--muted); font-size: 15px; max-width: 58ch; }
+.checks { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.check { display: grid; grid-template-columns: 24px 1fr auto; gap: 12px; align-items: center; padding: 14px 16px; border-top: 1px solid var(--line); }
+.check:first-child { border-top: 0; }
+.check .mk { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line-strong); display: grid; place-items: center; font-size: 12px; }
+.check.ok .mk { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.check.ok .mk::after { content: "✓"; font-weight: 700; }
+.check.run .mk { border-color: var(--info); border-right-color: transparent; animation: spin .8s linear infinite; }
+.check small { color: var(--muted); display: block; font-size: 12.5px; }
+.check .st { font-size: 12.5px; color: var(--muted); }
+.check.ok .st { color: var(--accent); }
+.consent { padding: 12px 14px; border-radius: 8px; background: var(--info-dim); border: 1px solid rgba(94,200,255,.3); font-size: 13.5px; }
+.consent b { font-family: var(--mono); font-weight: 500; }
+details { color: var(--muted); font-size: 13px; }
+details summary { cursor: pointer; color: var(--muted); }
+details summary:hover { color: var(--text); }
+details[open] summary { margin-bottom: 8px; }
+.card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 16px; display: grid; gap: 12px; }
+.machine { display: grid; grid-template-columns: 40px 1fr auto; gap: 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.machine:first-of-type { border-top: 0; padding-top: 0; }
+.avatar { width: 40px; height: 40px; border-radius: 10px; background: var(--panel-2); display: grid; place-items: center; font-size: 18px; }
+.machine small { display: block; color: var(--muted); font-size: 12.5px; }
+.claimed { color: var(--amber); font-size: 11.5px; margin-left: 6px; }
+.addr { font: 500 18px var(--mono); }
+.input { height: 40px; border-radius: var(--r); border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); padding: 0 12px; font: inherit; flex: 1; min-width: 0; }
+.input:focus { outline: 2px solid var(--info); outline-offset: 1px; }
+.hint { display: flex; gap: 12px; padding: 14px; border-radius: 10px; border: 1px dashed var(--line-strong); color: var(--muted); font-size: 13.5px; align-items: flex-start; }
+.hint b { color: var(--text); font-weight: 500; }
+.wait { display: flex; gap: 14px; align-items: center; padding: 18px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.wait .spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--info); border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
+.fpbox { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.fp { padding: 14px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+.fp label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.fp div { font: 500 22px/1.35 var(--mono); letter-spacing: .06em; }
+.sess { display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: center; padding: 12px 14px; border-top: 1px solid var(--line); cursor: pointer; }
+.sess:first-child { border-top: 0; }
+.sess input { width: 18px; height: 18px; accent-color: var(--accent); }
+.sess small { display: block; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+.prov { font: 500 10.5px var(--mono); padding: 2px 6px; border-radius: 4px; background: var(--panel-2); color: var(--muted); text-transform: uppercase; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.choice { border: 1px solid var(--line-strong); border-radius: 10px; padding: 12px 14px; cursor: pointer; display: grid; gap: 2px; }
+.choice input { position: absolute; opacity: 0; pointer-events: none; }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); }
+.choice small { color: var(--muted); font-size: 12.5px; }
+.choice .caveat { color: var(--amber); font-size: 12px; margin-top: 4px; }
+.done { text-align: left; display: grid; gap: 18px; }
+.big { width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-size: 28px; font-weight: 700; }
+.toast { position: absolute; right: 16px; bottom: 16px; width: 340px; padding: 12px 14px; border-radius: 10px; background: #1e262e; border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0,0,0,.5); font-size: 13px; }
+.toast[hidden] { display: none; }
+.toast b { display: block; }
+.toast.error { border-left: 4px solid var(--red); }
+
+/* compare */
+.compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 18px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.panel ul { margin: 0; padding-left: 18px; display: grid; gap: 7px; color: var(--muted); font-size: 13.5px; }
+.panel ul b { color: var(--text); font-weight: 500; }
+.tag { font: 500 11px var(--mono); padding: 3px 8px; border-radius: 999px; width: fit-content; }
+.tag.now { background: var(--red-dim); color: var(--red); }
+.tag.new { background: var(--accent-dim); color: var(--accent); }
+.tbl { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 500 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+</style>
+
+<div class="page">
+  <header style="display:grid;gap:10px">
+    <div class="eyebrow">AgentHub Desktop · 首次設定提案</div>
+    <h1>第一次打開 app，一次只做一件事</h1>
+    <p class="lede">剛裝好時，視窗改成一個三步的引導，取代現在「主表格上面疊一張清單」的做法。每一步只有一顆主要按鈕，技術細節收在「說明」裡。畫面上的資料都是示範資料。</p>
+    <div class="sim">模擬安裝方式：
+      <div class="seg" role="group" aria-label="安裝方式">
+        <button aria-pressed="true" data-mode="dmg" id="mode-dmg">拖 .dmg 安裝（什麼都還沒跑）</button>
+        <button aria-pressed="false" data-mode="script" id="mode-script">install.sh 安裝（服務已註冊）</button>
+      </div>
+      <div class="seg" role="group" aria-label="誰先送出">
+        <button aria-pressed="true" data-who="me" id="who-me">這台先送出配對</button>
+        <button aria-pressed="false" data-who="them" id="who-them">對方先送出</button>
+      </div>
+      <button class="btn ghost" id="restart">從頭開始</button>
+    </div>
+  </header>
+
+  <section style="display:grid;gap:12px">
+    <div class="scroller">
+      <div class="win" id="win">
+        <div class="titlebar"><div class="lights"><i></i><i></i><i></i></div><span class="brand"><span class="logo"></span>AgentHub</span><span class="spacer"></span><span class="muted" style="font-size:12.5px">首次設定</span></div>
+        <div class="wiz">
+          <nav class="rail" aria-label="設定步驟" id="rail"></nav>
+          <main class="stage" id="stage"></main>
+        </div>
+        <div class="toast" id="toast" hidden></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="compare">
+    <article class="panel">
+      <span class="tag now">現在</span>
+      <h2>剛裝好時看到的</h2>
+      <ul>
+        <li><b>同一件事出現三次，說法都不一樣。</b>節點沒回應時，待處理列說「節點沒有回應」並給「重試」，清單說「啟動節點」並給「啟動節點」，標題列又是另一句。服務已註冊、程序在跑但節點不回應時，標題列甚至是綠色的「背景服務執行中」：它只看服務有沒有在跑，不看節點有沒有回應。</li>
+        <li><b>同時有三到四顆綠色按鈕。</b>清單三步的按鈕全部能按，待處理列再加一顆，看不出下一步是哪個。</li>
+        <li><b>第一眼就是技術字。</b>待處理列直接印出 <code>dial tcp 127.0.0.1:7462: connect: connection refused</code>。</li>
+        <li><b>清單下面還壓著空表格與 PROVIDER／狀態／公開對象三排 0。</b></li>
+        <li><b>配對抽屜 784 個字。</b>上方步驟條寫「找到對方／送出請求／比對指紋」，下面三段卻是「這台機器能不能被連到／對方在哪裡／比對指紋」；標題說「不廣播」，左欄同時寫「廣播中 · 4:09」；出現本機回路（loopback）、en0、節點設定、手動填入。</li>
+        <li><b>候選機器一出現就印完整 node id 和指紋。</b>指紋只有在最後比對時才用得上。</li>
+        <li><b>沒有提到另一台電腦也要動手。</b>配對要兩台都操作，畫面只講這一台。</li>
+        <li><b>第 3 步「帶我去表格」</b>只是捲到表格，還要自己找公開對象欄。</li>
+      </ul>
+    </article>
+    <article class="panel">
+      <span class="tag new">提案</span>
+      <h2>三步引導</h2>
+      <ul>
+        <li><b>準備這台電腦：</b>一顆按鈕做完「啟動節點＋註冊背景服務＋開放區網」，三個檢查項當場打勾。開放區網是隱私決定，按鈕上寫明位址與影響，可以選「只在這台用」。</li>
+        <li><b>連到另一台：</b>第一句就叫你在另一台也打開 AgentHub。找到的機器只顯示名稱、平台和「自稱」標記；送出後等待畫面告訴你對方要按什麼；最後才出現兩組放大的指紋，問「和對方螢幕一樣嗎？」。</li>
+        <li><b>分享 session：</b>直接列出這台的 session，勾選、選「能留訊息」或「留訊息並喚醒」，按一次就分享。可以跳過。</li>
+        <li><b>引導進行中不顯示主表格、待處理列和篩選。</b>完成或按「稍後再設定」才回到主視窗；之後主視窗保留一顆「繼續設定」。</li>
+        <li><b>技術細節全部收進「說明」：</b>位址、node id、指紋來源、手動輸入配對資料。</li>
+      </ul>
+    </article>
+    <article class="panel" style="grid-column:1/-1">
+      <h2>操作次數（從打開 app 到另一台看得到一個 session）</h2>
+      <div class="tbl">
+      <table>
+        <thead><tr><th>情境</th><th class="num">現在（估計）</th><th class="num">提案</th><th>提案的每一下</th></tr></thead>
+        <tbody>
+          <tr><td>.dmg 安裝、這台先送出</td><td class="num">8–10</td><td class="num">6</td><td>準備好這台 → 送出配對請求 →（對方核准）→ 一樣，完成配對 → 勾 session → 分享 → 開始使用</td></tr>
+          <tr><td>install.sh 安裝、這台先送出</td><td class="num">7–9</td><td class="num">6</td><td>同上；第一步只剩開放區網，仍是一顆按鈕</td></tr>
+          <tr><td>對方先送出</td><td class="num">6–8</td><td class="num">5</td><td>準備好這台 → 一樣，核准 → 勾 session → 分享 → 開始使用</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="muted" style="font-size:13px">「現在」是我在 dev mock 上走一遍估的，不是量測值。它包含：關掉或略過待處理列、在抽屜裡找「允許區網」並重啟、捲回表格、打開公開對象選單。每一個主要步驟本身都在三下以內；多出來的是在不同畫面之間找下一步。</p>
+    </article>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const S = { mode: 'dmg', who: 'me', step: 1, local: false, prep: {}, pair: 'find', target: null, shared: [], preset: 'msg' };
+  const STEPS = [['準備這台電腦', '讓其他電腦找得到它'], ['連到另一台', '兩邊比對後配對'], ['分享 session', '選要讓對方看到的']];
+  const MACHINES = [{ name: 'Demo-MacBook', plat: 'macOS', addr: '192.168.50.31:7463', icon: '💻' }, { name: 'Demo-Ubuntu', plat: 'Linux', addr: '192.168.50.44:7463', icon: '🖥' }];
+  const SESSIONS = [
+    { id: 'a41c-9e02', prov: 'claude', title: '重構登入流程', cwd: '~/demo/web-shop' },
+    { id: 'b7d0-11fa', prov: 'codex', title: '訂單 API 加上 currency 欄位', cwd: '~/demo/api-server' },
+    { id: 'c093-5b7e', prov: 'claude', title: '整理文件站的導覽', cwd: '~/demo/docs-site' },
+  ];
+
+  function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+  function btn(label, cls, on) { const b = el('button', 'btn' + (cls ? ' ' + cls : ''), label); b.onclick = on; return b; }
+  function busy(b, ms, text, done) { b.classList.add('busy'); b.disabled = true; b.textContent = text; setTimeout(done, ms); }
+  function toast(title, body, kind) { const t = $('#toast'); t.className = 'toast' + (kind ? ' ' + kind : ''); t.replaceChildren(el('b', '', title), el('span', 'muted', body)); t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 5000); }
+
+  function rail() {
+    const r = $('#rail'); r.replaceChildren();
+    STEPS.forEach(([t, s], i) => {
+      const n = i + 1, d = el('div', 'rstep' + (n < S.step || S.step === 4 ? ' done' : n === S.step ? ' now' : ''));
+      d.append(el('span', 'n', n < S.step || S.step === 4 ? '✓' : String(n)), el('b', '', t), el('small', '', s));
+      if (n === 2 && S.local) d.querySelector('small').textContent = '已選擇只在這台用';
+      r.appendChild(d);
+    });
+    if (S.step < 4) { const k = btn('稍後再設定', 'ghost skip', () => toast('已先收起引導', '主視窗上會留一顆「繼續設定」，隨時可以回來。')); r.appendChild(k); }
+  }
+
+  function render() { rail(); const st = $('#stage'); st.replaceChildren(); [null, step1, step2, step3, done][S.step](st); }
+
+  /* ---------- step 1 ---------- */
+  function step1(st) {
+    st.append(el('h2', '', '先讓這台電腦準備好'), el('p', 'say', 'AgentHub 會在背景執行一個小程式，負責看見這台的 Claude Code 與 Codex session，並接收另一台電腦的配對與訊息。'));
+    const already = S.mode === 'script';
+    const items = [
+      ['node', 'AgentHub 在背景執行', '關掉視窗也會繼續', already],
+      ['login', '開機後自動啟動', '登入時自動開始', already],
+      ['lan', '區網裡的其他電腦連得到', '只有配對過的電腦能看到你分享的 session', false],
+    ];
+    const box = el('div', 'checks');
+    items.forEach(([k, t, s, pre]) => {
+      const state = S.prep[k] || (pre ? 'ok' : '');
+      const c = el('div', 'check ' + state);
+      const txt = el('div'); txt.append(el('b', '', t), el('small', '', s));
+      c.append(el('span', 'mk'), txt, el('span', 'st', state === 'ok' ? '完成' : state === 'run' ? '進行中…' : '待處理'));
+      box.appendChild(c);
+    });
+    st.appendChild(box);
+    const c = el('div', 'consent');
+    c.innerHTML = '按下後，這台會在 <b>192.168.50.10:7463</b>（Wi-Fi）接受配對請求。沒配對的電腦什麼都看不到。';
+    st.appendChild(c);
+    const row = el('div', 'row');
+    const go = btn(already ? '開放區網並繼續' : '準備好這台電腦', 'primary', () => {
+      busy(go, 0, '準備中…', () => {});
+      const seq = (already ? ['lan'] : ['node', 'login', 'lan']);
+      let i = 0;
+      const tick = () => {
+        if (i > 0) S.prep[seq[i - 1]] = 'ok';
+        if (i < seq.length) { S.prep[seq[i]] = 'run'; i++; rerenderChecks(); setTimeout(tick, 700); }
+        else { rerenderChecks(); setTimeout(() => { S.step = 2; render(); toast('這台準備好了', 'AgentHub 在背景執行，區網連得到。'); }, 500); }
+      };
+      tick();
+    });
+    const local = btn('只在這台用，不開放區網', 'ghost', () => { S.local = true; S.step = 3; render(); toast('先只在這台用', '之後想配對，到「機器」分頁按「配對另一台」。'); });
+    row.append(go, local); st.appendChild(row);
+    const d = el('details'); d.append(el('summary', '', '說明'), el('p', '', '背景程式叫 agenthub-node，會註冊成 launchd 登入項目（Linux 是 systemd --user，Windows 是工作排程器）。區網位址自動挑私有網段裡的那一個；有多張網卡時，可以之後在「設定 → 節點設定」改。'));
+    st.appendChild(d);
+    function rerenderChecks() { const keep = S.step; step1Replace(); }
+    function step1Replace() {
+      const checks = st.querySelectorAll('.check');
+      items.forEach(([k, , , pre], i) => { const state = S.prep[k] || (pre ? 'ok' : ''); checks[i].className = 'check ' + state; checks[i].querySelector('.st').textContent = state === 'ok' ? '完成' : state === 'run' ? '進行中…' : '待處理'; });
+    }
+  }
+
+  /* ---------- step 2 ---------- */
+  function step2(st) {
+    st.append(el('h2', '', '連到另一台電腦'));
+    const hint = el('div', 'hint');
+    hint.append(el('span', '', '①'), el('span', ''));
+    hint.lastChild.innerHTML = '<b>在另一台電腦也打開 AgentHub</b>，做到這一步。兩台都在這個畫面時，會互相出現在下面。';
+    if (S.pair === 'find' && S.who === 'them') { themFirst(st, hint); return; }
+    if (S.pair === 'find') {
+      st.appendChild(hint);
+      const card = el('div', 'card');
+      card.append(el('h3', '', '同一個網路上找到的電腦'));
+      MACHINES.forEach((m) => {
+        const r = el('div', 'machine');
+        const who = el('div'); const nm = el('b', '', m.name); nm.append(el('span', 'claimed', '自稱'));
+        who.append(nm, el('small', '', `${m.plat} · 剛剛看到`));
+        const b = btn('送出配對請求', 'primary', () => busy(b, 900, '送出中…', () => { S.pair = 'wait'; S.target = m; render(); }));
+        b.style.height = '38px'; b.style.fontSize = '14px';
+        r.append(el('span', 'avatar', m.icon), who, b); card.appendChild(r);
+      });
+      st.appendChild(card);
+      const d = el('details'); d.append(el('summary', '', '找不到另一台？'));
+      const box = el('div', 'row'); box.style.marginTop = '4px';
+      const inp = el('input', 'input'); inp.placeholder = '輸入另一台畫面上的位址，例如 192.168.50.31:7463'; inp.id = 'pair-address';
+      const s = btn('送出', '', () => { const v = inp.value.trim(); if (!v) { toast('請先輸入位址', '在另一台的這一步畫面下方找得到。', 'error'); inp.focus(); return; } S.pair = 'wait'; S.target = { name: v, plat: '', addr: v }; render(); });
+      box.append(inp, s);
+      const mine = el('p', ''); mine.style.marginTop = '8px'; mine.innerHTML = '這台的位址是 <span class="addr" style="font-size:14px">192.168.50.10:7463</span>，另一台找不到你時請他輸入這串。';
+      d.append(box, mine, el('p', '', '兩台之間有防火牆或不在同一個網段時，自動搜尋會找不到彼此，這時才需要輸入位址。'));
+      st.appendChild(d);
+      return;
+    }
+    if (S.pair === 'wait') {
+      st.append(el('p', 'say', `已送出。現在請到 ${S.target.name} 那台：`));
+      const w = el('div', 'wait'); const t = el('div');
+      t.append(el('b', '', `等 ${S.target.name} 按「核准」`), el('div', 'muted', '對方畫面會跳出「這台電腦想和你配對」，比對指紋後按核准。'));
+      w.append(el('span', 'spin'), t); st.appendChild(w);
+      const row = el('div', 'row');
+      row.append(btn('（示範）對方已核准', '', () => { S.pair = 'compare'; render(); }), btn('取消這次請求', 'ghost', () => { S.pair = 'find'; render(); }));
+      st.appendChild(row);
+      return;
+    }
+    if (S.pair === 'compare') compare(st, `和 ${S.target.name} 比對指紋`, '一樣，完成配對', '配對完成');
+  }
+  function themFirst(st, hint) {
+    const m = MACHINES[0]; S.target = m;
+    st.append(el('p', 'say', `${m.name} 送來了配對請求。`));
+    compare(st, `${m.name}（自稱）想和這台配對`, '一樣，核准', '已核准，配對完成');
+  }
+  function compare(st, title, okLabel, doneTitle) {
+    const card = el('div', 'card');
+    card.append(el('h3', '', title), el('p', 'muted', '看著另一台的螢幕：下面兩組字要和那邊顯示的一模一樣。不一樣代表中間可能有人，請按「不一樣」。'));
+    const box = el('div', 'fpbox');
+    [['這台', '7F3A 91C2 0B4E D5A8'], [S.target.name, '2B91 6E07 AC33 F14D']].forEach(([l, v]) => { const f = el('div', 'fp'); f.append(el('label', '', l), el('div', '', v)); box.appendChild(f); });
+    card.appendChild(box);
+    const row = el('div', 'row');
+    const ok = btn(okLabel, 'primary', () => busy(ok, 900, '確認中…', () => { S.step = 3; S.pair = 'find'; render(); toast(doneTitle, `這台和 ${S.target.name} 互相信任了。`); }));
+    const no = btn('不一樣，取消', 'danger', () => { S.pair = 'find'; render(); toast('已取消這次配對', '請確認另一台是你的電腦，再送一次。', 'error'); });
+    row.append(ok, no); card.appendChild(row);
+    st.appendChild(card);
+    const d = el('details'); d.append(el('summary', '', '說明'), el('p', '', '指紋是每台電腦自己的金鑰算出來的，只有真的是那台電腦時兩邊才會一樣。配對不會分享任何 session；分享是下一步，由你決定。'));
+    st.appendChild(d);
+  }
+
+  /* ---------- step 3 ---------- */
+  function step3(st) {
+    st.append(el('h2', '', '選要讓對方看到的 session'), el('p', 'say', S.local ? '你選了只在這台用，這一步可以先跳過；之後配對了再分享。' : `${S.target ? S.target.name : '已配對的電腦'} 只看得到你在這裡勾的。沒勾的一律不公開。`));
+    const card = el('div', 'card'); card.style.padding = '0';
+    SESSIONS.forEach((s) => {
+      const r = el('label', 'sess');
+      const cb = el('input'); cb.type = 'checkbox'; cb.checked = S.shared.includes(s.id); cb.disabled = S.local;
+      cb.onchange = () => { cb.checked ? S.shared.push(s.id) : S.shared.splice(S.shared.indexOf(s.id), 1); upd(); };
+      const t = el('div'); t.append(el('b', '', s.title), el('small', '', s.cwd));
+      r.append(cb, t, el('span', 'prov', s.prov)); card.appendChild(r);
+    });
+    st.appendChild(card);
+    const ch = el('div', 'choices');
+    [['msg', '能留訊息', '對方可以寄訊息到收件匣', ''], ['wake', '留訊息並喚醒', '訊息到了試著叫醒 agent 回覆', '不保證叫得醒：節點沒開自動喚醒、agent 已關閉或不支援時都不會醒。']].forEach(([v, t, s, c]) => {
+      const l = el('label', 'choice'); const i = el('input'); i.type = 'radio'; i.name = 'preset'; i.value = v; i.checked = S.preset === v; i.disabled = S.local; i.onchange = () => S.preset = v;
+      l.append(i, el('b', '', t), el('small', '', s)); if (c) l.append(el('small', 'caveat', '⚠ ' + c)); ch.appendChild(l);
+    });
+    st.appendChild(ch);
+    const row = el('div', 'row');
+    const share = btn('', 'primary', () => busy(share, 900, '分享中…', () => { S.step = 4; render(); }));
+    const skip = btn('先跳過', 'ghost', () => { S.shared = []; S.step = 4; render(); });
+    row.append(share, skip); st.appendChild(row);
+    function upd() { const n = S.shared.length; share.textContent = n ? `分享 ${n} 個 session` : '先勾選要分享的 session'; share.disabled = !n || S.local; }
+    upd();
+  }
+
+  function done(st) {
+    const d = el('div', 'done');
+    d.append(el('span', 'big', '✓'), el('h2', '', '設定好了'));
+    const n = S.shared.length;
+    d.append(el('p', 'say', S.local ? 'AgentHub 在這台背景執行。要和其他電腦配對時，到「機器」分頁按「配對另一台」。' : n ? `${S.target ? S.target.name : '另一台'} 現在看得到你分享的 ${n} 個 session，也能寄訊息給它們。` : `已和 ${S.target ? S.target.name : '另一台'} 配對，還沒有分享任何 session。之後在主視窗的「公開對象」欄隨時可以分享。`));
+    d.append(btn('開始使用', 'primary', () => toast('（示範）進入主視窗', '引導不再出現；主視窗第一次會標出「公開對象」欄。')));
+    st.appendChild(d);
+  }
+
+  function setMode(m) { S.mode = m; document.querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.mode === m)); reset(); }
+  function setWho(w) { S.who = w; document.querySelectorAll('[data-who]').forEach((b) => b.setAttribute('aria-pressed', b.dataset.who === w)); if (S.step === 2) { S.pair = 'find'; render(); } }
+  function reset() { Object.assign(S, { step: 1, local: false, prep: {}, pair: 'find', target: null, shared: [], preset: 'msg' }); $('#toast').hidden = true; render(); }
+  document.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+  document.querySelectorAll('[data-who]').forEach((b) => b.onclick = () => setWho(b.dataset.who));
+  $('#restart').onclick = reset;
+  render();
+})();
+</script>
