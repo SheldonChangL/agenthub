@@ -233,6 +233,9 @@ async function toStep2() {
   state.firstRun.engaged = true;
   state.firstRun.suspended = false;
   state.firstRun.localOnly = false;
+  // The owner's step from here on, as after 上一步: an untouched wizard is
+  // moved on to the first step not yet done (syncFirstRun).
+  state.firstRun.touched = true;
   state.firstRun.step = 1;
   app.render();
   await flush();
@@ -254,7 +257,22 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
 
 {
   if (!state.firstRun.engaged) failures.push("the wizard did not come up on a machine with nothing paired");
-  if (step() !== 1) failures.push(`the wizard opened on step ${step()}, want 1`);
+  // Step 1 is already done here, so the wizard comes up on step 2 — not on a
+  // step that has nothing left to do — and step 2 opens the window by being
+  // on screen, at launch as anywhere else.
+  if (step() !== 2) failures.push(`the wizard opened on step ${step()} over a step 1 that is done, want 2`);
+  if (named("OpenPairing").length !== 1) failures.push(`opening on step 2 called OpenPairing ${named("OpenPairing").length} times, want once`);
+  // 上一步 still goes back, and step 1 stays the owner's: nothing moves it on.
+  press(ZH["firstRun.back"]);
+  await flush();
+  if (step() !== 1) failures.push(`上一步 from the step the wizard opened on went to step ${step()}, want 1`);
+  app.render();
+  await flush();
+  if (step() !== 1) failures.push(`a repaint after 上一步 moved the wizard on to step ${step()}`);
+  if (state.pairing?.state?.open) failures.push("leaving step 2 for step 1 with nothing pending left the window open");
+  calls.length = 0;
+  app.render();
+  await flush();
   if (named("OpenPairing").length !== 0) failures.push("step 1 opened the pairing window");
   // Step 1 is not step 2: neither poll runs for it.
   calls.length = 0;
@@ -714,6 +732,79 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   app.render();
   await flush();
   if (!state.pairing?.state?.open) failures.push("re-entering step 2 did not open the window again");
+}
+
+/* ---------------- 11b. entered while a write is in flight ---------------- */
+
+{
+  // Off step 2 with nothing pending, so the window closes and entering again
+  // is an entry.
+  machine.requests = [];
+  await app.loadPairRequests();
+  state.firstRun.touched = true;
+  state.firstRun.step = 1;
+  app.render();
+  await flush();
+  machine.windowOpen = false;
+  await app.loadPairing();
+  // Settings → Appearance's 「顯示首次設定」 is not pressable during a write,
+  // as 「繼續設定」 is not.
+  state.busy = true;
+  app.render();
+  if (!el("settings-show-onboarding").disabled) failures.push("「顯示首次設定」 was pressable while a write was in flight");
+  // Step 2 entered during the write anyway (a step that lands on 2): the
+  // write holds OpenPairing back, and the opening is owed, not forgotten.
+  calls.length = 0;
+  state.firstRun.step = 2;
+  app.render();
+  await flush();
+  if (named("OpenPairing").length !== 0) failures.push("step 2 opened the window under a write in flight");
+  tick(5000).fn();
+  await flush();
+  if (named("OpenPairing").length !== 0) failures.push("a tick during the write opened the window");
+  state.busy = false;
+  app.render();
+  if (el("settings-show-onboarding").disabled) failures.push("「顯示首次設定」 stayed disabled after the write");
+  tick(5000).fn();
+  await flush();
+  const owed = named("OpenPairing");
+  if (owed.length !== 1) failures.push(`the tick after the write called OpenPairing ${owed.length} times, want once`);
+  else if (JSON.stringify(owed[0].slice(1)) !== "[0]") failures.push(`the owed opening passed ${JSON.stringify(owed[0].slice(1))}, want [0]`);
+  if (!state.pairing?.state?.open) failures.push("step 2 entered during a write never got its window");
+  for (let round = 0; round < 3; round++) {
+    tick(5000).fn();
+    await flush();
+  }
+  if (named("OpenPairing").length !== 1) failures.push(`an open window was asked for again: ${named("OpenPairing").length} calls`);
+
+  // A node that refuses the owed opening is asked once, not on every tick.
+  state.firstRun.step = 1;
+  app.render();
+  await flush();
+  machine.windowOpen = false;
+  await app.loadPairing();
+  machine.openThrows = true;
+  state.busy = true;
+  calls.length = 0;
+  state.firstRun.step = 2;
+  app.render();
+  await flush();
+  state.busy = false;
+  app.render();
+  for (let round = 0; round < 3; round++) {
+    tick(5000).fn();
+    await flush();
+  }
+  if (named("OpenPairing").length !== 1) failures.push(`a node refusing the owed opening was asked ${named("OpenPairing").length} times, want once`);
+  machine.openThrows = false;
+  // Open again for what follows.
+  state.firstRun.step = 1;
+  app.render();
+  await flush();
+  state.firstRun.step = 2;
+  app.render();
+  await flush();
+  if (!state.pairing?.state?.open) failures.push("re-entering step 2 after the write cases did not open the window");
 }
 
 /* ---------------- 12. leaving ---------------- */

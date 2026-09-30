@@ -237,6 +237,10 @@
     撤銷最後一台配對，都是待處理列的事，不能把整個精靈蓋在使用者正在用的設定頁上（fresh-context 審查 2026-09-30 找到的）。
   - **出現後就留著**（`syncFirstRun()`）：觸發條件正是第 1 步會關掉的東西，精靈不能在第一顆按鈕成功時自己消失。唯一例外：
     沒人碰過（`touched`）、不是手動打開（`forced`）、沒在跑、而觸發條件全都消失了——啟動時節點慢了一點的已設定機器——才自己收起。
+  - **打開就到第一個未完成的步驟**（含啟動時自己出現，同「繼續設定」的 `firstIncompleteStep()`）：區網已開、還沒配對的機器開在第 2 步，
+    不是開在一顆只剩「下一步」的第 1 步。啟動時判斷所需的讀取（`ServiceStatus()`、精靈自己的 `loadPairing()`）可能晚到，所以
+    **沒人碰過、沒在跑**時每次 render 都再算一次，只往前、不往回；使用者按過任何東西（含「上一步」）之後步驟就是他的（`syncFirstRun()`，
+    測試 `first-run.mjs` §1b、`first-run-pairing.mjs` §1）。
   - **每步的完成狀態每次 render 從 state 重算，不存**（`firstRunChecks()`、`firstRunStepComplete()`）：
     ①「AgentHub 在背景執行」＝`state.nodeReachable`；「開機後自動啟動」＝`ServiceStatus` 已安裝且在跑（狀態還沒讀到＝確認中；
     `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他電腦連得到」＝`pairHereState(state.pairing.state).reachable`
@@ -258,6 +262,12 @@
       列出欄位、不替他存；否則 `loadNodeSettings()` 取新基準，再走 `applyPeerListenRepairFromCard({ peerListen, peerListens: [位址], allowLan: true })`
       ——配對抽屜第 1 步同一條路：表單填好按儲存、單元固定的旗標照 §7.8 問、存完 `RestartNode()`（已安裝服務時 Go 端走
       `RestartService`）、重讀比對有沒有真的寫進去（`didNotStick`）。之後 `loadPairing()` + `load()`，用節點回報的可達性判定成敗。
+    - **快照規則（隱私）**：區網那一段只寫**按下那一刻畫面上說明句寫出的位址與埠**。第 1 步每顆會跑 `runFirstRunPrepare()` 的按鈕
+      （主要按鈕、「重試」）在按下時取 `firstRunShownLan()`——最後一次畫出的說明句的 `{ address, port }`，說明句沒顯示時是 null——
+      原樣傳給 `prepareFirstRunLan(shown)`，**不在節點與服務那段之後重算** `firstRunChosenAddress()`／`firstRunPort()`（節點存的位址與埠
+      要節點跑起來才讀得到、位址清單可能在中間才回來或改變）。按下時沒有說明句（例如 `LocalAddresses()` 還沒回答、畫面是
+      `firstRun.lan.noPrivate`）→ 只做節點與服務就停在第 1 步，讓使用者看到位址再按「開放區網並繼續」（測試 `first-run.mjs` §6b：
+      位址晚到、清單在按下後改變、節點存的位址改變選擇、埠在按下後改變）。
     - 按鈕文字：節點或服務沒好 →「準備好這台電腦」；只差區網 →「開放區網並繼續」；全部完成 → 完成狀態＋「下一步」。
     - 進行中那幾行顯示「進行中…」轉圈（`phase`），主要按鈕 `busy`；`state.busy` 或進行中時每顆寫入按鈕 disabled。
   - **開放區網是隱私決定**：主要按鈕上方一行藍底說明，寫出實際會用的位址（`LocalAddresses()` 裡 `private` 的那些，
@@ -265,12 +275,15 @@
     預設節點已存的那個、否則第一個），說明句跟著選到的那個改；不替使用者決定。沒有私有位址時說明（`firstRun.lan.noPrivate`）
     並只提供「只在這台用」（此時它是主要按鈕）。
   - **「只在這台用，不開放區網」**：不寫任何節點設定（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
-    「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。
+    「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。**節點與服務那段成功後才算數**（`localOnly`）；
+    失敗時選擇只記成待定（`localOnlyPending`），區網那一行、說明句與兩個選擇都留著，「重試」重做同一個選擇、不開放區網
+    （測試 `first-run.mjs` §6b 後段）。
   - 節點連不到時「AgentHub 在背景執行」那一行的主文是 `firstRun.node.down`，`dial tcp…` 原文只在它的 `<details>` 裡。
   - **第 2 步「連到另一台電腦」**（2026-09-30 第二段）：配對抽屜換了外觀與順序，**安全邏輯一條都是抽屜的**——
     送出走 `sendPairRequest()`（只帶位址）、決定走 `decidePairRequest()`（id 來自畫出那張卡的請求）、指紋區塊走 `writeFingerprintBlock()`
     （節點 `fingerprints` 陣列原樣，標籤走固定對照表，沒有陣列時照 §3.3 說去用 `ah pair pending`）、候選與請求都走 `reconcileRows()`
-    （抽屜的候選列與請求列也改走它：空 key 與重複 key 一律新建，請求的指紋簽章變了就丟掉重建〔`fingerprintsChanged()`〕）、
+    （抽屜的候選列與請求列也改走它：空 key 與重複 key 一律新建，請求的指紋簽章變了就丟掉重建〔`fingerprintsChanged()`；抽屜這條由
+    `pairing-exchange.mjs` §8d-ii 斷言：同一個 request id 指紋改變 → 新元素，之後不變 → 同一個元素〕）、
     notice 走 `candidateNoticeText()`、錯誤翻譯走 `pairErrorMessage()`。由上而下：
     - 標題；已配對時一句「已經和 N 台電腦配對。」，**「下一步」（主要按鈕）移到這句下面**，候選列的「送出配對請求」降為 ghost（一次一顆主要按鈕），仍可再配對一台。
     - 怎麼結束的（`frended`，見下）。
@@ -299,9 +312,12 @@
       第 2 步靠它看到 `state.nodes` 多了一台。第 2 步讀的一律是 `PairRequests(false)`：抽屜的「顯示已結束」勾著也一樣。
       讀取失敗時不畫任何請求卡片（上一份清單也不算數，同抽屜的 `renderPairRequests()`），只說讀取失敗；有寫入在進行時「稍後再設定」disabled
       （那時離開，`releasePairingWindow()` 會因 `state.busy` 跳過而沒有人再回來關視窗）。
+      寫入進行中進入第 2 步時 `openPairingWindowIfNeeded()` 不開視窗；這次開啟記成欠著（`pairWindowDeferred`），寫入結束後下一次
+      5 秒 tick 仍在第 2 步、視窗沒開就開一次（仍傳 0；節點拒絕也只問這一次；開成後照「每個見過開著的視窗只重開一次」算）。
+      設定 → 外觀的「顯示首次設定」在 `state.busy` 時 disabled（同「繼續設定」；測試 `first-run-pairing.mjs` §11b）。
       只在這台用時第 2 步是略過狀態（`firstRun.step2.localOnly`＋「下一步」），不開視窗、不輪詢。
     - 測試 `first-run-pairing.mjs`（§0 四個 interval、§1 進入與 `[0]`、§2 輪詢、§3 候選列、§4 等待與取消、§5 位址欄、§6 比對與三個動詞、§7 沒有陣列、
-      §8 沒有自動決定、§9 element identity 與 `replaceChildren` 次數、§10 結束方式、§11 到期重開、§12 離開的四種情況、§13 只在這台用、§14 pill）；
+      §8 沒有自動決定、§9 element identity 與 `replaceChildren` 次數、§10 結束方式、§11 到期重開、§11b 寫入中進入、§12 離開的四種情況、§13 只在這台用、§14 pill）；
       dev mock `?onboarding=mixed&lan=open` 加 `&pair=none|outgoing|confirm|incoming|mismatch`（沒有 `&pair=` 時是兩台候選，送出後 6 秒對方「核准」）。
   - **第 3 步**：本機 session 依最後活動新到舊，先顯示 8 個、多的「顯示全部 N 個」；每列 checkbox＋標題（沒有就用 id）＋工作目錄
     （`<bdi>`、從左邊裁）＋provider badge，全部 `textContent`；預設全不勾。兩個情境卡片（`first-run-preset`：能留訊息／留訊息並喚醒，
@@ -319,8 +335,8 @@
     它送使用者去的地方不能被它自己蓋住。只在這個視窗讓開（`suspended`），不寫偏好。
   - **元素識別**：每一步的面板、每一行、每顆按鈕、每個位址與 session 列都只建一次、之後就地改寫（`firstRunParts`、以位址／session id
     為 key 的 Map），15 秒的 `load()` tick 不換掉游標下的按鈕、不收起打開的 `<details>`（測試 `first-run.mjs` §9）。
-  - 測試 `first-run.mjs`（§1 出現條件與 `nodeChecked`、§2 待處理列與標題列、§3 三項推導、§4 順序與失敗停下、§5 身分保護、
-    §6 位址與只在這台用、§7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；dev mock `?onboarding=fresh|slow|unreachable|mixed`、
+  - 測試 `first-run.mjs`（§1 出現條件與 `nodeChecked`、§1b 開在第一個未完成的步驟、§2 待處理列與標題列、§3 三項推導、§4 順序與失敗停下、§5 身分保護、
+    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；dev mock `?onboarding=fresh|slow|unreachable|mixed`、
     `&addresses=two`、`mixed&service=none`。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
 - **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。

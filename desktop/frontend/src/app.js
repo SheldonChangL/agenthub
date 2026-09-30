@@ -151,7 +151,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // picture of the machine is complete, and it no longer comes up by
       // itself. reads: how many Overview reads have been rendered.
       seen: false, settled: false, reads: 0,
-      step: 1, localOnly: false, pairSkipped: false, shareSkipped: false,
+      // localOnlyPending: 「只在這台用」 was pressed and its node step has not
+      // gone through yet, so 重試 repeats that choice (runFirstRunPrepare).
+      step: 1, localOnly: false, localOnlyPending: false, pairSkipped: false, shareSkipped: false,
       phase: {}, failed: {}, addresses: null, choice: "",
       picked: new Set(), preset: "messages", showAll: false, shared: null,
       // Step 2's exchange: the live requests it has shown (id → name), the
@@ -159,6 +161,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // ended when somebody else ended it, and whether the window it keeps
       // open has been seen open since it last reopened it.
       pairWatch: new Map(), pairDecided: new Set(), pairEnded: null, pairWindowSeenOpen: false,
+      // pairWindowDeferred: step 2 was entered while a write held OpenPairing
+      // back, so its first opening is still to be made (enterFirstRunPairing).
+      pairWindowDeferred: false,
     },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
@@ -1012,8 +1017,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!wizard.settled && !wizard.engaged && !state.ui.onboardingDismissed && !state.ui.firstRunFinished && triggered) {
       wizard.engaged = true;
       wizard.seen = true;
-      wizard.step = 1;
+      wizard.step = firstIncompleteStep();
       readForFirstRun();
+    }
+    // To the first step not yet settled, as 「繼續設定」 goes (openFirstRun) —
+    // and kept there while the reads it is worked out from are still landing
+    // (the service status, the pairing state behind the network line), for as
+    // long as nobody has pressed anything. Only ever forward, and never under a
+    // step 1 that is running: once the owner has pressed a button, including
+    // 上一步, the step is theirs.
+    if (wizard.engaged && !wizard.touched && !wizard.running) {
+      wizard.step = Math.max(wizard.step, firstIncompleteStep());
     }
     if (state.nodeChecked && (state.service || wizard.reads >= 2)) wizard.settled = true;
     if (wizard.engaged && !wizard.forced && !wizard.touched && !wizard.running && !triggered) {
@@ -1039,6 +1053,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const wizard = state.firstRun;
     if (reset) {
       wizard.localOnly = false;
+      wizard.localOnlyPending = false;
       wizard.pairSkipped = false;
       wizard.shareSkipped = false;
       wizard.shared = null;
@@ -1151,6 +1166,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return privates.find((item) => saved.includes(String(item.address).toLowerCase())) ?? privates[0] ?? null;
   }
 
+  // What step 1's consent line names right now, as the last paint wrote it,
+  // or null when that line is not on screen. Taken by every button of step 1
+  // at the moment it is pressed, and handed down as it is (runFirstRunPrepare).
+  function firstRunShownLan() {
+    const shown = firstRunParts[1]?.shownLan;
+    return shown ? { ...shown } : null;
+  }
+
   // The error and warning sentences this window logged since `mark`, oldest
   // first: what the install, the restart or the save said when it failed,
   // which is the raw half of a failed step.
@@ -1247,10 +1270,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // and carried out by the path the pairing drawer's repair takes: the settings
   // form filled in and saved, the unit's pinned flags asked about, the node
   // restarted, and what it holds afterwards compared with what was asked for.
-  async function prepareFirstRunLan() {
+  //
+  // `shown` is the address and port the consent line named at the moment of
+  // the press (firstRunShownLan), never worked out again here: the node and
+  // service steps before this one change what the pick would be — the node's
+  // saved address and port are read only once it runs, and an address list
+  // can land or change in between — and what is opened is what was named.
+  async function prepareFirstRunLan(shown) {
     const wizard = state.firstRun;
-    const chosen = firstRunChosenAddress();
-    if (!chosen) return false;
+    if (!shown?.address || !shown?.port) return false;
     wizard.phase.lan = true;
     renderFirstRun();
     const mark = state.notices[0];
@@ -1272,7 +1300,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       failFirstRun("lan", t("firstRun.lan.unreadable"), noticesSince(mark) || el("node-settings-notice").textContent);
       return false;
     }
-    const address = `${chosen.address}:${firstRunPort()}`;
+    const address = `${shown.address}:${shown.port}`;
     await applyPeerListenRepairFromCard({ peerListen: address, peerListens: [address], allowLan: true, primary: true });
     await loadPairing();
     await load();
@@ -1289,11 +1317,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // be asked of a node that is not running — its settings live in it — and the
   // service before the settings, so the unit is registered without a single
   // setting baked into it (#116) and the save's own restart goes through it.
-  async function runFirstRunPrepare({ button = null, localOnly = false } = {}) {
+  //
+  // `lan` is what the consent line named when the button was pressed, or null
+  // when no consent line was on screen (firstRunShownLan). Null stops after the
+  // node and the service: the network is opened only by a press made with its
+  // address in front of the owner, so they see it and press again.
+  //
+  // 「只在這台用」 counts only once the node is running. Taken before that, a
+  // node step that failed would leave the network question answered and its
+  // line and button gone; instead the choice waits (localOnlyPending) for
+  // 重試, and the network line stays up with both answers still offered.
+  async function runFirstRunPrepare({ button = null, localOnly = false, lan = null } = {}) {
     const wizard = state.firstRun;
     if (state.busy || wizard.running) return;
     wizard.touched = true;
-    if (localOnly) wizard.localOnly = true;
+    wizard.localOnlyPending = localOnly;
     wizard.running = true;
     wizard.failed = {};
     wizard.phase = {};
@@ -1301,9 +1339,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let complete = false;
     try {
       if (!(await prepareFirstRunNode(button))) return;
+      if (localOnly) {
+        wizard.localOnly = true;
+        wizard.localOnlyPending = false;
+      }
       if (!wizard.localOnly) {
         await loadPairing();
-        if (!firstRunChecks().lan.done && !(await prepareFirstRunLan())) return;
+        if (!firstRunChecks().lan.done && !(lan && await prepareFirstRunLan(lan))) return;
       }
       complete = firstRunStepComplete(1);
     } finally {
@@ -1389,7 +1431,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const summary = element("summary");
     const detail = element("p");
     details.append(summary, detail);
-    const retry = firstRunButton("frretry", (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null }).catch(() => {}));
+    // 重試 runs the press that failed again: 「只在這台用」 again if that was
+    // it, and otherwise with the network line as it is on screen now.
+    const retry = firstRunButton("frretry", (event) => runFirstRunPrepare({
+      button: event?.currentTarget ?? null,
+      localOnly: Boolean(state.firstRun.localOnlyPending),
+      lan: state.firstRun.localOnlyPending ? null : firstRunShownLan(),
+    }).catch(() => {}));
     issue.append(issueText, details, retry);
     text.append(title, sub, issue);
     const status = element("span", "st");
@@ -1525,7 +1573,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       keepChildren(parts.pickList, wanted);
     }
     parts.consent.classList.toggle("hidden", !offerLan);
-    if (offerLan) parts.consent.textContent = t("firstRun.lan.consent", { address: `${chosen.address}:${firstRunPort()}` });
+    // Kept with the words: this is what a press of step 1's buttons opens.
+    parts.shownLan = offerLan && chosen ? { address: chosen.address, port: firstRunPort() } : null;
+    if (parts.shownLan) {
+      parts.consent.textContent = t("firstRun.lan.consent", { address: `${parts.shownLan.address}:${parts.shownLan.port}` });
+    }
     parts.noPrivate.classList.toggle("hidden", !(needLan && privates.length === 0));
     parts.noPrivate.textContent = t("firstRun.lan.noPrivate");
 
@@ -1541,10 +1593,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       };
     } else if (needNode || needLogin) {
       label = t("firstRun.prepare");
-      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null }).catch(() => {});
+      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
     } else if (offerLan) {
       label = t("firstRun.openLan");
-      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null }).catch(() => {});
+      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
     }
     parts.primary.classList.toggle("hidden", run === null);
     parts.primary.textContent = label;
@@ -1594,10 +1646,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   async function enterFirstRunPairing() {
     const wizard = state.firstRun;
     wizard.pairWindowSeenOpen = false;
+    wizard.pairWindowDeferred = false;
     wizard.pairWatch.clear();
     wizard.pairEnded = null;
     loadPairRequests().catch(() => {});
     await loadPairing();
+    // A write in flight holds every OpenPairing back (openPairingWindowIfNeeded).
+    // Entered then — 「顯示首次設定」 pressed mid-write, a step that lands on 2 —
+    // the opening this step owes is still owed, and the next tick after the
+    // write makes it (keepFirstRunWindowOpen). It is the first opening, not a
+    // reopening: the once-per-window rule still counts from the window it opens.
+    wizard.pairWindowDeferred = state.busy;
     await openPairingWindowIfNeeded();
     await keepFirstRunWindowOpen();
   }
@@ -1611,9 +1670,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (!firstRunPairingActive()) return;
     if (state.pairing?.state?.open) {
       wizard.pairWindowSeenOpen = true;
+      wizard.pairWindowDeferred = false;
       return;
     }
-    if (!wizard.pairWindowSeenOpen || state.busy) return;
+    if (state.busy) return;
+    if (wizard.pairWindowDeferred) {
+      // Once: a node that refuses this one is said once, as below.
+      wizard.pairWindowDeferred = false;
+      await openPairingWindowIfNeeded();
+      return;
+    }
+    if (!wizard.pairWindowSeenOpen) return;
     wizard.pairWindowSeenOpen = false;
     await openPairingWindowIfNeeded();
   }
@@ -2315,6 +2382,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("btn-resume-setup").classList.toggle("hidden",
       on || state.ui.firstRunFinished || !(state.firstRun.suspended || (met && firstRunTriggered())));
     el("btn-resume-setup").disabled = state.busy;
+    // Settings → Appearance's way back in, by the same rule: entering the
+    // wizard mid-write lands on steps whose buttons the write has disabled,
+    // and a step 2 whose window the write held back.
+    el("settings-show-onboarding").disabled = state.busy;
     if (!on) return;
     renderFirstRunRail();
     const step = state.firstRun.step;
@@ -8975,6 +9046,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // And it is reversible from Settings as well, because the wizard is the only
   // screen that explains what this app needs in order to do anything at all.
   el("settings-show-onboarding").onclick = () => {
+    if (state.busy) return;
     state.ui.onboardingDismissed = false;
     state.ui.firstRunFinished = false;
     savePrefs();

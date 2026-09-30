@@ -134,6 +134,9 @@ const bindings = {
   },
   InstallService: async (form) => {
     writes.push(["InstallService", form]);
+    // Something that lands while the install is out: an address read, a
+    // re-read of the list.
+    if (machine.onInstall) machine.onInstall();
     if (machine.installError) throw new Error(machine.installError);
     machine.installed = true;
     machine.running = true;
@@ -163,7 +166,11 @@ const bindings = {
     machine.saved = next;
     return nodeView();
   },
-  LocalAddresses: async () => machine.addresses,
+  LocalAddresses: async () => {
+    // A read that answers late: held until the test lets it through.
+    if (machine.addressesGate) await machine.addressesGate;
+    return machine.addresses;
+  },
   Pairing: async () => {
     if (!machine.nodeUp) return { availability: "unknown", candidates: [], error: "dial tcp" };
     const lan = machine.saved.allowLan ? lanAddress() : "";
@@ -325,6 +332,34 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (shown()) failures.push("revoking the last pairing mid-session put the wizard up");
 }
 
+/* ---------------- 1b. it opens on the first step not yet done ---------------- */
+
+{
+  // The network already open and nothing paired (what install.sh and an
+  // earlier 開放區網 leave): step 1 has nothing left, so the wizard comes up
+  // on step 2 — at launch, as 「繼續設定」 does — not on a step whose one
+  // button is 下一步.
+  const lan = { peerListen: "192.168.50.10:7463", peerListens: ["192.168.50.10:7463"], allowLan: true, discover: true, treatAsPrivate: [], autoWake: false };
+  const open = await start({ ...ready, saved: lan, sessions: [session("a", "claude")] });
+  if (!shown()) failures.push("a machine with nothing paired did not bring the wizard up");
+  if (open.state.firstRun.step !== 2) failures.push(`the wizard came up on step ${open.state.firstRun.step} over a step 1 that is done, want 2`);
+  // 上一步 goes back as ever, and a repaint or a read does not move it on.
+  await button(ZH["firstRun.back"])?.onclick();
+  await flush();
+  if (open.state.firstRun.step !== 1) failures.push(`上一步 from the step it opened on went to ${open.state.firstRun.step}, want 1`);
+  await open.load();
+  await flush();
+  if (open.state.firstRun.step !== 1) failures.push(`a read after 上一步 moved the wizard on to step ${open.state.firstRun.step}`);
+
+  // Paired too, no session yet: step 3.
+  const third = await start({ ...ready, saved: lan, nodes: [{ nodeId: "n" }] });
+  if (third.state.firstRun.step !== 3) failures.push(`with steps 1 and 2 done the wizard came up on step ${third.state.firstRun.step}, want 3`);
+
+  // Nothing done: step 1, as before.
+  const fresh = await start({});
+  if (fresh.state.firstRun.step !== 1) failures.push(`a fresh machine's wizard came up on step ${fresh.state.firstRun.step}, want 1`);
+}
+
 /* ---------------- 2. the parts it replaces are gone while it is up ---------------- */
 
 {
@@ -362,6 +397,9 @@ const ready = { nodeUp: true, installed: true, running: true };
 
 {
   const app = await start({ nodeUp: true, installed: true, running: true, sessions: [session("a", "claude")] });
+  // Held on step 1 as an owner who has pressed something is: an untouched
+  // wizard moves on by itself once step 1 is done (section 1b).
+  app.state.firstRun.touched = true;
   // Node answering, service installed and running, loopback: two of three.
   if (rowState(0) !== "ok") failures.push(`an answering node's line reads ${rowState(0)}`);
   if (rowState(1) !== "ok") failures.push(`a running service's line reads ${rowState(1)}`);
@@ -563,6 +601,106 @@ const ready = { nodeUp: true, installed: true, running: true };
   }
   if (!stageText().includes(ZH["firstRun.step3.localOnly"])) failures.push("step 3 does not say sharing can wait");
   if (inputs("checkbox").length !== 0) failures.push("step 3 offered sessions to share after 「只在這台用」");
+}
+
+/* ---------------- 6b. what is opened is what was named at the press ---------------- */
+
+{
+  const consentFor = (address) => ZH["firstRun.lan.consent"].replace("{address}", address);
+  const consentPrefix = ZH["firstRun.lan.consent"].split("{address}")[0];
+  const saves = () => writes.filter((entry) => entry[0] === "SaveNodeSettings").map((entry) => entry[1]);
+
+  // A fresh machine whose address read answers only after the press. On
+  // screen at the press: 「沒有區網位址」, no consent line, and a button that
+  // says 準備好這台電腦. The node and the service are that press's; the network
+  // is not, because nothing on screen named an address.
+  let release = () => {};
+  const late = await start({ addresses: ONE, addressesGate: new Promise((resolve) => { release = resolve; }) });
+  if (!stageText().includes(ZH["firstRun.lan.noPrivate"]) || stageText().includes(consentPrefix)) {
+    failures.push(`the late-address case did not start from a screen that names no address: ${stageText()}`);
+  }
+  if (primary()?.textContent !== ZH["firstRun.prepare"]) failures.push(`the late-address case's button reads ${primary()?.textContent}`);
+  machine.onInstall = () => { machine.addressesGate = null; release(); };
+  await primary().onclick();
+  await flush();
+  if (saves().length !== 0) {
+    failures.push(`a press made with no address on screen opened the network: ${JSON.stringify(writes)}`);
+  }
+  if (!writeNames().includes("InstallService")) failures.push("the late-address press did not install the service it was for");
+  if (late.state.firstRun.step !== 1) failures.push(`a press that opened nothing moved the wizard on to step ${late.state.firstRun.step}`);
+  // Now the address is on screen, named, and the next press is the one for it.
+  if (!stageText().includes(consentFor("192.168.50.10:7463"))) failures.push(`the address that landed is not named now: ${stageText()}`);
+  if (primary()?.textContent !== ZH["firstRun.openLan"]) failures.push(`after the node step the button reads ${primary()?.textContent}, want 開放區網並繼續`);
+  await primary().onclick();
+  await flush();
+  if (JSON.stringify(saves().map((save) => save.peerListens)) !== JSON.stringify([["192.168.50.10:7463"]])) {
+    failures.push(`the press made with the address on screen saved ${JSON.stringify(saves())}`);
+  }
+
+  // The list changes after the press (a re-read landing while the install is
+  // out): what is saved is the address the line named when it was pressed,
+  // not the one the new list would pick.
+  await start({ addresses: TWO });
+  if (!stageText().includes(consentFor("192.168.50.10:7463"))) failures.push(`the list-change case did not start by naming 192.168.50.10:7463: ${stageText()}`);
+  machine.onInstall = () => { current.state.firstRun.addresses = { list: [TWO[1]], failure: "" }; };
+  await primary().onclick();
+  await flush();
+  const listSaves = saves();
+  if (listSaves.length === 0) failures.push("the list-change case never reached the save, so it proves nothing");
+  if (listSaves.some((save) => JSON.stringify(save.peerListens) !== JSON.stringify(["192.168.50.10:7463"]))) {
+    failures.push(`a list that changed after the press opened ${JSON.stringify(listSaves.map((save) => save.peerListens))}, not the 192.168.50.10:7463 on screen`);
+  }
+
+  // The node's saved address, read only once it runs, would pick the other
+  // network: still the one on screen.
+  await start({ addresses: TWO, saved: { ...blank().saved, peerListens: [LOOPBACK, "10.0.0.5:7463"] } });
+  if (!stageText().includes(consentFor("192.168.50.10:7463"))) failures.push(`the saved-address case did not start by naming 192.168.50.10:7463: ${stageText()}`);
+  await primary().onclick();
+  await flush();
+  const savedSaves = saves();
+  if (savedSaves.length === 0) failures.push("the saved-address case never reached the save, so it proves nothing");
+  if (savedSaves.some((save) => JSON.stringify(save.peerListens) !== JSON.stringify(["192.168.50.10:7463"]))) {
+    failures.push(`the node's saved address overrode the one on screen: ${JSON.stringify(savedSaves.map((save) => save.peerListens))}`);
+  }
+
+  // The port changes after the press: before the node runs the line names
+  // the default port, and the node, once up, has another saved. The one named
+  // is the one opened.
+  await start({ installed: true, running: false, addresses: ONE, saved: { ...blank().saved, peerListen: "127.0.0.1:7500", peerListens: ["127.0.0.1:7500"] } });
+  if (!stageText().includes(consentFor("192.168.50.10:7463"))) failures.push(`the port case did not start by naming 192.168.50.10:7463: ${stageText()}`);
+  await primary().onclick();
+  await flush();
+  const portSaves = saves();
+  if (!writeNames().includes("RestartService")) failures.push(`the port case did not start the service: ${JSON.stringify(writeNames())}`);
+  if (portSaves.length === 0) failures.push("the port case never reached the save, so it proves nothing");
+  if (portSaves.some((save) => JSON.stringify(save.peerListens) !== JSON.stringify(["192.168.50.10:7463"]))) {
+    failures.push(`a port that changed after the press opened ${JSON.stringify(portSaves.map((save) => save.peerListens))}, not the :7463 on screen`);
+  }
+}
+
+{
+  // 「只在這台用」 pressed on a machine whose node step then fails: the choice
+  // is not taken yet. The network line, its consent and both answers stay up,
+  // and 重試 repeats the choice that was made rather than opening anything.
+  const app = await start({ addresses: ONE, installError: "launchctl bootstrap: 5: Input/output error" });
+  await button(ZH["firstRun.localOnly"]).onclick();
+  await flush();
+  if (!writeNames().includes("InstallService")) failures.push("「只在這台用」 on a stopped machine did not try to start it");
+  if (app.state.firstRun.localOnly) failures.push("「只在這台用」 was taken although its node step failed");
+  if (rowState(2) === "skipped") failures.push("the network line reads skipped after a node step that failed");
+  if (!button(ZH["firstRun.localOnly"]) || button(ZH["firstRun.localOnly"]).disabled) {
+    failures.push(`after the failure 「只在這台用」 is gone or dead: ${buttons().map((node) => node.textContent).join(" | ")}`);
+  }
+  if (!stageText().includes(ZH["firstRun.lan.consent"].replace("{address}", "192.168.50.10:7463"))) {
+    failures.push(`after the failure the network question is gone: ${stageText()}`);
+  }
+  if (!button(ZH["firstRun.retry"])) failures.push("the failed node step offers no 重試");
+  machine.installError = "";
+  await button(ZH["firstRun.retry"]).onclick();
+  await flush();
+  if (writeNames().includes("SaveNodeSettings")) failures.push("重試 after 「只在這台用」 opened the network");
+  if (!app.state.firstRun.localOnly) failures.push("重試 after 「只在這台用」 did not take the choice once the node was up");
+  if (app.state.firstRun.step !== 3) failures.push(`重試 after 「只在這台用」 went to step ${app.state.firstRun.step}, want 3`);
 }
 
 /* ---------------- 7. step 3 shares through the menu's own write ---------------- */
