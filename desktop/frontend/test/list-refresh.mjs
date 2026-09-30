@@ -89,6 +89,10 @@ configure({
 const scope = boot();
 
 const { state } = scope;
+// The attention strip is the main window's, and the first-run wizard hides it
+// whole while it is up (first-run.mjs). This check is about the main window,
+// so the wizard is put away, as an owner who pressed 「稍後再設定」 has.
+state.ui.onboardingDismissed = true;
 // replaceChildren takes a fragment, so the rows are one level down. Counted off
 // the serialized table rather than the child list for that reason.
 const drawnRows = () => (el("rows").serialize().match(/<tr/g) ?? []).length;

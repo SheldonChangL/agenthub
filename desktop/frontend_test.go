@@ -673,20 +673,40 @@ func TestFrontendSpeaksBothLanguages(t *testing.T) {
 	runNodeCheck(t, "i18n.mjs")
 }
 
-// TestFrontendWalksAFirstLaunchToAPairedNode covers the checklist a stranger
-// meets after the installer finishes.
-//
-// Everything it offers existed already; what did not exist was an order to do
-// them in. The joins are what this asserts: a step is shown only when the
-// window knows the thing it claims (an empty table on a read that never reached
-// the node is not a fact about this machine — issue #114), each button reaches
-// the same binding the panel's own button reaches and reaches it once, the
-// reachability button names "allow LAN connections" in its own label whenever
-// clicking it would turn that on (docs/ui-contract.md §7.8 rule 4), and the
-// fifteen-second refresh updates the rows in place rather than replacing the
-// button an owner is halfway through clicking.
+// TestFrontendWalksAFirstLaunchToAPairedNode covers what the first launch leans
+// on around the wizard: the pairing drawer's own first step, whose button names
+// "allow LAN connections" in its label whenever clicking it would turn that on
+// (docs/ui-contract.md §7.8 rule 4), and the scan the window runs by itself on
+// the first read that reaches the node — never on one that did not (#114).
 func TestFrontendWalksAFirstLaunchToAPairedNode(t *testing.T) {
 	runNodeCheck(t, "onboarding.mjs")
+}
+
+// TestFrontendFirstRunWizardPressesOnlyWhatTheWindowAlreadyPresses covers the
+// wizard a fresh install opens on (docs/ui-contract.md §3.2).
+//
+// Every write it makes is one another part of the window already makes, so
+// the joins are what this asserts: each step is worked out from state and
+// never stored, the one button runs what is left in order and stops at the
+// first failure, a node running but not as a service is sent to the form that
+// asks for its database rather than installed over, the network address is
+// the owner's pick when there is more than one, 「只在這台用」 writes no setting,
+// sharing goes through the inline menu's own write without the working
+// directory, and the attention strip is not on screen beside it.
+func TestFrontendFirstRunWizardPressesOnlyWhatTheWindowAlreadyPresses(t *testing.T) {
+	runNodeCheck(t, "first-run.mjs")
+}
+
+// TestFrontendFirstRunPairsByTheDrawersRules covers the wizard's step 2, which
+// is the pairing drawer in different clothes: the window opened with
+// OpenPairing(0) by being on screen and closed by the drawer's rule when the
+// step is left, the two polls running for it with no fifth interval, only the
+// address sent, the node's fingerprints as they came with the decision below
+// them and nothing decided without a press, kept rows across ticks — and the
+// title bar's pill, which called a service running while its node answered
+// nothing.
+func TestFrontendFirstRunPairsByTheDrawersRules(t *testing.T) {
+	runNodeCheck(t, "first-run-pairing.mjs")
 }
 
 // runNodeCheck runs one check under frontend/test.

@@ -799,7 +799,12 @@ serviceAnswer = { supported: true, installed: false, running: false, pid: 0 };
 await reload();
 el("service-form").classList.add("hidden");
 app.state.view = "local";
-if (serviceRow()) failures.push("the checklist's own service step is open and the strip repeats it");
+// With the first-run wizard up the strip is hidden whole: the wizard's first
+// step is this same fix (first-run.mjs covers the wizard's own path to it).
+app.openFirstRun();
+if (serviceRow()) failures.push("the first-run wizard is up and the strip repeats its fix beside it");
+app.state.firstRun.engaged = false;
+app.state.firstRun.forced = false;
 app.state.ui.onboardingDismissed = true;
 app.render();
 {

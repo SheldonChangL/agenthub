@@ -135,10 +135,36 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // free by comparison and stays on.
     // lang is "" until the owner picks one: empty means "follow the OS",
     // which is what pickLanguage does with navigator.language.
-    // onboardingDismissed is the checklist's one stored fact. Everything else
-    // about that card is computed from state on every render, so a step that
-    // regresses comes back — but a card the owner has closed stays closed.
-    ui: { backdrop: true, motion: false, lang: "", onboardingDismissed: false },
+    // onboardingDismissed is the first-run wizard's 「稍後再設定」: once set, the
+    // wizard does not put itself up again. It keeps the name of the checklist
+    // the wizard replaced, so a checklist closed before the wizard existed
+    // stays closed. firstRunFinished is 「開始使用」: setup is over, and the
+    // title bar's 「繼續設定」 goes with it. Everything else about the wizard is
+    // computed from state on every render, so a step that regresses comes back.
+    ui: { backdrop: true, motion: false, lang: "", onboardingDismissed: false, firstRunFinished: false },
+    // The first-run wizard's own memory, for this window only. Which step is
+    // done is never kept here: that is worked out from the state above on
+    // every render (firstRunChecks), so a step that regresses comes back.
+    firstRun: {
+      engaged: false, forced: false, suspended: false, touched: false, running: false,
+      // seen: it has been on screen in this window. settled: the launch's first
+      // picture of the machine is complete, and it no longer comes up by
+      // itself. reads: how many Overview reads have been rendered.
+      seen: false, settled: false, reads: 0,
+      // localOnlyPending: 「只在這台用」 was pressed and its node step has not
+      // gone through yet, so 重試 repeats that choice (runFirstRunPrepare).
+      step: 1, localOnly: false, localOnlyPending: false, pairSkipped: false, shareSkipped: false,
+      phase: {}, failed: {}, addresses: null, choice: "",
+      picked: new Set(), preset: "messages", showAll: false, shared: null,
+      // Step 2's exchange: the live requests it has shown (id → name), the
+      // ones this window decided itself, how the last one it was watching
+      // ended when somebody else ended it, and whether the window it keeps
+      // open has been seen open since it last reopened it.
+      pairWatch: new Map(), pairDecided: new Set(), pairEnded: null, pairWindowSeenOpen: false,
+      // pairWindowDeferred: step 2 was entered while a write held OpenPairing
+      // back, so its first opening is still to be made (enterFirstRunPairing).
+      pairWindowDeferred: false,
+    },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
     service: null,
@@ -201,6 +227,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Opt-out, so a preferences file written before this card existed leaves
       // the checklist showing rather than silently suppressed.
       state.ui.onboardingDismissed = ui.onboardingDismissed === true;
+      state.ui.firstRunFinished = ui.firstRunFinished === true;
     }
     // Applied here rather than at the call site so every path that reads the
     // preferences — boot, and the node checks that call loadPrefs directly —
@@ -300,6 +327,45 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return current;
     }
     return element("div", className, text);
+  }
+
+  // reconcileRows is the one rule every kept list of pairing rows follows —
+  // the drawer's candidates and requests and the first-run wizard's copies of
+  // both — so the security half of it cannot drift between two places.
+  //
+  // `kept` maps a key to the row element built for it. An item whose key is
+  // empty, or repeats one an earlier item in this same list already used, gets
+  // a fresh row rather than somebody else's: a sender repeating an id must not
+  // be able to take over the row the owner was about to press. `stale` is the
+  // other exception: a kept row it says is no longer the one the owner has been
+  // reading (a request whose fingerprints changed) is dropped and built again,
+  // so a mousedown aimed at the old element cannot become a click on the new
+  // values. Keys that did not come back are forgotten. Returns the rows in the
+  // order of `items`, for keepChildren.
+  function reconcileRows(kept, items, { key, make, update, stale = () => false }) {
+    const wanted = [];
+    const seen = new Set();
+    for (const item of items) {
+      const id = String(key(item) ?? "");
+      const keyed = id !== "" && !seen.has(id);
+      seen.add(id);
+      let row = keyed ? kept.get(id) : undefined;
+      if (row && stale(row, item)) {
+        kept.delete(id);
+        row = undefined;
+      }
+      if (row) {
+        update(row, item);
+      } else {
+        row = make(item);
+        if (keyed) kept.set(id, row);
+      }
+      wanted.push(row);
+    }
+    for (const id of [...kept.keys()]) {
+      if (!seen.has(id)) kept.delete(id);
+    }
+    return wanted;
   }
 
 
@@ -868,6 +934,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // install's failure toast. Opening the form again would reset the database
   // field and hide the output that says why the install failed.
   function goToService({ keepForm = false } = {}) {
+    stepOutOfFirstRun();
     state.view = "settings";
     state.settingsSection = "settings-service";
     render();
@@ -890,25 +957,33 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The drawer polls the exchange's rows only while that view is on screen, so
   // opening it from the sessions table alone would show rows that never refresh.
   function goToPairing() {
+    stepOutOfFirstRun();
     state.view = "network";
     render();
     openPairingDrawer().catch(() => {});
   }
 
-  // Which of the four situations this card exists for the window is in. The
-  // unreachable case is the one that does NOT wait for a successful read: a
-  // node that never answered is exactly the state this card is for, and gating
-  // it on loadedOnce would hide it precisely then.
+  /* ---------------- the first-run wizard ---------------- */
+
+  // What a fresh install opens on (docs/ui-contract.md §3.2). It replaced a
+  // checklist card stacked on top of the table, which said the same thing in
+  // three places at once — the card, the attention strip and the title bar's
+  // pill — each with a green button of its own, and led with the node's dial
+  // error. The wizard is the whole window instead: three steps down the left,
+  // the one being done on the right, one primary button at a time, and every
+  // technical detail under a 「說明」.
   //
-  // There is no loadedOnce gate here, because there cannot be one that does
-  // anything: load() sets state.loadedOnce and state.nodeReachable together
-  // (the reachable branch sets the first, the line after it sets the second),
-  // so `reachable && !loadedOnce` never holds and a clause testing it would be
-  // an equivalent mutant. The #114 protection that does work — "no sessions" on
-  // a read that never reached the node is not a fact about this machine — is
-  // the step-level gate in onboardingSteps, which drops the sessions step
-  // entirely until a read has landed.
-  function onboardingTriggered() {
+  // Which situations it is for. The unreachable case is the one that does not
+  // wait for a read to land: a node that never answered is exactly the state a
+  // first run is in. Every other clause needs state.loadedOnce, which holds
+  // whenever nodeReachable does (load() sets the two together) — an empty list
+  // from a read that never reached the node is not a fact about this machine
+  // (#114). What is new is nodeChecked: before the first Overview has answered,
+  // nodeReachable is false only because nothing has been asked yet, and unlike
+  // the card, the wizard stays up once it is up (syncFirstRun), so a finished
+  // machine would be covered by it on every launch for that first half second.
+  function firstRunTriggered() {
+    if (!state.nodeChecked) return false;
     if (!state.nodeReachable) return true;
     const status = state.service ?? {};
     if (status.supported === true && !(status.installed && status.running)) return true;
@@ -917,253 +992,1417 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return false;
   }
 
-  // onboardingSteps is state in, step descriptors out, and nothing else: no
-  // DOM, no reads, no writes. Everything that decides what an owner reads here
-  // is therefore assertable without a render.
-  function onboardingSteps() {
-    const status = state.service ?? {};
-    const steps = [];
+  function firstRunVisible() {
+    return state.firstRun.engaged && !state.firstRun.suspended;
+  }
 
-    // 1. The node itself. Without ah this window cannot find out what holds the
-    //    node, and restarting the process behind a launchd job or a systemd
-    //    unit is how one node becomes two — so while the node is answering that
-    //    case explains and offers nothing, exactly as the service panel does.
-    //    A node that is NOT answering is the exception; the branch says why.
-    if (status.toolError) {
-      // Without ah this window cannot say what holds the node, so when the node
-      // IS answering there is nothing here worth pressing. When it is not, there
-      // is: RestartNode falls through to restartNodeProcess whenever the status
-      // is not "supported and installed" (desktop/nodeprocess.go), and that path
-      // stops whatever agenthub-node is running and starts the binary shipped
-      // beside this app — it never runs ah. A missing ah used to cost the owner
-      // the one button the card exists for, on a machine with a dead node.
-      const down = !state.nodeReachable;
-      steps.push({
-        id: "service",
-        title: down ? t("onboarding.service.titleStart") : t("onboarding.service.title"),
-        body: down
-          ? t("onboarding.service.bodyNoAhNodeDown", { error: status.toolError })
-          : t("onboarding.service.bodyNoAh", { error: status.toolError }),
-        done: false,
-        actions: down ? [{
-          label: t("onboarding.service.actionStart"),
-          primary: true,
-          run: () => restartNode().catch(() => {}),
-        }] : [],
-      });
-    } else if (!state.nodeReachable) {
-      // A node that is not answering is not a finished step, whatever the
-      // service manager says about the job that is supposed to be holding it.
-      // Deriving this step from state.service alone put a tick over a machine
-      // showing "cannot reach http://127.0.0.1:7462", and left the card with
-      // nothing to press on the one situation it exists for.
-      steps.push({
-        id: "service",
-        title: t("onboarding.service.titleStart"),
-        body: t("onboarding.service.bodyNodeDown"),
-        done: false,
-        actions: [{
-          label: t("onboarding.service.actionStart"),
-          primary: true,
-          run: () => restartNode().catch(() => {}),
-        }],
-      });
-    } else if (!state.service) {
-      // The status has not landed yet. load() renders before ServiceStatus
-      // answers, so for the first seconds of every launch this step knows
-      // nothing — and "knows nothing" used to fall through to the else below
-      // and read "Install the service" on a machine whose service was installed
-      // and running, next to a title-bar pill that said so. A neutral sentence
-      // and no button until the fact arrives; loadService() re-renders this
-      // card when it does.
-      steps.push({
-        id: "service",
-        title: t("onboarding.service.title"),
-        body: t("onboarding.service.bodyChecking"),
-        done: false,
-        actions: [],
-      });
-    } else if (status.supported === false) {
-      // Windows today: the node runs, nothing this app can ask holds it, and
-      // the window starts and stops it itself. The node is answering — the
-      // branch above has the case where it is not — so this is the done state,
-      // and the button it keeps is the restart rather than the start.
-      steps.push({
-        id: "service",
-        title: t("onboarding.service.titleStart"),
-        body: t("onboarding.service.bodyUnsupported"),
-        done: true,
-        actions: [{
-          label: t("onboarding.service.actionRestart"),
-          primary: true,
-          run: () => restartNode().catch(() => {}),
-        }],
-      });
+  // Up once it is up. The triggers are what bring it: they are also what the
+  // first step turns off — the node answering, the service holding it — and a
+  // wizard that vanished the moment its first button worked would take the
+  // second and third steps with it. The one exception is a wizard nobody has
+  // touched, on a machine where every trigger has gone by itself: the node was
+  // simply slow to answer at launch, and a set-up machine is not a first run.
+  //
+  // And it comes up by itself only at launch, while the window is still
+  // forming its first picture of the machine: until the service status has
+  // landed as well as the first Overview (or a second read has come, for a
+  // status command that keeps failing). After that the owner has the main
+  // window, and a node that stops answering, a service stopped from a
+  // terminal or the last pairing revoked is the attention strip's to say —
+  // covering the settings page an owner is working in with the whole wizard
+  // is not a first run either.
+  function syncFirstRun() {
+    const wizard = state.firstRun;
+    const triggered = firstRunTriggered();
+    if (!wizard.settled && !wizard.engaged && !state.ui.onboardingDismissed && !state.ui.firstRunFinished && triggered) {
+      wizard.engaged = true;
+      wizard.seen = true;
+      wizard.step = firstIncompleteStep();
+      readForFirstRun();
+    }
+    // To the first step not yet settled, as 「繼續設定」 goes (openFirstRun) —
+    // and kept there while the reads it is worked out from are still landing
+    // (the service status, the pairing state behind the network line), for as
+    // long as nobody has pressed anything. Only ever forward, and never under a
+    // step 1 that is running: once the owner has pressed a button, including
+    // 上一步, the step is theirs.
+    if (wizard.engaged && !wizard.touched && !wizard.running) {
+      wizard.step = Math.max(wizard.step, firstIncompleteStep());
+    }
+    if (state.nodeChecked && (state.service || wizard.reads >= 2)) wizard.settled = true;
+    if (wizard.engaged && !wizard.forced && !wizard.touched && !wizard.running && !triggered) {
+      wizard.engaged = false;
+    }
+  }
+
+  // The two reads step 1 needs that load() does not make: this machine's own
+  // addresses (a Go call that needs no node, so it answers on a machine where
+  // nothing is running yet) and the pairing state that says whether the node's
+  // address is one another machine can reach.
+  function readForFirstRun() {
+    fetchLocalAddresses().then((addresses) => {
+      state.firstRun.addresses = addresses;
+      renderFirstRun();
+    }).catch(() => {});
+    loadPairing().then(() => renderFirstRun()).catch(() => {});
+  }
+
+  // Back into the wizard: from the title bar's 「繼續設定」, or from Settings →
+  // Appearance. Either way to the first step not yet settled.
+  function openFirstRun({ reset = false } = {}) {
+    const wizard = state.firstRun;
+    if (reset) {
+      wizard.localOnly = false;
+      wizard.localOnlyPending = false;
+      wizard.pairSkipped = false;
+      wizard.shareSkipped = false;
+      wizard.shared = null;
+    }
+    wizard.engaged = true;
+    wizard.seen = true;
+    wizard.forced = true;
+    wizard.suspended = false;
+    wizard.touched = true;
+    wizard.failed = {};
+    wizard.step = firstIncompleteStep();
+    closeAudiencePopover();
+    readForFirstRun();
+    render();
+  }
+
+  // 「稍後再設定」 and 「開始使用」. Both are remembered, so the wizard does not
+  // put itself back up on the next launch; only the second one also takes the
+  // title bar's 「繼續設定」 away, because only it says setup is over.
+  function closeFirstRun({ finished = false } = {}) {
+    const wizard = state.firstRun;
+    wizard.engaged = false;
+    wizard.forced = false;
+    wizard.suspended = false;
+    state.ui.onboardingDismissed = true;
+    if (finished) state.ui.firstRunFinished = true;
+    savePrefs();
+    state.view = "local";
+    render();
+    if (!finished) notify("info", t("firstRun.laterTitle"), { body: t("firstRun.laterBody") });
+  }
+
+  // Called by every function that sends the owner to another view. The wizard
+  // covers all three, so a destination it stayed on top of would be one the
+  // owner was sent to and could not see — the service form the identity guard
+  // sends them to above all. Put aside for this window only, not dismissed:
+  // 「繼續設定」 brings it back.
+  function stepOutOfFirstRun() {
+    if (firstRunVisible()) state.firstRun.suspended = true;
+  }
+
+  // Step 1's three facts, from state, on every render. Never stored: a service
+  // removed from a terminal makes its line come back by itself.
+  function firstRunChecks() {
+    const status = state.service;
+    const node = { done: state.nodeReachable };
+    let login;
+    if (!status) login = { done: false, na: false, sub: t("firstRun.login.checking"), checking: true };
+    else if (status.toolError) login = { done: false, na: true, sub: t("firstRun.login.noAh"), detail: status.toolError };
+    else if (status.supported !== true) login = { done: false, na: true, sub: t("firstRun.login.unsupported") };
+    else if (status.installed && status.running) login = { done: true, na: false, sub: t("firstRun.login.sub") };
+    else if (status.installed) login = { done: false, na: false, sub: t("firstRun.login.stopped") };
+    else if (nodeRunningNotAService(status)) login = { done: false, na: false, sub: t("firstRun.login.notAService") };
+    else login = { done: false, na: false, sub: t("firstRun.login.sub") };
+    // What the node says about its own address, and nothing the window
+    // guesses over the top of it (pairHereState, §3.3).
+    const here = state.nodeReachable ? pairHereState(state.pairing?.state) : { reachable: false, address: "", problem: "" };
+    const lan = { done: here.reachable, address: here.address, problem: here.problem };
+    return { node, login, lan };
+  }
+
+  function firstRunStepComplete(step) {
+    if (step === 1) {
+      const checks = firstRunChecks();
+      return checks.node.done && (checks.login.done || checks.login.na)
+        && (checks.lan.done || state.firstRun.localOnly);
+    }
+    if (step === 2) return state.nodes.length > 0;
+    if (step === 3) return (state.counts.all_paired ?? 0) + (state.counts.selected ?? 0) > 0;
+    return false;
+  }
+
+  // Done, or put aside on purpose.
+  function firstRunStepSettled(step) {
+    const wizard = state.firstRun;
+    if (firstRunStepComplete(step)) return true;
+    if (step === 2) return wizard.localOnly || wizard.pairSkipped;
+    if (step === 3) return wizard.shareSkipped || wizard.shared !== null;
+    return false;
+  }
+
+  function firstIncompleteStep() {
+    for (const step of [1, 2, 3]) if (!firstRunStepSettled(step)) return step;
+    return 4;
+  }
+
+  // The addresses step 1 may offer, and the one it would use. Only private
+  // ones: an address on a public network is a decision the settings form asks
+  // about in words (suggestPrivateRange), not one a single button makes.
+  function firstRunPrivateAddresses() {
+    const read = state.firstRun.addresses?.list ?? state.nodeAddresses?.list;
+    const list = Array.isArray(read) ? read : [];
+    const seen = new Set();
+    return list.filter((item) => item.private && !seen.has(item.address) && seen.add(item.address));
+  }
+
+  function firstRunPort() {
+    return peerListenPort(state.nodeSettings?.saved?.peerListen || LOOPBACK_LISTEN);
+  }
+
+  // What the owner picked, or — until they pick — what the node already has
+  // saved, or the first. Preselected, never decided silently: with more than
+  // one, every choice is on screen with the pre-selected one marked.
+  function firstRunChosenAddress() {
+    const privates = firstRunPrivateAddresses();
+    const picked = privates.find((item) => item.address === state.firstRun.choice);
+    if (picked) return picked;
+    const saved = [state.nodeSettings?.saved?.peerListen, ...(state.nodeSettings?.saved?.peerListens ?? [])]
+      .filter(Boolean).map((address) => hostOf(address).toLowerCase());
+    return privates.find((item) => saved.includes(String(item.address).toLowerCase())) ?? privates[0] ?? null;
+  }
+
+  // What step 1's consent line names right now, as the last paint wrote it,
+  // or null when that line is not on screen. Taken by every button of step 1
+  // at the moment it is pressed, and handed down as it is (runFirstRunPrepare).
+  function firstRunShownLan() {
+    const shown = firstRunParts[1]?.shownLan;
+    return shown ? { ...shown } : null;
+  }
+
+  // The error and warning sentences this window logged since `mark`, oldest
+  // first: what the install, the restart or the save said when it failed,
+  // which is the raw half of a failed step.
+  function noticesSince(mark) {
+    const found = [];
+    for (const notice of state.notices) {
+      if (notice === mark) break;
+      if (notice.kind === "error" || notice.kind === "warn") found.push([notice.title, notice.body].filter(Boolean).join(" "));
+    }
+    return found.reverse().join("\n");
+  }
+
+  function failFirstRun(item, text, detail) {
+    state.firstRun.failed[item] = { text, detail: String(detail ?? "") };
+  }
+
+  // The node and the thing that keeps it running, through the very functions
+  // the settings page and the title bar's pill press — never a second
+  // installer. So every identity guard of #204/#206 holds here as it does
+  // there: the status is read again before anything is installed
+  // (runServiceQuickAction), a node that answers without being a service is
+  // not installed over but sent to the form that asks for its database
+  // (nodeRunningNotAService, goToService), and a restart keeps the database
+  // the node runs on (restartNode, desktop/nodeprocess.go).
+  async function prepareFirstRunNode(button) {
+    const wizard = state.firstRun;
+    let status;
+    try {
+      status = await loadService();
+    } catch (error) {
+      failFirstRun("login", t("firstRun.login.failed"), String(error));
+      return false;
+    }
+    const managed = Boolean(status && status.supported === true && !status.toolError);
+    const serviceOk = !managed || (status.installed && status.running);
+    if (state.nodeReachable && serviceOk) return true;
+    if (!state.nodeReachable) wizard.phase.node = true;
+    if (!serviceOk) wizard.phase.login = true;
+    renderFirstRun();
+    const mark = state.notices[0];
+    if (managed && !serviceOk && !status.installed && nodeRunningNotAService(status)) {
+      // Started by hand, on a database this window cannot see. The form says
+      // what to type and asks before a blank; the wizard gets out of its way.
+      goToService();
+      notify("info", t("firstRun.toServiceForm"));
+      return false;
+    }
+    if (managed && (status.installed || !serviceOk)) {
+      if (status.installed) await restartNode({ button, service: true });
+      else await runServiceQuickAction({ button });
+      // The quick action re-read the status and may have found the case above
+      // after all; it went to the form, and so does the owner.
+      if (wizard.suspended) return false;
     } else {
-      const done = Boolean(status.installed && status.running);
-      steps.push({
-        id: "service",
-        title: t("onboarding.service.title"),
-        body: t("onboarding.service.body"),
-        done,
-        // The one step that is the attention strip's service row by another
-        // name: both install the service (renderAttention).
-        fixesService: !done,
-        actions: done ? [] : [{ label: t("onboarding.service.action"), primary: true, run: () => goToService() }],
-      });
+      // No service manager this window can ask (Windows without a task, no
+      // ah): RestartNode starts the node that ships beside the app.
+      await restartNode({ button });
     }
-
-    // 2. A doorway to the drawer, which explains the rest itself — including
-    //    「這台機器能不能被連到」, which used to be a step of its own here. It was
-    //    a step about a listening address, two views from the drawer where the
-    //    address is needed and read out, and the repair it offered is now in
-    //    that drawer's own first step.
-    const paired = state.nodes.length > 0;
-    steps.push({
-      id: "pair",
-      title: t("onboarding.pair.title"),
-      body: t("onboarding.pair.body"),
-      done: paired,
-      actions: paired ? [] : [{ label: t("onboarding.pair.action"), primary: true, run: () => goToPairing() }],
-    });
-
-    // 3. Text, and a button that points rather than acts. Opening the audience
-    //    dialog with nothing selected is a dead dialog, so this one puts the
-    //    keyboard on the checkbox that starts a selection.
-    //
-    //    With no session at all there is nothing to tick, and the card is on
-    //    screen partly for that reason (onboardingTriggered) — so the step says
-    //    so, where it would otherwise point at an empty table. Only after a read
-    //    that reached the node: an empty list from one that did not is not a
-    //    fact about this machine (#114).
-    const published = (state.counts.all_paired ?? 0) + (state.counts.selected ?? 0) > 0;
-    const noSessions = state.nodeReachable && state.sessions.length === 0;
-    steps.push({
-      id: "publish",
-      title: t("onboarding.publish.title"),
-      body: noSessions
-        ? `${t("onboarding.publish.body")} ${t("onboarding.publish.noSessions")}`
-        : t("onboarding.publish.body"),
-      done: published,
-      actions: published ? [] : [{
-        label: t("onboarding.publish.action"),
-        primary: false,
-        run: () => el("select-all")?.focus?.(),
-      }],
-    });
-
-    return steps;
+    // An install answers once the service manager has the job, not once the
+    // node answers; restartNode already waited for it, and this waits the same.
+    if (!state.nodeReachable) {
+      await waitForNode();
+      await load();
+    }
+    wizard.phase = {};
+    // The status as it is now, not as the load() above left it: that load
+    // fires its status read and does not wait for it.
+    // Its own answer, not state.service: a read that a newer one overtook is
+    // not stored (loadService), and the stored one can be from before the
+    // install.
+    let after = state.service;
+    try {
+      after = await loadService();
+    } catch {
+      // Judged on the last status read; the line below says what it shows.
+    }
+    // Said on the line whose press it was: where a service manager holds the
+    // node, the install or the start is the login line's, and the node line
+    // keeps saying only that nothing is running.
+    const detail = noticesSince(mark);
+    if (managed && !(after?.installed && after?.running)) {
+      failFirstRun("login", t("firstRun.login.failed"), detail);
+      return false;
+    }
+    if (!state.nodeReachable) {
+      failFirstRun("node", t("firstRun.node.failed"), detail || state.nodeError);
+      return false;
+    }
+    return true;
   }
 
-  // The step rows, by step id, and their buttons.
+  // Opening the network is the owner's decision about privacy, made by the one
+  // button whose label and the line above it name the address (§7.8 rule 4),
+  // and carried out by the path the pairing drawer's repair takes: the settings
+  // form filled in and saved, the unit's pinned flags asked about, the node
+  // restarted, and what it holds afterwards compared with what was asked for.
   //
-  // The local view is repainted by the fifteen-second load() tick. Rebuilding
-  // these rows on every tick would replace the button an owner is halfway
-  // through clicking — the same defect updateCandidateRow exists for — so the
-  // rows are updated in place and the container is written only when the set of
-  // steps itself changes.
-  const onboardingNodes = new Map();
-  let onboardingAllDoneShown = false;
-  // Whether the card is up showing 「把節點跑成背景服務」 not yet done, for the
-  // attention strip, which then leaves that one thing to the card
-  // (renderAttention). The node-down step starts the node instead, a different
-  // button for a different thing, and does not count.
-  let onboardingServiceStepOpen = false;
-  // The farewell is spent by a TICK, not by a render.
-  //
-  // load() fires loadService() and renders; the status lands about fifty
-  // milliseconds later and loadService re-renders this card. Hiding on the
-  // second render therefore took the farewell off screen in that fifty
-  // milliseconds, every time — nobody ever read it. So the flag the hide reads
-  // is set by the next load() instead, which is fifteen seconds away.
-  let onboardingFarewellSpent = false;
-
-  // Called by load(), once per tick, before it renders. A farewell put up during
-  // the previous tick has been on screen for that whole tick by now, so this
-  // render is the one that puts the card away.
-  function spendOnboardingFarewell() {
-    if (onboardingAllDoneShown) onboardingFarewellSpent = true;
-  }
-
-  function onboardingStepNode(step, index) {
-    let node = onboardingNodes.get(step.id);
-    if (!node) {
-      const row = element("div", "step");
-      const tick = element("span", "steptick");
-      const body = element("div", "stepbody");
-      const title = element("div", "steptitle");
-      const why = element("div", "stepwhy muted");
-      const actions = element("div", "stepactions");
-      body.append(title, why, actions);
-      row.append(tick, body);
-      node = { row, tick, title, why, actions, buttons: [] };
-      onboardingNodes.set(step.id, node);
-    }
-    node.row.className = step.done ? "step done" : "step";
-    node.tick.textContent = step.done ? "✓" : String(index + 1);
-    node.tick.title = step.done ? t("onboarding.done") : t("onboarding.todo");
-    node.title.textContent = step.title;
-    node.why.textContent = step.body;
-    // Buttons kept by position. A label or a handler can change under an
-    // existing button — that is how a language switch reaches them — but the
-    // element itself survives, so a click already in flight lands on the same
-    // node it started on.
-    while (node.buttons.length > step.actions.length) node.buttons.pop();
-    for (let index_ = 0; index_ < step.actions.length; index_++) {
-      const action = step.actions[index_];
-      let button = node.buttons[index_];
-      if (!button) {
-        button = document.createElement("button");
-        node.buttons[index_] = button;
+  // `shown` is the address and port the consent line named at the moment of
+  // the press (firstRunShownLan), never worked out again here: the node and
+  // service steps before this one change what the pick would be — the node's
+  // saved address and port are read only once it runs, and an address list
+  // can land or change in between — and what is opened is what was named.
+  async function prepareFirstRunLan(shown) {
+    const wizard = state.firstRun;
+    if (!shown?.address || !shown?.port) return false;
+    wizard.phase.lan = true;
+    renderFirstRun();
+    const mark = state.notices[0];
+    // An edit the owner has not saved is theirs. The save below presses the
+    // form's own button, so it would be carried along; refused and named, as
+    // the drawer refuses it.
+    if (state.nodeSettings && !state.nodeSettings.error) {
+      withdrawUntouchedPrivateSuggestion();
+      const carried = unsavedNodeSettingsFields();
+      if (carried.length > 0) {
+        failFirstRun("lan", t("firstRun.lan.dirty"),
+          t("pair.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
+        return false;
       }
-      button.className = action.primary ? "primary" : "ghost";
-      button.textContent = action.label;
-      // Every write in this window goes through the same flag: a second press
-      // while a restart or a save is in flight starts a second one whose result
-      // lands on top of the first.
-      button.disabled = state.busy;
-      button.onclick = () => action.run();
     }
-    keepChildren(node.actions, node.buttons);
-    return node.row;
+    // A fresh baseline: the node may have just been started or restarted.
+    await loadNodeSettings();
+    if (!state.nodeSettings || state.nodeSettings.error) {
+      failFirstRun("lan", t("firstRun.lan.unreadable"), noticesSince(mark) || el("node-settings-notice").textContent);
+      return false;
+    }
+    const address = `${shown.address}:${shown.port}`;
+    await applyPeerListenRepairFromCard({ peerListen: address, peerListens: [address], allowLan: true, primary: true });
+    await loadPairing();
+    await load();
+    const here = pairHereState(state.pairing?.state);
+    if (!here.reachable) {
+      failFirstRun("lan", t("firstRun.lan.failed"), [noticesSince(mark), here.problem].filter(Boolean).join("\n"));
+      return false;
+    }
+    return true;
   }
 
-  function renderOnboarding() {
-    const section = el("onboarding");
-    const steps = onboardingSteps();
-    let show = !state.ui.onboardingDismissed && onboardingTriggered();
-    if (show) { onboardingAllDoneShown = false; onboardingFarewellSpent = false; }
-    // Finished, and kept up for one full tick with every step ticked before it
-    // goes. A card that vanishes under the click that completed it reads as a
-    // glitch; one that stays forever is the thing people learn to ignore. The
-    // guard is the spent flag, not the shown one, so every render inside that
-    // tick — the status landing, a settings read answering — keeps it on screen
-    // rather than being the one that takes it away. Never reopened afterwards:
-    // once the card is hidden the class test below is false, and the settings
-    // panel's own warnings and the pairing drawer's notices are where a
-    // regression is said out loud.
-    if (!show && !state.ui.onboardingDismissed && !onboardingFarewellSpent
-      && !section.classList.contains("hidden") && steps.every((step) => step.done)) {
-      show = true;
-      onboardingAllDoneShown = true;
+  // The one button of step 1: everything not yet done, in order, stopping at
+  // the first thing that fails. The node comes first because nothing else can
+  // be asked of a node that is not running — its settings live in it — and the
+  // service before the settings, so the unit is registered without a single
+  // setting baked into it (#116) and the save's own restart goes through it.
+  //
+  // `lan` is what the consent line named when the button was pressed, or null
+  // when no consent line was on screen (firstRunShownLan). Null stops after the
+  // node and the service: the network is opened only by a press made with its
+  // address in front of the owner, so they see it and press again.
+  //
+  // 「只在這台用」 counts only once the node is running. Taken before that, a
+  // node step that failed would leave the network question answered and its
+  // line and button gone; instead the choice waits (localOnlyPending) for
+  // 重試, and the network line stays up with both answers still offered.
+  async function runFirstRunPrepare({ button = null, localOnly = false, lan = null } = {}) {
+    const wizard = state.firstRun;
+    if (state.busy || wizard.running) return;
+    wizard.touched = true;
+    wizard.localOnlyPending = localOnly;
+    wizard.running = true;
+    wizard.failed = {};
+    wizard.phase = {};
+    renderFirstRun();
+    let complete = false;
+    try {
+      if (!(await prepareFirstRunNode(button))) return;
+      if (localOnly) {
+        wizard.localOnly = true;
+        wizard.localOnlyPending = false;
+      }
+      if (!wizard.localOnly) {
+        await loadPairing();
+        if (!firstRunChecks().lan.done && !(lan && await prepareFirstRunLan(lan))) return;
+      }
+      complete = firstRunStepComplete(1);
+    } finally {
+      wizard.running = false;
+      wizard.phase = {};
+      if (complete && !wizard.suspended) {
+        wizard.step = wizard.localOnly ? 3 : 2;
+        notify("ok", t("firstRun.readyTitle"));
+      }
+      render();
     }
-    section.classList.toggle("hidden", !show);
-    onboardingServiceStepOpen = show && steps.some((step) => step.fixesService === true);
-    if (!show) return;
-    // No node-settings read here any more. The step that needed one — the
-    // listening address — is the pairing drawer's own first step now, and that
-    // drawer asks for itself when it opens.
-    // Said out loud on the one render that shows every tick. Ticks alone do not
-    // explain why the card is about to disappear.
-    el("onboarding-alldone").classList.toggle("hidden", !onboardingAllDoneShown);
-    keepChildren(el("onboarding-steps"), steps.map(onboardingStepNode));
+  }
+
+  // Step 3's list: newest activity first.
+  function firstRunSessions() {
+    const when = (session) => Date.parse(session.lastSeenAt ?? "") || 0;
+    return [...state.sessions].sort((a, b) => when(b) - when(a));
+  }
+
+  function firstRunPicked() {
+    const alive = new Set(state.sessions.map((session) => session.id));
+    return [...state.firstRun.picked].filter((id) => alive.has(id));
+  }
+
+  // The same rule as the inline menu and the dialog: sessions that are all
+  // Claude Code cannot be woken, so waking cannot be picked for them.
+  function firstRunWakeBlocked() {
+    const picked = sessionsFor(firstRunPicked());
+    return picked.length > 0 && picked.every((session) => session.provider === "claude");
+  }
+
+  // Through the inline menu's own write (applyAudienceChoice): the same mode
+  // rule — nobody sees it yet → every paired machine, already shared → the
+  // machines it has — the same grouping, the same toast and its 復原. The one
+  // difference is the working directory, which is never published from here:
+  // nothing on this screen says it would be.
+  async function shareFromFirstRun(button) {
+    const wizard = state.firstRun;
+    const ids = firstRunPicked();
+    if (ids.length === 0 || state.busy) return;
+    wizard.touched = true;
+    if (wizard.preset === "wake" && firstRunWakeBlocked()) wizard.preset = "messages";
+    await applyAudienceChoice(ids, wizard.preset, { button, withoutCwd: true });
+    const shared = sessionsFor(ids).filter((session) => isPublished(session.audience));
+    if (shared.length === ids.length) {
+      wizard.shared = {
+        count: shared.length,
+        targets: describeTargets(shared.map((session) => writableAudience(session.audience))),
+      };
+      wizard.picked.clear();
+      wizard.step = 4;
+    }
+    render();
+  }
+
+  /* ---- drawing it ---- */
+
+  // Every part is built once and written in place afterwards. The window
+  // repaints on the fifteen-second tick and after every write, and a rebuilt
+  // button is one whose press, begun before the repaint, never becomes a click;
+  // a rebuilt <details> is one the owner had open, folded shut.
+  const firstRunParts = {};
+
+  function firstRunButton(className, onclick) {
+    const button = element("button", className);
+    button.onclick = onclick;
+    return button;
+  }
+
+  // One line of step 1: its mark, what it is, the one sentence about it, and
+  // when it failed the readable sentence, the raw words under 「說明」 and 重試.
+  function firstRunCheckRow() {
+    const row = element("div", "frcheck");
+    const mark = element("span", "mk");
+    mark.setAttribute("aria-hidden", "true");
+    const text = element("div", "frchecktext");
+    const title = element("b");
+    const sub = element("small");
+    const issue = element("div", "frissue hidden");
+    const issueText = element("span", "frissuetext");
+    const details = document.createElement("details");
+    details.className = "why";
+    const summary = element("summary");
+    const detail = element("p");
+    details.append(summary, detail);
+    // 重試 runs the press that failed again: 「只在這台用」 again if that was
+    // it, and otherwise with the network line as it is on screen now.
+    const retry = firstRunButton("frretry", (event) => runFirstRunPrepare({
+      button: event?.currentTarget ?? null,
+      localOnly: Boolean(state.firstRun.localOnlyPending),
+      lan: state.firstRun.localOnlyPending ? null : firstRunShownLan(),
+    }).catch(() => {}));
+    issue.append(issueText, details, retry);
+    text.append(title, sub, issue);
+    const status = element("span", "st");
+    row.append(mark, text, status);
+    return { row, title, sub, issue, issueText, details, summary, detail, retry, status };
+  }
+
+  function paintCheck(part, { title, sub, state: rowState, issue = null, retry = false }) {
+    part.row.className = `frcheck ${rowState}`;
+    part.title.textContent = title;
+    part.sub.textContent = sub;
+    part.status.textContent = t(`firstRun.status.${rowState === "" ? "todo" : rowState}`);
+    part.issue.classList.toggle("hidden", !issue);
+    if (issue) {
+      part.issueText.textContent = issue.text;
+      part.summary.textContent = t("common.why");
+      part.detail.textContent = issue.detail;
+      part.details.classList.toggle("hidden", !issue.detail);
+    }
+    part.retry.textContent = t("firstRun.retry");
+    part.retry.classList.toggle("hidden", !retry);
+    part.retry.disabled = state.busy || state.firstRun.running;
+  }
+
+  function firstRunStep1() {
+    let parts = firstRunParts[1];
+    if (!parts) {
+      const root = element("div", "frpanel");
+      const heading = element("h2");
+      const say = element("p", "say");
+      const checks = element("div", "frchecks");
+      const rows = { node: firstRunCheckRow(), login: firstRunCheckRow(), lan: firstRunCheckRow() };
+      checks.append(rows.node.row, rows.login.row, rows.lan.row);
+      const consent = element("div", "frconsent hidden");
+      const pick = element("fieldset", "frpick hidden");
+      const pickLegend = element("legend");
+      const pickList = element("div", "frpicklist");
+      pick.append(pickLegend, pickList);
+      const noPrivate = element("p", "frnote hidden");
+      const actions = element("div", "fractions");
+      const primary = firstRunButton("primary", () => {});
+      const local = firstRunButton("ghost", (event) => {
+        runFirstRunPrepare({ button: event?.currentTarget ?? null, localOnly: true }).catch(() => {});
+      });
+      actions.append(primary, local);
+      const why = whyDetails("firstRun.step1.why");
+      root.append(heading, say, checks, pick, consent, noPrivate, actions, why);
+      parts = { root, heading, say, rows, consent, pick, pickLegend, pickList, pickRows: new Map(), noPrivate, primary, local, why };
+      firstRunParts[1] = parts;
+    }
+    const wizard = state.firstRun;
+    parts.heading.textContent = t("firstRun.step1.title");
+    parts.say.textContent = t("firstRun.step1.say");
+    parts.why.children[0].textContent = t("common.why");
+    parts.why.children[1].textContent = t("firstRun.step1.why");
+
+    const checks = firstRunChecks();
+    const running = wizard.running;
+    const failed = wizard.failed;
+    const rowState = (key, done, na = false) => {
+      if (wizard.phase[key]) return "run";
+      if (failed[key]) return "fail";
+      if (done) return "ok";
+      if (na) return "na";
+      return "";
+    };
+    // The node: never its dial error as the sentence. That goes under 「說明」.
+    const nodeIssue = failed.node
+      ?? (!checks.node.done && state.nodeChecked ? { text: t("firstRun.node.down"), detail: state.nodeError } : null);
+    paintCheck(parts.rows.node, {
+      title: t("firstRun.node.title"),
+      sub: t("firstRun.node.sub"),
+      state: rowState("node", checks.node.done),
+      issue: wizard.phase.node ? null : nodeIssue,
+      retry: Boolean(failed.node) && !running,
+    });
+    const loginIssue = failed.login ?? (checks.login.detail ? { text: "", detail: checks.login.detail } : null);
+    paintCheck(parts.rows.login, {
+      title: t("firstRun.login.title"),
+      sub: checks.login.sub,
+      state: checks.login.checking && !wizard.phase.login && !failed.login ? "checking" : rowState("login", checks.login.done, checks.login.na),
+      issue: wizard.phase.login ? null : loginIssue,
+      retry: Boolean(failed.login) && !running,
+    });
+    const lanState = wizard.localOnly && !checks.lan.done && !wizard.phase.lan ? "skipped" : rowState("lan", checks.lan.done);
+    const lanIssue = failed.lan
+      ?? (checks.lan.problem && !checks.lan.done && !wizard.localOnly ? { text: "", detail: checks.lan.problem } : null);
+    paintCheck(parts.rows.lan, {
+      title: t("firstRun.lan.title"),
+      sub: checks.lan.done && checks.lan.address ? t("firstRun.lan.open", { address: checks.lan.address }) : t("firstRun.lan.sub"),
+      state: lanState,
+      issue: wizard.phase.lan ? null : lanIssue,
+      retry: Boolean(failed.lan) && !running,
+    });
+
+    const needNode = !checks.node.done;
+    const needLogin = !checks.login.done && !checks.login.na;
+    const needLan = !checks.lan.done && !wizard.localOnly;
+    const privates = firstRunPrivateAddresses();
+    const chosen = firstRunChosenAddress();
+    const offerLan = needLan && privates.length > 0;
+
+    // The choice of network, when there is one to make. Never made for the
+    // owner: every private address is listed, the node's own or the first
+    // pre-selected, and the line below names whichever is selected.
+    parts.pick.classList.toggle("hidden", !(offerLan && privates.length > 1));
+    parts.pickLegend.textContent = t("firstRun.lan.pick");
+    if (offerLan && privates.length > 1) {
+      const wanted = privates.map((item) => {
+        let entry = parts.pickRows.get(item.address);
+        if (!entry) {
+          const label = element("label", "frpickrow");
+          const input = document.createElement("input");
+          input.type = "radio";
+          input.name = "first-run-address";
+          input.value = item.address;
+          input.onchange = () => {
+            state.firstRun.choice = item.address;
+            state.firstRun.touched = true;
+            renderFirstRun();
+          };
+          const text = element("span");
+          label.append(input, text);
+          entry = { label, input, text };
+          parts.pickRows.set(item.address, entry);
+        }
+        entry.text.textContent = t("firstRun.lan.option", { address: `${item.address}:${firstRunPort()}`, interface: item.interface });
+        entry.input.checked = chosen?.address === item.address;
+        entry.input.disabled = state.busy || running;
+        return entry.label;
+      });
+      for (const key of [...parts.pickRows.keys()]) if (!privates.some((item) => item.address === key)) parts.pickRows.delete(key);
+      keepChildren(parts.pickList, wanted);
+    }
+    parts.consent.classList.toggle("hidden", !offerLan);
+    // Kept with the words: this is what a press of step 1's buttons opens.
+    parts.shownLan = offerLan && chosen ? { address: chosen.address, port: firstRunPort() } : null;
+    if (parts.shownLan) {
+      parts.consent.textContent = t("firstRun.lan.consent", { address: `${parts.shownLan.address}:${parts.shownLan.port}` });
+    }
+    parts.noPrivate.classList.toggle("hidden", !(needLan && privates.length === 0));
+    parts.noPrivate.textContent = t("firstRun.lan.noPrivate");
+
+    // One primary button, labelled by what it will do.
+    let label = "";
+    let run = null;
+    if (!needNode && !needLogin && !needLan) {
+      label = t("firstRun.next");
+      run = () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = state.firstRun.localOnly ? 3 : 2;
+        render();
+      };
+    } else if (needNode || needLogin) {
+      label = t("firstRun.prepare");
+      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
+    } else if (offerLan) {
+      label = t("firstRun.openLan");
+      run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
+    }
+    parts.primary.classList.toggle("hidden", run === null);
+    parts.primary.textContent = label;
+    parts.primary.onclick = run ?? (() => {});
+    parts.primary.disabled = state.busy || running;
+    parts.primary.classList.toggle("busy", running);
+    parts.primary.setAttribute("aria-busy", String(running));
+    // 「只在這台用」 only while there is a network question to say no to. With no
+    // private address it is the only way on, so it carries the weight.
+    parts.local.className = `${run === null ? "primary" : "ghost"}${needLan ? "" : " hidden"}`;
+    parts.local.textContent = t("firstRun.localOnly");
+    parts.local.disabled = state.busy || running;
+    return parts.root;
+  }
+
+  /* ---- step 2: connecting to the other computer ---- */
+
+  // Step 2 is the pairing drawer again, in the wizard's clothes. The same
+  // bindings, called by the same functions — sendPairRequest (only ever an
+  // address), decidePairRequest (the id from the row it was drawn for),
+  // copyPairAddress, openPairModal — the same kept-row rule (reconcileRows,
+  // with the fingerprint exception), the same fingerprint block from the same
+  // writer (writeFingerprintBlock: the node's array as it came, the labels
+  // from the fixed table), the same compare sentence above it and the
+  // decision below it, and the same window lifecycle. What is different is the
+  // order and how much is said at once: the other computer's part first, the
+  // machines found by name only (the ids and fingerprints folded away until
+  // the one moment they are compared), then a screen for waiting and a screen
+  // for comparing, with the two values large.
+
+  // Being on screen is the drawer being open (docs/ui-contract.md §2).
+  // Entering reads the rows and opens the window with OpenPairing(0); leaving
+  // — 下一步, 上一步, 先跳過, 稍後再設定, a trip to another view — closes it by
+  // the drawer's own rule (releasePairingWindow): not while a row is
+  // mid-exchange, not when that read fails, not when the step is back on
+  // screen by the time it answers. Watched from renderFirstRun rather than at
+  // every place that changes the step, so no way out can be missed.
+  let firstRunPairingWas = false;
+  function syncFirstRunPairing() {
+    const now = firstRunPairingActive();
+    if (now === firstRunPairingWas) return;
+    firstRunPairingWas = now;
+    if (now) enterFirstRunPairing().catch(() => {});
+    else releasePairingWindow().catch(() => {});
+  }
+
+  async function enterFirstRunPairing() {
+    const wizard = state.firstRun;
+    wizard.pairWindowSeenOpen = false;
+    wizard.pairWindowDeferred = false;
+    wizard.pairWatch.clear();
+    wizard.pairEnded = null;
+    loadPairRequests().catch(() => {});
+    await loadPairing();
+    // A write in flight holds every OpenPairing back (openPairingWindowIfNeeded).
+    // Entered then — 「顯示首次設定」 pressed mid-write, a step that lands on 2 —
+    // the opening this step owes is still owed, and the next tick after the
+    // write makes it (keepFirstRunWindowOpen). It is the first opening, not a
+    // reopening: the once-per-window rule still counts from the window it opens.
+    wizard.pairWindowDeferred = state.busy;
+    await openPairingWindowIfNeeded();
+    await keepFirstRunWindowOpen();
+  }
+
+  // The node closes the window when its time runs out, and this step shows no
+  // clock to say so. While the step is still on screen a new one is opened —
+  // once for each window this step has seen open, so a node that refuses is
+  // reported once rather than on every poll.
+  async function keepFirstRunWindowOpen() {
+    const wizard = state.firstRun;
+    if (!firstRunPairingActive()) return;
+    if (state.pairing?.state?.open) {
+      wizard.pairWindowSeenOpen = true;
+      wizard.pairWindowDeferred = false;
+      return;
+    }
+    if (state.busy) return;
+    if (wizard.pairWindowDeferred) {
+      // Once: a node that refuses this one is said once, as below.
+      wizard.pairWindowDeferred = false;
+      await openPairingWindowIfNeeded();
+      return;
+    }
+    if (!wizard.pairWindowSeenOpen) return;
+    wizard.pairWindowSeenOpen = false;
+    await openPairingWindowIfNeeded();
+  }
+
+  const livePairRequest = (request) => request?.state === "pending" || request?.state === "awaiting-confirm";
+
+  // A request this step was showing that has left the live list, and not
+  // because this window decided it: the other computer refused it, its time
+  // ran out, a newer one displaced it. The live list does not say which, so
+  // the finished ones are read once — the only reason this step asks for
+  // them — and the ending is said in the drawer's own words (pairStepText,
+  // where a refusal on the fingerprints has a sentence of its own).
+  function noteFirstRunPairEndings(live) {
+    const wizard = state.firstRun;
+    if (!state.pairRequestsLoaded || state.pairRequestsError) return;
+    const liveIds = new Set(live.map((request) => String(request.id ?? "")));
+    for (const id of [...wizard.pairWatch.keys()]) {
+      if (liveIds.has(id)) continue;
+      wizard.pairWatch.delete(id);
+      if (wizard.pairDecided.has(id)) continue;
+      // Still in the list, finished: the drawer's 「顯示已結束」 is on.
+      const known = (state.pairRequests ?? []).find((request) => String(request?.id ?? "") === id);
+      if (known) wizard.pairEnded = known;
+      else readFirstRunPairEnding(id).catch(() => {});
+    }
+    for (const request of live) if (request.id) wizard.pairWatch.set(String(request.id), true);
+  }
+
+  async function readFirstRunPairEnding(id) {
+    let rows;
+    try {
+      rows = await api.PairRequests(true);
+    } catch {
+      // Not a fact about the other computer: nothing is said.
+      return;
+    }
+    if (!firstRunPairingActive()) return;
+    const row = (Array.isArray(rows) ? rows : []).find((entry) => String(entry?.id ?? "") === id);
+    if (!row || livePairRequest(row)) return;
+    state.firstRun.pairEnded = row;
+    renderFirstRun();
+  }
+
+  // An icon from a fixed table, never from the string: the platform is the
+  // other computer's own claim.
+  function platformGlyph(platform) {
+    const value = String(platform ?? "").toLowerCase();
+    if (value.startsWith("darwin")) return "💻";
+    if (value.startsWith("windows") || value.startsWith("linux")) return "🖥";
+    return "?";
+  }
+
+  // A machine found on the network: its name, marked as its own claim, the
+  // two flags that make impersonation visible, and its platform and when it
+  // was last heard. The full node id, the announced fingerprint and the
+  // address are in the row, folded: they are the candidate's claims, and the
+  // fingerprint only matters at the one moment it is compared — which is on
+  // the compare screen, from the connection, not from this packet.
+  function firstRunCandidateRow(candidate) {
+    const row = element("div", "frmachine");
+    const avatar = element("span", "fravatar");
+    avatar.setAttribute("aria-hidden", "true");
+    const who = element("div", "frmachinewho");
+    const line = element("div", "frmachineline");
+    const name = element("b");
+    const claimed = element("span", "claimed frclaimed");
+    line.append(name, claimed);
+    const sub = element("small");
+    const why = element("div", "disabledwhy");
+    const details = document.createElement("details");
+    details.className = "why frmachinedetails";
+    const summary = element("summary");
+    const field = () => {
+      const box = element("div", "frfield");
+      const label = element("span", "muted");
+      const value = element("span", "fingerprint");
+      box.append(label, value);
+      details.append(box);
+      return { label, value };
+    };
+    details.append(summary);
+    const nodeId = field();
+    const fingerprint = field();
+    const address = field();
+    const seen = element("div", "muted");
+    details.append(seen);
+    who.append(line, sub, why, details);
+    const send = element("button", "primary");
+    row.append(avatar, who, send);
+    row.candidateParts = { avatar, line, name, claimed, sub, why, summary, nodeId, fingerprint, address, seen, send };
+    row.candidateFlags = "";
+    updateFirstRunCandidateRow(row, candidate);
+    return row;
+  }
+
+  function updateFirstRunCandidateRow(row, candidate) {
+    const parts = row.candidateParts;
+    parts.avatar.textContent = platformGlyph(candidate.platform);
+    parts.name.textContent = candidateName(candidate);
+    parts.claimed.textContent = t("firstRun.pair.claimed");
+    // The flags on the row itself, as in the drawer (§4): rewritten only when
+    // they change, and the button is not in this line.
+    const flags = `${candidate.contested ? "c" : ""}${candidate.duplicate ? "d" : ""}`;
+    if (row.candidateFlags !== flags) {
+      row.candidateFlags = flags;
+      const pills = [];
+      if (candidate.contested) pills.push(pill(t("candidate.contested"), "bad"));
+      if (candidate.duplicate) pills.push(pill(t("candidate.duplicate"), "bad"));
+      parts.line.replaceChildren(parts.name, parts.claimed, ...pills);
+    }
+    parts.sub.textContent = t("firstRun.pair.machineSub", {
+      platform: candidate.platform || t("pair.noPlatform"),
+      when: relative(candidate.lastSeen),
+    });
+    parts.summary.textContent = t("firstRun.pair.details");
+    parts.nodeId.label.textContent = t("firstRun.pair.nodeIdLabel");
+    parts.nodeId.value.textContent = candidate.nodeId ?? "";
+    parts.fingerprint.label.textContent = t("firstRun.pair.fingerprintLabel");
+    parts.fingerprint.value.textContent = candidate.fingerprint ?? "";
+    parts.address.label.textContent = t("firstRun.pair.addressLabel");
+    parts.address.value.textContent = candidate.address || t("pair.noAddress");
+    parts.seen.textContent = t("candidate.seen", {
+      first: relative(candidate.firstSeen),
+      last: relative(candidate.lastSeen),
+    });
+    // The one primary button on the screen while nothing is paired; once a
+    // machine is, 下一步 is, and this one steps down.
+    const paired = state.nodes.length > 0;
+    parts.send.classList.toggle("primary", !paired);
+    parts.send.classList.toggle("ghost", paired);
+    parts.send.textContent = PAIR_TEXT.sendFromCandidate;
+    parts.send.disabled = state.busy || !candidate.address;
+    parts.why.textContent = candidate.address ? "" : t("candidate.noAddressWhy");
+    // The address and nothing else, exactly as the drawer's row sends it.
+    parts.send.onclick = () => sendPairRequest(candidate.address, { button: parts.send, input: null }).catch(() => {});
+  }
+
+  // One live exchange, as one card that changes with it: waiting for the
+  // other owner while this computer's request is pending there, then the two
+  // fingerprints and the decision once there is something to compare here —
+  // the other computer's request, or ours after they approved. One card for
+  // both, so the button an owner is reaching for when the other side answers
+  // is the same element it was.
+  function firstRunRequestCard(request) {
+    const card = element("div", "frcard frrequest");
+    const title = element("h3");
+    const say = element("p", "say");
+    const wait = element("div", "frwait");
+    const spin = element("span", "frspin");
+    spin.setAttribute("aria-hidden", "true");
+    const waitText = element("div", "frwaittext");
+    const waitTitle = element("b");
+    const waitSay = element("div", "muted");
+    const waitThen = element("div", "muted");
+    waitText.append(waitTitle, waitSay, waitThen);
+    wait.append(spin, waitText);
+    // The drawer's compare sentence, once, above the block it describes
+    // (§3.3), with its 「說明」.
+    const compare = element("div", "frcomparenote");
+    const fingerprints = element("div", "fingerprints frfingerprints");
+    const decide = element("div", "fractions frdecide");
+    const primary = element("button", "primary");
+    const reject = element("button", "ghost");
+    card.append(title, say, wait, compare, fingerprints, decide);
+    card.pairParts = { title, say, wait, waitTitle, waitSay, waitThen, compare, fingerprints, decide, primary, reject };
+    // Neither written yet; the first update fills both.
+    card.pairFingerprints = null;
+    card.pairCompare = null;
+    updateFirstRunRequestCard(card, request);
+    return card;
+  }
+
+  function updateFirstRunRequestCard(card, request) {
+    const parts = card.pairParts;
+    const incoming = request.state === "pending" && request.direction === "incoming";
+    const confirm = request.state === "awaiting-confirm";
+    const comparing = incoming || confirm;
+    const name = request.displayName || request.address || request.nodeId || t("pair.noName");
+    card.className = comparing ? "frcard frrequest comparing" : "frcard frrequest waiting";
+    parts.title.classList.toggle("hidden", !comparing);
+    parts.title.textContent = incoming
+      ? t("firstRun.pair.incomingTitle", { name })
+      : t("firstRun.pair.confirmTitle", { name });
+    parts.say.textContent = comparing ? t("firstRun.pair.compareSay") : t("firstRun.pair.sentSay", { name });
+    parts.wait.classList.toggle("hidden", comparing);
+    parts.waitTitle.textContent = t("firstRun.pair.waitTitle", { name });
+    parts.waitSay.textContent = t("firstRun.pair.waitSay");
+    // After they approve, this computer compares too: a requester told only
+    // "wait for them" stops there (§3.3).
+    parts.waitThen.textContent = t("firstRun.pair.waitThen");
+    if (card.pairCompare !== comparing) {
+      card.pairCompare = comparing;
+      parts.compare.replaceChildren(
+        ...(comparing
+          ? [...PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)),
+            whyDetails("why.compareFingerprints")]
+          : []));
+    }
+    parts.compare.classList.toggle("hidden", !comparing);
+    parts.fingerprints.classList.toggle("hidden", !comparing);
+    // Rewritten only when the node answered with different values; a kept
+    // card whose values changed is not reused at all (fingerprintsChanged).
+    const signature = fingerprintSignature(request);
+    if (card.pairFingerprints !== signature) {
+      card.pairFingerprints = signature;
+      writeFingerprintBlock(parts.fingerprints, request);
+    }
+    // Below the values, never beside them. Approve for their request, confirm
+    // for ours they approved; the other button refuses either way.
+    const verb = confirm ? "confirm" : (incoming ? "approve" : "");
+    const wanted = [];
+    if (verb !== "") {
+      parts.primary.textContent = t(verb === "confirm" ? "firstRun.pair.confirm" : "firstRun.pair.approve");
+      parts.primary.disabled = state.busy;
+      parts.primary.onclick = () => decidePairRequest(request.id, verb, { button: parts.primary, fromWizard: true }).catch(() => {});
+      wanted.push(parts.primary);
+    }
+    parts.reject.textContent = comparing ? t("firstRun.pair.different") : t("firstRun.pair.cancel");
+    parts.reject.classList.toggle("danger", comparing);
+    parts.reject.classList.toggle("ghost", !comparing);
+    parts.reject.disabled = state.busy;
+    parts.reject.onclick = () => decidePairRequest(request.id, "reject", { button: parts.reject, fromWizard: true }).catch(() => {});
+    wanted.push(parts.reject);
+    keepChildren(parts.decide, wanted);
+  }
+
+  // This computer's own address, for the other one to type when neither finds
+  // the other: the drawer's #pair-here rule (§3.3) — the node's judgement of
+  // whether it can be reached, and an unreachable address never printed as the
+  // one to type. Step 1 is where that is repaired, so this only points back.
+  function paintFirstRunHere(parts) {
+    const here = state.nodeReachable ? pairHereState(state.pairing?.state) : { reachable: false, address: "" };
+    const open = pairOpenAddresses();
+    const addresses = !here.reachable ? []
+      : open.length >= 2 ? open : [{ address: here.address, interface: "" }];
+    parts.mineLead.textContent = here.reachable ? t("firstRun.pair.mine") : t("firstRun.pair.mineUnreachable");
+    parts.mineBack.textContent = t("firstRun.pair.backToStep1");
+    parts.mineBack.classList.toggle("hidden", here.reachable);
+    // A way off step 2, so not while a write is in flight (稍後再設定 says why).
+    parts.mineBack.disabled = state.busy;
+    const signature = JSON.stringify([addresses, t("common.copy"), t("firstRun.pair.noAddressToCopy")]);
+    if (parts.mineList.signature === signature) return;
+    parts.mineList.signature = signature;
+    parts.mineStatus.textContent = "";
+    if (addresses.length === 0) {
+      const line = element("div", "frmineaddr");
+      const copy = element("button", "ghost", t("common.copy"));
+      copy.disabled = true;
+      line.append(element("span", "muted", t("firstRun.pair.noAddressToCopy")), copy);
+      parts.mineList.replaceChildren(line);
+      return;
+    }
+    parts.mineList.replaceChildren(...addresses.map((entry) => {
+      const line = element("div", "frmineaddr");
+      const copy = element("button", "ghost", t("common.copy"));
+      copy.onclick = () => copyPairAddress(entry.address, parts.mineStatus).catch(() => {});
+      line.append(element("span", "keyvalue", entry.address));
+      if (entry.interface) line.append(element("span", "muted", entry.interface));
+      line.append(copy);
+      return line;
+    }));
+  }
+
+  // The candidate list, in the drawer's states (renderCandidates): what is not
+  // known is said as not known, never drawn as an empty list.
+  function paintFirstRunCandidates(parts) {
+    const pairing = state.pairing;
+    const box = parts.machines;
+    let message = null;
+    if (!pairing) message = [["empty", t("pair.readingState")]];
+    else if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
+      message = [["empty", t("firstRun.pair.notLooking")]];
+    } else if (pairing.availability !== "on") message = [["empty", t("candidate.stateUnreadable")]];
+    else if (pairing.candidatesError) {
+      message = [["stale", t("candidate.listUnreadable")], ["muted", pairing.candidatesError]];
+    }
+    const candidates = message ? [] : (pairing.candidates ?? []);
+    if (!message && candidates.length === 0) message = [["frlooking", t("firstRun.pair.noCandidates")]];
+    parts.full.classList.toggle("hidden", !(pairing?.full && !pairing?.candidatesError));
+    parts.full.textContent = t("candidate.listFull");
+    const said = pairing?.availability === "on" && !pairing?.candidatesError ? candidateNoticeText(pairing) : "";
+    parts.notice.textContent = said;
+    parts.notice.classList.toggle("hidden", said === "" || candidates.length === 0);
+    if (message) {
+      // Off screen, the kept rows are forgotten: a machine's old claims are
+      // not put back without a read that says them again.
+      parts.candidateRows.clear();
+      keepChildren(box, message.map(([className, text], index) => keptMessage(box, index, className, text)));
+      return;
+    }
+    keepChildren(box, reconcileRows(parts.candidateRows, candidates, {
+      key: (candidate) => candidate.nodeId,
+      make: firstRunCandidateRow,
+      update: updateFirstRunCandidateRow,
+    }));
+  }
+
+  function firstRunStep2() {
+    let parts = firstRunParts[2];
+    if (!parts) {
+      const root = element("div", "frpanel");
+      const heading = element("h2");
+      const say = element("p", "say");
+      // The other computer's half, first: pairing needs both, and a screen
+      // about this one alone is how the other one gets forgotten.
+      const hint = element("div", "frhint");
+      const hintMark = element("span", "frhintmark", "①");
+      hintMark.setAttribute("aria-hidden", "true");
+      const hintText = element("span");
+      const hintBold = element("b");
+      const hintRest = element("span");
+      hintText.append(hintBold, hintRest);
+      hint.append(hintMark, hintText);
+      const ended = element("div", "frended hidden");
+      const endedText = element("div");
+      const endedNode = element("div", "muted");
+      const endedOk = firstRunButton("ghost", () => {
+        state.firstRun.pairEnded = null;
+        renderFirstRun();
+      });
+      ended.append(endedText, endedNode, endedOk);
+      const requestsError = element("div", "stale hidden");
+      const live = element("div", "frlive");
+      const find = element("div", "frfind");
+      const card = element("div", "frcard");
+      const cardTitle = element("h3");
+      const full = element("div", "stale hidden");
+      const machines = element("div", "frmachines");
+      const notice = element("p", "frnotice muted hidden");
+      card.append(cardTitle, full, machines, notice);
+      const manual = document.createElement("details");
+      manual.className = "frmanual";
+      const manualSummary = element("summary");
+      const sendRow = element("div", "frsendrow");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "frinput";
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      const send = element("button", "");
+      const sendTyped = () => sendPairRequest(input.value, { button: send, input }).catch(() => {});
+      send.onclick = sendTyped;
+      // Enter sends, as in the drawer's field.
+      input.onkeydown = (event) => {
+        if (event?.key === "Enter") sendTyped();
+      };
+      sendRow.append(input, send);
+      const mine = element("div", "frmine");
+      const mineLead = element("p");
+      const mineList = element("div", "frmineaddrs");
+      const mineStatus = element("div", "muted");
+      const mineBack = firstRunButton("link", () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 1;
+        render();
+      });
+      mine.append(mineLead, mineList, mineStatus, mineBack);
+      const when = element("p", "muted");
+      // The drawer footer's last resort, here too: two computers that cannot
+      // open a connection to each other at all.
+      const manualForm = firstRunButton("link", () => openPairModal());
+      manual.append(manualSummary, sendRow, mine, when, manualForm);
+      find.append(card, manual);
+      const actions = element("div", "fractions");
+      const next = firstRunButton("primary", () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 3;
+        render();
+      });
+      const skip = firstRunButton("ghost", () => {
+        state.firstRun.touched = true;
+        state.firstRun.pairSkipped = true;
+        state.firstRun.step = 3;
+        render();
+      });
+      const back = firstRunButton("ghost", () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 1;
+        render();
+      });
+      actions.append(next, skip, back);
+      root.append(heading, say, ended, hint, requestsError, live, find, actions);
+      parts = {
+        root, heading, say, hint, hintBold, hintRest, ended, endedText, endedNode, endedOk, requestsError,
+        live, find, cardTitle, full, machines, notice, manual, manualSummary, input, send, mineLead, mineList,
+        mineStatus, mineBack, when, manualForm, actions, next, skip, back,
+        candidateRows: new Map(), requestCards: new Map(),
+      };
+      firstRunParts[2] = parts;
+    }
+    const wizard = state.firstRun;
+    const paired = state.nodes.length;
+    parts.heading.textContent = t("firstRun.step2.title");
+    parts.next.textContent = t("firstRun.next");
+    parts.next.classList.toggle("hidden", paired === 0 && !wizard.localOnly);
+    parts.next.disabled = state.busy;
+    parts.skip.textContent = t("firstRun.step2.skip");
+    parts.skip.classList.toggle("hidden", paired > 0 || wizard.localOnly);
+    parts.skip.disabled = state.busy;
+    parts.back.textContent = t("firstRun.back");
+    parts.back.disabled = state.busy;
+
+    // Skipped by choice on step 1: nothing is opened and nothing is read.
+    if (wizard.localOnly) {
+      parts.say.textContent = t("firstRun.step2.localOnly");
+      parts.say.classList.remove("hidden");
+      for (const part of [parts.hint, parts.ended, parts.requestsError, parts.live, parts.find]) part.classList.add("hidden");
+      return parts.root;
+    }
+    parts.say.textContent = paired > 0 ? plural(paired, "firstRun.step2.paired") : "";
+    parts.say.classList.toggle("hidden", paired === 0);
+    // Once a machine is paired, 下一步 is the primary button, and it goes up
+    // under the sentence that says so: pairing another is still below, but
+    // the way on is not under the list of what was found. Moved only when that
+    // changes (keepChildren), so the buttons are the same elements throughout.
+    keepChildren(parts.root, paired > 0
+      ? [parts.heading, parts.say, parts.actions, parts.ended, parts.hint, parts.requestsError, parts.live, parts.find]
+      : [parts.heading, parts.say, parts.ended, parts.hint, parts.requestsError, parts.live, parts.find, parts.actions]);
+
+    // A failed read is not a fact about the other machine, and the last
+    // good list is not one either any more: nothing is offered to decide on
+    // until a read answers again, and the kept cards are forgotten — the
+    // drawer's own rule (renderPairRequests).
+    const failed = Boolean(state.pairRequestsError);
+    const live = failed ? [] : (state.pairRequests ?? []).filter(livePairRequest);
+    noteFirstRunPairEndings(live);
+    if (failed) parts.requestCards.clear();
+    const cards = reconcileRows(parts.requestCards, live, {
+      key: (request) => request.id,
+      make: firstRunRequestCard,
+      update: updateFirstRunRequestCard,
+      stale: fingerprintsChanged,
+    });
+    keepChildren(parts.live, cards);
+    const exchanging = cards.length > 0;
+    parts.live.classList.toggle("hidden", !exchanging);
+    parts.requestsError.classList.toggle("hidden", !state.pairRequestsError);
+    parts.requestsError.textContent = state.pairRequestsError
+      ? `${PAIR_TEXT.requestsFailed} ${state.pairRequestsError}` : "";
+
+    // How the last one ended, when somebody other than this window ended it.
+    const ending = wizard.pairEnded;
+    parts.ended.classList.toggle("hidden", !ending);
+    if (ending) {
+      parts.ended.className = `frended ${ending.state === "approved" ? "ok" : "stale"}`;
+      parts.endedText.textContent = pairStepText(ending) || PAIR_TEXT.state[pairStateKey(ending)] || String(ending.state ?? "");
+      // A finished row is where the node's own next step is shown (§3.3).
+      const detail = String(ending.nextStep ?? "").trim();
+      parts.endedNode.textContent = detail ? t("pair.nodeSaidWrap", { detail }) : "";
+      parts.endedOk.textContent = t("firstRun.pair.dismissEnded");
+    }
+
+    // While an exchange is live it is the whole screen; the machines found and
+    // the typed address come back when it is over.
+    parts.hint.classList.toggle("hidden", exchanging);
+    parts.find.classList.toggle("hidden", exchanging);
+    parts.hintBold.textContent = t("firstRun.pair.hintBold");
+    parts.hintRest.textContent = t("firstRun.pair.hintRest");
+    parts.cardTitle.textContent = t("firstRun.pair.found");
+    paintFirstRunCandidates(parts);
+    parts.manualSummary.textContent = t("firstRun.pair.cannotFind");
+    parts.input.placeholder = t("firstRun.pair.addressPlaceholder");
+    parts.input.disabled = state.busy;
+    parts.send.textContent = t("firstRun.pair.send");
+    parts.send.disabled = state.busy;
+    paintFirstRunHere(parts);
+    parts.when.textContent = t("firstRun.pair.whenManual");
+    parts.manualForm.textContent = t("pairManual.open");
+    return parts.root;
+  }
+
+  const FIRST_RUN_SESSIONS_SHOWN = 8;
+
+  function firstRunSessionRow(parts, session) {
+    let entry = parts.sessionRows.get(session.id);
+    if (!entry) {
+      const label = element("label", "frsess");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.onchange = () => {
+        const picked = state.firstRun.picked;
+        if (box.checked) picked.add(session.id);
+        else picked.delete(session.id);
+        state.firstRun.touched = true;
+        renderFirstRun();
+      };
+      const text = element("div", "frsesstext");
+      const title = element("b");
+      // Clipped from the left, as the table's column is: the end of a path is
+      // the part that tells two sessions apart. The path itself is isolated so
+      // the right-to-left clipping does not reorder it.
+      const where = element("small");
+      const cwd = element("bdi");
+      where.append(cwd);
+      text.append(title, where);
+      const provider = element("span", "prov");
+      label.append(box, text, provider);
+      entry = { label, box, title, cwd, provider };
+      parts.sessionRows.set(session.id, entry);
+    }
+    // The provider's words, as text, like every other place a session's own
+    // metadata reaches the screen.
+    entry.title.textContent = session.title || session.id;
+    entry.cwd.textContent = session.cwd || "—";
+    entry.provider.textContent = session.provider ?? "";
+    entry.box.checked = state.firstRun.picked.has(session.id);
+    entry.box.disabled = state.busy;
+    return entry.label;
+  }
+
+  function firstRunChoice(parts, choice) {
+    let entry = parts.choices[choice];
+    if (!entry) {
+      const label = element("label", "frchoice");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "first-run-preset";
+      input.value = choice;
+      input.onchange = () => {
+        state.firstRun.preset = choice;
+        state.firstRun.touched = true;
+        renderFirstRun();
+      };
+      const name = element("b");
+      const hint = element("small");
+      const caveat = element("small", "caveat");
+      const why = element("small", "disabledwhy");
+      label.append(input, name, hint, caveat, why);
+      entry = { label, input, name, hint, caveat, why };
+      parts.choices[choice] = entry;
+    }
+    return entry;
+  }
+
+  function firstRunStep3() {
+    let parts = firstRunParts[3];
+    if (!parts) {
+      const root = element("div", "frpanel");
+      const heading = element("h2");
+      const say = element("p", "say");
+      const empty = element("div", "frempty hidden");
+      const emptyText = element("p");
+      const rescan = firstRunButton("", (event) => discoverSessions({ button: event?.currentTarget ?? null }).catch(() => {}));
+      empty.append(emptyText, rescan);
+      const list = element("div", "frsessions");
+      const more = firstRunButton("link frmore", () => {
+        state.firstRun.showAll = !state.firstRun.showAll;
+        renderFirstRun();
+      });
+      const choiceBox = element("fieldset", "frchoices");
+      const choiceLegend = element("legend");
+      choiceBox.append(choiceLegend);
+      const actions = element("div", "fractions");
+      const share = firstRunButton("primary", (event) => shareFromFirstRun(event?.currentTarget ?? null).catch(() => {}));
+      const skip = firstRunButton("ghost", () => {
+        state.firstRun.touched = true;
+        state.firstRun.shareSkipped = true;
+        state.firstRun.step = 4;
+        render();
+      });
+      actions.append(share, skip);
+      root.append(heading, say, empty, list, more, choiceBox, actions);
+      parts = { root, heading, say, empty, emptyText, rescan, list, more, choiceBox, choiceLegend, choices: {}, share, skip, sessionRows: new Map() };
+      firstRunParts[3] = parts;
+      for (const choice of ["messages", "wake"]) choiceBox.append(firstRunChoice(parts, choice).label);
+    }
+    const wizard = state.firstRun;
+    const local = wizard.localOnly;
+    const sessions = firstRunSessions();
+    const none = sessions.length === 0;
+    parts.heading.textContent = t("firstRun.step3.title");
+    parts.say.textContent = local ? t("firstRun.step3.localOnly") : t("firstRun.step3.say");
+
+    parts.empty.classList.toggle("hidden", local || !none);
+    parts.emptyText.textContent = t("firstRun.step3.noSessions");
+    parts.rescan.textContent = t("app.rescan");
+    parts.rescan.disabled = state.busy;
+
+    const shown = wizard.showAll ? sessions : sessions.slice(0, FIRST_RUN_SESSIONS_SHOWN);
+    const rows = local ? [] : shown.map((session) => firstRunSessionRow(parts, session));
+    for (const id of [...parts.sessionRows.keys()]) if (!sessions.some((session) => session.id === id)) parts.sessionRows.delete(id);
+    keepChildren(parts.list, rows);
+    parts.list.classList.toggle("hidden", rows.length === 0);
+    const extra = sessions.length > FIRST_RUN_SESSIONS_SHOWN && !local;
+    parts.more.classList.toggle("hidden", !extra);
+    parts.more.textContent = wizard.showAll ? t("firstRun.step3.showFewer") : t("firstRun.step3.showAll", { n: sessions.length });
+
+    const blocked = firstRunWakeBlocked();
+    if (blocked && wizard.preset === "wake") wizard.preset = "messages";
+    parts.choiceBox.classList.toggle("hidden", local || none);
+    parts.choiceLegend.textContent = t("firstRun.step3.choiceLabel");
+    for (const choice of ["messages", "wake"]) {
+      const entry = firstRunChoice(parts, choice);
+      entry.name.textContent = t(`popover.${choice}`);
+      entry.hint.textContent = t(`popover.${choice}Hint`);
+      entry.caveat.textContent = choice === "wake" ? `⚠ ${t("wake.caveat")}` : "";
+      entry.caveat.classList.toggle("hidden", choice !== "wake");
+      const disabled = choice === "wake" && blocked;
+      entry.why.textContent = disabled ? t("popover.wakeClaudeOnly") : "";
+      entry.why.classList.toggle("hidden", !disabled);
+      entry.input.checked = wizard.preset === choice;
+      entry.input.disabled = disabled || state.busy;
+      entry.label.classList.toggle("on", wizard.preset === choice);
+      entry.label.classList.toggle("off", disabled);
+    }
+
+    const picked = firstRunPicked().length;
+    parts.share.classList.toggle("hidden", local || none);
+    parts.share.textContent = picked > 0 ? plural(picked, "firstRun.step3.share") : t("firstRun.step3.pickFirst");
+    parts.share.disabled = picked === 0 || state.busy;
+    parts.skip.textContent = t("firstRun.step3.skip");
+    parts.skip.className = local ? "primary" : "ghost";
+    parts.skip.disabled = state.busy;
+    return parts.root;
+  }
+
+  function firstRunDone() {
+    let parts = firstRunParts[4];
+    if (!parts) {
+      const root = element("div", "frpanel frdone");
+      const big = element("span", "frbig", "✓");
+      big.setAttribute("aria-hidden", "true");
+      const heading = element("h2");
+      const say = element("p", "say");
+      const start = firstRunButton("primary", () => closeFirstRun({ finished: true }));
+      root.append(big, heading, say, start);
+      parts = { root, heading, say, start };
+      firstRunParts[4] = parts;
+    }
+    const wizard = state.firstRun;
+    parts.heading.textContent = t("firstRun.done.title");
+    if (wizard.localOnly) parts.say.textContent = t("firstRun.done.localOnly");
+    else if (wizard.shared) parts.say.textContent = plural(wizard.shared.count, "firstRun.done.shared", { targets: wizard.shared.targets });
+    else parts.say.textContent = t("firstRun.done.nothingShared");
+    parts.start.textContent = t("firstRun.done.start");
+    return parts.root;
+  }
+
+  const firstRunRailRows = [];
+
+  function renderFirstRunRail() {
+    const wizard = state.firstRun;
+    const steps = [
+      ["firstRun.rail.prepare", wizard.localOnly && !firstRunChecks().lan.done ? "firstRun.rail.localOnly" : "firstRun.rail.prepareSub"],
+      ["firstRun.rail.pair", wizard.localOnly && state.nodes.length === 0 ? "firstRun.rail.localOnly"
+        : wizard.pairSkipped && state.nodes.length === 0 ? "firstRun.rail.skipped" : "firstRun.rail.pairSub"],
+      ["firstRun.rail.share", wizard.shareSkipped && !firstRunStepComplete(3) ? "firstRun.rail.skipped" : "firstRun.rail.shareSub"],
+    ];
+    const rows = steps.map(([title, sub], index) => {
+      const number = index + 1;
+      let entry = firstRunRailRows[index];
+      if (!entry) {
+        const row = element("li", "frstep");
+        const mark = element("span", "n");
+        const name = element("b");
+        const small = element("small");
+        row.append(mark, name, small);
+        entry = { row, mark, name, small };
+        firstRunRailRows[index] = entry;
+      }
+      const done = firstRunStepComplete(number);
+      const now = wizard.step === number;
+      entry.row.className = `frstep${done ? " done" : ""}${now ? " now" : ""}`;
+      if (now) entry.row.setAttribute("aria-current", "step");
+      else entry.row.setAttribute("aria-current", "false");
+      entry.mark.textContent = done ? "✓" : String(number);
+      entry.name.textContent = t(title);
+      entry.small.textContent = t(sub);
+      return entry.row;
+    });
+    keepChildren(el("first-run-steps"), rows);
+    el("first-run-rail").setAttribute("aria-label", t("firstRun.railLabel"));
+    const later = el("first-run-later");
+    later.classList.toggle("hidden", wizard.step === 4);
+    // Not while a write is in flight either: leaving step 2 then would skip
+    // closing the pairing window (releasePairingWindow waits for no write),
+    // and nothing would come back to close it.
+    later.disabled = wizard.running || state.busy;
+  }
+
+  // renderFirstRun draws the wizard, or puts it away, and says so to the parts
+  // of the window it replaces. Called at the top of render() and on its own by
+  // what only the wizard cares about (an address read landing, a box ticked).
+  function renderFirstRun() {
+    syncFirstRun();
+    syncFirstRunPairing();
+    const on = firstRunVisible();
+    el("first-run").classList.toggle("hidden", !on);
+    // The title bar keeps the name, the bell and the toasts; the tabs, the
+    // service pill and 重新掃描 are the main window's, and would be a second
+    // way to do what the wizard is in the middle of (style.css #app.firstrun-on).
+    el("app").classList.toggle("firstrun-on", on);
+    // 「繼續設定」 for as long as setup is not finished and there is something
+    // left to set up — not a primary button: the main window is the owner's.
+    // Only for an owner who has met the wizard — this window, or a launch that
+    // put it away — so a set-up machine whose node drops later is not told to
+    // go back to a setup it never started.
+    const met = state.firstRun.seen || state.ui.onboardingDismissed;
+    el("btn-resume-setup").classList.toggle("hidden",
+      on || state.ui.firstRunFinished || !(state.firstRun.suspended || (met && firstRunTriggered())));
+    el("btn-resume-setup").disabled = state.busy;
+    // Settings → Appearance's way back in, by the same rule: entering the
+    // wizard mid-write lands on steps whose buttons the write has disabled,
+    // and a step 2 whose window the write held back.
+    el("settings-show-onboarding").disabled = state.busy;
+    if (!on) return;
+    renderFirstRunRail();
+    const step = state.firstRun.step;
+    const panel = step === 1 ? firstRunStep1()
+      : step === 2 ? firstRunStep2()
+        : step === 3 ? firstRunStep3()
+          : firstRunDone();
+    keepChildren(el("first-run-stage"), [panel]);
   }
 
   const VIEWS = ["local", "network", "settings"];
 
   function render() {
-    renderOnboarding();
-    for (const view of VIEWS) el(`${view}-view`).classList.toggle("hidden", state.view !== view);
+    renderFirstRun();
+    // The wizard takes the whole window while it is up: no view under it.
+    const wizard = firstRunVisible();
+    for (const view of VIEWS) el(`${view}-view`).classList.toggle("hidden", wizard || state.view !== view);
     for (const segment of document.querySelectorAll("#view-switch [data-view]")) {
       const on = segment.dataset.view === state.view;
       segment.className = on ? "tab on" : "tab";
@@ -1362,7 +2601,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // The drawer can be dismissed while loadPairing is still on its way: a
     // window opened after that is one nobody asked for, and nothing on screen
     // would then close it.
-    if (!pairingDrawerOpen()) return;
+    if (!pairingWanted()) return;
     const pairing = state.pairing;
     if (!pairing || state.busy) return;
     // A node that will not answer the window endpoints is not asked. The
@@ -1382,8 +2621,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // opened would otherwise stay open for the node's whole default duration
     // with no drawer on screen to close it. So the dismissal is run again now
     // that there is something to close — with its own rule intact: a row
-    // mid-exchange keeps the window open.
-    if (!pairingDrawerOpen()) await dismissPairingDrawer({ windowOpened: true });
+    // mid-exchange keeps the window open. The same for the first-run wizard's
+    // step 2, which is the other thing that opens the window by being shown.
+    if (!pairingWanted()) await releasePairingWindow({ windowOpened: true });
   }
 
   // closePairingDrawer only hides it. The window is left alone, because two
@@ -1410,11 +2650,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // afterwards must not be taken as "nothing to close".
   async function dismissPairingDrawer({ windowOpened = false } = {}) {
     closePairingDrawer();
+    await releasePairingWindow({ windowOpened });
+  }
+
+  // releasePairingWindow is the second half of that: close the window if
+  // nothing on screen wants it any more and nobody is mid-exchange. Also what
+  // leaving the first-run wizard's step 2 runs — by 下一步, 上一步, 稍後再設定,
+  // or a trip to another view — because that step opened the window the same
+  // way the drawer does, by being shown.
+  async function releasePairingWindow({ windowOpened = false } = {}) {
     const open = () => windowOpened || Boolean(state.pairing?.state?.open);
-    if (state.busy || !open()) return;
+    if (pairingWanted() || state.busy || !open()) return;
     await loadPairRequests({ render: false });
-    // Reopened while the read was out: the owner is not done after all.
-    if (pairingDrawerOpen() || state.pairRequestsError) return;
+    // Reopened while the read was out — the drawer, or the wizard back on its
+    // step 2: the owner is not done after all.
+    if (pairingWanted() || state.pairRequestsError) return;
     const pending = (state.pairRequests ?? []).some(
       (request) => request.state === "pending" || request.state === "awaiting-confirm");
     if (pending || state.busy || !open()) return;
@@ -1483,6 +2733,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // node dial every machine it is waiting on.
   function pairingDrawerOpen() {
     return !el("pairing-modal").classList.contains("hidden");
+  }
+
+  // firstRunPairingActive is the wizard's step 2 on screen: the other place
+  // the pairing window is opened by being looked at, and polled only while it
+  // is (docs/ui-contract.md §3.2). Not when the owner chose to stay on this
+  // machine — that step is skipped, and opens nothing.
+  function firstRunPairingActive() {
+    return firstRunVisible() && state.firstRun.step === 2 && !state.firstRun.localOnly;
+  }
+
+  // pairingWanted: something on screen is showing the exchange, so the window
+  // stays open and its rows are read.
+  function pairingWanted() {
+    return pairingDrawerOpen() || firstRunPairingActive();
   }
 
   // renderPairingSummary is the one-line state in the node list's foot: it
@@ -1949,14 +3213,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!attentionKeys.has(item.key)) logNotice(ATTENTION_KIND[item.sev], item.title, item.body);
     }
     attentionKeys = keys;
-    // The checklist's own first step already offers the service's fix, on the
-    // local view where the card is: two buttons for one thing is one too many,
-    // so the strip leaves it to the card while that step is open. Still logged
-    // above, and back on the strip on any other view or once the card goes.
-    const cardHasService = onboardingServiceStepOpen && state.view === "local";
     const shown = items
       .filter((item) => !attentionDismissed.has(item.key))
-      .filter((item) => !(item.kind === "service" && cardHasService))
       .sort((a, b) => ATTENTION_ORDER[a.sev] - ATTENTION_ORDER[b.sev]);
     for (const kind of [...attentionRows.keys()]) {
       if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
@@ -1971,7 +3229,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
     const box = el("attention");
     keepChildren(box, children);
-    box.classList.toggle("hidden", shown.length === 0);
+    // Never beside the first-run wizard. Its first step is the node, the
+    // service and the address, which are this strip's first two rows by
+    // another name, and one thing with two buttons on screen is how the card
+    // it replaced read (docs/ui-contract.md §3.2). Still logged above, so the
+    // bell has it; back the moment the wizard is put away.
+    box.classList.toggle("hidden", shown.length === 0 || firstRunVisible());
   }
 
   // The fifteen-second tick's one read of the exchange, for the attention row.
@@ -1986,7 +3249,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   let incomingRequest = 0;
   let incomingApplied = 0;
   async function refreshIncomingPairRequests() {
-    if (pairingDrawerOpen()) return;
+    if (pairingWanted()) return;
     if (!pairWindowReportedOpen()) {
       if (state.pairIncoming.length > 0) {
         state.pairIncoming = [];
@@ -2217,9 +3480,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const alive = new Set(state.sessions.map((s) => s.id));
     for (const id of [...state.selected]) if (!alive.has(id)) state.selected.delete(id);
 
-    // One tick, one chance to spend the farewell: whatever this render decides,
-    // a card that said goodbye during the previous tick has been read by now.
-    spendOnboardingFarewell();
+    state.firstRun.reads += 1;
     render();
     return true;
   }
@@ -2539,11 +3800,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // clearSelection is for the selection bar: its sessions are the selection,
   // and a batch that went through leaves nothing selected, as the dialog does.
   // A row's own menu leaves the selection as it was.
-  async function applyAudienceChoice(ids, choice, { button = null, clearSelection = false } = {}) {
+  //
+  // withoutCwd is the first-run wizard's: it publishes without the working
+  // directory whatever the session held, because nothing on that screen says
+  // a directory is going with it (the menu says so, popover.withCwd). The
+  // undo still writes back what each session had.
+  async function applyAudienceChoice(ids, choice, { button = null, clearSelection = false, withoutCwd = false } = {}) {
     const sessions = sessionsFor(ids);
     if (sessions.length === 0 || !(choice === "none" || AUDIENCE_PRESETS[choice])) return;
     const before = sessions.map((session) => ({ id: session.id, audience: writableAudience(session.audience) }));
-    const after = sessions.map((session) => ({ id: session.id, audience: audienceForChoice(session, choice) }));
+    const after = sessions.map((session) => {
+      const audience = audienceForChoice(session, choice);
+      if (withoutCwd) audience.exportCwd = false;
+      return { id: session.id, audience };
+    });
     const action = choice === "none" ? t("audience.verb.none") : t("popover.verb", { preset: choiceLabel(choice) });
     const undo = { label: t("popover.undo"), run: () => undoAudience(before) };
     await withBusy(action, async () => {
@@ -2985,7 +4255,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // invent one. It is not validated here — the node holds the ranges this build
   // will talk to, and a second rule in this process could only disagree with
   // the one that actually decides.
-  async function sendPairRequest(address, { button = null } = {}) {
+  //
+  // input is the field the address was typed into, emptied once the request
+  // is out: the drawer's own by default, the wizard's when it sends.
+  async function sendPairRequest(address, { button = null, input = el("pair-address") } = {}) {
     const wanted = String(address ?? "").trim();
     if (wanted === "") {
       banner(PAIR_TEXT.addressEmpty);
@@ -2998,7 +4271,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         banner(pairErrorMessage(error));
         return;
       }
-      el("pair-address").value = "";
+      if (input) input.value = "";
       banner(PAIR_TEXT.sent, true);
       await loadPairRequests();
     }, { button });
@@ -3009,15 +4282,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   //
   // The id comes from the row the button was built on, never from a field: an
   // id typed or pasted is an id that can name somebody else's request.
-  async function decidePairRequest(id, verb, { button = null } = {}) {
+  //
+  // fromWizard is the first-run wizard's step 2 pressing it. The one thing
+  // that changes is the toast: it carries no 「去公開 session」, because the
+  // wizard's own next step is exactly that, and the way out of the wizard it
+  // offered would leave the owner outside it with nothing said.
+  async function decidePairRequest(id, verb, { button = null, fromWizard = false } = {}) {
     const call = { approve: api.ApprovePairRequest, confirm: api.ConfirmPairRequest, reject: api.RejectPairRequest }[verb];
     if (!call) return;
     const label = t("pair.busy." + verb);
     await withBusy(label, async () => {
       let answer;
       try {
+        // Recorded before the answer: a row this window decided is not one
+        // the wizard then has to find out the ending of.
+        state.firstRun.pairDecided.add(id);
         answer = await call(id);
       } catch (error) {
+        state.firstRun.pairDecided.delete(id);
         banner(pairErrorMessage(error));
         await loadPairRequests();
         return;
@@ -3032,6 +4314,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // Paired is half of the point; the other half is publishing something to
       // the machine, which is a different view. The toast carries the way there.
       if (said && verb === "reject") banner(said);
+      else if (said && fromWizard) notify("ok", said);
       else if (said) notify("ok", said, { actions: [{ label: t("pair.goPublish"), run: goToPublish }] });
       await loadPairRequests();
       // Approving or confirming writes the trust store, so the node list is
@@ -3044,6 +4327,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // put away the way its own close button does it, so a window with nothing
   // pending is closed rather than left announcing behind a view nobody sees.
   function goToPublish() {
+    stepOutOfFirstRun();
     closeAudiencePopover();
     if (pairingDrawerOpen()) dismissPairingDrawer().catch(() => {});
     state.view = "local";
@@ -3104,7 +4388,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const local = (answer ? pairStepText(answer) : "") || PAIR_TEXT.decided[verb] || "";
     const detail = String(answer?.nextStep ?? "").trim();
     if (local === "") return detail;
-    return detail === "" ? local : `${local}（${PAIR_TEXT.nodeSaid}：${detail}）`;
+    return detail === "" ? local : `${local}${t("pair.nodeSaidWrap", { detail })}`;
   }
 
   // pairStateKey is the row's state as this panel talks about it: the two
@@ -3352,42 +4636,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         state.pairRequestsAll ? PAIR_TEXT.requestsEmptyAll : PAIR_TEXT.requestsEmpty));
       return;
     }
-    const wanted = [];
-    const seen = new Set();
-    for (const request of requests) {
-      // The request id is what says "the same exchange". A row that carries
-      // none — or one another row in this same list already used — cannot be
-      // matched to a kept row, so it gets a fresh one rather than somebody
-      // else's: a node repeating an id must not be able to take over the row
-      // whose fingerprints the owner has already compared.
-      const key = String(request.id ?? "");
-      const keyed = key !== "" && !seen.has(key);
-      seen.add(key);
-      let row = keyed ? pairRequestRows.get(key) : undefined;
-      // And a kept row whose fingerprints changed is not the row the owner has
-      // been reading. Rewriting the block inside it swaps the two values under
-      // a pointer that is already there, and keeps the press that was aimed at
-      // the old ones; a fresh row cannot be pressed by a mousedown aimed at its
-      // predecessor.
-      if (row && row.pairFingerprints !== null &&
-          row.pairFingerprints !== fingerprintSignature(request)) {
-        pairRequestRows.delete(key);
-        row = undefined;
-      }
-      if (row) {
-        updateRequestRow(row, request);
-      } else {
-        row = pairRequestRow(request);
-        if (keyed) pairRequestRows.set(key, row);
-      }
-      wanted.push(row);
-    }
-    for (const key of [...pairRequestRows.keys()]) {
-      if (!seen.has(key)) pairRequestRows.delete(key);
-    }
+    // The request id is what says "the same exchange". A row that carries
+    // none — or one another row in this same list already used — cannot be
+    // matched to a kept row, so it gets a fresh one rather than somebody
+    // else's: a node repeating an id must not be able to take over the row
+    // whose fingerprints the owner has already compared.
+    const wanted = reconcileRows(pairRequestRows, requests, {
+      key: (request) => request.id,
+      make: pairRequestRow,
+      update: updateRequestRow,
+      stale: fingerprintsChanged,
+    });
     // And the container is written only on an arrival, a departure or a
     // reorder.
     keepChildren(rows, wanted);
+  }
+
+  // A kept row whose fingerprints changed is not the row the owner has been
+  // reading. Rewriting the block inside it swaps the two values under a
+  // pointer that is already there, and keeps the press that was aimed at the
+  // old ones; a fresh row cannot be pressed by a mousedown aimed at its
+  // predecessor. Every kept request row — the drawer's and the wizard's —
+  // records the signature it was drawn with in pairFingerprints.
+  function fingerprintsChanged(row, request) {
+    return row.pairFingerprints !== null && row.pairFingerprints !== fingerprintSignature(request);
   }
 
   // pairAddressReachable says whether the address the node answers with is one
@@ -3444,6 +4716,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // where to click. The address is fixed two tabs away, and an owner who has
   // just been told their node is unreachable should not also have to find it.
   function goToNodeSettings() {
+    stepOutOfFirstRun();
     closePairingDrawer();
     state.view = "settings";
     state.settingsSection = "settings-node";
@@ -3648,8 +4921,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // copyPairAddress hands that address to the clipboard, and says so when the
   // clipboard refuses: the address is on screen either way, and a copy silently
   // reported as done is a string typed wrong on the other machine.
-  async function copyPairAddress(chosen = "") {
-    const status = el("copy-pair-address-status");
+  async function copyPairAddress(chosen = "", status = el("copy-pair-address-status")) {
     const address = chosen || state.pairing?.state?.peerAddress || "";
     if (!address) {
       status.textContent = PAIR_TEXT.hereNoAddress;
@@ -3975,28 +5247,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         ? t("candidate.emptyWithPairs")
         : t("candidate.emptyNoPairs")));
     }
-    const seen = new Set();
-    for (const candidate of candidates) {
-      // The node id is what says "the same machine". A candidate that announced
-      // none — or one another row in this same list already used — cannot be
-      // matched to a kept row, so it gets a fresh one rather than somebody
-      // else's: a forger who repeats a neighbour's id must not be able to take
-      // over the row the owner was about to press.
-      const key = String(candidate.nodeId ?? "");
-      const keyed = key !== "" && !seen.has(key);
-      seen.add(key);
-      let row = keyed ? candidateRows.get(key) : undefined;
-      if (row) {
-        updateCandidateRow(row, candidate);
-      } else {
-        row = candidateRow(candidate);
-        if (keyed) candidateRows.set(key, row);
-      }
-      wanted.push(row);
-    }
-    for (const key of [...candidateRows.keys()]) {
-      if (!seen.has(key)) candidateRows.delete(key);
-    }
+    // The node id is what says "the same machine". A candidate that announced
+    // none — or one another row in this same list already used — cannot be
+    // matched to a kept row, so it gets a fresh one rather than somebody
+    // else's: a forger who repeats a neighbour's id must not be able to take
+    // over the row the owner was about to press (reconcileRows).
+    wanted.push(...reconcileRows(candidateRows, candidates, {
+      key: (candidate) => candidate.nodeId,
+      make: candidateRow,
+      update: updateCandidateRow,
+    }));
     // And the list is written only when it differs.
     keepChildren(rows, wanted);
     // The node's own words about what this list is worth, so the warning here
@@ -5531,12 +6791,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (sequence !== serviceRequest) return status;
     state.service = status;
     renderService();
-    // The checklist's first step is derived from this status, and load()
-    // renders the card before this read answers. Without this line the card
-    // keeps whatever it was built with — which on every launch is "no status
-    // yet" — while the title bar's pill, painted by renderService above,
-    // already says the service is running.
-    renderOnboarding();
+    // The wizard's first step is derived from this status, and load()
+    // renders it before this read answers. Without this line the step keeps
+    // whatever it was built with — which on every launch is "no status yet" —
+    // while the title bar's pill, painted by renderService above, already says
+    // the service is running.
+    renderFirstRun();
     // And the attention strip's service row, for the same reason.
     renderAttention();
     return status;
@@ -5554,7 +6814,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     let words;
     if (status.toolError) words = t("service.pillNoAh");
     else if (!status.supported) { tone = ""; words = t("service.pillUnsupported"); }
-    else if (status.installed && status.running) { tone = "ok"; words = t("service.pillRunning"); }
+    // Running is the service manager's word, not the node's: a service whose
+    // process is up while the node answers nothing is not green. The press is
+    // the same quick action, which reads the status again and goes from there.
+    else if (status.installed && status.running && state.nodeChecked && !state.nodeReachable) {
+      words = t("service.pillRunningNoAnswer");
+    } else if (status.installed && status.running) { tone = "ok"; words = t("service.pillRunning"); }
     else if (status.installed) words = t("service.pillStopped");
     else words = state.nodeReachable ? t("service.pillNotAService") : t("service.pillNodeDown");
     pill_.className = `servicepill${tone ? ` ${tone}` : ""}${busy}`;
@@ -6225,6 +7490,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // is subtracted against.
     state.pairingReadAt = performance.now();
     if (state.view === "network") renderPairing();
+    // The wizard's step 2 draws the same candidates; it is the only part of
+    // the wizard a pairing read changes while it is up.
+    if (firstRunPairingActive()) renderFirstRun();
     refreshPairListeners().catch(() => {});
   }
 
@@ -6247,7 +7515,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // here as well wrote the rows twice per tick over data nothing had changed.
   async function loadPairRequests({ render = true } = {}) {
     const sequence = ++pairRequestsRequest;
-    const all = state.pairRequestsAll;
+    // The drawer's 「顯示已結束」 is the drawer's: the wizard's step 2 reads
+    // the live rows only, whatever that box was left at.
+    const all = state.pairRequestsAll && !firstRunPairingActive();
     let rows;
     try {
       rows = await api.PairRequests(all);
@@ -6257,7 +7527,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // A failed read is not a fact about the other machine, so the rows are
       // left alone and the panel says which of the two this is.
       state.pairRequestsError = String(error);
-      if (render) renderPairRequests();
+      if (render) renderPairRequestViews();
       return;
     }
     if (sequence <= pairRequestsApplied) return;
@@ -6271,7 +7541,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     incomingApplied = ++incomingRequest;
     state.pairIncoming = pendingIncoming(state.pairRequests);
     renderAttention();
-    if (render) renderPairRequests();
+    if (render) renderPairRequestViews();
+  }
+
+  // Both places the exchange's rows are drawn: the drawer, and the wizard's
+  // step 2 when it is the one on screen.
+  function renderPairRequestViews() {
+    renderPairRequests();
+    if (firstRunPairingActive()) renderFirstRun();
   }
 
   el("mcp-close").onclick = closeMCPConfig;
@@ -6712,13 +7989,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // would commit a private range or an auto-wake tick the owner was still
   // thinking about, as a side effect of a button about a listening address.
   // So a dirty form is refused and named, rather than silently carried along.
+  // Every field the save would send, minus the ones a repair is there to set.
+  // Anything left is an edit that belongs to the owner, not to us. The drawer
+  // and the first-run wizard both ask it before pressing save on the form.
+  function unsavedNodeSettingsFields() {
+    return Object.keys(readNodeSettingsPatch())
+      .filter((field) => field !== "peerListen" && field !== "peerListens" && field !== "allowLan");
+  }
+
   async function applyPeerListenRepairFromCard(option) {
     // One of those fields may not be the owner's at all — see below.
     withdrawUntouchedPrivateSuggestion();
-    // Every field the save would send, minus the two this button is here to
-    // set. Anything left is an edit that belongs to the owner, not to us.
-    const carried = Object.keys(readNodeSettingsPatch())
-      .filter((field) => field !== "peerListen" && field !== "peerListens" && field !== "allowLan");
+    const carried = unsavedNodeSettingsFields();
     if (carried.length > 0) {
       // Named, not just counted. "There are unsaved changes" over a form the
       // owner does not remember editing is a dead end; the field's own label is
@@ -7756,21 +9038,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     render();
   };
 
-  // Closing the checklist is remembered, and it is the only thing about the
-  // card that is. A WebView with storage disabled shows it again next launch,
-  // which is annoying rather than wrong.
-  el("onboarding-dismiss").onclick = () => {
-    state.ui.onboardingDismissed = true;
-    savePrefs();
-    render();
-  };
-  // And it is reversible, because the card is the only screen that explains
-  // what this app needs in order to do anything at all.
+  // Putting the wizard away is remembered, and it is the only thing about it
+  // that is (besides 「開始使用」). A WebView with storage disabled shows it
+  // again next launch, which is annoying rather than wrong.
+  el("first-run-later").onclick = () => closeFirstRun();
+  el("btn-resume-setup").onclick = () => openFirstRun();
+  // And it is reversible from Settings as well, because the wizard is the only
+  // screen that explains what this app needs in order to do anything at all.
   el("settings-show-onboarding").onclick = () => {
+    if (state.busy) return;
     state.ui.onboardingDismissed = false;
+    state.ui.firstRunFinished = false;
     savePrefs();
-    state.view = "local";
-    render();
+    openFirstRun({ reset: true });
   };
 
   el("pairing-close").onclick = () => dismissPairingDrawer().catch(() => {});
@@ -7890,7 +9170,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     renderPeerListenProblem, peerListenRepairs, applyPeerListenRepair, applyPeerListenRepairFromCard,
     loadNodeSettings, saveNodeSettings, applyNodeSettings, readNodeSettingsPatch,
     renderNodeLine, relabelNodeSettings, repaintFromState, renderMCPStatus,
-    onboardingSteps, onboardingTriggered, renderOnboarding, spendOnboardingFarewell, goToService, goToPairing, discoverSessions,
+    firstRunTriggered, firstRunVisible, firstRunChecks, firstRunStepComplete, firstIncompleteStep, renderFirstRun,
+    openFirstRun, closeFirstRun, runFirstRunPrepare, shareFromFirstRun, firstRunPrivateAddresses, firstRunChosenAddress,
+    goToService, goToPairing, goToNodeSettings, discoverSessions,
     backdropPlan, describeBackdropState, buildRain, applyBackdrop, loadPrefs, savePrefs,
     t, plural, setUILanguage, paintStatic, pickLanguage, setLanguage, language,
     isLoopbackListen, isPrivateByDefinition, coversAddress, canJudgePrivacy, syncNodeSettingsForm, suggestPrivateRange, fetchLocalAddresses,
@@ -7903,10 +9185,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     serviceQuickAction, runServiceQuickAction, pairStepperPhase, renderPairStepper, goToPublish, viewSwitchKey,
   };
   if (!start) return internals;
-  // The panel is polled only while it is on screen.
+  // The panel is polled only while it is on screen: the network view, or the
+  // first-run wizard's step 2, which shows the same candidates.
   setInterval(() => {
-    if (state.view !== "network") return;
-    loadPairing().catch(() => {});
+    if (state.view !== "network" && !firstRunPairingActive()) return;
+    loadPairing().then(keepFirstRunWindowOpen).catch(() => {});
   }, 5000);
 
   // The exchange's rows, faster and only while they are on screen.
@@ -7917,8 +9200,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // drawer is open, because each read makes the node dial every machine it is
   // waiting on — a poll that outlived the panel would keep doing that for as
   // long as the window was left running.
+  //
+  // The first-run wizard's step 2 is the other place those rows are on screen,
+  // and the poll runs for it by the same rule (docs/ui-contract.md §3.2).
   setInterval(() => {
-    if (state.view !== "network" || !pairingDrawerOpen()) return;
+    if (!((state.view === "network" && pairingDrawerOpen()) || firstRunPairingActive())) return;
     // Not while a decision is in flight: the answer would repaint the rows
     // under the button that is still being pressed.
     if (state.busy) return;
@@ -7938,7 +9224,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     loadPairRequests({ render: false })
       .then(() => load({ background: true, exceptPairingDrawer: true }).catch(() => false))
       .then((rendered) => {
-        if (!rendered) renderPairRequests();
+        if (rendered) return;
+        renderPairRequests();
+        renderFirstRun();
       })
       .catch(() => {});
   }, 2000);
@@ -7947,15 +9235,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // expiring. Only the countdown's own text is touched: redrawing the panel here
   // would rebuild the candidate rows every second, replacing the row an owner is
   // about to click.
+  //
+  // The wizard's step 2 shows no clock, but its window runs out all the same:
+  // at zero it asks the node too, and keepFirstRunWindowOpen opens a new one
+  // for as long as that step is still on screen.
   setInterval(() => {
-    if (state.view !== "network" || !state.pairing?.state?.open) return;
+    if ((state.view !== "network" && !firstRunPairingActive()) || !state.pairing?.state?.open) return;
     const before = pairingRemaining();
     tickCountdown();
     // The node is what closes the window. When the count reaches zero, ask it
     // rather than waiting up to five seconds to stop claiming an open window.
     if (before === 0) {
       renderPairingWindow();
-      loadPairing().catch(() => {});
+      loadPairing().then(keepFirstRunWindowOpen).catch(() => {});
     }
   }, 1000);
 

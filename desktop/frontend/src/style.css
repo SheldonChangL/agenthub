@@ -442,62 +442,220 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 #local-view { overflow-y: auto; }
 #local-view .tablewrap { min-height: 320px; }
 
-/* ---------- local view: the first-launch checklist ---------- */
+/* ---------- the first-run wizard ---------- */
 
-/* Sits above the filters at its natural height, with no scroller of its own.
- *
- * It had `max-height: 46vh; overflow-y: auto`, meaning to keep the table on
- * screen. At 1200x760 — a laptop, which is the machine a stranger opens this
- * on — that clipped a 563px card to 348px: two of the five steps were entirely
- * below the fold of a nested scroller nothing pointed at, and step three's
- * buttons were cut through the middle. A checklist that hides 40% of itself is
- * not a checklist. The view scrolls instead (see #local-view), so the card is
- * whole and the table keeps a floor rather than the card keeping a ceiling. */
-#onboarding {
-  flex: none;
-  margin: 12px 16px 0;
-}
-#onboarding .cardhead { gap: 8px; flex-wrap: wrap; }
-#onboarding .cardhead .muted { font-weight: 400; font-size: 12px; }
-#onboarding .cardhead .spacer { flex: 1; }
-#onboarding-steps { display: flex; flex-direction: column; gap: 10px; }
+/* The whole window on a fresh install (docs/ui-contract.md §3.2): the three
+ * steps down the left, the one being done on the right, one primary button at
+ * a time. The title bar keeps the name, the bell and the toasts; the tabs,
+ * the service pill, 重新掃描, the node line and the status bar's counts belong
+ * to the main window and are a second way to do what the wizard is in the
+ * middle of — or, for the counts, a row of zeros about a table nobody sees. */
+#app.firstrun-on .titlebar .tabs,
+#app.firstrun-on #service-pill,
+#app.firstrun-on #btn-discover,
+#app.firstrun-on #node-line,
+#app.firstrun-on .statusbar { display: none; }
 
-.onboarding .step {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel-solid);
-}
-/* The number is what says "these are in order"; the tick is what says this
- * one is behind you. Both in the same box so the rows stay aligned. */
-.onboarding .steptick {
+.firstrun { flex-direction: row; min-height: 0; overflow: hidden; }
+.frrail {
   flex: none;
-  width: 22px; height: 22px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 50%;
+  width: 232px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 24px 16px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+.frsteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.frstep {
+  display: grid; grid-template-columns: 28px 1fr; gap: 1px 12px; align-items: center;
+  padding: 9px 8px; border-radius: var(--radius);
+}
+.frstep .n {
+  grid-row: span 2;
+  width: 28px; height: 28px; border-radius: 50%;
   border: 1px solid var(--line-strong);
-  color: var(--muted);
-  font-size: 11px; font-weight: 600;
+  display: grid; place-items: center;
+  font-size: 12.5px; font-weight: 600; color: var(--muted);
 }
-.onboarding .stepbody { flex: 1; min-width: 0; }
-.onboarding .steptitle { font-weight: 600; font-size: 13px; }
-.onboarding .stepwhy { font-size: 12px; line-height: 1.55; margin-top: 2px; }
-.onboarding .stepactions {
-  display: flex; flex-wrap: wrap; gap: 8px;
+.frstep b { font-weight: 600; font-size: 13px; }
+.frstep small { color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+.frstep.now { background: var(--panel-2); }
+.frstep.now .n { border-color: var(--sev-info); color: var(--sev-info); }
+.frstep.done .n { background: var(--accent); border-color: var(--accent); color: #062312; }
+.frlater { margin-top: auto; align-self: flex-start; color: var(--muted); }
+
+.frstage { flex: 1; min-width: 0; overflow-y: auto; padding: 32px 40px 40px; background: rgba(11, 15, 18, 0.72); }
+.frpanel { max-width: 640px; display: flex; flex-direction: column; gap: 18px; }
+.frpanel h2 { margin: 0; font-size: 21px; font-weight: 600; line-height: 1.3; }
+.frpanel .say { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+.fractions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.frpanel details.why { margin: 0; }
+
+.frchecks { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-solid); }
+.frcheck {
+  display: grid; grid-template-columns: 22px 1fr auto; gap: 12px; align-items: start;
+  padding: 13px 16px; border-top: 1px solid var(--line);
 }
-.onboarding .stepactions:not(:empty) { margin-top: 8px; }
-/* Done is stated by the tick and the colour, never by removing the step:
- * a checklist that deletes what you finished cannot be read back. */
-.onboarding .step.done { opacity: 0.72; }
-.onboarding .step.done .steptick {
-  border-color: var(--accent-line);
-  background: var(--accent-dim);
-  color: var(--accent);
+.frcheck:first-child { border-top: 0; }
+.frcheck .mk {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--line-strong);
+  display: grid; place-items: center; font-size: 12px; font-weight: 700;
 }
-.onboarding .step.done .steptitle { color: var(--muted); font-weight: 500; }
+.frcheck.ok .mk { background: var(--accent); border-color: var(--accent); color: #062312; }
+.frcheck.ok .mk::after { content: "✓"; }
+.frcheck.run .mk { border-color: var(--sev-info); border-right-color: transparent; animation: busy-spin 0.8s linear infinite; }
+.frcheck.fail .mk { border-color: var(--sev-error); color: var(--sev-error); }
+.frcheck.fail .mk::after { content: "!"; }
+.frcheck.na .mk, .frcheck.skipped .mk { border-style: dashed; }
+.frchecktext { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.frchecktext b { font-weight: 600; font-size: 13.5px; }
+.frchecktext small { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.frcheck .st { font-size: 12px; color: var(--muted); white-space: nowrap; padding-top: 2px; }
+.frcheck.ok .st { color: var(--accent); }
+.frcheck.run .st { color: var(--sev-info); }
+.frcheck.fail .st { color: var(--sev-error); }
+.frissue { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 4px; }
+.frissuetext { font-size: 12.5px; color: var(--text); }
+.frcheck.fail .frissuetext { color: #f0908a; }
+.frissue details.why { margin: 0; }
+.frissue details.why > p { white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
+
+.frconsent {
+  padding: 11px 14px; border-radius: var(--radius);
+  background: rgba(94, 200, 255, 0.12); border: 1px solid rgba(94, 200, 255, 0.3);
+  font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
+}
+.frpick { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 6px; }
+.frpick legend { padding: 0; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
+.frpicklist { display: flex; flex-direction: column; gap: 6px; }
+.frpickrow {
+  display: flex; align-items: center; gap: 10px; min-height: 36px;
+  padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel-solid); cursor: pointer; font-family: var(--mono); font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.frnote { margin: 0; font-size: 12.5px; color: var(--amber); line-height: 1.55; }
+
+.frsessions { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-solid); }
+.frsess {
+  display: grid; grid-template-columns: 18px 1fr auto; gap: 12px; align-items: center;
+  padding: 10px 14px; min-height: 48px; border-top: 1px solid var(--line); cursor: pointer;
+}
+.frsess:first-child { border-top: 0; }
+.frsesstext { min-width: 0; display: flex; flex-direction: column; }
+.frsesstext b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.frsesstext small { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.frsess .prov {
+  font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 4px;
+  background: var(--panel-2); color: var(--muted); text-transform: uppercase;
+}
+.frmore { align-self: flex-start; }
+.frempty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.frempty p { margin: 0; color: var(--muted); }
+.frchoices { margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.frchoices legend { grid-column: 1 / -1; padding: 0; margin-bottom: 8px; font-size: 12.5px; color: var(--muted); }
+.frchoice {
+  position: relative;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 11px 14px; border: 1px solid var(--line-strong); border-radius: 10px; cursor: pointer;
+}
+.frchoice input { position: absolute; top: 12px; right: 12px; }
+.frchoice b { font-weight: 600; padding-right: 24px; }
+.frchoice small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.frchoice .caveat { color: var(--amber); }
+.frchoice.on { border-color: var(--accent); background: var(--accent-dim); }
+.frchoice.off { opacity: 0.6; cursor: default; }
+.frchoice:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.frdone { gap: 16px; }
+/* A column stretches its children; a button is as wide as its words. */
+.frpanel > button, .frempty > button { align-self: flex-start; }
+.frbig {
+  width: 56px; height: 56px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--accent); color: #062312; font-size: 28px; font-weight: 700;
+}
+
+/* Step 2: the other machine's half first, then what was found, then the
+ * exchange itself with the two values large and the decision under them. */
+.frhint {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 14px; border-radius: 10px; border: 1px dashed var(--line-strong);
+  color: var(--muted); font-size: 13.5px; line-height: 1.6;
+}
+.frhint b { color: var(--text); font-weight: 600; }
+.frhintmark { flex: none; color: var(--sev-info); }
+.frcard {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-solid);
+}
+.frcard h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.frcard .say { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frmachines { display: flex; flex-direction: column; }
+.frmachines > .empty, .frmachines > .frlooking { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frmachine {
+  display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 14px; align-items: start;
+  padding: 12px 0; border-top: 1px solid var(--line);
+}
+.frmachine:first-child { border-top: 0; padding-top: 0; }
+.fravatar {
+  width: 40px; height: 40px; border-radius: 10px; background: var(--panel-2);
+  display: grid; place-items: center; font-size: 18px;
+}
+.frmachinewho { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.frmachineline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.frmachineline b { font-weight: 600; overflow-wrap: anywhere; }
+.claimed.frclaimed { font-family: inherit; font-size: 11.5px; }
+.frmachinewho small { color: var(--muted); font-size: 12.5px; }
+.frmachinedetails .frfield { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.frmachinedetails .fingerprint { overflow-wrap: anywhere; }
+.frmachine > button { white-space: nowrap; }
+.frnotice { margin: 0; font-size: 12px; line-height: 1.55; }
+.frmanual { font-size: 13px; color: var(--muted); }
+.frmanual > summary { cursor: pointer; color: var(--text); }
+.frmanual > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.frmanual > * + * { margin-top: 10px; }
+.frmanual p { margin: 0; line-height: 1.6; }
+.frsendrow { display: flex; gap: 8px; }
+.frinput { flex: 1; min-width: 0; }
+.frmine { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.frmineaddrs { display: flex; flex-direction: column; gap: 6px; }
+.frmineaddr { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.frmineaddr .keyvalue { margin: 0; font-size: 14px; }
+.frwait {
+  display: flex; gap: 14px; align-items: center;
+  padding: 16px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+}
+.frspin {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--sev-info); border-right-color: transparent;
+  animation: busy-spin 0.8s linear infinite;
+}
+.frwaittext { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.55; }
+.frwaittext b { font-weight: 600; font-size: 14px; overflow-wrap: anywhere; }
+.frcomparenote .stale { margin: 0; }
+/* The two values, large: two people read them off two screens. */
+.fingerprints.frfingerprints { gap: 6px; padding: 14px; }
+.fingerprints.frfingerprints .who { font-size: 12.5px; }
+.fingerprints.frfingerprints .fingerprint { font-size: 19px; line-height: 1.4; font-weight: 500; }
+.frended { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin: 0; }
+.frended.ok {
+  padding: 8px 10px; border-radius: 6px; font-size: 12.5px; line-height: 1.55;
+  border: 1px solid rgba(53, 192, 122, 0.35); background: rgba(53, 192, 122, 0.07);
+}
+.frended > div { overflow-wrap: anywhere; }
+
+/* The way back into the wizard from the main window. An offer, not a
+ * primary: the main window is the owner's once the wizard is put away. */
+.resumesetup { flex: none; padding: 0 10px; font-size: 12px; color: var(--sev-info); border-color: rgba(94, 200, 255, 0.35); }
+/* It is one more control in a title bar already full at the minimum width:
+ * English, macOS's inset and a long service pill left the bell past the
+ * window's edge. The tabs give up some padding there instead. */
+@media (max-width: 1000px) {
+  .tab { padding: 0 9px; }
+  .actions { gap: 6px; }
+}
 
 /* ---------- local view: filters ---------- */
 

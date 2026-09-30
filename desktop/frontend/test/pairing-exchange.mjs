@@ -1029,6 +1029,38 @@ if (!keptRequest || !keptApprove || !keptFingerprints) {
     failures.push(`the relabelled button ran ${JSON.stringify(decisions.at(-1))} rather than a confirm of its own row`);
   }
 
+  // The one exception to keeping a row (fingerprintsChanged): the same
+  // request id arriving with different fingerprints is not the row the owner
+  // has been reading off two screens. Rewriting the values inside the kept
+  // element would swap them under a pointer already on 指紋一致 and keep the
+  // press aimed at the old ones, so the row is a new element — and after that
+  // the new one is kept like any other.
+  const SWAPPED_FP = "0D0D 1E1E 2F2F 3A3A 4B4B 5C5C 6D6D 7E7E";
+  const swapped = {
+    ...incoming, state: "awaiting-confirm",
+    fingerprints: [
+      fp("requester", "ubuntu-lab", "the other machine", SWAPPED_FP),
+      fp("receiver", "studio-mac", "this machine", LOCAL_FP),
+    ],
+  };
+  pending = [swapped, outgoing];
+  await scope.loadPairRequests();
+  const redrawn = rendered()[0];
+  if (!rowsHTML().includes(SWAPPED_FP)) {
+    failures.push("the changed fingerprint never reached the row, so the identity check below proves nothing");
+  }
+  if (redrawn === advanced) {
+    failures.push("a request whose fingerprints changed kept the row the owner was comparing the old ones on");
+  }
+  if (redrawn && buttonsIn(redrawn).includes(advancedPrimary)) {
+    failures.push("a request whose fingerprints changed kept the decision button aimed at the old ones");
+  }
+  pending = [{ ...swapped }, outgoing];
+  await scope.loadPairRequests();
+  if (rendered()[0] !== redrawn) {
+    failures.push("the row drawn for the new fingerprints was rebuilt again over unchanged ones");
+  }
+
   // A decided row leaves when the all-toggle is turned off, and the row beside
   // it stays the element it was.
   pending = [{ ...incoming, state: "awaiting-confirm" }, outgoing];
