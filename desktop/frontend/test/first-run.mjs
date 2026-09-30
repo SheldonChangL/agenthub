@@ -111,6 +111,10 @@ const bindings = {
     }
     : { reachable: false, nodeUrl: "http://127.0.0.1:7462", error: DIAL, sessions: [], nodes: [], peers: [], counts: {} }),
   ServiceStatus: async () => {
+    // A real status read is a process `ah` runs, and answers after anything
+    // already queued: a caller that fires it and moves on does not have it
+    // yet (load() does exactly that).
+    await new Promise((resolve) => setImmediate(resolve));
     // A node somebody starts by hand between two reads of the status.
     if (typeof machine.upAfterReads === "number" && --machine.upAfterReads < 0) machine.nodeUp = true;
     return serviceStatus();

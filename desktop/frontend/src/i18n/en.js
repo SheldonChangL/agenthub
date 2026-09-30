@@ -736,8 +736,8 @@ export const TEXT = {
   "firstRun.step3.skip": "Skip for now",
 
   "firstRun.done.title": "All set",
-  "firstRun.done.shared.one": "Shared {n} session: {targets}.",
-  "firstRun.done.shared.other": "Shared {n} sessions: {targets}.",
+  "firstRun.done.shared.one": "Shared {n} session. {targets}.",
+  "firstRun.done.shared.other": "Shared {n} sessions. {targets}.",
   "firstRun.done.localOnly": "AgentHub is running on this machine, for this machine only. To pair with another one, open the Network tab and press Pair another machine.",
   "firstRun.done.nothingShared": "No session is shared yet. Share one any time from the Audience column in the main window.",
   "firstRun.done.start": "Start using AgentHub",

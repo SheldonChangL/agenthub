@@ -1156,6 +1156,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await load();
     }
     wizard.phase = {};
+    // The status as it is now, not as the load() above left it: that load
+    // fires its status read and does not wait for it.
+    try {
+      await loadService();
+    } catch {
+      // Judged on the last status read; the line below says what it shows.
+    }
     // Said on the line whose press it was: where a service manager holds the
     // node, the install or the start is the login line's, and the node line
     // keeps saying only that nothing is running.

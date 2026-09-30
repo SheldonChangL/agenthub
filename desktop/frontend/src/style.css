@@ -447,12 +447,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 /* The whole window on a fresh install (docs/ui-contract.md §3.2): the three
  * steps down the left, the one being done on the right, one primary button at
  * a time. The title bar keeps the name, the bell and the toasts; the tabs,
- * the service pill, 重新掃描 and the node line belong to the main window and
- * are a second way to do what the wizard is in the middle of. */
+ * the service pill, 重新掃描, the node line and the status bar's counts belong
+ * to the main window and are a second way to do what the wizard is in the
+ * middle of — or, for the counts, a row of zeros about a table nobody sees. */
 #app.firstrun-on .titlebar .tabs,
 #app.firstrun-on #service-pill,
 #app.firstrun-on #btn-discover,
-#app.firstrun-on #node-line { display: none; }
+#app.firstrun-on #node-line,
+#app.firstrun-on .statusbar { display: none; }
 
 .firstrun { flex-direction: row; min-height: 0; overflow: hidden; }
 .frrail {
@@ -567,6 +569,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .frchoice:focus-within { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .frdone { gap: 16px; }
+/* A column stretches its children; a button is as wide as its words. */
+.frpanel > button, .frempty > button { align-self: flex-start; }
 .frbig {
   width: 56px; height: 56px; border-radius: 50%;
   display: grid; place-items: center;
@@ -575,7 +579,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 
 /* The way back into the wizard from the main window. An offer, not a
  * primary: the main window is the owner's once the wizard is put away. */
-.resumesetup { color: var(--sev-info); border-color: rgba(94, 200, 255, 0.35); }
+.resumesetup { flex: none; padding: 0 10px; font-size: 12px; color: var(--sev-info); border-color: rgba(94, 200, 255, 0.35); }
+/* It is one more control in a title bar already full at the minimum width:
+ * English, macOS's inset and a long service pill left the bell past the
+ * window's edge. The tabs give up some padding there instead. */
+@media (max-width: 1000px) {
+  .tab { padding: 0 9px; }
+  .actions { gap: 6px; }
+}
 
 /* ---------- local view: filters ---------- */
 
