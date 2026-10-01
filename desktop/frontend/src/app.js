@@ -439,38 +439,127 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return button;
   }
 
-  // resumeCommand is what to paste in a terminal to pick this session up again.
-  // For Claude the provider id is the jsonl's sessionId, which is what
-  // `claude --resume` takes (adapter/claude.go); for Codex it is the thread id.
-  function resumeCommand(session) {
-    const { rest } = shortId(session.id);
-    const id = session.providerSessionId || rest;
-    if (session.provider === "codex") return `codex resume ${id}`;
-    return `claude --resume ${id}`;
+  // resumeId is the ID to hand `claude --resume` or `codex resume`, and the
+  // only thing the row's Copy ID button puts on the clipboard: the owner asked
+  // for the bare ID, so it pastes after whatever they already typed.
+  //
+  // It is the provider's own id for the session. For Claude that is the
+  // jsonl's sessionId, which is what `claude --resume` takes
+  // (internal/adapter/claude.go); for Codex it is the rollout's session_meta
+  // id, the thread id that `codex resume` takes and that the wake driver
+  // resumes by (internal/adapter/codex.go, internal/codexdriver/driver.go).
+  // A session without one falls back to what follows the first colon of its
+  // AgentHub id, which is the same value by construction: the node builds
+  // the id as `<provider>:<providerSessionId>` (model.SessionID) and refuses
+  // a stored session whose id does not match that (registry.validateSessionFields);
+  // the provider session id itself may not contain a colon
+  // (model.ValidateProviderSessionID), so the first colon is the only one.
+  function resumeId(session) {
+    if (session.providerSessionId) return String(session.providerSessionId);
+    const id = String(session.id ?? "");
+    const colon = id.indexOf(":");
+    return colon === -1 ? id : id.slice(colon + 1);
+  }
+
+  // The command the ID is for, named in the button's tooltip only. Not
+  // translated: it is what gets typed in a terminal.
+  function resumeCommandName(session) {
+    return session.provider === "codex" ? "codex resume" : "claude --resume";
   }
 
   // Clipboard writes are serialised, not merely numbered: two quick clicks on
   // different rows each start a CopyText call, and the one that resolves last
-  // is what the clipboard holds. Chaining them keeps the last click's command
-  // on the clipboard, and only the last click gets to report.
+  // is what the clipboard holds. Chaining them keeps the last click's text on
+  // the clipboard, and only the last click gets to report.
+  //
+  // The report is in place (docs/ui-contract.md §2, CopyText): the pressed
+  // control reads 「已複製 ✓」 for COPIED_FOR_MS, and a refusal opens the
+  // fallback beside it with the text selected, so the owner can copy it by
+  // hand instead of retyping a UUID.
   let clipboardQueue = Promise.resolve();
-  let resumeRequest = 0;
-  async function copyResumeCommand(session) {
-    const sequence = ++resumeRequest;
-    const command = resumeCommand(session);
-    const write = clipboardQueue.then(() => api.CopyText(command));
+  let copyRequest = 0;
+  const COPIED_FOR_MS = 1500;
+  async function copyFromRow(tr, which, text, anchor) {
+    const sequence = ++copyRequest;
+    closeCopyFallback();
+    const write = clipboardQueue.then(() => api.CopyText(text));
     clipboardQueue = write.catch(() => {});
     try {
       await write;
     } catch (error) {
-      if (sequence !== resumeRequest) return;
-      banner(t("row.resumeCopyFailed", { error, command }));
+      if (sequence !== copyRequest) return;
+      openCopyFallback(anchor, t("row.copyFailed", { error }), text);
       return;
     }
-    if (sequence !== resumeRequest) return;
-    banner(session.cwd
-      ? t("row.resumeCopiedIn", { command, cwd: session.cwd })
-      : t("row.resumeCopied", { command }), true);
+    if (sequence !== copyRequest) return;
+    flashCopied(tr, which);
+  }
+
+  // The flash is state on the row, not text written once: updateSessionRow
+  // repaints the labels every tick and on a language switch, and it has to
+  // repaint 「已複製 ✓」 while the flash lasts rather than wipe it.
+  function flashCopied(tr, which) {
+    const parts = tr.sessionParts;
+    clearTimeout(parts.copiedTimers[which]);
+    parts.copied[which] = true;
+    paintCopyControls(parts);
+    parts.copiedTimers[which] = setTimeout(() => {
+      parts.copied[which] = false;
+      paintCopyControls(parts);
+    }, COPIED_FOR_MS);
+  }
+
+  // The accessible name is the tooltip's whole sentence, which starts with the
+  // visible label; while the flash lasts it is the flash.
+  function paintCopyControls(parts) {
+    const { id, cwd } = parts.copied;
+    parts.resumeLabel.textContent = t(id ? "row.copied" : "row.copyId");
+    parts.resumeButton.classList.toggle("copied", id);
+    parts.resumeButton.setAttribute("aria-label", id ? t("row.copied") : parts.resumeButton.title);
+    parts.cwdFlash.textContent = cwd ? t("row.copied") : "";
+    parts.cwdFlash.classList.toggle("hidden", !cwd);
+    parts.cwdButton.classList.toggle("copied", cwd);
+    parts.cwdButton.setAttribute("aria-label", cwd ? t("row.copied") : parts.cwdButton.title);
+  }
+
+  // The fallback for a clipboard that refused: the sentence that says so and
+  // the text itself in a read-only field, selected, beside the control that
+  // was pressed. Drawn like the audience menu and closed the same ways — Esc,
+  // a press outside, a scroll or a resize — because it is drawn against a row
+  // that would otherwise move out from under it.
+  let copyFallbackAnchor = null;
+  function copyFallbackOpen() {
+    return !el("copy-fallback").classList.contains("hidden");
+  }
+
+  function openCopyFallback(anchor, message, text) {
+    closeAudiencePopover();
+    const box = el("copy-fallback");
+    const field = element("input", "copyfield");
+    field.type = "text";
+    field.readOnly = true;
+    field.spellcheck = false;
+    field.value = text;
+    field.setAttribute("aria-label", t("row.copyFallbackLabel"));
+    const close = element("button", "ghost", t("row.copyFallbackClose"));
+    close.onclick = () => closeCopyFallback({ focus: true });
+    box.replaceChildren(element("p", "copynote", message), field, close);
+    box.setAttribute("aria-label", message);
+    box.classList.remove("hidden");
+    copyFallbackAnchor = anchor ?? null;
+    positionPopover(box, anchor);
+    field.focus?.();
+    field.select?.();
+  }
+
+  function closeCopyFallback({ focus = false } = {}) {
+    const box = el("copy-fallback");
+    if (box.classList.contains("hidden")) return;
+    box.classList.add("hidden");
+    box.replaceChildren();
+    const anchor = copyFallbackAnchor;
+    copyFallbackAnchor = null;
+    if (focus) anchor?.focus?.();
   }
 
   // sessionRows keeps one <tr> per session id, so the fifteen-second tick
@@ -588,14 +677,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // that a path too long for the column loses its head rather than its tail —
     // the project name is the part worth keeping. The isolate stops that
     // direction from reordering the path's own slashes.
+    //
+    // The whole cell is the copy control for that path (the owner asked for
+    // the directory to be copyable): a button the width of the column, so the
+    // target is the cell rather than a 16px icon, and a row without a
+    // directory shows the plain 「—」 instead — there is nothing to copy. Both
+    // are built once and toggled, so a tick never swaps the button out.
     const cwdCell = element("td", "mono muted cwd");
+    const cwdButton = element("button", "cwdcopy");
     const cwdText = element("bdi");
-    cwdCell.append(cwdText);
+    const cwdFlash = element("span", "copiedflash hidden");
+    cwdButton.append(cwdText, cwdFlash);
+    const cwdEmpty = element("span", "cwdempty", "—");
+    cwdCell.append(cwdButton, cwdEmpty);
 
     const seenCell = element("td", "muted");
 
-    // Row actions. Opening an inbox is a read; resume writes the clipboard
-    // and says so.
+    // Row actions. Opening an inbox is a read; Copy ID writes the session's
+    // bare ID to the clipboard and says so on the button.
     //
     // There is no MCP button here on purpose. It used to sit between these
     // two, and it produced the `.mcp.json` that binds one agent to one
@@ -625,7 +724,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // does not have to grow.
     const badge = element("span", "inboxbadge hidden");
     inboxButton.append(inboxLabel, badge);
-    const resumeButton = rowActionButton("resume", "", "", null);
+    const resumeButton = rowActionButton("copyid", "", "", null);
     const resumeLabel = element("span", "label");
     resumeButton.append(resumeLabel);
     group.append(inboxButton, resumeButton);
@@ -636,7 +735,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     tr.sessionParts = {
       checkbox, idCell, providerTag, label, statusPill,
       audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, wakeCaveat, cwdCell, cwdText,
+      cwdButton, cwdFlash, cwdEmpty,
       seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
+      // Which of the row's two copy controls is showing 「已複製 ✓」 right now,
+      // and the timers that end it (flashCopied).
+      copied: { id: false, cwd: false },
+      copiedTimers: { id: undefined, cwd: undefined },
     };
     updateSessionRow(tr, session);
     return tr;
@@ -708,25 +812,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.wakeCaveat.title = t("wake.caveat");
     parts.wakeCaveat.setAttribute("aria-label", t("wake.caveat"));
 
-    parts.cwdText.textContent = session.cwd ? session.cwd : "—";
-    parts.cwdCell.title = session.cwd ? session.cwd : "";
+    // The path is text (textContent), whatever it holds: it is the provider's
+    // metadata, not this window's. The tooltip carries it whole, since the
+    // cell clips its head.
+    const cwd = session.cwd ? String(session.cwd) : "";
+    parts.cwdText.textContent = cwd;
+    parts.cwdButton.classList.toggle("hidden", cwd === "");
+    parts.cwdEmpty.classList.toggle("hidden", cwd !== "");
+    parts.cwdButton.title = cwd ? t("row.copyCwdTitle", { cwd }) : "";
+    parts.cwdButton.onclick = cwd ? () => copyFromRow(tr, "cwd", cwd, parts.cwdButton) : null;
     parts.seenCell.textContent = relative(session.lastSeenAt);
     parts.seenCell.title = parts.seenCell.textContent;
 
-    // The two button labels. Written here and not at creation: see sessionRow.
-    //
-    // "resume" is the same word in both languages on purpose — it names the
-    // command this button copies into a terminal, so it is not in the tables.
-    // It is still written here rather than at creation, because the rule is
-    // about where a kept row's text is written, and an exception to it is how
-    // the next translated string quietly goes back to being written once.
+    // The button labels and tooltips. Written here and not at creation: see
+    // sessionRow. paintCopyControls writes the two copy labels, from the
+    // row's flash state, so a tick during 「已複製 ✓」 does not cut it short.
     parts.inboxLabel.textContent = t("inbox.title");
-    parts.resumeLabel.textContent = "resume";
     parts.inboxButton.onclick = () => {
       openInbox(session.id).catch((error) => banner(t("inbox.readFailed", { error })));
     };
-    parts.resumeButton.title = t("row.resumeTitle", { command: resumeCommand(session) });
-    parts.resumeButton.onclick = () => copyResumeCommand(session);
+    const id = resumeId(session);
+    parts.resumeButton.title = t("row.copyIdTitle", { command: resumeCommandName(session), id });
+    parts.resumeButton.onclick = () => copyFromRow(tr, "id", id, parts.resumeButton);
+    paintCopyControls(parts);
     updateInboxBadge(parts.inboxButton, parts.badge, session.id);
   }
 
@@ -3342,7 +3450,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // the table under it would leave the menu pointing at a different row.
   function interactionInProgress({ exceptPairingDrawer = false } = {}) {
     return state.busy || state.selected.size > 0
-      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus() || audiencePopoverOpen();
+      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus() || audiencePopoverOpen()
+      || copyFallbackOpen();
   }
 
   // background: this read is the 15-second tick's, not the owner's. A background
@@ -4086,8 +4195,59 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     document.addEventListener("scroll", (event) => {
       if (!within(event?.target, el("audience-popover"))) closeAudiencePopover();
     }, true);
+    // The copy fallback (openCopyFallback) closes the same ways.
+    document.addEventListener("keydown", copyFallbackKey);
+    document.addEventListener("pointerdown", copyFallbackOutsidePress, true);
+    document.addEventListener("scroll", (event) => {
+      if (!within(event?.target, el("copy-fallback"))) closeCopyFallback();
+    }, true);
   }
-  globalThis.addEventListener?.("resize", () => closeAudiencePopover());
+  globalThis.addEventListener?.("resize", () => {
+    closeAudiencePopover();
+    closeCopyFallback();
+  });
+
+  // Esc closes the copy fallback and gives the keyboard back to the control
+  // that was pressed.
+  function copyFallbackKey(event) {
+    if (!copyFallbackOpen()) return;
+    if (event?.key === "Escape") {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      closeCopyFallback({ focus: true });
+      return;
+    }
+    // Tab moves between the field and Close; past either end it leaves the
+    // box, which then closes and hands the keyboard back to the control, as
+    // the audience menu does. Left open behind a Tab, the box would float over
+    // whatever view the keyboard reached and hold the tick off indefinitely.
+    if (event?.key !== "Tab") return;
+    const box = el("copy-fallback");
+    const stops = Array.from(box.children ?? []).filter((child) => /^(input|button)$/i.test(child?.tagName ?? ""));
+    const at = stops.indexOf(document.activeElement);
+    event.preventDefault?.();
+    // Focus on the box's own text (a click on the note) is still inside it:
+    // the next Tab enters at the near end, as confirmKey does.
+    if (at === -1 && within(document.activeElement, box)) {
+      stops[event.shiftKey ? stops.length - 1 : 0]?.focus?.();
+      return;
+    }
+    const next = at + (event.shiftKey ? -1 : 1);
+    if (at === -1 || next < 0 || next >= stops.length) {
+      closeCopyFallback({ focus: true });
+      return;
+    }
+    stops[next].focus?.();
+  }
+
+  // A press outside it closes it; a press on the control it belongs to is
+  // left to that control, which copies again.
+  function copyFallbackOutsidePress(event) {
+    if (!copyFallbackOpen()) return;
+    const target = event?.target;
+    if (within(target, el("copy-fallback")) || (copyFallbackAnchor && within(target, copyFallbackAnchor))) return;
+    closeCopyFallback();
+  }
 
   // The dialog from a row's menu. The dialog applies to the selection, so for
   // a row that is not the whole selection it becomes the selection while the
@@ -9162,8 +9322,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
-    pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeCommand,
-    copyResumeCommand, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeId,
+    copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,

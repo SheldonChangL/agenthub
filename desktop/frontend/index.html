@@ -714,6 +714,12 @@
          above it. -->
     <div id="audience-popover" class="popover hidden" role="menu"></div>
 
+    <!-- ============ a copy the clipboard refused ============
+         Filled by openCopyFallback() in app.js when a row's Copy ID or
+         working-directory copy fails: the sentence that says so and the text
+         itself, selected, next to the control that was pressed. -->
+    <div id="copy-fallback" class="popover copyfallback hidden" role="dialog"></div>
+
     <!-- ============ toasts ============
          The answer to the button just pressed, bottom right, newest at the
          bottom, three at most. Successes go by themselves after six seconds;

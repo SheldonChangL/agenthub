@@ -534,6 +534,14 @@ func TestFrontendRowAudienceCells(t *testing.T) {
 	runNodeCheck(t, "row-audience.mjs")
 }
 
+// TestFrontendRowCopiesIDAndWorkingDirectory covers a row's two copy controls:
+// Copy ID puts the bare session ID on the clipboard (no command in front), the
+// working directory copies whole, both report on the control rather than in a
+// toast, and the fifteen-second tick keeps both buttons.
+func TestFrontendRowCopiesIDAndWorkingDirectory(t *testing.T) {
+	runNodeCheck(t, "row-copy.mjs")
+}
+
 // TestFrontendPublishesInAtMostThreePresses covers the inline audience menu,
 // the selection bar, the one-press service fix, the pairing drawer's steps and
 // the view tabs (2026-09-29). The menu decides which machines a press publishes
