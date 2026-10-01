@@ -787,6 +787,8 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (older.state.firstRun.step !== 1) failures.push(`a reachable node that is not searching opened the wizard on step ${older.state.firstRun.step}, want 1`);
   if (rowState(2) === "ok") failures.push("a reachable node that is not searching has its network line ticked");
   if (primary()?.textContent !== ZH["firstRun.turnOnSearch"]) failures.push(`the older node's button reads ${primary()?.textContent}`);
+  // 「不開放區網」 is not a choice left to make on a network already open.
+  if (button(ZH["firstRun.localOnly"])) failures.push("「只在這台用，不開放區網」 is offered on a node whose network is already open");
   await primary()?.onclick();
   await flush();
   if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {

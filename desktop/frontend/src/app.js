@@ -1728,8 +1728,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.primary.classList.toggle("busy", running);
     parts.primary.setAttribute("aria-busy", String(running));
     // 「只在這台用」 only while there is a network question to say no to. With no
-    // private address it is the only way on, so it carries the weight.
-    parts.local.className = `${run === null ? "primary" : "ghost"}${needLan ? "" : " hidden"}`;
+    // private address it is the only way on, so it carries the weight. Not
+    // once the address is open and only searching is missing: 「不開放區網」
+    // would then be a choice already made the other way, and step 2 has its
+    // own 先跳過.
+    parts.local.className = `${run === null ? "primary" : "ghost"}${needAddress ? "" : " hidden"}`;
     parts.local.textContent = t("firstRun.localOnly");
     parts.local.disabled = state.busy || running;
     return parts.root;
