@@ -164,6 +164,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // pairWindowDeferred: step 2 was entered while a write held OpenPairing
       // back, so its first opening is still to be made (enterFirstRunPairing).
       pairWindowDeferred: false,
+      // Step 2's 「開始在區網上搜尋」: in flight, and how its last press failed.
+      searching: false, searchFailed: null,
     },
     // Which settings section is scrolled to.
     settingsSection: "settings-service",
@@ -1219,7 +1221,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // What the node says about its own address, and nothing the window
     // guesses over the top of it (pairHereState, §3.3).
     const here = state.nodeReachable ? pairHereState(state.pairing?.state) : { reachable: false, address: "", problem: "" };
-    const lan = { done: here.reachable, address: here.address, problem: here.problem };
+    // Reachable is half of it. A node started without -discover — every node's
+    // default, cmd/agenthub-node — answers the pairing window and refuses the
+    // candidate list (App.Pairing: off / openNotAnnouncing), so step 2's
+    // 「同一個網路上找到的電腦」 stays empty on both machines. Observed from what
+    // the running node answers, not from what is saved (§7.8 rule 3).
+    const looking = state.nodeReachable && state.pairing?.availability === "on";
+    const lan = { done: here.reachable && looking, reachable: here.reachable, looking, address: here.address, problem: here.problem };
     return { node, login, lan };
   }
 
@@ -1294,8 +1302,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return found.reverse().join("\n");
   }
 
-  function failFirstRun(item, text, detail) {
-    state.firstRun.failed[item] = { text, detail: String(detail ?? "") };
+  function failFirstRun(item, text, detail, extra = {}) {
+    state.firstRun.failed[item] = { text, detail: String(detail ?? ""), ...extra };
   }
 
   // The node and the thing that keeps it running, through the very functions
@@ -1384,32 +1392,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // service steps before this one change what the pick would be — the node's
   // saved address and port are read only once it runs, and an address list
   // can land or change in between — and what is opened is what was named.
+  //
+  // The same goes for searching the network (`discover`): written only when
+  // the consent line said so at the press (`shown.discover`), in the same
+  // save and the same restart as the address, and judged afterwards by what
+  // the restarted node answers — a save the node did not keep (a flag in the
+  // service unit, a refusal) is said on the network line, not ticked.
   async function prepareFirstRunLan(shown) {
-    const wizard = state.firstRun;
-    if (!shown?.address || !shown?.port) return false;
-    wizard.phase.lan = true;
+    const opensAddress = Boolean(shown?.address && shown?.port);
+    if (!opensAddress && !shown?.discover) return false;
+    state.firstRun.phase.lan = true;
     renderFirstRun();
     const mark = state.notices[0];
-    // An edit the owner has not saved is theirs. The save below presses the
-    // form's own button, so it would be carried along; refused and named, as
-    // the drawer refuses it.
-    if (state.nodeSettings && !state.nodeSettings.error) {
-      withdrawUntouchedPrivateSuggestion();
-      const carried = unsavedNodeSettingsFields();
-      if (carried.length > 0) {
-        failFirstRun("lan", t("firstRun.lan.dirty"),
-          t("pair.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }));
-        return false;
-      }
+    const option = { primary: true };
+    if (opensAddress) {
+      const address = `${shown.address}:${shown.port}`;
+      Object.assign(option, { peerListen: address, peerListens: [address], allowLan: true });
     }
-    // A fresh baseline: the node may have just been started or restarted.
-    await loadNodeSettings();
-    if (!state.nodeSettings || state.nodeSettings.error) {
-      failFirstRun("lan", t("firstRun.lan.unreadable"), noticesSince(mark) || el("node-settings-notice").textContent);
+    if (shown.discover) option.discover = true;
+    const refused = await writeFirstRunNetwork(option, mark);
+    if (refused) {
+      failFirstRun("lan", refused.text, refused.detail);
       return false;
     }
-    const address = `${shown.address}:${shown.port}`;
-    await applyPeerListenRepairFromCard({ peerListen: address, peerListens: [address], allowLan: true, primary: true });
     await loadPairing();
     await load();
     const here = pairHereState(state.pairing?.state);
@@ -1417,7 +1422,84 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       failFirstRun("lan", t("firstRun.lan.failed"), [noticesSince(mark), here.problem].filter(Boolean).join("\n"));
       return false;
     }
+    if (shown.discover && state.pairing?.availability !== "on") {
+      // Reachable, and not searching: pairing by address still works, so the
+      // owner is told so and may go on (firstRunStep1 offers 下一步).
+      failFirstRun("lan", t("firstRun.lan.searchFailed"),
+        noticesSince(mark) || t("firstRun.lan.searchFailedDetail", { availability: String(state.pairing?.availability ?? "") }),
+        { searchOnly: true });
+      return false;
+    }
     return true;
+  }
+
+  // The one write both of the wizard's network buttons make — step 1's and
+  // step 2's 「開始在區網上搜尋」 — through the pairing drawer's repair
+  // (applyPeerListenRepairFromCard: the settings form filled in and saved, the
+  // unit's pinned flags asked about, the node restarted, and what it holds
+  // afterwards compared with what was asked for). Answers null, or why it did
+  // not write.
+  async function writeFirstRunNetwork(option, mark) {
+    // An edit the owner has not saved is theirs. The save below presses the
+    // form's own button, so it would be carried along; refused and named, as
+    // the drawer refuses it.
+    if (state.nodeSettings && !state.nodeSettings.error) {
+      withdrawUntouchedPrivateSuggestion();
+      const carried = unsavedNodeSettingsFields(option);
+      if (carried.length > 0) {
+        return {
+          text: t("firstRun.lan.dirty"),
+          detail: t("pair.formDirtyFields", { fields: carried.map(nodeSettingsFieldLabel).join(", ") }),
+        };
+      }
+    }
+    // A fresh baseline: the node may have just been started or restarted.
+    await loadNodeSettings();
+    if (!state.nodeSettings || state.nodeSettings.error) {
+      return {
+        text: t("peerListen" in option ? "firstRun.lan.unreadable" : "firstRun.lan.searchUnreadable"),
+        detail: noticesSince(mark) || el("node-settings-notice").textContent,
+      };
+    }
+    await applyPeerListenRepairFromCard(option);
+    return null;
+  }
+
+  // Step 2's way back when the node is still not searching — step 1 pressed
+  // before this existed, a save the node did not keep, 下一步 taken past a
+  // search that failed. The same write as step 1's, carrying the switch alone;
+  // the address and the typed-in way to pair are left as they are.
+  async function turnOnFirstRunSearch() {
+    const wizard = state.firstRun;
+    if (state.busy || wizard.running || wizard.searching) return;
+    wizard.touched = true;
+    wizard.searching = true;
+    wizard.searchFailed = null;
+    renderFirstRun();
+    const mark = state.notices[0];
+    try {
+      const refused = await writeFirstRunNetwork({ discover: true }, mark);
+      if (refused) {
+        wizard.searchFailed = refused;
+        return;
+      }
+      await loadPairing();
+      await load();
+      // The save restarted the node, and a restarted node's window is shut:
+      // this step opens it again by being on screen, as on entering it —
+      // whether or not searching came on, since a typed address needs it too.
+      await openPairingWindowIfNeeded();
+      await keepFirstRunWindowOpen();
+      if (state.pairing?.availability !== "on") {
+        wizard.searchFailed = {
+          text: t("firstRun.lan.searchFailed"),
+          detail: noticesSince(mark) || t("firstRun.lan.searchFailedDetail", { availability: String(state.pairing?.availability ?? "") }),
+        };
+      }
+    } finally {
+      wizard.searching = false;
+      render();
+    }
   }
 
   // The one button of step 1: everything not yet done, in order, stopping at
@@ -1579,7 +1661,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const checks = element("div", "frchecks");
       const rows = { node: firstRunCheckRow(), login: firstRunCheckRow(), lan: firstRunCheckRow() };
       checks.append(rows.node.row, rows.login.row, rows.lan.row);
+      // Two sentences, each there only when the press would do what it says:
+      // the address opened, and searching the network turned on.
       const consent = element("div", "frconsent hidden");
+      const consentAddress = element("span", "frconsentaddress");
+      const consentSearch = element("span", "frconsentsearch");
+      consent.append(consentAddress, consentSearch);
       const pick = element("fieldset", "frpick hidden");
       const pickLegend = element("legend");
       const pickList = element("div", "frpicklist");
@@ -1590,10 +1677,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const local = firstRunButton("ghost", (event) => {
         runFirstRunPrepare({ button: event?.currentTarget ?? null, localOnly: true }).catch(() => {});
       });
-      actions.append(primary, local);
+      // The "no" to searching, when searching is the only thing asked: on to
+      // step 2 with nothing written, where the typed address still pairs and
+      // the switch is offered again in the list's place.
+      const skipSearch = firstRunButton("ghost", () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 2;
+        render();
+      });
+      actions.append(primary, local, skipSearch);
       const why = whyDetails("firstRun.step1.why");
       root.append(heading, say, checks, pick, consent, noPrivate, actions, why);
-      parts = { root, heading, say, rows, consent, pick, pickLegend, pickList, pickRows: new Map(), noPrivate, primary, local, why };
+      parts = {
+        root, heading, say, rows, consent, consentAddress, consentSearch, pick, pickLegend, pickList,
+        pickRows: new Map(), noPrivate, primary, local, skipSearch, why,
+      };
       firstRunParts[1] = parts;
     }
     const wizard = state.firstRun;
@@ -1632,10 +1730,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
     const lanState = wizard.localOnly && !checks.lan.done && !wizard.phase.lan ? "skipped" : rowState("lan", checks.lan.done);
     const lanIssue = failed.lan
-      ?? (checks.lan.problem && !checks.lan.done && !wizard.localOnly ? { text: "", detail: checks.lan.problem } : null);
+      ?? (checks.lan.problem && !checks.lan.reachable && !wizard.localOnly ? { text: "", detail: checks.lan.problem } : null);
+    let lanSub = t("firstRun.lan.sub");
+    if (checks.lan.done && checks.lan.address) lanSub = t("firstRun.lan.open", { address: checks.lan.address });
+    else if (checks.lan.reachable && checks.lan.address) lanSub = t("firstRun.lan.notSearching", { address: checks.lan.address });
     paintCheck(parts.rows.lan, {
       title: t("firstRun.lan.title"),
-      sub: checks.lan.done && checks.lan.address ? t("firstRun.lan.open", { address: checks.lan.address }) : t("firstRun.lan.sub"),
+      sub: lanSub,
       state: lanState,
       issue: wizard.phase.lan ? null : lanIssue,
       retry: Boolean(failed.lan) && !running,
@@ -1644,16 +1745,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const needNode = !checks.node.done;
     const needLogin = !checks.login.done && !checks.login.na;
     const needLan = !checks.lan.done && !wizard.localOnly;
+    // What is missing of the network line: the address other machines reach,
+    // searching the network, or both. One button does what is missing, and
+    // the line above it says each part of that.
+    const needAddress = needLan && !checks.lan.reachable;
+    const needSearch = needLan && !checks.lan.looking;
     const privates = firstRunPrivateAddresses();
     const chosen = firstRunChosenAddress();
-    const offerLan = needLan && privates.length > 0;
+    const offerAddress = needAddress && privates.length > 0;
+    // Searching alone, with no address to open, only where the address is
+    // already reachable: on loopback a node that searches is still one nobody
+    // can connect to.
+    const offerLan = offerAddress || (needLan && !needAddress);
 
     // The choice of network, when there is one to make. Never made for the
     // owner: every private address is listed, the node's own or the first
     // pre-selected, and the line below names whichever is selected.
-    parts.pick.classList.toggle("hidden", !(offerLan && privates.length > 1));
+    parts.pick.classList.toggle("hidden", !(offerAddress && privates.length > 1));
     parts.pickLegend.textContent = t("firstRun.lan.pick");
-    if (offerLan && privates.length > 1) {
+    if (offerAddress && privates.length > 1) {
       const wanted = privates.map((item) => {
         let entry = parts.pickRows.get(item.address);
         if (!entry) {
@@ -1681,12 +1791,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       keepChildren(parts.pickList, wanted);
     }
     parts.consent.classList.toggle("hidden", !offerLan);
-    // Kept with the words: this is what a press of step 1's buttons opens.
-    parts.shownLan = offerLan && chosen ? { address: chosen.address, port: firstRunPort() } : null;
-    if (parts.shownLan) {
-      parts.consent.textContent = t("firstRun.lan.consent", { address: `${parts.shownLan.address}:${parts.shownLan.port}` });
-    }
-    parts.noPrivate.classList.toggle("hidden", !(needLan && privates.length === 0));
+    // Kept with the words: this is what a press of step 1's buttons opens —
+    // the address the first sentence names, and searching the network only
+    // when the second sentence is on screen to say what that shows of this
+    // machine (prepareFirstRunLan).
+    parts.shownLan = offerLan
+      ? {
+        address: offerAddress ? chosen.address : null,
+        port: offerAddress ? firstRunPort() : null,
+        discover: needSearch,
+      }
+      : null;
+    parts.consentAddress.textContent = parts.shownLan?.address
+      ? t("firstRun.lan.consent", { address: `${parts.shownLan.address}:${parts.shownLan.port}` }) : "";
+    parts.consentAddress.classList.toggle("hidden", !parts.shownLan?.address);
+    parts.consentSearch.textContent = parts.shownLan?.discover ? t("firstRun.lan.consentSearch") : "";
+    parts.consentSearch.classList.toggle("hidden", !parts.shownLan?.discover);
+    parts.noPrivate.classList.toggle("hidden", !(needAddress && privates.length === 0));
     parts.noPrivate.textContent = t("firstRun.lan.noPrivate");
 
     // One primary button, labelled by what it will do.
@@ -1702,8 +1823,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     } else if (needNode || needLogin) {
       label = t("firstRun.prepare");
       run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
+    } else if (failed.lan?.searchOnly && checks.lan.reachable && !running) {
+      // Searching could not be turned on, and the address is open: pairing by
+      // address works, so the way on is not held behind it. 重試 stays on the
+      // line, and step 2 offers the switch again in the place of its list.
+      label = t("firstRun.next");
+      run = () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 2;
+        render();
+      };
     } else if (offerLan) {
-      label = t("firstRun.openLan");
+      label = t(offerAddress ? "firstRun.openLan" : "firstRun.turnOnSearch");
       run = (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, lan: firstRunShownLan() }).catch(() => {});
     }
     parts.primary.classList.toggle("hidden", run === null);
@@ -1713,10 +1844,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.primary.classList.toggle("busy", running);
     parts.primary.setAttribute("aria-busy", String(running));
     // 「只在這台用」 only while there is a network question to say no to. With no
-    // private address it is the only way on, so it carries the weight.
-    parts.local.className = `${run === null ? "primary" : "ghost"}${needLan ? "" : " hidden"}`;
+    // private address it is the only way on, so it carries the weight. Not
+    // once the address is open and only searching is missing: 「不開放區網」
+    // would then be a choice already made the other way, and step 2 has its
+    // own 先跳過.
+    parts.local.className = `${run === null ? "primary" : "ghost"}${needAddress ? "" : " hidden"}`;
     parts.local.textContent = t("firstRun.localOnly");
     parts.local.disabled = state.busy || running;
+    // Shown exactly when the primary button is the search switch.
+    const searchOnlyAsked = !needNode && !needLogin && needLan && !needAddress && !(failed.lan?.searchOnly && !running);
+    parts.skipSearch.className = `ghost${searchOnlyAsked ? "" : " hidden"}`;
+    parts.skipSearch.textContent = t("firstRun.skipSearch");
+    parts.skipSearch.disabled = state.busy || running;
     return parts.root;
   }
 
@@ -1757,6 +1896,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     wizard.pairWindowDeferred = false;
     wizard.pairWatch.clear();
     wizard.pairEnded = null;
+    wizard.searchFailed = null;
     loadPairRequests().catch(() => {});
     await loadPairing();
     // A write in flight holds every OpenPairing back (openPairingWindowIfNeeded).
@@ -1983,8 +2123,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       card.pairCompare = comparing;
       parts.compare.replaceChildren(
         ...(comparing
+          // The drawer's 「說明」 says 「按拒絕」 about the drawer's 拒絕; this
+          // card's button is 「不一樣，拒絕」, and its own 說明 names that one.
           ? [...PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)),
-            whyDetails("why.compareFingerprints")]
+            whyDetails("firstRun.pair.compareWhy")]
           : []));
     }
     parts.compare.classList.toggle("hidden", !comparing);
@@ -2057,11 +2199,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function paintFirstRunCandidates(parts) {
     const pairing = state.pairing;
     const box = parts.machines;
+    // A node that is not searching lists nobody, whoever is on the network:
+    // said, with the switch that changes it (turnOnFirstRunSearch).
+    const notLooking = Boolean(pairing) && (pairing.availability === "off" || pairing.availability === "openNotAnnouncing");
+    paintFirstRunSearchOff(parts, notLooking);
+    box.classList.toggle("hidden", notLooking);
     let message = null;
     if (!pairing) message = [["empty", t("pair.readingState")]];
-    else if (pairing.availability === "off" || pairing.availability === "openNotAnnouncing") {
-      message = [["empty", t("firstRun.pair.notLooking")]];
-    } else if (pairing.availability !== "on") message = [["empty", t("candidate.stateUnreadable")]];
+    else if (notLooking) message = [];
+    else if (pairing.availability !== "on") message = [["empty", t("candidate.stateUnreadable")]];
     else if (pairing.candidatesError) {
       message = [["stale", t("candidate.listUnreadable")], ["muted", pairing.candidatesError]];
     }
@@ -2084,6 +2230,31 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       make: firstRunCandidateRow,
       update: updateFirstRunCandidateRow,
     }));
+  }
+
+  // The switch in the list's place, with the same sentence step 1's consent
+  // line says about it: pressing it is the same decision, so it is put in the
+  // same words.
+  function paintFirstRunSearchOff(parts, on) {
+    const wizard = state.firstRun;
+    parts.search.classList.toggle("hidden", !on);
+    parts.searchSay.textContent = t("firstRun.pair.notLooking");
+    parts.searchWhat.textContent = t("firstRun.lan.consentSearch");
+    const issue = wizard.searching ? null : wizard.searchFailed;
+    parts.searchIssue.classList.toggle("hidden", !issue);
+    parts.searchIssueText.textContent = issue?.text ?? "";
+    parts.searchSummary.textContent = t("common.why");
+    parts.searchDetail.textContent = issue?.detail ?? "";
+    parts.searchDetails.classList.toggle("hidden", !issue?.detail);
+    parts.searchButton.textContent = t("firstRun.pair.startSearch");
+    // The one primary button while nothing is paired; once a machine is,
+    // 下一步 is, and this one steps down, as the found machines' buttons do.
+    const paired = state.nodes.length > 0;
+    parts.searchButton.classList.toggle("primary", !paired);
+    parts.searchButton.classList.toggle("ghost", paired);
+    parts.searchButton.classList.toggle("busy", wizard.searching);
+    parts.searchButton.setAttribute("aria-busy", String(wizard.searching));
+    parts.searchButton.disabled = state.busy || wizard.running || wizard.searching;
   }
 
   function firstRunStep2() {
@@ -2117,8 +2288,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const cardTitle = element("h3");
       const full = element("div", "stale hidden");
       const machines = element("div", "frmachines");
+      // In the list's place while the node is not searching: why the list is
+      // empty, what searching shows of this machine, and the switch — the
+      // typed address below stays open either way.
+      const search = element("div", "frsearchoff hidden");
+      const searchSay = element("p", "frlooking");
+      const searchWhat = element("p", "frconsent");
+      const searchIssue = element("div", "frissue hidden");
+      const searchIssueText = element("span", "frissuetext");
+      const searchDetails = document.createElement("details");
+      searchDetails.className = "why";
+      const searchSummary = element("summary");
+      const searchDetail = element("p");
+      searchDetails.append(searchSummary, searchDetail);
+      searchIssue.append(searchIssueText, searchDetails);
+      const searchButton = firstRunButton("primary", () => turnOnFirstRunSearch().catch(() => {}));
+      search.append(searchSay, searchWhat, searchIssue, searchButton);
       const notice = element("p", "frnotice muted hidden");
-      card.append(cardTitle, full, machines, notice);
+      card.append(cardTitle, full, machines, search, notice);
       const manual = document.createElement("details");
       manual.className = "frmanual";
       const manualSummary = element("summary");
@@ -2174,6 +2361,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       parts = {
         root, heading, say, hint, hintBold, hintRest, ended, endedText, endedNode, endedOk, requestsError,
         live, find, cardTitle, full, machines, notice, manual, manualSummary, input, send, mineLead, mineList,
+        search, searchSay, searchWhat, searchIssue, searchIssueText, searchDetails, searchSummary, searchDetail, searchButton,
         mineStatus, mineBack, when, manualForm, actions, next, skip, back,
         candidateRows: new Map(), requestCards: new Map(),
       };
@@ -4597,13 +4785,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const row of rows) {
       const who = element("div", "who");
       const role = PAIR_TEXT.role[row.role] ?? row.role ?? "";
-      if (role) who.append(element("span", "", `${role}　`));
+      // The spacing and the brackets are the language's (a full-width pair in
+      // Chinese, ASCII in English), so they come from the table with the words.
+      if (role) who.append(element("span", "", t("pair.roleLead", { role })));
       who.append(element("span", "", row.machine || t("pair.noName")));
       const whose = PAIR_TEXT.whose[row.whose];
       // Only the two labels the node documents get the highlight; anything else
       // is shown as the plain text it is.
-      if (whose) who.append(element("span", row.whose === "this machine" ? "mine" : "", `（${whose}）`));
-      else if (row.whose) who.append(element("span", "", `（${row.whose}）`));
+      if (whose) who.append(element("span", row.whose === "this machine" ? "mine" : "", t("pair.whoseWrap", { whose })));
+      else if (row.whose) who.append(element("span", "", t("pair.whoseWrap", { whose: row.whose })));
       kids.push(who);
       kids.push(element("div", "fingerprint", row.fingerprint || ""));
     }
@@ -5091,7 +5281,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await api.CopyText(address);
       status.textContent = PAIR_TEXT.hereCopied;
     } catch (error) {
-      status.textContent = `${PAIR_TEXT.hereCopyFailed}（${error}）`;
+      status.textContent = t("pair.hereCopyFailedWrap", { text: PAIR_TEXT.hereCopyFailed, error });
     }
   }
 
@@ -8103,8 +8293,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // of its own: that path validates, saves, restarts, re-reads and says whether
   // what was asked for survived. A shortcut here would be a second way to
   // change this setting, with its own bugs, reporting success on its own terms.
+  //
+  // A repair sets only the fields it names (repairFields): the address ones,
+  // allowLan, and — for the first-run wizard's search — discover. One that
+  // carries discover alone leaves the address rows and the switch as saved.
   async function applyPeerListenRepair(option) {
-    if (peerListensSupported()) {
+    const fields = repairFields(option);
+    if (fields.includes("peerListens") && peerListensSupported()) {
       // A repair names the whole set it stands for: every address for 「全部開放」,
       // one for a single address, none for 「就先只在本機」. The rows are rebuilt
       // with exactly those ticked, so an address the list did not carry (the
@@ -8113,30 +8308,39 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       peerListenTicks = [];
       peerListenOrder = [...list];
       fillPeerListenRows(list, state.nodeAddresses?.list);
-      el("node-allow-lan").checked = option.allowLan;
-      syncNodeSettingsForm();
-      await saveNodeSettings();
-      return;
+    } else if (fields.includes("peerListens")) {
+      const select = el("node-peerlisten");
+      // The option has to exist before it can be selected. The list is built from
+      // this machine's addresses at the node's default port, so any repair that
+      // changes the port — which is the whole of the port_in_use case — names an
+      // address no option carries, and assigning an unmatched value to a <select>
+      // selects nothing. "Nothing" in this list is loopback: the owner would click
+      // 改用 …:7464, the node would be saved as local-only, and the panel would
+      // report it as a success.
+      if (option.peerListen && ![...select.options].some((existing) => existing.value === option.peerListen)) {
+        const added = document.createElement("option");
+        added.value = option.peerListen;
+        added.textContent = `${option.peerListen} · ${t("nodeSettings.optionRepairChosen")}`;
+        added.dataset.private = "1";
+        select.append(added);
+      }
+      select.value = option.peerListen;
     }
-    const select = el("node-peerlisten");
-    // The option has to exist before it can be selected. The list is built from
-    // this machine's addresses at the node's default port, so any repair that
-    // changes the port — which is the whole of the port_in_use case — names an
-    // address no option carries, and assigning an unmatched value to a <select>
-    // selects nothing. "Nothing" in this list is loopback: the owner would click
-    // 改用 …:7464, the node would be saved as local-only, and the panel would
-    // report it as a success.
-    if (option.peerListen && ![...select.options].some((existing) => existing.value === option.peerListen)) {
-      const added = document.createElement("option");
-      added.value = option.peerListen;
-      added.textContent = `${option.peerListen} · ${t("nodeSettings.optionRepairChosen")}`;
-      added.dataset.private = "1";
-      select.append(added);
-    }
-    select.value = option.peerListen;
-    el("node-allow-lan").checked = option.allowLan;
+    if (fields.includes("allowLan")) el("node-allow-lan").checked = option.allowLan;
+    if (fields.includes("discover")) el("node-discover").checked = option.discover;
     syncNodeSettingsForm();
     await saveNodeSettings();
+  }
+
+  // The form fields a repair option sets. Every repair the drawer offers names
+  // an address and allowLan (peerListenRepairs); the first-run wizard's also
+  // names discover, and its step 2 switch names discover alone.
+  function repairFields(option = {}) {
+    const fields = [];
+    if ("peerListen" in option || "peerListens" in option) fields.push("peerListen", "peerListens");
+    if ("allowLan" in option) fields.push("allowLan");
+    if ("discover" in option) fields.push("discover");
+    return fields;
   }
 
   // applyPeerListenRepairFromCard is the pairing drawer's way into the same
@@ -8152,15 +8356,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Every field the save would send, minus the ones a repair is there to set.
   // Anything left is an edit that belongs to the owner, not to us. The drawer
   // and the first-run wizard both ask it before pressing save on the form.
-  function unsavedNodeSettingsFields() {
-    return Object.keys(readNodeSettingsPatch())
-      .filter((field) => field !== "peerListen" && field !== "peerListens" && field !== "allowLan");
+  // `option` is the repair about to be pressed: only the fields it sets are
+  // its own (repairFields), so a press that sets discover alone still refuses
+  // an unsaved address, and one that sets no discover refuses an unsaved tick.
+  function unsavedNodeSettingsFields(option = { peerListen: "", allowLan: false }) {
+    const owned = new Set(repairFields(option));
+    return Object.keys(readNodeSettingsPatch()).filter((field) => !owned.has(field));
   }
 
   async function applyPeerListenRepairFromCard(option) {
     // One of those fields may not be the owner's at all — see below.
     withdrawUntouchedPrivateSuggestion();
-    const carried = unsavedNodeSettingsFields();
+    const carried = unsavedNodeSettingsFields(option);
     if (carried.length > 0) {
       // Named, not just counted. "There are unsaved changes" over a form the
       // owner does not remember editing is a dead end; the field's own label is

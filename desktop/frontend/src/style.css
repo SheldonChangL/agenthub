@@ -526,6 +526,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   background: rgba(94, 200, 255, 0.12); border: 1px solid rgba(94, 200, 255, 0.3);
   font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
 }
+/* Two sentences, each about one thing the press does: one apiece per line. */
+.frconsent > span { display: block; }
+.frconsent > span + span { margin-top: 6px; }
+.frconsent > span.hidden { display: none; }
+/* Step 2's switch, in the list's place while the node is not searching. */
+.frsearchoff { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.frsearchoff > p { margin: 0; }
+.frsearchoff > .frlooking { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frsearchoff .frissue .frissuetext { color: #f0908a; }
 .frpick { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 6px; }
 .frpick legend { padding: 0; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
 .frpicklist { display: flex; flex-direction: column; gap: 6px; }
