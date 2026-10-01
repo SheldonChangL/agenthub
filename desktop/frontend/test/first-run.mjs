@@ -811,18 +811,38 @@ const ready = { nodeUp: true, installed: true, running: true };
     if (setup.nodeUp && !button(ZH["firstRun.localOnly"])) failures.push(`${name} has no 「只在這台用」 to say no with`);
   }
 
-  // 「準備好這台電腦，先不搜尋」 says what it does only where the service is
-  // registered and stopped. On loopback the address is still to open (the
-  // "no" there is 「只在這台用」); with no service at all, or while the status
-  // is still being read, pressing it would open the service form instead.
-  for (const [name, setup] of [
-    ["a stopped service on loopback", { nodeUp: true, installed: true, running: false, sessions: [session("a", "claude")] }],
-    ["a running node outside any service", { nodeUp: true, installed: false, saved: { ...lan }, sessions: [session("a", "claude")] }],
+  // On loopback the address is still to open, and the "no" there is
+  // 「只在這台用」: neither search "no" belongs beside it.
+  await start({ nodeUp: true, installed: true, running: false, sessions: [session("a", "claude")] });
+  for (const key of ["firstRun.skipSearch", "firstRun.prepareNoSearch"]) {
+    if (button(ZH[key])) failures.push(`a stopped service on loopback offers ${ZH[key]}: ${buttons().map((node) => node.textContent).join(" | ")}`);
+  }
+  if (!button(ZH["firstRun.localOnly"])) failures.push("a stopped service on loopback has no 「只在這台用」 to say no with");
+
+  // The rule, state by state: wherever the consent line asks for searching,
+  // a press beside it does not search. A stopped service, a node outside any
+  // service, and a status still being read (the window's first seconds).
+  for (const [name, setup, before] of [
+    ["a stopped service", { nodeUp: true, installed: true, running: false, saved: { ...lan }, sessions: [session("a", "claude")] }, null],
+    ["a node outside any service", { nodeUp: true, installed: false, saved: { ...lan }, sessions: [session("a", "claude")] }, null],
+    ["a service status still being read", { ...ready, saved: { ...lan }, sessions: [session("a", "claude")] }, (app) => { app.state.service = null; app.renderFirstRun(); }],
   ]) {
-    await start(setup);
-    for (const key of ["firstRun.skipSearch", "firstRun.prepareNoSearch"]) {
-      if (button(ZH[key])) failures.push(`${name} offers ${ZH[key]}: ${buttons().map((node) => node.textContent).join(" | ")}`);
+    const app = await start(setup);
+    before?.(app);
+    if (!stageText().includes(ZH["firstRun.lan.consentSearch"])) {
+      failures.push(`${name}: the consent line does not ask for searching, so this check would prove nothing: ${stageText()}`);
+      continue;
     }
+    const no = ["firstRun.prepareNoSearch", "firstRun.skipSearch", "firstRun.localOnly"].map((key) => button(ZH[key])).find(Boolean);
+    if (!no) {
+      failures.push(`${name}: the consent line asks for searching with no "no" beside it: ${buttons().map((node) => node.textContent).join(" | ")}`);
+      continue;
+    }
+    writes.length = 0;
+    await no.onclick?.({ currentTarget: no });
+    await flush();
+    const searched = writes.some((entry) => entry[0] === "SaveNodeSettings" && entry[1]?.discover === true);
+    if (searched) failures.push(`${name}: 「${no.textContent}」 turned searching on: ${JSON.stringify(writes)}`);
   }
 
   // Settings → 「顯示首次設定」 starts over: a "no" left from an earlier
