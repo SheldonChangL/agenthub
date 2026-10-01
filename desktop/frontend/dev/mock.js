@@ -66,8 +66,9 @@ const pairShape = query.get("pair") ?? "";
 //   ?onboarding=fresh   what dragging the .dmg in leaves behind: no node
 //                       running, nothing registered, no session scanned yet.
 //                       「準備好這台電腦」 installs the service (which starts the
-//                       node), opens the network address and restarts; the
-//                       sessions appear once the window has scanned.
+//                       node), opens the network address, turns searching the
+//                       network on and restarts; the sessions appear once the
+//                       window has scanned, and step 2's list once it searches.
 //   ?onboarding=mixed   what install.sh leaves: the node running as a service,
 //                       the sessions found, the node still on loopback and
 //                       nobody paired — step 1 is down to 「開放區網並繼續」
@@ -86,8 +87,20 @@ const pairShape = query.get("pair") ?? "";
 //   &service=none       with `mixed`: the node answering without being a
 //                       service, which the wizard sends to the service form
 //                       rather than installing over.
-//   &lan=open           with `mixed`: the network already open, so step 1 is
-//                       done and its 下一步 goes straight to step 2.
+//   &lan=open           with `mixed`: the network already open and the node
+//                       searching it, so step 1 is done and the wizard opens
+//                       on step 2.
+//   &discover=off       with `mixed&lan=open`: open, but not searching — what
+//                       an earlier build's 開放區網 left. Step 1 is not done,
+//                       and its one button is 開始在區網上搜尋並繼續.
+//   &discover=stuck     the first save that asks for discover does not keep
+//                       it: step 1 says searching could not be turned on and
+//                       offers 下一步, and step 2 shows 開始在區網上搜尋 where
+//                       the list would be (pressed again, it is kept).
+//
+// Every one of them starts from the node's own defaults — loopback, no
+// -allow-lan, no -discover — so step 2's list is empty until step 1 (or step
+// 2's switch) has turned searching on, exactly as on a real first run.
 //
 // Step 2 (connecting to the other machine), with `&pair=` — which means
 // something else without `?onboarding=`, where the address shape is its job:
@@ -149,13 +162,19 @@ const pairAddress = () => {
   const lan = saved.allowLan && [saved.peerListen, ...(saved.peerListens ?? [])].find((address) => address && !address.startsWith("127."));
   return lan ? { announceable: 1, address: { peerAddress: lan, peerAddressReachable: true } } : PAIR_ADDRESS;
 };
+// Worked out as App.Pairing works it out (desktop/app.go): a node running
+// without -discover answers the window and refuses the candidate list, which
+// is `off`, or `openNotAnnouncing` while a window is open. This used to be a
+// fixed "on", so a first run here always found the other machine — and the
+// real one, started with the node's defaults, never did.
+const searching = () => Boolean(nodeSettings.settings?.discover);
 const pairing = () => ({
-  availability: "on",
+  availability: searching() ? "on" : (pairingOpen ? "openNotAnnouncing" : "off"),
   windowAvailable: true,
   state: { open: pairingOpen, remainingSeconds: 252, displayName: "studio-mac", nameIsChosen: false,
     ...pairAddress().address,
-    announcing: { announceableAddresses: pairAddress().announceable, lastAnnouncedAt: ago(3) } },
-  candidates: pairingOpen && !(onboarding && pairShape === "none") ? [
+    ...(searching() ? { announcing: { announceableAddresses: pairAddress().announceable, lastAnnouncedAt: ago(3) } } : {}) },
+  candidates: searching() && pairingOpen && !(onboarding && pairShape === "none") ? [
     { nodeId: "node_04f7b2c9d1e8a3560b7d", address: "192.168.50.87:7463", displayName: "", platform: "", fingerprint: "7C21 E0D4 9B8F 3A56 C7D2 1E40 8F9B 6A03", firstSeen: ago(40), lastSeen: ago(12) },
     { nodeId: "node_a91c3e7b2d5f8046c0e1", address: "192.168.50.22:7463", displayName: "ubuntu-lab", platform: "linux/amd64", fingerprint: "AAAA BBBB CCCC DDDD EEEE FFFF 0011 2233", firstSeen: ago(120), lastSeen: ago(5), contested: true, duplicate: true },
   ] : [],
@@ -254,15 +273,30 @@ const nodeSettings = {
     message: "no interface on this machine holds 122.122.0.7:7463 any more",
   },
 };
-// A first run has none of the above; the middle one has the sessions and the
-// service but nothing to send them to.
+// A first run has none of the above: the node's own defaults
+// (nodeconfig.DefaultSettings) — the peer listener on loopback, no -allow-lan,
+// no -discover — for `fresh`, `slow`, `unreachable` and `mixed` alike, since
+// install.sh leaves the same. Only `&lan=open` is a node somebody set up.
 if (onboarding) {
-  nodeSettings.settings = { ...nodeSettings.settings, peerListen: "127.0.0.1:7463", allowLan: false };
-  if (query.get("lan") === "open") nodeSettings.settings = { ...nodeSettings.settings, peerListen: "192.168.50.10:7463", allowLan: true };
+  const loopback = "127.0.0.1:7463";
+  nodeSettings.settings = { peerListen: loopback, peerListens: [loopback], allowLan: false, discover: false, treatAsPrivate: [], autoWake: false };
+  if (query.get("lan") === "open") {
+    const lan = "192.168.50.10:7463";
+    // `&discover=off`: opened to the network by a build before the wizard
+    // turned searching on, so step 1 is not done and its button is the switch.
+    nodeSettings.settings = { ...nodeSettings.settings, peerListen: lan, peerListens: [lan], allowLan: true, discover: query.get("discover") !== "off" };
+  }
   nodeSettings.saved = { ...nodeSettings.settings };
+  nodeSettings.sources = { peerListen: "default", allowLan: "default", discover: "default", treatAsPrivate: "default", autoWake: "default" };
+  nodeSettings.peerListeners = nodeSettings.settings.peerListens.map((address) => ({ address, state: "bound" }));
   nodeSettings.restartRequired = false;
   delete nodeSettings.peerListenProblem;
 }
+// `&discover=stuck`: the first save asking for discover does not keep it, as a
+// node whose service unit pins the flag would not. Step 1 then says so and
+// offers 下一步, and step 2 shows 「開始在區網上搜尋」 in the list's place; that
+// second press is kept.
+let discoverDrops = onboarding && query.get("discover") === "stuck" ? 1 : 0;
 
 // The wizard's step 2 exchange (`&pair=`, above). Its own list, so the drawer's
 // three demonstration rows never appear in a first run.
@@ -496,6 +530,29 @@ configure({
   SaveNodeSettings: async (patch) => {
     const next = { ...nodeSettings.settings, ...patch };
     let message = "";
+    if ("discover" in patch && discoverDrops > 0) {
+      discoverDrops -= 1;
+      next.discover = nodeSettings.settings.discover;
+      log("SaveNodeSettings: discover not kept (&discover=stuck)");
+    }
+    // A first run's node takes the list (ADR-005), as every node since does:
+    // the list and the scalar move together.
+    if (onboarding) {
+      if (patch.peerListens) next.peerListen = patch.peerListens[0];
+      else if (patch.peerListen) next.peerListens = [patch.peerListen];
+      if (next.allowLan === false) {
+        next.peerListen = "127.0.0.1:7463";
+        next.peerListens = ["127.0.0.1:7463"];
+      }
+      nodeSettings.settings = { ...next };
+      nodeSettings.saved = { ...next };
+      nodeSettings.sources = Object.fromEntries(Object.keys(next).map((k) => [k, "remembered"]));
+      nodeSettings.peerListeners = next.peerListens.map((address) => ({ address, state: "bound" }));
+      nodeSettings.restartRequired = false;
+      nodeSettings.message = "";
+      log("SaveNodeSettings", patch);
+      return { ...nodeSettings };
+    }
     // The list and the scalar are one setting: the scalar alone replaces the
     // list, and the list's first entry is the scalar.
     if (listenShape === "multi") {

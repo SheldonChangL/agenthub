@@ -18,6 +18,11 @@ import { TEXT as EN } from "../../src/i18n/en.js";
 import { TEXT as ZH } from "../../src/i18n/zh-Hant.js";
 
 const HAN = /\p{Script=Han}/u;
+// Chinese punctuation under English, which the tables' own guard cannot see
+// when app.js glues it on around a translated word: 「（this machine）」 was
+// one, built from a template literal around PAIR_TEXT.whose. The ideographic
+// space, the full-width forms block, and the CJK marks the window uses.
+export const FULL_WIDTH = /[　！-～、。「-』【】]/u;
 
 // Text of an element, plus the text of a <select>'s options: an option list
 // rebuilt in the wrong language is invisible to textContent alone.
@@ -63,6 +68,11 @@ export function inEnglish(app, failures, label, ids, repaint = () => {}, derived
     const text = readable(node);
     if (HAN.test(text)) {
       failures.push(`${label}: #${id} is still Chinese after switching to English: ${text.trim().slice(0, 120)}`);
+    }
+    const mark = text.match(FULL_WIDTH);
+    if (mark) {
+      const at = Math.max(0, mark.index - 40);
+      failures.push(`${label}: #${id} carries full-width punctuation ${JSON.stringify(mark[0])} in English: ${text.slice(at, at + 100).trim()}`);
     }
     for (const word of text.split(/\s+/)) {
       if (Object.hasOwn(EN, word)) {

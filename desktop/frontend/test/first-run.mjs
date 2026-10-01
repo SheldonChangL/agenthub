@@ -67,8 +67,16 @@ const blank = () => ({
   sessions: [],
   nodes: [],
   addresses: ONE,
-  saved: { peerListen: LOOPBACK, peerListens: [LOOPBACK], allowLan: false, discover: true, treatAsPrivate: [], autoWake: false },
+  // A node's own defaults (nodeconfig.DefaultSettings): loopback, and not
+  // searching the network — the default that left step 2's list empty while
+  // this fake said discover: true and every check here passed.
+  saved: { peerListen: LOOPBACK, peerListens: [LOOPBACK], allowLan: false, discover: false, treatAsPrivate: [], autoWake: false },
   installError: "",
+  // The pairing window, which a restart shuts as a real node's does.
+  windowOpen: false,
+  // A node that does not keep discover when it is saved: a flag in the unit, a
+  // node that refuses it. The save answers, and the value is not there after.
+  dropsDiscover: false,
 });
 let machine = blank();
 // The window the bindings are answering, for a fake that has to start a read
@@ -147,11 +155,13 @@ const bindings = {
     writes.push(["RestartService"]);
     machine.running = true;
     machine.nodeUp = true;
+    machine.windowOpen = false;
     return { command: "ah service restart", output: "restarted" };
   },
   RestartNode: async () => {
     writes.push(["RestartNode"]);
     machine.nodeUp = true;
+    machine.windowOpen = false;
     if (machine.installed) machine.running = true;
     return { command: "restart", output: "restarted" };
   },
@@ -162,6 +172,9 @@ const bindings = {
   SaveNodeSettings: async (patch) => {
     writes.push(["SaveNodeSettings", patch]);
     const next = { ...machine.saved, ...patch };
+    if (machine.dropsDiscover) next.discover = machine.saved.discover;
+    // What the running node does until the restart that follows every save.
+    delete machine.searching;
     if (patch.peerListens) next.peerListen = patch.peerListens[0];
     machine.saved = next;
     return nodeView();
@@ -174,10 +187,18 @@ const bindings = {
   Pairing: async () => {
     if (!machine.nodeUp) return { availability: "unknown", candidates: [], error: "dial tcp" };
     const lan = machine.saved.allowLan ? lanAddress() : "";
+    // A node without -discover answers the window and refuses the candidate
+    // list, which App.Pairing reports as off, or openNotAnnouncing while a
+    // window is open (desktop/app.go). The fake's saved values are the
+    // running ones: every save here is followed by its restart.
+    // `searching`, when set, is a running node that differs from what it has
+    // saved (started with -discover, saved off since, not yet restarted).
+    const looking = typeof machine.searching === "boolean" ? machine.searching : machine.saved.discover;
+    const availability = looking ? "on" : (machine.windowOpen ? "openNotAnnouncing" : "off");
     // A default node on loopback sends no peerAddress at all (§3.3).
     return {
-      availability: "on", windowAvailable: true, candidates: [],
-      state: lan ? { open: false, peerAddress: lan, peerAddressReachable: true } : { open: false },
+      availability, windowAvailable: true, candidates: [],
+      state: lan ? { open: machine.windowOpen, peerAddress: lan, peerAddressReachable: true } : { open: machine.windowOpen },
     };
   },
   SetAudience: async (ids, audience) => {
@@ -188,7 +209,16 @@ const bindings = {
   Discover: async () => { writes.push(["Discover"]); return { claude: 0, codex: 0, total: 0, skipped: 0 }; },
   InboxCounts: async () => ({ ok: true, counts: {} }),
   PairRequests: async () => [],
-  OpenPairing: async () => ({ open: true }), ClosePairing: async () => ({ open: false }),
+  OpenPairing: async (...args) => {
+    // Counted apart from `writes`, whose order the sections below assert.
+    machine.opens = [...(machine.opens ?? []), args];
+    machine.windowOpen = true;
+    return { open: true };
+  },
+  ClosePairing: async () => {
+    machine.windowOpen = false;
+    return { open: false };
+  },
   TrustNode: async () => ({}), RevokeNode: async () => ({}), Heartbeat: async () => "",
   Inbox: async () => ({ messages: [] }), ClearInbox: async () => ({}), CopyText: async () => ({}),
   UninstallService: async () => ({}), HostPlatform: async () => "darwin", Version: async () => ({ release: "unreleased" }),
@@ -400,7 +430,8 @@ const ready = { nodeUp: true, installed: true, running: true };
   // Held on step 1 as an owner who has pressed something is: an untouched
   // wizard moves on by itself once step 1 is done (section 1b).
   app.state.firstRun.touched = true;
-  // Node answering, service installed and running, loopback: two of three.
+  // Node answering, service installed and running, loopback, not searching:
+  // two of three, and the network line names both halves it will turn on.
   if (rowState(0) !== "ok") failures.push(`an answering node's line reads ${rowState(0)}`);
   if (rowState(1) !== "ok") failures.push(`a running service's line reads ${rowState(1)}`);
   if (rowState(2) === "ok") failures.push("a node on loopback was called reachable from the network");
@@ -419,14 +450,34 @@ const ready = { nodeUp: true, installed: true, running: true };
   // The node's own word on its address decides the third line (§3.3).
   machine.installed = true;
   machine.running = true;
-  app.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
+  app.state.pairing = { availability: "on", windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
   app.renderFirstRun();
   if (rowState(2) !== "ok") failures.push(`a node that says its address is reachable reads ${rowState(2)}`);
-  app.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: false, peerAddressProblem: "bind failed" } };
+  app.state.pairing = { availability: "on", windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: false, peerAddressProblem: "bind failed" } };
   app.renderFirstRun();
   if (rowState(2) === "ok") failures.push("a node that says its address cannot be reached was ticked anyway");
+  // Reachable and not searching — the network opened by a build before this
+  // one, or by hand without -discover: the line is not done, step 1 is not
+  // done, and the one button is the switch, named on the line above it.
+  await app.loadService();
+  for (const availability of ["off", "openNotAnnouncing"]) {
+    app.state.pairing = { availability, windowAvailable: true, state: { open: availability !== "off", peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
+    app.renderFirstRun();
+    if (rowState(2) === "ok") failures.push(`a reachable node that is not searching (${availability}) was ticked`);
+    if (app.firstRunStepComplete(1)) failures.push(`step 1 was complete on a node that is not searching (${availability})`);
+    if (primary()?.textContent !== ZH["firstRun.turnOnSearch"]) {
+      failures.push(`a reachable node that is not searching offers ${primary()?.textContent}, want ${ZH["firstRun.turnOnSearch"]}`);
+    }
+    if (!stageText().includes(ZH["firstRun.lan.consentSearch"])) failures.push(`the switch's press is not explained above it (${availability}): ${stageText()}`);
+    if (stageText().includes(ZH["firstRun.lan.consent"].split("{address}")[0])) {
+      failures.push(`an address already open is offered as opened again (${availability}): ${stageText()}`);
+    }
+    if (!stageText().includes(ZH["firstRun.lan.notSearching"].replace("{address}", "192.168.50.10:7463"))) {
+      failures.push(`the network line does not say what is missing (${availability}): ${stageText()}`);
+    }
+  }
   // Everything done: the step says so and offers the next one.
-  app.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
+  app.state.pairing = { availability: "on", windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
   await app.loadService();
   app.renderFirstRun();
   if (primary()?.textContent !== ZH["firstRun.next"]) failures.push(`a finished step 1 offers ${primary()?.textContent}, not 下一步`);
@@ -458,6 +509,10 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (save.allowLan !== true || JSON.stringify(save.peerListens) !== JSON.stringify(["192.168.50.10:7463"])) {
     failures.push(`the save sent ${JSON.stringify(save)}, not the address and the switch the line above the button named`);
   }
+  // Searching the network goes in that same save — the one restart above —
+  // or step 2's list stays empty on a node left at its default.
+  if (save.discover !== true) failures.push(`the one save did not turn searching the network on: ${JSON.stringify(save)}`);
+  if (app.state.pairing?.availability !== "on") failures.push(`after step 1 the node is not searching: ${app.state.pairing?.availability}`);
   if (app.state.firstRun.step !== 2) failures.push(`a step 1 that finished left the wizard on step ${app.state.firstRun.step}, want 2`);
   if (!railRows()[0]?.className.includes("done")) failures.push("the rail did not tick step 1");
 
@@ -704,6 +759,154 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (app.state.firstRun.step !== 3) failures.push(`重試 after 「只在這台用」 went to step ${app.state.firstRun.step}, want 3`);
 }
 
+/* ---------------- 6c. searching the network, so the other machine shows up ---------------- */
+
+{
+  const saves = () => writes.filter((entry) => entry[0] === "SaveNodeSettings").map((entry) => entry[1]);
+  const searchBox = () => {
+    let found = null;
+    walk(stage(), (node) => { if (String(node.className).split(/\s+/).includes("frsearchoff")) found = node; });
+    return found;
+  };
+  const textOf = (root) => {
+    const parts = [];
+    walk(root, (node) => { if (node._text) parts.push(node._text); });
+    return parts.join(" ");
+  };
+  const detailsText = (root) => {
+    const parts = [];
+    walk(root, (node) => { if (node.tagName === "details") walk(node, (child) => { if (child._text) parts.push(child._text); }, false); });
+    return parts.join(" ");
+  };
+  const lan = { peerListen: "192.168.50.10:7463", peerListens: ["192.168.50.10:7463"], allowLan: true, discover: false, treatAsPrivate: [], autoWake: false };
+
+  // The network opened by an earlier build, which never turned searching on:
+  // step 1 is not done, the wizard opens on it, and its one button writes the
+  // switch alone — the address and allowLan stay as they are.
+  const older = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
+  if (older.state.firstRun.step !== 1) failures.push(`a reachable node that is not searching opened the wizard on step ${older.state.firstRun.step}, want 1`);
+  if (rowState(2) === "ok") failures.push("a reachable node that is not searching has its network line ticked");
+  if (primary()?.textContent !== ZH["firstRun.turnOnSearch"]) failures.push(`the older node's button reads ${primary()?.textContent}`);
+  await primary()?.onclick();
+  await flush();
+  if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {
+    failures.push(`turning searching on for an open node saved ${JSON.stringify(saves())}, want [{"discover":true}]`);
+  }
+  if (older.state.firstRun.step !== 2) failures.push(`the older node did not move on to step 2 once searching: step ${older.state.firstRun.step}`);
+  if (!railRows()[0]?.className.includes("done")) failures.push("the rail did not tick step 1 once the node was searching");
+
+  // A press made while the line above the button did not mention searching
+  // writes no discover. The running node searches (started with -discover)
+  // and has saved it off since: the line names the address alone, and the
+  // save that follows must not carry a switch nobody was told about.
+  const unnamed = await start({ ...ready, searching: true, sessions: [session("a", "claude")] });
+  if (stageText().includes(ZH["firstRun.lan.consentSearch"])) {
+    failures.push(`the consent line names searching on a node that already searches: ${stageText()}`);
+  }
+  if (!stageText().includes(ZH["firstRun.lan.consent"].replace("{address}", "192.168.50.10:7463"))) {
+    failures.push(`the unnamed-search case did not start from the address sentence: ${stageText()}`);
+  }
+  await primary()?.onclick();
+  await flush();
+  if (saves().length !== 1) failures.push(`the unnamed-search press saved ${saves().length} times, want once`);
+  if (saves().some((save) => "discover" in save)) {
+    failures.push(`a press whose consent line did not mention searching wrote discover: ${JSON.stringify(saves())}`);
+  }
+  // The restart left it not searching; the line now says so, and asks again.
+  if (unnamed.firstRunStepComplete(1)) failures.push("step 1 was called complete on a node the restart left not searching");
+  if (!stageText().includes(ZH["firstRun.lan.consentSearch"])) failures.push(`the next press is not explained: ${stageText()}`);
+
+  // 「只在這台用」 writes nothing, discover included.
+  const alone = await start({ ...ready, addresses: ONE, sessions: [session("a", "claude")] });
+  await button(ZH["firstRun.localOnly"])?.onclick();
+  await flush();
+  if (saves().length !== 0 || machine.saved.discover !== false) {
+    failures.push(`「只在這台用」 wrote ${JSON.stringify(saves())}, discover now ${machine.saved.discover}`);
+  }
+  if (alone.state.firstRun.step !== 3) failures.push(`「只在這台用」 went to step ${alone.state.firstRun.step}, want 3`);
+
+  // A save the node does not keep is said, on the network line, with the
+  // window's own report of it under 「說明」 — never ticked.
+  const dropped = await start({ addresses: ONE, dropsDiscover: true });
+  await primary()?.onclick();
+  await flush();
+  if (dropped.state.firstRun.step !== 1) failures.push(`a search that did not stick moved the wizard on to step ${dropped.state.firstRun.step}`);
+  if (rowState(2) !== "fail") failures.push(`after a search that did not stick the network line reads ${rowState(2)}, want fail`);
+  if (!stageText().includes(ZH["firstRun.lan.searchFailed"])) failures.push(`a search that did not stick is not said: ${stageText()}`);
+  const said = detailsText(checkRows()[2]);
+  if (!said.includes(ZH["nodeSettings.savedDidNotStick"].split("{lost}")[0])) {
+    failures.push(`the save's own report is not under 「說明」: ${said}`);
+  }
+  if (!button(ZH["firstRun.retry"])) failures.push("a search that did not stick offers no 重試");
+  // The address is open, so pairing by typing it works: the way on is there.
+  if (primary()?.textContent !== ZH["firstRun.next"]) failures.push(`after a search that failed the way on reads ${primary()?.textContent}, want 下一步`);
+  await primary()?.onclick();
+  await flush();
+  if (dropped.state.firstRun.step !== 2) failures.push(`下一步 past a failed search went to step ${dropped.state.firstRun.step}`);
+
+  // Step 2, not searching: the list's place says why, says what searching
+  // shows of this machine, and offers the switch; the typed address stays.
+  const box = searchBox();
+  if (!box) failures.push(`step 2 on a node that is not searching has no 「開始在區網上搜尋」: ${stageText()}`);
+  else {
+    const boxText = textOf(box);
+    if (!boxText.includes(ZH["firstRun.pair.notLooking"])) failures.push(`the empty list is not explained: ${boxText}`);
+    if (!boxText.includes(ZH["firstRun.lan.consentSearch"])) failures.push(`the switch is not explained in step 1's words: ${boxText}`);
+  }
+  const startSearch = button(ZH["firstRun.pair.startSearch"]);
+  if (!startSearch) failures.push("step 2 offers no 開始在區網上搜尋 button");
+  let manualInput = null;
+  walk(stage(), (node) => { if (node.tagName === "input" && node.type === "text") manualInput = node; }, false);
+  if (!manualInput || manualInput.disabled) failures.push("the typed address is not open beside the switch");
+
+  // Pressed with the node still dropping it: said there, not ticked.
+  writes.length = 0;
+  await startSearch?.onclick();
+  await flush();
+  if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {
+    failures.push(`step 2's switch saved ${JSON.stringify(saves())}, want [{"discover":true}]`);
+  }
+  if (!searchBox() || !textOf(searchBox()).includes(ZH["firstRun.lan.searchFailed"])) {
+    failures.push(`step 2's switch failing is not said: ${searchBox() ? textOf(searchBox()) : "(no box)"}`);
+  }
+
+  // And once the node keeps it: the list is back, the switch gone, and the
+  // window the restart shut is open again.
+  machine.dropsDiscover = false;
+  writes.length = 0;
+  const opensBefore = (machine.opens ?? []).length;
+  await button(ZH["firstRun.pair.startSearch"])?.onclick();
+  await flush();
+  if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {
+    failures.push(`step 2's second press saved ${JSON.stringify(saves())}, want [{"discover":true}]`);
+  }
+  if (dropped.state.pairing?.availability !== "on") failures.push(`after step 2's switch the node is ${dropped.state.pairing?.availability}`);
+  if (searchBox()) failures.push("the switch stayed on screen over a node that now searches");
+  if (!stageText().includes(ZH["firstRun.pair.noCandidates"])) failures.push(`the list did not come back: ${stageText()}`);
+  const reopened = (machine.opens ?? []).slice(opensBefore);
+  if (reopened.length !== 1 || JSON.stringify(reopened[0]) !== "[0]") {
+    failures.push(`the window the restart shut was opened ${JSON.stringify(reopened)}, want once with [0]`);
+  }
+
+  // An unsaved edit on the settings page is the owner's: the switch saves
+  // discover alone, and an unsaved allowLan is refused and named, not carried.
+  const dirty = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
+  dirty.state.firstRun.step = 2;
+  dirty.state.firstRun.touched = true;
+  dirty.render();
+  await flush();
+  await dirty.loadNodeSettings();
+  el("node-allow-lan").checked = false;
+  writes.length = 0;
+  await button(ZH["firstRun.pair.startSearch"])?.onclick();
+  await flush();
+  if (saves().length !== 0) failures.push(`step 2's switch carried an unsaved edit along: ${JSON.stringify(saves())}`);
+  if (!searchBox() || !textOf(searchBox()).includes(ZH["firstRun.lan.dirty"])) {
+    failures.push(`the refused switch does not say why: ${searchBox() ? textOf(searchBox()) : "(no box)"}`);
+  }
+  if (!shown()) failures.push("the refused switch took the owner out of the wizard");
+}
+
 /* ---------------- 7. step 3 shares through the menu's own write ---------------- */
 
 {
@@ -816,7 +1019,7 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (!shown()) failures.push("繼續設定 did not bring the wizard back");
   if (app.state.firstRun.step !== 1) failures.push(`繼續設定 went to step ${app.state.firstRun.step}, want 1`);
   // With step 1 done, to step 2.
-  app.state.pairing = { windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
+  app.state.pairing = { availability: "on", windowAvailable: true, state: { peerAddress: "192.168.50.10:7463", peerAddressReachable: true } };
   el("first-run-later").onclick();
   el("btn-resume-setup").onclick();
   if (app.state.firstRun.step !== 2) failures.push(`繼續設定 with step 1 done went to step ${app.state.firstRun.step}, want 2`);
