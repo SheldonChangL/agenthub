@@ -484,7 +484,11 @@ configure({
   ] }),
   ClearInbox: async () => ({ removed: 3 }),
   MCPConfig: async (sessionId) => ({ text: JSON.stringify({ mcpServers: { agenthub: { command: "/usr/local/bin/agenthub-mcp", args: ["-as", sessionId, "-url", "http://127.0.0.1:7462"] } } }, null, 2) }),
-  CopyText: async (text) => log("CopyText", text),
+  // `?copy=fail` refuses every write, to see a row's copy fallback.
+  CopyText: async (text) => {
+    log("CopyText", text);
+    if (query.get("copy") === "fail") throw new Error("the mock clipboard refused");
+  },
   // The node remembers its own start-up settings (#116). The fake keeps them in
   // a variable so a save really changes what the next read answers, including
   // the rule that turning allowLan off pulls peerListen back to loopback.

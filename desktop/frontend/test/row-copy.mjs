@@ -152,6 +152,9 @@ const noticesBefore = app.state.notices.length;
     `the fallback does not say why, or cannot be closed: ${JSON.stringify(box.textContent)}`);
   check(parts.resumeLabel.textContent === ZH["row.copyId"], "a refused copy flashed 「已複製 ✓」");
   check(app.state.notices.length === noticesBefore, "a refused copy went to a toast instead of beside the button");
+  // Even once the keyboard has left its field: the box is drawn against this
+  // row, and a tick that re-sorted the table would leave it beside another.
+  field?.blur?.();
   check(app.interactionInProgress(), "the open fallback does not hold the tick off the row it is drawn against");
   app.closeCopyFallback();
   check(!app.copyFallbackOpen(), "the fallback did not close");
