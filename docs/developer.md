@@ -342,7 +342,9 @@ bin/agenthub-node --db ./data/agenthub.db \
 `--peer-listen` is where peers connect back to, and it is the address that gets
 announced, so it has to be an address other machines can reach — not loopback.
 `--allow-lan` is what permits that. `--discover` turns on finding peers on the
-local network; without it `ah candidates` refuses and says so, while the pairing
+local network — the node listens for as long as it runs — and on announcing this
+one while a pairing window is open; without it `ah candidates` refuses and says
+so, while the pairing
 window and `ah pair request <host:port>` still work — that exchange needs only an
 address one owner types, which is the case it exists for.
 
@@ -985,7 +987,7 @@ The Codex App Server client is what waking a Codex session runs through, and the
 | `GET` | `/v1/outbound/{id}` | What became of one queued message |
 | `GET` | `/v1/wakes?limit=50` | What has woken agents on this node, newest first, with the refusals and the limits that produced them: `limit` (1–200) and `session` (a local session id, narrowing the trail to that session — a present but blank `session` is refused (400); giving it twice is too). `ah wakes` renders it |
 | `GET` | `/v1/sessions/{id}/wake-stream` | Where an agent's own MCP server waits to be told that session has a message. `agenthub-mcp -channel` holds this long poll; the node answers just short of its write deadline and says how long it held in `Agenthub-Wake-Wait` |
-| `GET` | `/v1/pairing` | Whether this node is advertising, and what the announce loop last managed to send |
+| `GET` | `/v1/pairing` | Whether this node is advertising, whether it was started with `-discover` (`discovery`), and what the announce loop last managed to send |
 | `POST` | `/v1/pairing` | Open the window, optionally `{"seconds":N}` (30s–15m, default 5m) |
 | `DELETE` | `/v1/pairing` | Stop advertising now |
 | `GET` | `/v1/pairing/candidates` | Machines advertising right now. Every field is the sender's own claim |
@@ -1000,8 +1002,9 @@ The Codex App Server client is what waking a Codex session runs through, and the
 advertising" and "this node is not looking" are different answers and only one
 of them means the owner should keep waiting. The window itself (`GET`/`POST`/
 `DELETE /v1/pairing`) does not need it: the window is a node-level state, and its
-answer carries a `notice` saying that nothing is being announced over mDNS and
-which address the other machine has to be given instead.
+answer carries a `notice` saying that nothing is being announced over mDNS, with
+`peerAddress` beside it naming the address the other machine has to be given
+instead.
 
 Advertising also needs somewhere for a peer to connect back to, and that is the
 peer listener's own bound address — so it needs `-allow-lan` *and* a
@@ -1010,17 +1013,22 @@ one address, sent from that address and out of the interface holding it, because
 a receiver lists an offer only when the address it carries is the address the
 datagram came from.
 
-Opening the window is refused with `409 NO_ANNOUNCEABLE_ADDRESS` when there is
-no such address, and the message says which case applies: a loopback listener
-that no other machine can reach, an IPv6 listener that is perfectly reachable
-but cannot be discovered while announcements go out on the IPv4 group, a
-`-peer-listen` naming a host rather than one address, or an address whose
-interface cannot carry a multicast packet — a point-to-point or VPN interface,
-where the address is fine and the announcement has nowhere to go. That last one
-is checked when the window is asked for rather than at startup, because an
-interface can lose the ability after boot. Announcing anyway would advertise an
-address nothing is listening on: the peer would see a candidate that looks
-right, with a matching fingerprint, and get a refused connection.
+When there is no such address the window still opens — the other machine can
+be given this one's address to type — but nothing is announced, and the state
+the node answers with carries a `notice` that says which case applies: a
+loopback listener that no other machine can reach, an IPv6 listener that is
+perfectly reachable but cannot be discovered while announcements go out on the
+IPv4 group, a `-peer-listen` naming a host rather than one address, or an
+address whose interface cannot carry a multicast packet — a point-to-point or
+VPN interface, where the address is fine and the announcement has nowhere to
+go. That last one is checked each time the node reports the window's state
+rather than at startup, because an interface can lose the ability after boot. Announcing anyway would
+advertise an address nothing is listening on: the peer would see a candidate
+that looks right, with a matching fingerprint, and get a refused connection.
+(An earlier node refused to open the window in this case, with `409
+NO_ANNOUNCEABLE_ADDRESS`; `openPairing` in `internal/api/pairing.go` says why
+that changed. The window is no longer refused for want of an address; a length
+outside 30 s–15 min is refused with `400 INVALID_REQUEST` rather than clamped.)
 
 A node with `-discover` joins the group on every interface that can carry it,
 re-checked every ten seconds so an adapter plugged in after startup is picked up
@@ -1035,7 +1043,13 @@ one bad read would drop a membership that was never gone.
 `GET /v1/pairing` carries `announcing`
 because an open window and a machine that is actually sending packets are
 separate facts: it reports how many addresses this node can announce, when it
-last tried and last succeeded, and why nothing is going out.
+last tried and last succeeded, and why nothing is going out. Beside it, a
+top-level `"discovery": true|false` says whether the node was started with
+`-discover`. A node without it and a node with no address to announce both
+report zero announceable addresses, and they have different remedies, so the
+field is stated rather than left to be inferred; `ah pairing on` reads it to say
+`discovery is off: this node was started without -discover` instead of "no
+address it can announce".
 
 Nothing in the candidate list is verified and appearing in it grants nothing.
 The fingerprint shown is the one announced, which is a hint for finding the

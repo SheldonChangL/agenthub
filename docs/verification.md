@@ -1045,11 +1045,15 @@ the previous case's result carries over.
   machine?** in the window) does not use discovery, and is the fallback when
   searching is off or a network drops multicast. This run did not exercise it.
 
-**A misleading CLI message.** On a node with `-discover` off, `ah pairing on`
-gives "this node has no address it can announce" as the reason nothing is
-announced (`internal/cli/cli.go`, `pairingStateRow.announcing`).
-The node had an address; what it lacked was `-discover`. Recorded here, not
-fixed.
+**A misleading CLI message, since fixed.** On a node with `-discover` off,
+`ah pairing on` gave "this node has no address it can announce" as the reason
+nothing was announced. The node had an address; what it lacked was `-discover`.
+Fixed in [#217](https://github.com/SheldonChangL/agenthub/pull/217): `GET
+/v1/pairing` now carries a top-level `"discovery"` (whether the node was started
+with `-discover`), and on a node where it is `false`, `ah pairing on` prints
+`announcing over mDNS  no (discovery is off: this node was started without
+-discover)` (`internal/cli/cli.go`, `pairingStateRow.announcing`). The fix was
+checked by the CLI's tests, not by repeating this two-machine run.
 
 **What this run does not show.** The run drove the nodes from `ah`. The
 first-run setup in the app was not walked through from start to finish on two
