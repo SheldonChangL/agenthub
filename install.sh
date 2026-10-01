@@ -38,6 +38,10 @@ FROM=""
 
 TEMP_DIR=""
 MOUNT_POINT=""
+# Set only by the uninstall path, for the app it found; cleared here so a
+# variable of that name in the owner's environment cannot point the "is the app
+# running?" check at some other bundle.
+QUIT_APP_PATH=""
 
 # A directory this script put an install in carries this file, so a later run
 # can tell "the prefix I installed into" from "a directory of the owner's that
@@ -509,9 +513,24 @@ quit_running_app() {
 		return 0
 	fi
 	say "agenthub-desktop is running; asking it to quit before its bundle is removed"
-	run osascript -e 'quit app "agenthub-desktop"'
 	if [ "$DRY_RUN" -eq 1 ]; then
+		run osascript -e 'quit app "agenthub-desktop"'
 		return 0
+	fi
+	# The answer osascript gives is not the answer to "did it quit". This app
+	# (Wails, with no OnBeforeClose veto: desktop/main.go sets only OnStartup)
+	# replies to every quit request with "cancel" and then quits on its own
+	# a moment later (its applicationShouldTerminate: returns NSTerminateCancel
+	# and hands the quit to its Go side), so AppleScript reports error -128,
+	# "user canceled", for a quit that is in fact under way. Under set -e that
+	# reply ended the install with a raw AppleScript line and no next step
+	# (issue #211). Whether the process is gone is what pgrep says below; the
+	# reply is kept only to be shown if it never goes.
+	quit_reply=""
+	if ! quit_reply="$(osascript -e 'quit app "agenthub-desktop"' 2>&1)"; then
+		[ -n "$quit_reply" ] || quit_reply="osascript failed without saying why"
+	else
+		quit_reply=""
 	fi
 	quit_waited=0
 	while [ "$quit_waited" -lt 10 ]; do
@@ -522,6 +541,11 @@ quit_running_app() {
 		sleep 1
 		quit_waited=$((quit_waited + 1))
 	done
+	if [ -n "$quit_reply" ]; then
+		die "agenthub-desktop is still running after 10 seconds, and removing a running app's bundle breaks it.
+Quit it yourself (right-click its Dock icon, Quit) and run this again.
+(macOS answered the quit request with: $quit_reply)"
+	fi
 	die "agenthub-desktop is still running after 10 seconds, and removing a running app's bundle breaks it.
 Quit it yourself (right-click its Dock icon, Quit) and run this again."
 }
