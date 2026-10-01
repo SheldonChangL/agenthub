@@ -18,6 +18,7 @@
 
 import { document } from "./dom-shim.mjs";
 import { latestToast, toastButtons } from "./fixtures/toasts.mjs";
+import { FULL_WIDTH } from "./fixtures/in-english.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 import { TEXT as EN } from "../src/i18n/en.js";
 
@@ -159,7 +160,10 @@ const bindings = {
   },
   NodeSettings: async () => ({ settings: { peerListen: "192.168.50.10:7463", allowLan: true }, saved: { peerListen: "192.168.50.10:7463", allowLan: true } }),
   LocalAddresses: async () => [{ interface: "en0", address: "192.168.50.10", subnet: "192.168.50.0/24", private: true }],
-  CopyText: async (text) => { calls.push(["CopyText", text]); },
+  CopyText: async (text) => {
+    calls.push(["CopyText", text]);
+    if (machine.copyThrows) throw new Error("clipboard denied");
+  },
   InboxCounts: async () => ({ ok: true, counts: {} }),
   Discover: async () => ({ claude: 0, codex: 0, total: 0, skipped: 0 }),
   SetAudience: async () => ({ changed: 0, failed: 0, errors: [] }),
@@ -507,6 +511,57 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
     if (confirms.length !== 1 || confirms[0][1] !== "pair_out00000003") failures.push(`一樣，完成配對 called ${JSON.stringify(confirms)}`);
     if (named("ApprovePairRequest").length !== 0) failures.push("confirming ours called Approve");
   }
+}
+
+/* ---------------- 6b. the compare card and the copy line, in English ---------------- */
+
+{
+  // The compare screen's words name the button that is on it: 「不一樣，拒絕」,
+  // not the drawer's 拒絕 (PAIR_TEXT.compare is §4's and stays as it is).
+  for (const [name, table] of [["zh-Hant", ZH], ["en", EN]]) {
+    for (const key of ["firstRun.pair.compareSay", "firstRun.pair.compareWhy"]) {
+      if (!table[key]?.includes(table["firstRun.pair.different"])) failures.push(`${name} ${key} does not name the button ${table["firstRun.pair.different"]}`);
+    }
+  }
+  machine.nodes = [];
+  await app.load();
+  machine.requests = [];
+  await app.loadPairRequests();
+  await flush();
+  app.setUILanguage("en");
+  // A card drawn in English from the start, so what is read is what the
+  // English window writes, not a Chinese one left over from before a switch.
+  machine.requests = [incoming("pair_in_english001")];
+  await app.loadPairRequests();
+  await flush();
+  const [card] = cards();
+  if (!card) failures.push("no compare card in English");
+  else {
+    const text = allText(card);
+    const mark = text.match(FULL_WIDTH);
+    if (mark) failures.push(`the English compare card carries full-width ${JSON.stringify(mark[0])}: ${text.slice(Math.max(0, mark.index - 40), mark.index + 40)}`);
+    if (!text.includes(`(${EN["pair.whose.this-machine"]})`)) failures.push(`the English fingerprint labels are not bracketed in ASCII: ${text}`);
+    if (!text.includes(EN["firstRun.pair.compareWhy"])) failures.push("the compare card's 「說明」 is not the wizard's own");
+  }
+  machine.requests = [];
+  await app.loadPairRequests();
+  await flush();
+  // The copy line's failure, which glued the clipboard's error on in
+  // full-width brackets.
+  machine.copyThrows = true;
+  const copy = all((node) => node.tagName === "button" && node.textContent === EN["common.copy"], stage(), false)[0];
+  if (!copy) failures.push(`no Copy beside this machine's address in English: ${allText(stage())}`);
+  else {
+    await copy.onclick();
+    await flush();
+    const said = allText(stage());
+    if (!said.includes(EN["pair.hereCopyFailed"])) failures.push(`a copy that failed did not say so: ${said}`);
+    const mark = said.match(FULL_WIDTH);
+    if (mark) failures.push(`the English step 2 carries full-width ${JSON.stringify(mark[0])}: ${said.slice(Math.max(0, mark.index - 60), mark.index + 30)}`);
+  }
+  machine.copyThrows = false;
+  app.setUILanguage("zh-Hant");
+  await flush();
 }
 
 /* ---------------- 7. a node without the ordered pair ---------------- */

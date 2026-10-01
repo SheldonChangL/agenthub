@@ -62,7 +62,7 @@
 | `StartPairRequest(address)` | 候選列的「送出配對請求」、位址表單的「送出配對請求」；首次設定精靈第 2 步的候選列與「找不到另一台？」的位址欄（都走同一個 `sendPairRequest()`） | 只送位址，不送金鑰/指紋/節點 ID；失敗走錯誤 toast，錯誤碼翻成中文（§4.3） |
 | `ApprovePairRequest(id)` | 收到的請求列「指紋一致，核准」；首次設定精靈第 2 步比對畫面的「一樣，核准」（同一個 `decidePairRequest()`） | id 來自該列本身，不是欄位；成功後重讀請求清單與 `Overview()` |
 | `ConfirmPairRequest(id)` | 送出的請求列（`awaiting-confirm`）「指紋一致，確認」；首次設定精靈第 2 步的「一樣，完成配對」 | 同上 |
-| `RejectPairRequest(id)` | 任一未決請求列「拒絕」；首次設定精靈第 2 步等待畫面的「取消這次請求」與比對畫面的「不一樣，取消」 | 成功後把節點回的 `nextStep` 放進 toast——推不出去的拒絕只有這裡會說 |
+| `RejectPairRequest(id)` | 任一未決請求列「拒絕」；首次設定精靈第 2 步等待畫面的「取消這次請求」與比對畫面的「不一樣，拒絕」 | 成功後把節點回的 `nextStep` 放進 toast——推不出去的拒絕只有這裡會說 |
 | `Inbox(sessionId)` | 每列的「收件匣」（動作欄） | 開**抽屜**（`inbox-modal`，三個分頁：收件匣／送出紀錄／喚醒紀錄），先畫 loading；序號守衛；清空按鈕只在答案回來後才對準這個 session |
 | `ClearInbox(sessionId)` | 收件匣「清空收件匣…」 | `askConfirm` 按「清空」後執行；結果（移除 N 則 / 失敗未變動）顯示在**對話框內**，不是 toast |
 | `ServiceStatus()` | 每次 Overview 後 | 五種狀態文案（找不到 ah / 不支援 / 已裝執行中 / 已裝未執行 / 節點在跑但非服務 / 都沒有） |
@@ -74,13 +74,13 @@
 | `Outbound(session, limit, after)` | 收件匣抽屜的「送出紀錄」分頁 | 分頁載入；序號守衛；`next` 為空表示沒有更多 |
 | `Wakes(session, limit)` | 收件匣抽屜的「喚醒紀錄」分頁 | 分頁載入；序號守衛；`limits` 顯示節點端的上限 |
 | `NodeSettings()` | 進入設定頁的節點設定區 | 讀回 `settings`（執行中）與 `saved`（存下來的）兩份；規則見 §7.8 |
-| `SaveNodeSettings(patch)` | 節點設定區的「儲存」；配對抽屜第 1 步與首次設定精靈第 1 步的修復鈕（都走 `applyPeerListenRepairFromCard()` → 表單的 `saveNodeSettings()`，§7.8） | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
+| `SaveNodeSettings(patch)` | 節點設定區的「儲存」；配對抽屜第 1 步與首次設定精靈第 1 步的修復鈕、精靈第 2 步的「開始在區網上搜尋」（都走 `applyPeerListenRepairFromCard()` → 表單的 `saveNodeSettings()`，§7.8；精靈的兩顆經 `writeFirstRunNetwork()`） | patch 併到 **`saved`** 不是 `settings`；存完重讀並比對「有沒有真的寫進去」；沒生效要說出來 |
 | `RestartService()` | 節點設定區的「重新啟動服務」；一鍵處理「已安裝但沒在跑」、首次設定精靈第 1 步遇到已安裝的服務而節點沒回應（`restartNode({ service: true })`：直接呼叫這個綁定，不經 `RestartNode` 在 Go 端再判一次，其餘——等節點回答、degraded 的說法——與設定頁同一份） | 走 `ah service restart`；三平台都支援——macOS `launchctl kickstart -k`、Linux `systemctl --user restart`、Windows `taskkill` 掉 node 再 `schtasks /Run` 排程工作 |
 | `RestartNode()` | 服務區的「重新啟動／啟動」（`service-restart`）、首次設定精靈第 1 步在沒有服務管理員（不支援、找不到 ah）而節點沒回應時、節點設定儲存後 | 已安裝服務→`RestartService()`；否則 app 自己停掉再啟動節點（`desktop/nodeprocess.go`）。**帶著原本的資料庫重啟（#205）**：節點 API 不回報資料庫路徑，所以 Go 端讀正在跑的 agenthub-node 自己的命令列與環境變數（macOS `kern.procargs2`；Linux `/proc/<pid>/cmdline`、`/proc/<pid>/environ`；Windows 命令列走 WMI——PowerShell 用 `%SystemRoot%` 下的絕對路徑、只讀 stdout、關掉進度記錄——環境變數讀程序的 PEB，使用者比對程序 token 的 SID），命令列照節點的旗標表解析、Windows 照 Go `os.Args` 的切法（不是 `CommandLineToArgvW`），用同一組參數啟動新的——只拿掉節點記住的五個設定（它們正是這次重啟要套用的存檔值，帶回舊旗標會蓋掉存檔）。命令列沒寫的路徑（`--db`、`--claude-root`、`--codex-root`）是節點**用它自己的環境**算出來的（`defaultPaths`：macOS `HOME`、Linux `XDG_CONFIG_HOME` 再 `HOME`、Windows `APPDATA`／`USERPROFILE`），app 用節點的環境照同樣規則算（`desktop/nodeenv.go`），**明確**以 `--db <絕對路徑>` 等傳給新節點，不讓新節點用 app 的環境重算。**停之前**就判斷，下列情況拒絕且不碰節點：讀不到命令列、同時有兩個以上 agenthub-node、路徑旗標是相對路徑或由環境算出相對路徑、資料庫檔不存在、旗標表不認得的旗標、`-listen` 不是 app 的位址（`127.0.0.1:7462`）、有路徑沒寫而節點環境讀不到（macOS／Linux 一律拒絕；Windows 見下）、節點在回答但 `GET /v1/node` 讀不到身分、節點沒回答而資料庫只是 app 推斷的。停了之後等該 pid 從程序清單消失（殭屍程序不算在跑）才啟動，逾時就回錯誤不啟動——埠關了不代表程序已放開資料庫。啟動後比對 node id 與指紋，不同就回錯誤（兩個 id＋把舊節點帶回來的命令），不宣稱成功。復原命令分兩種：路徑都是從節點自己的命令列或環境讀來的，命令裡每個路徑都明確寫出，在哪個環境執行都指向同一個資料庫；有路徑是 app 用自己的環境**推算**的（Windows 讀不到 PEB 的 fallback），復原命令只給舊節點原本的命令列、不帶推算的路徑（新節點正是開在那些路徑上才變成別人），並寫明哪些旗標是推算的、要在舊節點原本啟動的環境（它的登入或啟動它的 shell）裡執行（測試 `TestRestartNodeDoesNotHandBackAnInferredPathAsTheWayBack`）；輸出與錯誤裡的命令（`commandLine`，`desktop/nodeargs.go`）照平台的 shell 加引號：Windows 是 PowerShell 形式（`& '…\agenthub-node.exe' --db '…'`，單引號內 `$`、`` ` `` 都是字面，`'` 與 PowerShell 視同單引號的彎引號重複一次；只有旗標名稱（`--db`、`-discover`）不加引號，其餘一律加——5.1 會把沒引號的 `-a.b` 在點切開，`--`、`--%` 是它自己的語法），macOS／Linux 是 sh／bash／zsh 的單引號形式；cmd.exe、fish 不在保證內。Windows PowerShell 5.1 傳給程式時會丟掉空字串參數、不跳脫參數內的 `"`（Windows 路徑兩者都不會有；PowerShell 7.3 起沒有這問題）。測試 `TestShellCommandLineQuotesForEachShell`、`TestCommandLineSurvivesTheShell`（把命令交給本機每個 `/bin` shell、Windows 上交給 Windows PowerShell 5.1，執行測試自己的 binary 比對收到的參數）；節點重啟前沒回答（沒有 id 可比）時照樣啟動，但輸出寫明沒有比對、用的是哪個資料庫、從哪裡讀來。沒有任何 agenthub-node 在跑＝首次啟動，照舊不帶參數。**保證範圍**：macOS／Linux 上，新節點開的資料庫路徑就是舊節點命令列或它自己環境所指的那一個（檔案須存在），加上事後 id／指紋比對。**Windows 殘餘風險**：讀 PEB 失敗（權限、位元數不同等）而有路徑沒寫時，改用 app 自己的 `APPDATA`／`USERPROFILE` 算出的路徑，條件是資料庫檔存在、節點程序 token 的使用者 SID 與 app 相同、且節點重啟前有回答身分（事後比對 id）——同一使用者但節點啟動時 `APPDATA` 被改過、而 app 那邊的預設資料庫恰好也存在時，新節點會開 app 那一個，這時只靠事後 id 比對發現（回錯誤＋復原命令，不刪任何東西），不是事前擋下。Windows 這一半（WMI、PEB、token）只在 CI 的 `desktop-windows-processes` job 實際執行，開發機上只編譯；macOS 這一半（`kern.procargs2`：環境後面直接接核心自己的 apple strings、中間不保證有空項目，讀到 buffer 結尾就是字串區結束；apple strings 留在環境清單尾端，查找取第一筆所以蓋不掉真的變數）另在 CI 的 `desktop-macos-processes` job 跑，真程序測試 `-count=20`。兩個 job 都要求清單裡每個測試在 log 有 `--- PASS:`，且只為該 OS 編譯的測試檔裡每個 `Test*` 都在清單上。列舉遇到 `EINVAL`／`ESRCH`（有個 agenthub-node 正在退出、還不是殭屍）時重試幾次（6×50ms）再決定，**不當成它已消失**，持續失敗就拒絕。前端**不另外問**：Go 端在上述範圍內確認資料庫才動手、確認不了就拒絕，所以 `nodeRunningNotAService` 時按重新啟動也不 `askConfirm`；拒絕的原文照 `restartNode()` 的失敗路徑放進 `service-output`，不出「已重新啟動」（測試 `service-panel.mjs`） |
 | `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（錯誤 toast `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
 | `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
-| `CopyText(text)` | MCP 設定、resume 指令、指紋等所有「複製」 | 寫入剪貼簿；結果顯示在原地（對話框內），不是 toast。例外：列上的 resume 沒有地方放結果，一直走 toast（原本是 banner） |
+| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，與公開對象選單同一套定位，Esc、點外面、捲動、縮放關閉；Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕，框沒開時不攔任何 Tab），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
 
 ## 3. 畫面與元件清單（現況，2026-09-15 對照 main 的 index.html 與 src/ 重寫）
 
@@ -145,7 +145,7 @@
     `repaintFromState()` → `relabelSessionRows()` 再掃一次 `sessionRows` 裡的每一列——
     也就是別的分頁在畫面上、沒有 `render()` 跟在後面時仍被留住的那些（被篩選條件擋掉的列
     每次 `renderRows` 都會從 map 移除，重新出現時是用當下語言重建的）。由 `frontend/test/i18n.mjs` 釘住：
-    zh 開兩列 → 切 en → 每列的 Inbox / resume 標籤與 tooltip 都是英文、`#rows` 整段
+    zh 開兩列 → 切 en → 每列的 Inbox / Copy ID 標籤與 tooltip（含 `aria-label`）、工作目錄按鈕的 tooltip 都是英文、`#rows` 整段
     textContent 不得出現任何漢字 → 再切回 zh。
 - **通知三層（2026-09-29，取代 `#banner`）**。原本的 banner 只有一則：成功 4 秒就消失、錯誤被下一則蓋掉，
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
@@ -243,8 +243,20 @@
     測試 `first-run.mjs` §1b、`first-run-pairing.mjs` §1）。
   - **每步的完成狀態每次 render 從 state 重算，不存**（`firstRunChecks()`、`firstRunStepComplete()`）：
     ①「AgentHub 在背景執行」＝`state.nodeReachable`；「開機後自動啟動」＝`ServiceStatus` 已安裝且在跑（狀態還沒讀到＝確認中；
-    `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他電腦連得到」＝`pairHereState(state.pairing.state).reachable`
-    （節點說了就聽節點的，§3.3）。在終端機移除服務，那一行自己變回未完成。②＝`state.nodes` 非空。③＝`counts.all_paired + selected > 0`。
+    `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他電腦找得到、也連得到」＝`pairHereState(state.pairing.state).reachable`
+    （節點說了就聽節點的，§3.3）**而且** `state.pairing.availability === "on"`（節點在區網上搜尋，2026-10-01）。在終端機移除服務，那一行自己變回未完成。②＝`state.nodes` 非空。③＝`counts.all_paired + selected > 0`。
+    - **為什麼要搜尋（2026-10-01，產品 BLOCKER）**：節點的 `-discover` 預設關（`cmd/agenthub-node/main.go` 的旗標、`nodeconfig.DefaultSettings()`），
+      沒開時節點回答配對視窗、拒絕候選清單（`App.Pairing()` 回 `off`，視窗開著時 `openNotAnnouncing`），第 2 步「同一個網路上找到的電腦」在兩台上都永遠是空的。
+      只看可達性的舊判定讓全新安裝在第 1 步打勾、到第 2 步才發現找不到對方；dev mock 與測試的假節點把 `availability: "on"`、`discover: true` 寫死，所以沒有人看到。
+    - **選擇合在同一行而不是第 4 行**：一顆按鈕、一次存檔、一次重啟同時做兩件事，使用者也只關心「另一台能不能找到、連到這台」；分成兩行只會讓兩行在同一次按下一起翻面。
+      這一行把缺的那一半說出來：只差搜尋時副標是 `firstRun.lan.notSearching`（「其他電腦連得到 {address}，但這台還沒在區網上搜尋…」），
+      按鈕是 `firstRun.turnOnSearch`「開始在區網上搜尋並繼續」，只寫 `discover`、不動位址與 `allowLan`。更早版本開過區網、沒開搜尋的機器因此開在第 1 步。
+      這時旁邊有 ghost「下一步，先不搜尋」（`firstRun.skipSearch`）：什麼都不寫、到第 2 步（輸入位址仍可配對，清單位置再提供一次開關）——
+      同意說明不能沒有「不要」；在設定頁刻意關掉搜尋的人不必為了配對而同意廣播（fresh-context 審查 2026-10-01）。
+    - **節點什麼時候廣播（查證）**：`-discover` 開著時節點整個行程都在聽區網上的 mDNS（`main.go` 的 `discovery.Listen`，只收不送），
+      但**只在配對視窗開著時**每 20 秒送出一次通告（`internal/pairing/announcer.go` 的 `announceIfOpen()` 先判 `mode.IsOpen()`；`AnnounceInterval`），
+      內容是節點 ID、名稱、平台、指紋與 peer listener 的位址（`discovery.Offer`、`AnnounceOffering()`——`internal/discovery` 唯一送封包的地方）。
+      視窗由精靈第 2 步（或配對抽屜）打開，預設 5 分鐘（`pairing.DefaultWindow`），離開就關。同意說明照這個寫。
     只記在記憶體、不存的是使用者的選擇：只在這台用（`localOnly`）、略過第 2／3 步、選的位址、勾的 session。
   - **第 1 步的一顆主要按鈕**（`runFirstRunPrepare()`）依序做完未完成的，任何一步失敗就停在那一行：一句可讀的錯誤＋`<details>`
     裡的原始錯誤（這一步期間記進通知紀錄的錯誤／警告，`noticesSince()`）＋「重試」，不前進；全部完成才自動到第 2 步
@@ -258,23 +270,35 @@
       而節點沒回應 → `restartNode()`（`RestartNode`）。之後節點還沒回答就 `waitForNode()` + `load()`，並**再讀一次**
       `ServiceStatus()` 才判定，並且用**那次讀取自己的回答**（`load()` 發出狀態讀取但不等它；被更新的讀取超車的那次不會存進
     `state.service`，存著的可能還是安裝前的狀態）。服務那一步失敗記在「開機後自動啟動」那一行，節點那行只說還沒執行。
-    - 區網（`prepareFirstRunLan()`）：節點設定表單有使用者沒存的修改（`unsavedNodeSettingsFields()`，配對抽屜同一條）就停，
-      列出欄位、不替他存；否則 `loadNodeSettings()` 取新基準，再走 `applyPeerListenRepairFromCard({ peerListen, peerListens: [位址], allowLan: true })`
+    - 區網（`prepareFirstRunLan()` → `writeFirstRunNetwork()`）：節點設定表單有使用者沒存的修改（`unsavedNodeSettingsFields(option)`，配對抽屜同一條；
+      只有這次按下要設的欄位〔`repairFields()`〕不算）就停，列出欄位、不替他存；否則 `loadNodeSettings()` 取新基準，再走
+      `applyPeerListenRepairFromCard({ peerListen, peerListens: [位址], allowLan: true, discover: true })`（說明句沒提位址就不帶前三個、沒提搜尋就不帶 `discover`）
       ——配對抽屜第 1 步同一條路：表單填好按儲存、單元固定的旗標照 §7.8 問、存完 `RestartNode()`（已安裝服務時 Go 端走
-      `RestartService`）、重讀比對有沒有真的寫進去（`didNotStick`）。之後 `loadPairing()` + `load()`，用節點回報的可達性判定成敗。
+      `RestartService`）、重讀比對有沒有真的寫進去（`didNotStick`）。**`discover` 與位址在同一次 `SaveNodeSettings`、同一次重啟。**
+      之後 `loadPairing()` + `load()`，用節點回報的可達性與 `availability` 判定成敗：不可達＝`firstRun.lan.failed`；可達但說明句提了搜尋而節點沒在搜尋
+      （存檔沒被保留、單元固定了旗標…）＝`firstRun.lan.searchFailed`，`<details>` 裡是這次存檔自己的回報（`savedDidNotStick` 等），列上有「重試」，
+      主要按鈕變成「下一步」（位址已開，用位址配對仍可行；第 2 步的補救在清單的位置）。
     - **快照規則（隱私）**：區網那一段只寫**按下那一刻畫面上說明句寫出的位址與埠**。第 1 步每顆會跑 `runFirstRunPrepare()` 的按鈕
       （主要按鈕、「重試」）在按下時取 `firstRunShownLan()`——最後一次畫出的說明句的 `{ address, port }`，說明句沒顯示時是 null——
       原樣傳給 `prepareFirstRunLan(shown)`，**不在節點與服務那段之後重算** `firstRunChosenAddress()`／`firstRunPort()`（節點存的位址與埠
       要節點跑起來才讀得到、位址清單可能在中間才回來或改變）。按下時沒有說明句（例如 `LocalAddresses()` 還沒回答、畫面是
       `firstRun.lan.noPrivate`）→ 只做節點與服務就停在第 1 步，讓使用者看到位址再按「開放區網並繼續」（測試 `first-run.mjs` §6b：
       位址晚到、清單在按下後改變、節點存的位址改變選擇、埠在按下後改變）。
-    - 按鈕文字：節點或服務沒好 →「準備好這台電腦」；只差區網 →「開放區網並繼續」；全部完成 → 完成狀態＋「下一步」。
+      **延伸到搜尋**：`firstRunShownLan()` 回 `{ address, port, discover }`，`discover` 是按下那一刻搜尋那句（`firstRun.lan.consentSearch`）在不在畫面上；
+      不在（例如節點當時已在搜尋）就不寫 `discover`，即使重啟後節點變成沒在搜尋——那時這一行回到未完成，說明句提到搜尋，再按一次（測試 `first-run.mjs` §6c）。
+    - 按鈕文字：節點或服務沒好 →「準備好這台電腦」；只差區網位址（含搜尋）→「開放區網並繼續」；位址已可達、只差搜尋 →「開始在區網上搜尋並繼續」；
+      搜尋開不起來而位址可達 →「下一步」；全部完成 → 完成狀態＋「下一步」。
     - 進行中那幾行顯示「進行中…」轉圈（`phase`），主要按鈕 `busy`；`state.busy` 或進行中時每顆寫入按鈕 disabled。
   - **開放區網是隱私決定**：主要按鈕上方一行藍底說明，寫出實際會用的位址（`LocalAddresses()` 裡 `private` 的那些，
-    埠照節點存的 `peerListen`）與影響（`firstRun.lan.consent`）。**兩個以上私有位址時列出單選**（`first-run-address`，
+    埠照節點存的 `peerListen`）與影響（`firstRun.lan.consent`：在那個位址接受配對請求，沒配對的電腦看不到任何 session——
+    原本寫「什麼都看不到」，搜尋打開後配對期間別人看得到名稱與位址，那句就不成立了）。節點沒在搜尋時同一行再加一句
+    （`firstRun.lan.consentSearch`）：「在區網上搜尋：配對期間，同一個網路上的其他電腦看得到這台的名稱與位址（以及平台、指紋與節點 ID）；沒在配對時不廣播。」
+    ——照上面查證的事實，不誇大（沒在配對時不送任何東西）也不縮小（平台、指紋與節點 ID 也在通告裡）。位址已可達、只差搜尋時只有這一句。
+    **兩個以上私有位址時列出單選**（`first-run-address`，
     預設節點已存的那個、否則第一個），說明句跟著選到的那個改；不替使用者決定。沒有私有位址時說明（`firstRun.lan.noPrivate`）
     並只提供「只在這台用」（此時它是主要按鈕）。
-  - **「只在這台用，不開放區網」**：不寫任何節點設定（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
+  - **「只在這台用，不開放區網」**：只在區網位址還不可達時出現（位址已開、只差搜尋時「不開放區網」已經不是一個選擇，第 2 步自己有「先跳過」）。
+    不寫任何節點設定，`discover` 也不寫（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
     「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。**節點與服務那段成功後才算數**（`localOnly`）；
     失敗時選擇只記成待定（`localOnlyPending`），區網那一行、說明句與兩個選擇都留著，「重試」重做同一個選擇、不開放區網
     （測試 `first-run.mjs` §6b 後段）。
@@ -291,13 +315,22 @@
     - **有未決請求（pending／awaiting-confirm）時**，每個請求一張卡（`frrequest`，以 request id 為 key），提示框與下面的尋找區隱藏：
       outgoing pending ＝等待畫面（轉圈、「等 X 按『核准』」、對方畫面會看到什麼、「對方核准之後，這裡會換成兩組指紋，你也要在這台比對一次」、
       「取消這次請求」→ `RejectPairRequest`，沒有指紋）；incoming pending 或 awaiting-confirm ＝比對畫面（標題「X（自稱）想和這台配對」／
-      「和 X（自稱）比對指紋」、「看著另一台的螢幕…」、`PAIR_TEXT.compare` 警語＋說明〔指紋之上〕、放大的指紋區塊、
-      **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，取消」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
+      「和 X（自稱）比對指紋」、「看著另一台的螢幕…」〔`firstRun.pair.compareSay`，按鈕照實寫「不一樣，拒絕」〕、`PAIR_TEXT.compare` 警語＋說明〔指紋之上；
+      說明是精靈自己的 `firstRun.pair.compareWhy`，同樣寫「不一樣，拒絕」——抽屜的 `why.compareFingerprints` 講的是抽屜的「拒絕」。
+      `PAIR_TEXT.compare` 本身是 §4 逐字斷言的，原樣保留，所以它的「按拒絕」仍出現在這張卡上〕、放大的指紋區塊、
+      **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，拒絕」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
       成功 toast 同抽屜（`pairStepText()` 的句子＋「（節點回報：…）」），但**不帶「去公開 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
     - 沒有未決請求時：「同一個網路上找到的電腦」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
       `contested`／`duplicate` pill、平台 · 最後看到；完整 nodeId、宣告的指紋、位址、首次／最後看到收進該列的 `<details>`
       （§4 的候選列斷言是對抽屜的 `candidate-rows`，在 DOM 裡就算數；精靈這份在 details 裡，也在 DOM 裡）；「送出配對請求」。
-      清單狀態同抽屜：讀取中、沒在看（`firstRun.pair.notLooking`）、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
+      清單狀態同抽屜：讀取中、沒在看、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
+    - **沒在看＝補救**（2026-10-01）：`availability` 是 `off` 或 `openNotAnnouncing`（第 1 步被跳過、存檔沒被保留、搜尋失敗後按了下一步、
+      之後在設定頁關掉）時，清單的位置換成 `.frsearchoff`：`firstRun.pair.notLooking`（為什麼是空的、請對方送請求或輸入位址）、
+      第 1 步同一句 `firstRun.lan.consentSearch`（藍底）、失敗時的一句＋`<details>` 原文、一顆「開始在區網上搜尋」（`turnOnFirstRunSearch()`；
+      沒配對時是主要按鈕、配對後降為 ghost）。按下走**同一個** `writeFirstRunNetwork({ discover: true })`：同一條未存修改的拒絕（這次只有 `discover`
+      是它的，表單上沒存的位址或 `allowLan` 一樣被拒並點名，不帶走、不離開精靈）、同一個存檔＋重啟＋`didNotStick`；之後 `loadPairing()` + `load()`，
+      重啟關掉的視窗不論成敗都由 `openPairingWindowIfNeeded()` 再開一次（仍傳 0；輸入位址也需要它），之後仍不是 `on` 就在原地說 `firstRun.lan.searchFailed`。
+      「找不到另一台？」的位址欄不受影響，一直可用。
     - `<details class="frmanual">`「找不到另一台？」：位址欄＋「送出」（Enter 同按、trim、空的不送並給錯誤 toast——都是 `sendPairRequest()` 的）、
       這台的位址（`pairHereState()`，節點說了就聽節點的；多個開放位址時列出每個）＋「複製」（`copyPairAddress(address, 狀態列)`），
       不可達時不印位址、複製 disabled、說明並給「回到第 1 步」（不重複修復按鈕）、何時需要手動的一句、「手動輸入配對資料…」（`openPairModal()`）。
@@ -336,8 +369,13 @@
   - **元素識別**：每一步的面板、每一行、每顆按鈕、每個位址與 session 列都只建一次、之後就地改寫（`firstRunParts`、以位址／session id
     為 key 的 Map），15 秒的 `load()` tick 不換掉游標下的按鈕、不收起打開的 `<details>`（測試 `first-run.mjs` §9）。
   - 測試 `first-run.mjs`（§1 出現條件與 `nodeChecked`、§1b 開在第一個未完成的步驟、§2 待處理列與標題列、§3 三項推導、§4 順序與失敗停下、§5 身分保護、
-    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；dev mock `?onboarding=fresh|slow|unreachable|mixed`、
-    `&addresses=two`、`mixed&service=none`。
+    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§6c 搜尋：只開搜尋、說明句沒提就不寫、只在這台用不寫、沒保留要說、第 2 步補救與它的拒絕、
+    §7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；測試的假節點與 dev mock 都從節點真正的預設開始（loopback、沒有 `-allow-lan`、
+    `discover: false`，`availability` 照 `App.Pairing()` 的規則推導：有搜尋 `on`、沒有時視窗開著 `openNotAnnouncing`、否則 `off`；候選只在 `on` 時才有）。
+    dev mock `?onboarding=fresh|slow|unreachable|mixed`、`&addresses=two`、`mixed&service=none`、`mixed&lan=open`（已設定：開放且在搜尋）、
+    `mixed&lan=open&discover=off`（更早版本開的區網、沒搜尋：第 1 步只差搜尋）、`&discover=stuck`（第一次要求的 `discover` 不被保留：第 1 步說搜尋開不起來並給下一步，第 2 步出現補救）。
+    英文介面不得出現全形標點：`test/fixtures/in-english.mjs` 的 `inEnglish()` 對 render 後的 DOM 文字檢查（`FULL_WIDTH`），
+    `first-run-pairing.mjs` §6b 用英文畫比對卡與複製失敗；app.js 組字串時的括號與空白走表格（`pair.roleLead`、`pair.whoseWrap`、`pair.hereCopyFailedWrap`）。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
 - **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
@@ -373,7 +411,15 @@
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
-- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
+- 列動作兩顆：`收件匣 ｜ 複製 ID`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
+  「複製 ID」（class `copyid`；en「Copy ID」）只複製 provider 自己的 session id，**不帶任何指令前綴**（§8）；
+  tooltip 與 `aria-label` 以按鈕文字開頭並寫出用途與 ID 本身（「複製 ID：這個 session 的 ID，可用於 claude --resume。<id>」，
+  Codex 列寫 `codex resume`）。按下後的「已複製 ✓」用 10.5px 字（13px 時按鈕從 60px 變 71px，
+  收件匣帶三位數徽章的列要 180px，超過欄寬 172px；dev/mock.html 900×760 量的），按鈕寬度不因此變大。
+- 工作目錄欄（2026-10-01）：有值時整格是一顆按鈕（`button.cwdcopy`，欄寬 × `--control-h` 高），按下複製完整路徑；
+  hover／鍵盤焦點時顯示邊框與複製圖示（圖示佔最後 22px，tooltip 有完整路徑）。路徑照舊以 textContent 進 `<bdi>`、
+  由右往左截斷。空值顯示純文字「—」（`span.cwdempty`），沒有按鈕。兩者在 `sessionRow` 建一次、`updateSessionRow` 切換，
+  tick 不換掉按鈕。
 - 空狀態：「沒有符合條件的 session。」
 
 ### 3.3 區網視圖
@@ -845,7 +891,13 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 | codex | `codex resume <providerSessionId>` | thread id |
 
 - 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
-- 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
+- ~~複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。~~（2026-10-01 取代，見下）
+
+**2026-10-01 更新（擁有者指定：「resume 複製時只給 session id 就好，前面指令不用，工作目錄也要可以複製」）。**
+按鈕改名「複製 ID」／「Copy ID」，複製的是**純 ID**：`providerSessionId`；沒有這個欄位時退回 `id` 第一個冒號之後的部分——
+兩者依構造相同：節點以 `model.SessionID(provider, providerSessionID)` 組出 `<provider>:<providerSessionId>`，
+`registry.validateSessionFields` 拒絕 id 與此不符的 session，`model.ValidateProviderSessionID` 拒絕含冒號的 providerSessionId，所以 id 裡只有一個冒號。上表的指令只出現在 tooltip 裡說明用途。
+工作目錄改由工作目錄欄自己複製（§3.2），所以回饋不再帶「在 <cwd> 執行」；回饋顯示在原地（§2 `CopyText`）。
 - 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 
 ### 4.2 Go 端靜態測試的硬性要求（`desktop/frontend_test.go`）
@@ -955,7 +1007,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 
 契約：
 
-1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `resume` 各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
+1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `copyid`（原 `resume`，2026-10-01 改名，§8）各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
 2. `openMCPConfig(sessionId)` 產生的設定必須帶**傳進去的那個** session。這條保護不能跟著入口一起拿掉：綁錯 session 之後從任何一側都看不出來（server 起得來、四個工具都回答，只是回答別人的 session）。2026-09-10 就發生過把另一台的 session id 手貼進設定。
 3. `col.c-actions` 寬度下限從 250px 降到 **160px**，實際寬度 176px。
    154px 是**算**出來的不是量出來的：沿用三顆按鈕那次量到的單顆寬度（收件匣 63、resume 67），

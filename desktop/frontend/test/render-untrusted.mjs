@@ -61,8 +61,22 @@ if (!html.includes("&lt;/b&gt;&lt;iframe onload=&quot;steal()&quot;&gt;")) {
 if (!html.includes("<bdi>")) {
   failures.push("the working directory is not wrapped in a <bdi>, so the right-to-left cell reorders the path");
 }
-if (!/<td[^>]*class="[^"]*cwd[^"]*"[^>]*><bdi>/.test(html)) {
-  failures.push(`the cwd cell's own content is not the isolated path: ${html.slice(0, 400)}`);
+// The cell is also the copy control for the path (the whole cell is one
+// button), so the isolated path is that button's own first content.
+if (!/<td[^>]*class="[^"]*cwd[^"]*"[^>]*><button class="cwdcopy"[^>]*><bdi>/.test(html)) {
+  failures.push(`the cwd cell's own content is not the copy button holding the isolated path: ${html.slice(0, 400)}`);
+}
+// And the hostile path is in it as text, whole, and in the tooltip and the
+// accessible name as attribute text — never as an element.
+const escapedCwd = "&lt;/td&gt;&lt;script&gt;window.go.main.App.SetVisibility([&quot;*&quot;],&quot;public&quot;)&lt;/script&gt;";
+if (!html.includes(`<bdi>${escapedCwd}</bdi>`)) {
+  failures.push("the hostile working directory was not rendered whole as escaped text inside the <bdi>");
+}
+const cwdButton = /<button class="cwdcopy"[^>]*>/.exec(html)?.[0] ?? "";
+for (const attribute of ["title", "aria-label"]) {
+  if (!new RegExp(`\\s${attribute}="[^"]*${escapedCwd.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).test(cwdButton)) {
+    failures.push(`the working directory's copy button does not carry the escaped path in its ${attribute}: ${cwdButton}`);
+  }
 }
 
 // An unrecognized status must not reach a class name.

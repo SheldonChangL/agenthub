@@ -526,6 +526,15 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   background: rgba(94, 200, 255, 0.12); border: 1px solid rgba(94, 200, 255, 0.3);
   font-size: 13px; line-height: 1.55; overflow-wrap: anywhere;
 }
+/* Two sentences, each about one thing the press does: one apiece per line. */
+.frconsent > span { display: block; }
+.frconsent > span + span { margin-top: 6px; }
+.frconsent > span.hidden { display: none; }
+/* Step 2's switch, in the list's place while the node is not searching. */
+.frsearchoff { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.frsearchoff > p { margin: 0; }
+.frsearchoff > .frlooking { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.frsearchoff .frissue .frissuetext { color: #f0908a; }
 .frpick { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 6px; }
 .frpick legend { padding: 0; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); }
 .frpicklist { display: flex; flex-direction: column; gap: 6px; }
@@ -833,6 +842,63 @@ tbody tr.sel td.col-actions { background: #16261d; }
    so the slashes do not migrate. */
 td.cwd { direction: rtl; text-align: left; }
 td.cwd bdi { direction: ltr; unicode-bidi: isolate; }
+/* A path is also a copy control (app.js sessionRow): a button the width of
+   the cell and a control high, so the whole cell is the target, drawn as the
+   plain path it holds until it is hovered or focused. It clips the way the
+   cell did — right-to-left, losing the head — and on hover or focus a copy
+   icon takes the last 22px, which the tooltip's whole path makes up for.
+   「已複製 ✓」 covers the cell for the moment after a copy. */
+td.cwd button.cwdcopy {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: var(--control-h);
+  padding: 0 4px;
+  border-color: transparent;
+  background: transparent;
+  color: inherit;
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+td.cwd button.cwdcopy:hover:not(:disabled),
+td.cwd button.cwdcopy:focus-visible { padding-right: 26px; border-color: var(--line); background: rgba(255, 255, 255, 0.04); color: var(--text); }
+td.cwd button.cwdcopy:hover::after,
+td.cwd button.cwdcopy:focus-visible::after {
+  content: "";
+  position: absolute;
+  top: 50%; right: 6px;
+  width: 14px; height: 14px; margin-top: -7px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><rect width='14' height='14' x='8' y='8' rx='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/></svg>") center / contain no-repeat;
+}
+td.cwd button.cwdcopy .copiedflash {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  direction: ltr;
+  border-radius: 6px;
+  background: #1a2027;
+  color: var(--accent);
+}
+td.cwd button.cwdcopy.copied::after { content: none; }
+/* The Copy ID button while it says 「已複製 ✓」, in a smaller face so the button
+   does not grow. Measured in dev/mock.html at 900x760: at 13px 「已複製 ✓」
+   is 52.6px of text against 「複製 ID」's 42.1px, which made the button 71px
+   instead of 60px, and a row whose inbox carries a three-digit badge (93px)
+   then needed 180px of the actions column's 172px. At 10.5px it is the
+   same width as 「複製 ID」, and 「Copied ✓」 is narrower than 「Copy ID」. */
+.rowactions button.copyid.copied { color: var(--accent); border-color: var(--accent-line); }
+.rowactions button.copyid.copied .label { font-size: 10.5px; }
+
+/* The copy the clipboard refused (openCopyFallback): the sentence, the text
+   in a read-only field the owner can select, and Close. */
+.popover.copyfallback { display: grid; gap: 8px; padding: 10px; }
+.popover.copyfallback .copynote { margin: 0; font-size: 12px; color: var(--amber); white-space: normal; }
+.popover.copyfallback .copyfield { width: 100%; font-family: var(--mono); font-size: 11.5px; user-select: text; -webkit-user-select: text; }
+.popover.copyfallback button { justify-self: end; }
 .sid .providertag {
   display: inline-flex; align-items: center;
   height: 16px; padding: 0 6px; margin-right: 8px;
