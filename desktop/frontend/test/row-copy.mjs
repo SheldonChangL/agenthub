@@ -159,6 +159,34 @@ const noticesBefore = app.state.notices.length;
   app.closeCopyFallback();
   check(!app.copyFallbackOpen(), "the fallback did not close");
 
+  // Tab walks the field and Close; past the end it closes the box and gives
+  // the keyboard back to the button, as the audience menu does.
+  refuse = "clipboard is busy";
+  parts.resumeButton.onclick();
+  await settle();
+  refuse = null;
+  {
+    const tabBox = el("copy-fallback");
+    const [tabField, tabClose] = ["input", "button"].map((tag) => tabBox.children.find((child) => child?.tagName === tag));
+    const tab = (shiftKey = false) => app.copyFallbackKey({ key: "Tab", shiftKey, preventDefault() {}, stopPropagation() {} });
+    tabField?.focus?.();
+    tab();
+    check(app.copyFallbackOpen() && document.activeElement === tabClose, "Tab from the field did not move to Close inside the box");
+    tab(true);
+    check(app.copyFallbackOpen() && document.activeElement === tabField, "Shift+Tab from Close did not move back to the field");
+    tab(true);
+    check(!app.copyFallbackOpen(), "Shift+Tab out of the box left it open over the page");
+    check(document.activeElement === parts.resumeButton, "leaving the box by Tab did not give the keyboard back to the button");
+    refuse = "clipboard is busy";
+    parts.resumeButton.onclick();
+    await settle();
+    refuse = null;
+    el("copy-fallback").children.find((child) => child?.tagName === "button")?.focus?.();
+    tab();
+    check(!app.copyFallbackOpen(), "Tab past Close left the box open, holding the tick off");
+    check(!app.interactionInProgress(), "the tick is still held off after the box closed by Tab");
+  }
+
   // The working directory's copy, refused, offers the path — as a field's
   // value, which is text whatever it holds.
   const hostile = { ...codex, cwd: '/tmp/<img src=x onerror="alert(1)">' };

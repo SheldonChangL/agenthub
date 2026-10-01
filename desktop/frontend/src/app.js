@@ -451,8 +451,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // A session without one falls back to what follows the first colon of its
   // AgentHub id, which is the same value by construction: the node builds
   // the id as `<provider>:<providerSessionId>` (model.SessionID) and refuses
-  // a stored session whose id does not match that, or whose provider half
-  // contains a colon (registry.validateSessionFields).
+  // a stored session whose id does not match that (registry.validateSessionFields);
+  // the provider session id itself may not contain a colon
+  // (model.ValidateProviderSessionID), so the first colon is the only one.
   function resumeId(session) {
     if (session.providerSessionId) return String(session.providerSessionId);
     const id = String(session.id ?? "");
@@ -4209,10 +4210,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // Esc closes the copy fallback and gives the keyboard back to the control
   // that was pressed.
   function copyFallbackKey(event) {
-    if (!copyFallbackOpen() || event?.key !== "Escape") return;
+    if (!copyFallbackOpen()) return;
+    if (event?.key === "Escape") {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      closeCopyFallback({ focus: true });
+      return;
+    }
+    // Tab moves between the field and Close; past either end it leaves the
+    // box, which then closes and hands the keyboard back to the control, as
+    // the audience menu does. Left open behind a Tab, the box would float over
+    // whatever view the keyboard reached and hold the tick off indefinitely.
+    if (event?.key !== "Tab") return;
+    const box = el("copy-fallback");
+    const stops = Array.from(box.children ?? []).filter((child) => /^(input|button)$/i.test(child?.tagName ?? ""));
+    const at = stops.indexOf(document.activeElement);
+    const next = at + (event.shiftKey ? -1 : 1);
     event.preventDefault?.();
-    event.stopPropagation?.();
-    closeCopyFallback({ focus: true });
+    if (at === -1 || next < 0 || next >= stops.length) {
+      closeCopyFallback({ focus: true });
+      return;
+    }
+    stops[next].focus?.();
   }
 
   // A press outside it closes it; a press on the control it belongs to is
@@ -9298,7 +9317,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeId,
-    copyFromRow, copyFallbackOpen, closeCopyFallback, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,

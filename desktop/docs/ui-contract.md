@@ -858,7 +858,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 **2026-10-01 更新（擁有者指定：「resume 複製時只給 session id 就好，前面指令不用，工作目錄也要可以複製」）。**
 按鈕改名「複製 ID」／「Copy ID」，複製的是**純 ID**：`providerSessionId`；沒有這個欄位時退回 `id` 第一個冒號之後的部分——
 兩者依構造相同：節點以 `model.SessionID(provider, providerSessionID)` 組出 `<provider>:<providerSessionId>`，
-`registry.validateSessionFields` 拒絕 id 與此不符、或 provider 那半含冒號的 session。上表的指令只出現在 tooltip 裡說明用途。
+`registry.validateSessionFields` 拒絕 id 與此不符的 session，`model.ValidateProviderSessionID` 拒絕含冒號的 providerSessionId，所以 id 裡只有一個冒號。失敗框裡 Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕（同公開對象選單）。上表的指令只出現在 tooltip 裡說明用途。
 工作目錄改由工作目錄欄自己複製（§3.2），所以回饋不再帶「在 <cwd> 執行」；回饋顯示在原地（§2 `CopyText`）。
 - 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 
