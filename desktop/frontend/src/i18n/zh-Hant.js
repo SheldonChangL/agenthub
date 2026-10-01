@@ -745,7 +745,7 @@ export const TEXT = {
   "firstRun.pair.fingerprintLabel": "它宣告的指紋",
   "firstRun.pair.addressLabel": "位址",
   "firstRun.pair.noCandidates": "還沒找到。另一台打開 AgentHub 並做到這一步後，會出現在這裡。",
-  "firstRun.pair.notLooking": "這台沒有在區網上搜尋，所以這裡不會列出任何一台，這台也不會出現在另一台的清單裡。按「開始在區網上搜尋」，或用位址配對：在下面輸入另一台的位址，或請另一台輸入這台的位址。",
+  "firstRun.pair.notLooking": "這台沒有在區網上搜尋，所以這裡不會列出任何一台，這台也不會出現在另一台的清單裡。按「開始在區網上搜尋」，或用位址配對：打開下面的「找不到另一台？」輸入另一台的位址，或請另一台輸入那裡列出的這台位址。",
   "firstRun.pair.startSearch": "開始在區網上搜尋",
   "firstRun.pair.cannotFind": "找不到另一台？",
   "firstRun.pair.addressPlaceholder": "輸入另一台畫面上的位址，例如 192.168.50.31:7463",

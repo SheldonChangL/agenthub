@@ -185,8 +185,8 @@ is not running — it is stopped, the node is running outside it, or its status 
 still being read — the button reads **Get this machine ready**, with **Get this
 machine ready, without searching** beside it. That second button does the same
 to the service as the first (it starts it, or sends you to Settings to confirm
-the database first) but writes no network setting, so searching stays off; then
-it moves on to step 2.
+the database first) but writes no network setting, so searching stays off; once
+the service is running, it moves on to step 2.
 
 Prefer to keep AgentHub on this one computer? Press **Use it on this machine
 only**. Step 2 is then marked **Staying on this machine** and skipped.

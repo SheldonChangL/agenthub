@@ -1027,8 +1027,8 @@ advertise an address nothing is listening on: the peer would see a candidate
 that looks right, with a matching fingerprint, and get a refused connection.
 (An earlier node refused to open the window in this case, with `409
 NO_ANNOUNCEABLE_ADDRESS`; `openPairing` in `internal/api/pairing.go` says why
-that changed. The only refusal left is a window outside 30 s–15 min, answered
-`400 INVALID_REQUEST` rather than clamped.)
+that changed. The window is no longer refused for want of an address; a length
+outside 30 s–15 min is refused with `400 INVALID_REQUEST` rather than clamped.)
 
 A node with `-discover` joins the group on every interface that can carry it,
 re-checked every ten seconds so an adapter plugged in after startup is picked up

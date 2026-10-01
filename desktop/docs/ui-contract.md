@@ -336,7 +336,7 @@
       （§4 的候選列斷言是對抽屜的 `candidate-rows`，在 DOM 裡就算數；精靈這份在 details 裡，也在 DOM 裡）；「送出配對請求」。
       清單狀態同抽屜：讀取中、沒在看、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
     - **沒在看＝補救**（2026-10-01）：`availability` 是 `off` 或 `openNotAnnouncing`（第 1 步被跳過、存檔沒被保留、搜尋失敗後按了下一步、
-      之後在設定頁關掉）時，清單的位置換成 `.frsearchoff`：`firstRun.pair.notLooking`（為什麼是空的、請對方送請求或輸入位址）、
+      之後在設定頁關掉）時，清單的位置換成 `.frsearchoff`：`firstRun.pair.notLooking`（為什麼是空的、這台也不會出現在對方清單、按「開始在區網上搜尋」或打開「找不到另一台？」用位址配對）、
       第 1 步同一句 `firstRun.lan.consentSearch`（藍底）、失敗時的一句＋`<details>` 原文、一顆「開始在區網上搜尋」（`turnOnFirstRunSearch()`；
       沒配對時是主要按鈕、配對後降為 ghost）。按下走**同一個** `writeFirstRunNetwork({ discover: true })`：同一條未存修改的拒絕（這次只有 `discover`
       是它的，表單上沒存的位址或 `allowLan` 一樣被拒並點名，不帶走、不離開精靈）、同一個存檔＋重啟＋`didNotStick`；之後 `loadPairing()` + `load()`，

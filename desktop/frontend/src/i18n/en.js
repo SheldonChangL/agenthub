@@ -750,7 +750,7 @@ export const TEXT = {
   "firstRun.pair.fingerprintLabel": "Fingerprint it announced",
   "firstRun.pair.addressLabel": "Address",
   "firstRun.pair.noCandidates": "Nothing found yet. The other machine shows up here once it has AgentHub open at this step.",
-  "firstRun.pair.notLooking": "This machine is not searching the network, so nothing will be listed here, and it does not show up in the other machine's list either. Press Start searching the network, or pair by address: type the other machine's address below, or have it type this one's.",
+  "firstRun.pair.notLooking": "This machine is not searching the network, so nothing will be listed here, and it does not show up in the other machine's list either. Press Start searching the network, or pair by address: open Can't find the other machine? below and type the other machine's address, or give it this machine's address shown there.",
   "firstRun.pair.startSearch": "Start searching the network",
   "firstRun.pair.cannotFind": "Can't find the other machine?",
   "firstRun.pair.addressPlaceholder": "The address on the other machine's screen, e.g. 192.168.50.31:7463",
