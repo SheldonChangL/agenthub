@@ -1314,6 +1314,190 @@ checks=$((checks + 1))
 if sh "$installer" --uninstall --version v0.1.0 >"$work/un-version.txt" 2>&1; then fail "--uninstall --version was accepted"; fi
 contains un-version "$work/un-version.txt" "do not go with it"
 
+# ---- a running app on a macOS upgrade --------------------------------------
+
+# A real macOS install from a .dmg, on any machine: hdiutil, ditto and xattr
+# are shims, and so are the two things quit_running_app asks — osascript, and
+# pgrep for whether the app is still there. What is real is the rm -rf of the
+# old bundle, which is why every run is a --prefix install into the work
+# directory, with a HOME of its own, and why a dry run of the same command has
+# to show that rm naming the prefix — and nothing under /Applications — before
+# any real run is made. A faked uname does not fake the disk.
+#
+# The case that matters is issue #211: a Wails app answers every quit request
+# with "cancel" (-128) and then quits on its own a moment later, and that
+# answer used to end the install under set -e with a raw AppleScript line.
+quit_shim="$work/quit-shim"
+mkdir -p "$quit_shim"
+# pgrep answers only for the prefix's app and says "not running" for anything
+# else, so no pattern this suite does not control can match a real process.
+# Its first call is quit_running_app's "is it running?"; every call after that
+# is one turn of the wait loop, and QUIT_RUNNING_FOR says how many of those
+# still find it ("forever" for an app that never goes).
+cat >"$quit_shim/pgrep" <<'EOF'
+#!/bin/sh
+echo "$*" >>"$QUIT_LOG.pgrep"
+case "$*" in
+*"$QUIT_PREFIX/agenthub-desktop.app/Contents/MacOS/desktop"*) ;;
+*) exit 1 ;;
+esac
+calls=$(($(cat "$QUIT_LOG.count" 2>/dev/null || echo 0) + 1))
+echo "$calls" >"$QUIT_LOG.count"
+[ "$calls" -eq 1 ] && exit 0
+[ "$QUIT_RUNNING_FOR" = forever ] && exit 0
+[ "$calls" -le $((QUIT_RUNNING_FOR + 1)) ] && exit 0
+exit 1
+EOF
+cat >"$quit_shim/osascript" <<'EOF'
+#!/bin/sh
+echo "$*" >>"$QUIT_LOG.osascript"
+if [ "$QUIT_OSASCRIPT" = refuse ]; then
+	# What macOS printed on the machine in issue #211, localised as it was.
+	echo "0:27: execution error: agenthub-desktop發生錯誤：使用者取消操作。 (-128)" >&2
+	exit 1
+fi
+EOF
+# hdiutil attach "mounts" a new bundle, marked new, at the mount point.
+cat >"$quit_shim/hdiutil" <<'EOF'
+#!/bin/sh
+echo "$*" >>"$QUIT_LOG.hdiutil"
+[ "$1" = attach ] || exit 0
+while [ "$#" -gt 1 ]; do
+	[ "$1" = -mountpoint ] && mount_point=$2
+	shift
+done
+mkdir -p "$mount_point/agenthub-desktop.app/Contents/MacOS"
+echo new >"$mount_point/agenthub-desktop.app/Contents/MacOS/desktop"
+printf '#!/bin/sh\necho "ah (fake, new)"\n' >"$mount_point/agenthub-desktop.app/Contents/MacOS/ah"
+chmod +x "$mount_point/agenthub-desktop.app/Contents/MacOS/ah"
+EOF
+# ditto writes only into the prefix; anywhere else is a test that has escaped.
+cat >"$quit_shim/ditto" <<'EOF'
+#!/bin/sh
+case "$2" in
+"$QUIT_PREFIX"/*) cp -R "$1" "$2" ;;
+*) echo "ditto shim: refusing to write $2 outside $QUIT_PREFIX" >&2; exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\nexit 0\n' >"$quit_shim/xattr"
+# The wait loop sleeps a second a turn; the shim keeps ten turns from costing
+# ten seconds. pgrep's count, not the clock, is what the cases turn on.
+printf '#!/bin/sh\nexit 0\n' >"$quit_shim/sleep"
+chmod +x "$quit_shim"/*
+quit_dmg_dir="$work/quit-dmg"
+mkdir -p "$quit_dmg_dir"
+echo "not really a disk image" >"$quit_dmg_dir/agenthub-desktop_v0.1.0_darwin_universal.dmg"
+(
+	cd "$quit_dmg_dir"
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum agenthub-desktop_v0.1.0_darwin_universal.dmg >SHA256SUMS
+	else
+		shasum -a 256 agenthub-desktop_v0.1.0_darwin_universal.dmg >SHA256SUMS
+	fi
+)
+quit_darwin=$(fake_uname Darwin arm64)
+
+# quit_case puts the previous version's bundle, marked old, in a fresh prefix
+# and runs a real upgrade over it. Its status is the installer's.
+quit_case() { # quit_case <name> <ok|refuse> <turns still running|forever> [args...]
+	local name=$1 osascript_mode=$2 running_for=$3
+	shift 3
+	QUIT_PFX="$work/quit-$name"
+	QUIT_OUT="$work/quit-$name.txt"
+	mkdir -p "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS" "$work/quit-$name-home"
+	touch "$QUIT_PFX/.agenthub-install"
+	echo old >"$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop"
+	rm -f "$work/quit-$name.log".*
+	PATH="$quit_shim:$quit_darwin:$bare_path" SHELL=/bin/zsh \
+		QUIT_LOG="$work/quit-$name.log" QUIT_PREFIX="$QUIT_PFX" \
+		QUIT_OSASCRIPT="$osascript_mode" QUIT_RUNNING_FOR="$running_for" \
+		isolated "$work/quit-$name-home" sh "$installer" \
+		--from "$quit_dmg_dir/agenthub-desktop_v0.1.0_darwin_universal.dmg" \
+		--prefix "$QUIT_PFX" --no-service --no-open --no-modify-path --no-skill "$@" >"$QUIT_OUT" 2>&1
+}
+
+echo "== a running app: the dry run stays inside the prefix =="
+checks=$((checks + 1))
+quit_safe=1
+if ! quit_case dry refuse forever --dry-run; then
+	fail "quit-dry: the dry run failed: $(cat "$QUIT_OUT")"
+	quit_safe=0
+fi
+commands_only "$QUIT_OUT" "$work/quit-dry.cmds"
+checks=$((checks + 1))
+if ! grep -qxF -- "+ rm -rf $QUIT_PFX/agenthub-desktop.app" "$work/quit-dry.cmds"; then
+	fail "quit-dry: the old bundle's rm -rf is not the prefix's: $(grep -F 'rm -rf' "$work/quit-dry.cmds")"
+	quit_safe=0
+fi
+checks=$((checks + 1))
+if grep -qF "/Applications" "$work/quit-dry.cmds"; then
+	fail "quit-dry: a command names /Applications: $(grep -F /Applications "$work/quit-dry.cmds")"
+	quit_safe=0
+fi
+contains quit-dry "$work/quit-dry.cmds" "osascript -e 'quit app \"agenthub-desktop\"'"
+checks=$((checks + 1))
+[ ! -e "$work/quit-dry.log.osascript" ] || fail "quit-dry: a dry run ran osascript"
+
+if [ "$quit_safe" -eq 1 ]; then
+	echo "== a quit macOS calls cancelled, then the app quits: the upgrade completes =="
+	checks=$((checks + 1))
+	quit_case late refuse 2 || fail "quit-late: the upgrade failed: $(cat "$QUIT_OUT")"
+	contains quit-late "$QUIT_OUT" "agenthub-desktop is running; asking it to quit"
+	contains quit-late "$QUIT_OUT" "agenthub-desktop quit"
+	contains quit-late "$QUIT_OUT" "installed $QUIT_PFX/agenthub-desktop.app"
+	contains quit-late "$QUIT_OUT" "done. AgentHub"
+	# -128 is the normal answer to a quit that then happens; it is not news.
+	lacks quit-late "$QUIT_OUT" "execution error"
+	contains quit-late "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" "new"
+	contains quit-late "$work/quit-late.log.osascript" "-e quit app \"agenthub-desktop\""
+	# Asked once to see it running, then three turns: two still there, one gone.
+	checks=$((checks + 1))
+	[ "$(cat "$work/quit-late.log.count")" = 4 ] ||
+		fail "quit-late: pgrep was asked $(cat "$work/quit-late.log.count") times, not 4"
+
+	echo "== a quit that is cancelled and never happens: our message, the old app kept =="
+	checks=$((checks + 1))
+	if quit_case never refuse forever; then
+		fail "quit-never: the upgrade went on with the app still running"
+	fi
+	contains quit-never "$QUIT_OUT" "install.sh: agenthub-desktop is still running after 10 seconds"
+	contains quit-never "$QUIT_OUT" "Quit it yourself (right-click its Dock icon, Quit) and run this again."
+	contains quit-never "$QUIT_OUT" "(macOS answered the quit request with: 0:27: execution error: agenthub-desktop發生錯誤：使用者取消操作。 (-128))"
+	# The AppleScript line appears once, inside our message, and not ahead of it.
+	checks=$((checks + 1))
+	[ "$(grep -c "execution error" "$QUIT_OUT")" = 1 ] ||
+		fail "quit-never: the AppleScript reply is printed on its own: $(cat "$QUIT_OUT")"
+	lacks quit-never "$QUIT_OUT" "installed $QUIT_PFX/agenthub-desktop.app"
+	checks=$((checks + 1))
+	[ "$(cat "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" 2>/dev/null)" = old ] ||
+		fail "quit-never: the running app's bundle was removed or replaced"
+	# The whole loop ran: one "is it running?" and ten turns.
+	checks=$((checks + 1))
+	[ "$(cat "$work/quit-never.log.count")" = 11 ] ||
+		fail "quit-never: pgrep was asked $(cat "$work/quit-never.log.count") times, not 11"
+
+	echo "== a quit macOS accepts: the upgrade completes as before =="
+	checks=$((checks + 1))
+	quit_case ok ok 0 || fail "quit-ok: the upgrade failed: $(cat "$QUIT_OUT")"
+	contains quit-ok "$QUIT_OUT" "agenthub-desktop quit"
+	contains quit-ok "$QUIT_OUT" "done. AgentHub"
+	contains quit-ok "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" "new"
+	contains quit-ok "$work/quit-ok.log.osascript" "-e quit app \"agenthub-desktop\""
+
+	echo "== a quit macOS accepts but the app stays: our message, no reply to quote =="
+	checks=$((checks + 1))
+	if quit_case stays ok forever; then
+		fail "quit-stays: the upgrade went on with the app still running"
+	fi
+	contains quit-stays "$QUIT_OUT" "Quit it yourself (right-click its Dock icon, Quit) and run this again."
+	lacks quit-stays "$QUIT_OUT" "macOS answered"
+	checks=$((checks + 1))
+	[ "$(cat "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" 2>/dev/null)" = old ] ||
+		fail "quit-stays: the running app's bundle was removed or replaced"
+else
+	echo "  skipped the real quit cases: the dry run did not stay inside the prefix" >&2
+fi
+
 # ---- the Claude Code skill ---------------------------------------------------
 
 # The skill is what tells an agent on this machine that `ah` exists. It travels
