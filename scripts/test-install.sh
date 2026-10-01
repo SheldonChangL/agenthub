@@ -1466,7 +1466,7 @@ if [ "$quit_safe" -eq 1 ]; then
 	# The AppleScript line appears once, inside our message, and not ahead of it.
 	checks=$((checks + 1))
 	[ "$(grep -c "execution error" "$QUIT_OUT")" = 1 ] ||
-		fail "quit-never: the AppleScript reply is printed on its own: $(cat "$QUIT_OUT")"
+		fail "quit-never: the AppleScript reply appears $(grep -c "execution error" "$QUIT_OUT") times, not once: $(cat "$QUIT_OUT")"
 	lacks quit-never "$QUIT_OUT" "installed $QUIT_PFX/agenthub-desktop.app"
 	checks=$((checks + 1))
 	[ "$(cat "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" 2>/dev/null)" = old ] ||
@@ -1483,6 +1483,14 @@ if [ "$quit_safe" -eq 1 ]; then
 	contains quit-ok "$QUIT_OUT" "done. AgentHub"
 	contains quit-ok "$QUIT_PFX/agenthub-desktop.app/Contents/MacOS/desktop" "new"
 	contains quit-ok "$work/quit-ok.log.osascript" "-e quit app \"agenthub-desktop\""
+
+	# A QUIT_APP_PATH left in the owner's environment must not point the
+	# running-app check at some other bundle: the upgrade would then skip the
+	# quit and replace a running app's files.
+	QUIT_APP_PATH=/nowhere/agenthub-desktop.app quit_case stray ok 0 ||
+		fail "quit-stray: the upgrade failed: $(cat "$QUIT_OUT")"
+	contains quit-stray "$QUIT_OUT" "agenthub-desktop quit"
+	contains quit-stray "$work/quit-stray.log.osascript" "-e quit app \"agenthub-desktop\""
 
 	echo "== a quit macOS accepts but the app stays: our message, no reply to quote =="
 	checks=$((checks + 1))

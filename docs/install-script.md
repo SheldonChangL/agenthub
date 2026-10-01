@@ -292,7 +292,7 @@ out from under a live process.
 What osascript answers does not decide anything: the app is a Wails app, which
 replies to every quit request with "cancel" (AppleScript error -128, "user
 canceled") and then quits on its own a moment later, so only `pgrep` says
-whether it went. The reply is shown only if the ten seconds run out, after the
+whether it went. A failing reply is shown only if the ten seconds run out, after the
 script's own instructions.
 
 `ah service install` runs again on every upgrade, not only the first time. The
