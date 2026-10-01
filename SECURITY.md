@@ -52,16 +52,17 @@ expect:
   getting past `allowOutbound`.
 - **`install.sh`** — anything that installs a file other than the release
   asset it checked against that release's `SHA256SUMS`, or that writes outside
-  the locations the README lists.
+  the locations [docs/install-script.md](docs/install-script.md) lists.
 - **The desktop app's service install** — the app running an `ah`,
   `agenthub-node` or `agenthub-mcp` other than the one it found where the
-  README says it looks, or registering a service that does something other than
+  [developer guide](docs/developer.md#desktop-app) says it looks, or
+  registering a service that does something other than
   what the form showed.
 
 ## Out of scope
 
 These are documented limits of the design, not vulnerabilities. The reasoning
-is in the README's "How it stays private" and in
+is in [How it stays private](docs/developer.md#how-it-stays-private) and in
 [docs/decisions/](docs/decisions/).
 
 - **Attacks that start with access to the machine.** The owner's API on
@@ -81,7 +82,8 @@ is in the README's "How it stays private" and in
 - **Unsigned binaries.** The macOS app is ad-hoc signed and not notarized, and
   the Windows installer is not signed. A matching `SHA256SUMS` proves the file
   is what the release workflow published, not that the release page itself is
-  honest; the README says what backs it.
+  honest; [the developer guide](docs/developer.md#what-a-checksum-proves-and-what-it-does-not)
+  says what backs it.
 - **Being run on a network you do not trust.** The peer listener stays on
   loopback until you pass `--allow-lan` and name a private address; opening it
   wider is the owner's decision.
