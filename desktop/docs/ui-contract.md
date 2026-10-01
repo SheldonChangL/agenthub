@@ -376,7 +376,8 @@
 - 列動作兩顆：`收件匣 ｜ 複製 ID`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
   「複製 ID」（class `copyid`；en「Copy ID」）只複製 provider 自己的 session id，**不帶任何指令前綴**（§8）；
   tooltip 與 `aria-label` 以按鈕文字開頭並寫出用途與 ID 本身（「複製 ID：這個 session 的 ID，可用於 claude --resume。<id>」，
-  Codex 列寫 `codex resume`）。
+  Codex 列寫 `codex resume`）。按下後的「已複製 ✓」用 10.5px 字（13px 時按鈕從 60px 變 71px，
+  收件匣帶三位數徽章的列要 180px，超過欄寬 172px；dev/mock.html 900×760 量的），按鈕寬度不因此變大。
 - 工作目錄欄（2026-10-01）：有值時整格是一顆按鈕（`button.cwdcopy`，欄寬 × `--control-h` 高），按下複製完整路徑；
   hover／鍵盤焦點時顯示邊框與複製圖示（圖示佔最後 22px，tooltip 有完整路徑）。路徑照舊以 textContent 進 `<bdi>`、
   由右往左截斷。空值顯示純文字「—」（`span.cwdempty`），沒有按鈕。兩者在 `sessionRow` 建一次、`updateSessionRow` 切換，

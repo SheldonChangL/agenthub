@@ -875,8 +875,14 @@ td.cwd button.cwdcopy .copiedflash {
   color: var(--accent);
 }
 td.cwd button.cwdcopy.copied::after { content: none; }
-/* The Copy ID button while it says 「已複製 ✓」. */
+/* The Copy ID button while it says 「已複製 ✓」, in a smaller face so the button
+   does not grow. Measured in dev/mock.html at 900x760: at 13px 「已複製 ✓」
+   is 52.6px of text against 「複製 ID」's 42.1px, which made the button 71px
+   instead of 60px, and a row whose inbox carries a three-digit badge (93px)
+   then needed 180px of the actions column's 172px. At 10.5px it is the
+   same width as 「複製 ID」, and 「Copied ✓」 is narrower than 「Copy ID」. */
 .rowactions button.copyid.copied { color: var(--accent); border-color: var(--accent-line); }
+.rowactions button.copyid.copied .label { font-size: 10.5px; }
 
 /* The copy the clipboard refused (openCopyFallback): the sentence, the text
    in a read-only field the owner can select, and Close. */
