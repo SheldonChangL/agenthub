@@ -8,8 +8,9 @@ For a security problem, do not open an issue: see [SECURITY.md](SECURITY.md).
 ## What you need
 
 - **Go 1.27.0 or newer** for both modules (`go.mod` and `desktop/go.mod`). The
-  floor is a security requirement, not a language one; the README's "Build and
-  test" section says why.
+  floor is a security requirement, not a language one;
+  [Build and test](docs/developer.md#build-and-test) in the developer guide
+  says why.
 - **Node 22** for the desktop frontend. It is not optional: the desktop Go
   tests run the frontend checks through `node`.
 - On Linux, the desktop module needs GTK 3 and WebKit2GTK 4.1 headers to

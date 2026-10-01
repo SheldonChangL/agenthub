@@ -71,6 +71,9 @@ if (readmeDemo) {
     sessions.splice(hostile, 1);
     Object.assign(counts, { total: sessions.length, claude: counts.claude - 1, none: counts.none - 1 });
   }
+  // The README says a Claude Code session is never woken, so its picture does
+  // not show the top row, a Claude Code session, flagged WAKE.
+  sessions[0].audience.autoWake = false;
 }
 
 // The first-run wizard, which the finished window above can never show: every
@@ -425,15 +428,17 @@ const shapedService = () => ({
   noah: { toolError: "ah not found on PATH or beside the app", supported: true, installed: false, running: false },
 }[serviceShape]);
 // A first run has published nothing yet, so the counts follow the sessions the
-// wizard's step 3 shares rather than the finished preview's fixed numbers.
-if (firstRun) for (const s of sessions) s.audience = aud("none");
+// wizard's step 3 shares rather than the finished preview's fixed numbers. The
+// README's wizard pictures start there too, so step 3 is not already ticked.
+const nothingShared = firstRun || (readmeDemo && onboarding !== "");
+if (nothingShared) for (const s of sessions) s.audience = aud("none");
 const liveCounts = () => ({
   ...counts,
   all_paired: sessions.filter((s) => s.audience.mode === "all_paired").length,
   selected: sessions.filter((s) => s.audience.mode === "selected").length,
   none: sessions.filter((s) => s.audience.mode === "none").length,
 });
-const overviewCounts = () => (!scanned ? { total: 0, all_paired: 0, selected: 0, none: 0 } : firstRun ? liveCounts() : counts);
+const overviewCounts = () => (!scanned ? { total: 0, all_paired: 0, selected: 0, none: 0 } : nothingShared ? liveCounts() : counts);
 
 configure({
   // A node that is not answering: `reachable` false and the dial error, shaped
@@ -520,7 +525,9 @@ configure({
       ok: true,
       counts: {
         [sessions[0].id]: { held: 3, capacity: 500, full: false },
-        [sessions[2].id]: { held: 500, capacity: 500, full: true },
+        // A full inbox puts a banner across the README picture; it stays full
+        // in every other load.
+        [sessions[2].id]: readmeDemo ? { held: 7, capacity: 500, full: false } : { held: 500, capacity: 500, full: true },
         [sessions[3].id]: { held: 12, capacity: 500, full: false },
       },
     };
