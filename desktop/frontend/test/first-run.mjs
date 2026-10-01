@@ -153,6 +153,12 @@ const bindings = {
   },
   RestartService: async () => {
     writes.push(["RestartService"]);
+    // A service manager that will not start the job, once.
+    if (machine.restartError) {
+      const error = machine.restartError;
+      machine.restartError = "";
+      throw new Error(error);
+    }
     machine.running = true;
     machine.nodeUp = true;
     machine.windowOpen = false;
@@ -789,6 +795,62 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (primary()?.textContent !== ZH["firstRun.turnOnSearch"]) failures.push(`the older node's button reads ${primary()?.textContent}`);
   // 「不開放區網」 is not a choice left to make on a network already open.
   if (button(ZH["firstRun.localOnly"])) failures.push("「只在這台用，不開放區網」 is offered on a node whose network is already open");
+
+  // 「下一步，先不搜尋」 is the "no" to searching alone. Where the address is
+  // still to be opened it is not: going on would leave a node nobody can
+  // reach, and the "no" there is 「只在這台用」. A fresh node — nothing
+  // running — and the same node once running on loopback, its defaults.
+  for (const [name, setup] of [
+    ["a fresh node", {}],
+    ["a running node on its default loopback address", { ...ready, sessions: [session("a", "claude")] }],
+  ]) {
+    await start(setup);
+    if (button(ZH["firstRun.skipSearch"])) {
+      failures.push(`${name} offers 「下一步，先不搜尋」 past an address nobody can reach: ${buttons().map((node) => node.textContent).join(" | ")}`);
+    }
+    if (setup.nodeUp && !button(ZH["firstRun.localOnly"])) failures.push(`${name} has no 「只在這台用」 to say no with`);
+  }
+
+  // The node running on a reachable address and not searching, its service
+  // registered and stopped: the one button is 「準備好這台電腦」 under a
+  // consent line asking for searching, and that line has its "no" too. It
+  // starts the service, writes nothing of the network line, and goes on.
+  {
+    const stopped = await start({ nodeUp: true, installed: true, running: false, saved: { ...lan }, sessions: [session("a", "claude")] });
+    if (primary()?.textContent !== ZH["firstRun.prepare"]) failures.push(`the stopped-service case's button reads ${primary()?.textContent}, want ${ZH["firstRun.prepare"]}`);
+    if (!stageText().includes(ZH["firstRun.lan.consentSearch"])) failures.push(`the stopped-service case does not ask for searching: ${stageText()}`);
+    const no = button(ZH["firstRun.prepareNoSearch"]);
+    if (!no) failures.push(`a consent line asking for searching has no "no" while the service is stopped: ${buttons().map((node) => node.textContent).join(" | ")}`);
+    else if (!String(no.className).split(/\s+/).includes("ghost")) failures.push(`「準備好這台電腦，先不搜尋」 is not a ghost button: ${no.className}`);
+    if (button(ZH["firstRun.skipSearch"])) failures.push("「下一步，先不搜尋」 is offered beside a service that is not running");
+    await no?.onclick();
+    await flush();
+    if (!writeNames().some((name) => name === "RestartService" || name === "RestartNode")) {
+      failures.push(`「準備好這台電腦，先不搜尋」 did not start the service: ${JSON.stringify(writeNames())}`);
+    }
+    if (saves().length !== 0 || machine.saved.discover !== false) {
+      failures.push(`「準備好這台電腦，先不搜尋」 wrote ${JSON.stringify(saves())}, discover now ${machine.saved.discover}`);
+    }
+    if (!machine.running) failures.push("after 「準備好這台電腦，先不搜尋」 the service is still not running");
+    if (stopped.state.firstRun.step !== 2) failures.push(`「準備好這台電腦，先不搜尋」 went to step ${stopped.state.firstRun.step}, want 2`);
+    if (stopped.state.firstRun.localOnly) failures.push("「準備好這台電腦，先不搜尋」 was taken as 「只在這台用」");
+    if (!searchBox()) failures.push("step 2 after 「準備好這台電腦，先不搜尋」 does not offer the switch again");
+
+    // Its 重試 repeats the "no": a service that fails to start, then 重試,
+    // still writes no discover.
+    const again = await start({ nodeUp: true, installed: true, running: false, restartError: "launchctl kickstart: 5: Input/output error", saved: { ...lan }, sessions: [session("a", "claude")] });
+    await button(ZH["firstRun.prepareNoSearch"])?.onclick();
+    await flush();
+    if (again.state.firstRun.step !== 1) failures.push(`a service that would not start under 「準備好這台電腦，先不搜尋」 moved the wizard to step ${again.state.firstRun.step}`);
+    const retry = button(ZH["firstRun.retry"]);
+    if (!retry) failures.push(`a service that failed under 「準備好這台電腦，先不搜尋」 offers no 重試: ${stageText()}`);
+    await retry?.onclick();
+    await flush();
+    if (saves().length !== 0 || machine.saved.discover !== false) {
+      failures.push(`重試 after 「準備好這台電腦，先不搜尋」 wrote ${JSON.stringify(saves())}, discover now ${machine.saved.discover}`);
+    }
+    if (again.state.firstRun.step !== 2) failures.push(`重試 after 「準備好這台電腦，先不搜尋」 went to step ${again.state.firstRun.step}, want 2`);
+  }
   // The "no" to searching: on to step 2, nothing written, and the switch is
   // there again in the list's place.
   const declined = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
@@ -874,11 +936,21 @@ const ready = { nodeUp: true, installed: true, running: true };
 
   // Pressed with the node still dropping it: said there, not ticked.
   writes.length = 0;
+  const opensBeforeDropped = (machine.opens ?? []).length;
   await startSearch?.onclick();
   await flush();
   if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {
     failures.push(`step 2's switch saved ${JSON.stringify(saves())}, want [{"discover":true}]`);
   }
+  // The save restarted the node and shut its window; searching did not come
+  // on, and the window is opened again all the same — the typed address on
+  // this screen needs it as much as the list does. Reopened before the
+  // failure is judged, not skipped by it.
+  const reopenedDropped = (machine.opens ?? []).slice(opensBeforeDropped);
+  if (reopenedDropped.length !== 1 || JSON.stringify(reopenedDropped[0]) !== "[0]") {
+    failures.push(`after a search that did not come on, the window the restart shut was opened ${JSON.stringify(reopenedDropped)}, want once with [0]`);
+  }
+  if (!machine.windowOpen) failures.push("a search that did not come on left step 2 with its window shut");
   if (!searchBox() || !textOf(searchBox()).includes(ZH["firstRun.lan.searchFailed"])) {
     failures.push(`step 2's switch failing is not said: ${searchBox() ? textOf(searchBox()) : "(no box)"}`);
   }

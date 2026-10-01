@@ -204,7 +204,7 @@ for (const sentence of PAIR_TEXT.compare) {
 // assumes ("two fingerprints are shown: the requester first…"). Below them it
 // reads as a comment on the decision instead of as the instruction for reading.
 // The half that says why: a mismatch means something is intercepting the
-// connection. Without it "press Reject" reads as a typo check, and ui-contract
+// connection. Without it "reject it" reads as a typo check, and ui-contract
 // §4 lists this wording as part of the contract. Both languages, main sentence
 // — not a tooltip.
 if (!PAIR_TEXT.compare.join(" ").includes("攔截")) {
@@ -214,6 +214,16 @@ if (!PAIR_TEXT.compare.join(" ").includes("攔截")) {
   const { TEXT: EN } = await import("../src/i18n/en.js");
   if (!/intercept/.test(EN["pair.compare"]) || !ZH["pair.compare"].includes("攔截")) {
     failures.push("pair.compare lost the clause naming interception in en or zh-Hant");
+  }
+  // And it names no button. The same sentence sits above the drawer's 拒絕
+  // and above the wizard's 「不一樣，拒絕」, so a button named in it is wrong on
+  // one of the two screens. The owner chose this wording on 2026-10-01
+  // (ui-contract §3.2): 「只要有一組不同就拒絕」, "if any group differs, reject it".
+  if (!ZH["pair.compare"].includes("只要有一組不同就拒絕") || ZH["pair.compare"].includes("按拒絕")) {
+    failures.push(`zh-Hant pair.compare is not the owner's wording, or names the button: ${ZH["pair.compare"]}`);
+  }
+  if (!EN["pair.compare"].includes("if any group differs, reject it") || /press\s+reject/i.test(EN["pair.compare"])) {
+    failures.push(`en pair.compare is not the owner's wording, or names the button: ${EN["pair.compare"]}`);
   }
 }
 if (html.indexOf(PAIR_TEXT.compare[0]) > html.indexOf(THEIR_FP)) {

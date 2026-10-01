@@ -253,10 +253,18 @@
       按鈕是 `firstRun.turnOnSearch`「開始在區網上搜尋並繼續」，只寫 `discover`、不動位址與 `allowLan`。更早版本開過區網、沒開搜尋的機器因此開在第 1 步。
       這時旁邊有 ghost「下一步，先不搜尋」（`firstRun.skipSearch`）：什麼都不寫、到第 2 步（輸入位址仍可配對，清單位置再提供一次開關）——
       同意說明不能沒有「不要」；在設定頁刻意關掉搜尋的人不必為了配對而同意廣播（fresh-context 審查 2026-10-01）。
+      同一句說明也會出現在**服務還沒在跑**的時候（節點在跑、位址已可達、沒在搜尋、服務已註冊但停著：主要按鈕是「準備好這台電腦」，
+      它會連同 `discover` 一起寫）。這時那顆 ghost 是「準備好這台電腦，先不搜尋」（`firstRun.prepareNoSearch`，#216 審查 NIT 3）：
+      `runFirstRunPrepare({ noSearch: true })`，只做節點與服務那段、**不帶 `lan`**（`lan: null` 本來就是「不寫任何網路設定」的那次按壓，
+      不管畫面上的說明句當時寫了什麼；用 `{ ...shown, discover: false }` 也會是空操作，但它的正確性要靠 `shown` 剛好沒有位址），
+      成功且位址可達時直接到第 2 步，跟「下一步，先不搜尋」一樣——使用者說一次「不要」就夠。服務那段失敗時「重試」重做同一個「不要」
+      （`noSearchPending`，同 `localOnlyPending`），不會變成寫入 `discover` 的那次按壓（測試 `first-run.mjs` §6c）。
     - **節點什麼時候廣播（查證）**：`-discover` 開著時節點整個行程都在聽區網上的 mDNS（`main.go` 的 `discovery.Listen`，只收不送），
       但**只在配對視窗開著時**每 20 秒送出一次通告（`internal/pairing/announcer.go` 的 `announceIfOpen()` 先判 `mode.IsOpen()`；`AnnounceInterval`），
       內容是節點 ID、名稱、平台、指紋與 peer listener 的位址（`discovery.Offer`、`AnnounceOffering()`——`internal/discovery` 唯一送封包的地方）。
-      視窗由精靈第 2 步（或配對抽屜）打開，預設 5 分鐘（`pairing.DefaultWindow`），離開就關。同意說明照這個寫。
+      視窗由精靈第 2 步（或配對抽屜）打開，預設 5 分鐘（`pairing.DefaultWindow`），離開就關。
+      **但停在第 2 步時視窗到期會自動重開**（`keepFirstRunWindowOpen()`：每個看到開著的視窗到期後重開一次），所以實際廣播的時間是
+      第 2 步在畫面上的整段時間，不是 5 分鐘（#216 審查 NIT 4）。同意說明照這個寫（「配對期間」＝第 2 步或抽屜開著的期間）。
     只記在記憶體、不存的是使用者的選擇：只在這台用（`localOnly`）、略過第 2／3 步、選的位址、勾的 session。
   - **第 1 步的一顆主要按鈕**（`runFirstRunPrepare()`）依序做完未完成的，任何一步失敗就停在那一行：一句可讀的錯誤＋`<details>`
     裡的原始錯誤（這一步期間記進通知紀錄的錯誤／警告，`noticesSince()`）＋「重試」，不前進；全部完成才自動到第 2 步
@@ -297,7 +305,8 @@
     **兩個以上私有位址時列出單選**（`first-run-address`，
     預設節點已存的那個、否則第一個），說明句跟著選到的那個改；不替使用者決定。沒有私有位址時說明（`firstRun.lan.noPrivate`）
     並只提供「只在這台用」（此時它是主要按鈕）。
-  - **「只在這台用，不開放區網」**：只在區網位址還不可達時出現（位址已開、只差搜尋時「不開放區網」已經不是一個選擇，第 2 步自己有「先跳過」）。
+  - **「只在這台用，不開放區網」**：只在區網位址還不可達時出現（位址已開、只差搜尋時「不開放區網」已經不是一個選擇；
+    那時對搜尋說「不要」的是第 1 步的 ghost「下一步，先不搜尋」，服務還沒在跑時是「準備好這台電腦，先不搜尋」，見上）。
     不寫任何節點設定，`discover` 也不寫（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
     「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。**節點與服務那段成功後才算數**（`localOnly`）；
     失敗時選擇只記成待定（`localOnlyPending`），區網那一行、說明句與兩個選擇都留著，「重試」重做同一個選擇、不開放區網
@@ -317,7 +326,9 @@
       「取消這次請求」→ `RejectPairRequest`，沒有指紋）；incoming pending 或 awaiting-confirm ＝比對畫面（標題「X（自稱）想和這台配對」／
       「和 X（自稱）比對指紋」、「看著另一台的螢幕…」〔`firstRun.pair.compareSay`，按鈕照實寫「不一樣，拒絕」〕、`PAIR_TEXT.compare` 警語＋說明〔指紋之上；
       說明是精靈自己的 `firstRun.pair.compareWhy`，同樣寫「不一樣，拒絕」——抽屜的 `why.compareFingerprints` 講的是抽屜的「拒絕」。
-      `PAIR_TEXT.compare` 本身是 §4 逐字斷言的，原樣保留，所以它的「按拒絕」仍出現在這張卡上〕、放大的指紋區塊、
+      `PAIR_TEXT.compare` 由 §4 斷言；**2026-10-01 擁有者同意改寫成不指名按鈕**——zh「只要有一組不同就拒絕——那表示中間有東西在攔截」、
+      en「if any group differs, reject it — something is intercepting the connection」——因為同一句同時在抽屜的「拒絕」和這張卡的
+      「不一樣，拒絕」上面，指名哪一顆都會在另一個畫面上說錯〕、放大的指紋區塊、
       **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，拒絕」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
       成功 toast 同抽屜（`pairStepText()` 的句子＋「（節點回報：…）」），但**不帶「去公開 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
     - 沒有未決請求時：「同一個網路上找到的電腦」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
@@ -369,11 +380,12 @@
   - **元素識別**：每一步的面板、每一行、每顆按鈕、每個位址與 session 列都只建一次、之後就地改寫（`firstRunParts`、以位址／session id
     為 key 的 Map），15 秒的 `load()` tick 不換掉游標下的按鈕、不收起打開的 `<details>`（測試 `first-run.mjs` §9）。
   - 測試 `first-run.mjs`（§1 出現條件與 `nodeChecked`、§1b 開在第一個未完成的步驟、§2 待處理列與標題列、§3 三項推導、§4 順序與失敗停下、§5 身分保護、
-    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§6c 搜尋：只開搜尋、說明句沒提就不寫、只在這台用不寫、沒保留要說、第 2 步補救與它的拒絕、
+    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§6c 搜尋：只開搜尋、說明句沒提就不寫、只在這台用不寫、沒保留要說、第 2 步補救與它的拒絕、補救失敗也重開視窗、位址未開時沒有「先不搜尋」、服務停著時的「準備好這台電腦，先不搜尋」與它的重試、
     §7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；測試的假節點與 dev mock 都從節點真正的預設開始（loopback、沒有 `-allow-lan`、
     `discover: false`，`availability` 照 `App.Pairing()` 的規則推導：有搜尋 `on`、沒有時視窗開著 `openNotAnnouncing`、否則 `off`；候選只在 `on` 時才有）。
     dev mock `?onboarding=fresh|slow|unreachable|mixed`、`&addresses=two`、`mixed&service=none`、`mixed&lan=open`（已設定：開放且在搜尋）、
-    `mixed&lan=open&discover=off`（更早版本開的區網、沒搜尋：第 1 步只差搜尋）、`&discover=stuck`（第一次要求的 `discover` 不被保留：第 1 步說搜尋開不起來並給下一步，第 2 步出現補救）。
+    `mixed&lan=open&discover=off`（更早版本開的區網、沒搜尋：第 1 步只差搜尋）、`mixed&lan=open&discover=off&service=stopped`
+    （同上但服務已註冊、停著：「準備好這台電腦」旁邊是「準備好這台電腦，先不搜尋」）、`&discover=stuck`（第一次要求的 `discover` 不被保留：第 1 步說搜尋開不起來並給下一步，第 2 步出現補救）。
     英文介面不得出現全形標點：`test/fixtures/in-english.mjs` 的 `inEnglish()` 對 render 後的 DOM 文字檢查（`FULL_WIDTH`），
     `first-run-pairing.mjs` §6b 用英文畫比對卡與複製失敗；app.js 組字串時的括號與空白走表格（`pair.roleLead`、`pair.whoseWrap`、`pair.hereCopyFailedWrap`）。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
@@ -514,7 +526,10 @@
 - **背景服務**：狀態行、重新讀取、安裝／重新安裝、移除；展開表單**只有一個欄位：資料庫路徑**
   （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
   第二份設定來源。安裝說明；輸出區 `<pre>`。節點沒在跑且未安裝時表單自動展開一次。
-- **節點設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。存的是節點**下次啟動**才讀的值，
+- **節點設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。`-discover` 的標籤說它做的兩件事（擁有者 2026-10-01）：
+  `nodeSettings.discover`「在區網上搜尋其他電腦（配對時也讓其他電腦找到這台）」，下面一行 `nodeSettings.discoverWhy`
+  照節點原始碼寫：開著時一直收聽區網通告（只收不送，`discovery.Listen`），只有配對視窗開著時才廣播名稱、位址、平台、指紋與節點 ID
+  （`announceIfOpen()`、`buildAnnouncement()`）（測試 `i18n.mjs`）。存的是節點**下次啟動**才讀的值，
   規則見 §7.8。節點回 `saved.peerListens`（ADR-005）時，對外位址是勾選清單（`#node-peerlistens`，每列一個
   `<input type=checkbox>`）：這台機器每個私有 IPv4、「其他位址」小標下的非私有位址、saved 裡有但機器現在沒有
   的位址（保留勾著）、非預設的 loopback；首選列標「從這裡廣播」，都沒勾顯示「都沒勾：只有這台機器自己連得到」。
@@ -590,6 +605,7 @@
 | `reason: fingerprint_mismatch` | 指紋不一致的專屬句子 | 跟一般拒絕同一句 |
 | 送出請求被 `PEER_PAIRING_BUSY` 拒 | 節點原文（對端自己的理由＋補救）；**不得**出現錯誤碼 | 本地自己寫的一句話（它蓋掉的是兩種不同的 429） |
 | 配對請求列（未決） | 兩組指紋、節點給的標籤、`PAIR_TEXT.compare`、按鈕在指紋**下面** | 只顯示一組指紋；`ah pair approve`（GUI 裡跟按鈕自相矛盾） |
+| `PAIR_TEXT.compare` 本身（2026-10-01 擁有者同意改寫） | zh「只要有一組不同就拒絕」＋「攔截」；en「if any group differs, reject it」＋「intercept」（`pairing-exchange.mjs`） | 指名按鈕：「按拒絕」、「press Reject」 |
 | 配對請求列（已結束） | 一句結果 + 節點的 `nextStep` | 核准／確認按鈕 |
 | 配對面板任何位置 | | 「自動核准」「略過比對」「全部核准」「不比對」 |
 | availability 未知 | 「不可信」、錯誤原文 | 「-discover」「機器在廣播。」 |

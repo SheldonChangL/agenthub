@@ -153,7 +153,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       seen: false, settled: false, reads: 0,
       // localOnlyPending: 「只在這台用」 was pressed and its node step has not
       // gone through yet, so 重試 repeats that choice (runFirstRunPrepare).
-      step: 1, localOnly: false, localOnlyPending: false, pairSkipped: false, shareSkipped: false,
+      // noSearchPending: the same for 「準備好這台電腦，先不搜尋」, whose 重試
+      // must not turn into a press that writes the search it declined.
+      step: 1, localOnly: false, localOnlyPending: false, noSearchPending: false, pairSkipped: false, shareSkipped: false,
       phase: {}, failed: {}, addresses: null, choice: "",
       picked: new Set(), preset: "messages", showAll: false, shared: null,
       // Step 2's exchange: the live requests it has shown (id → name), the
@@ -1517,11 +1519,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // node step that failed would leave the network question answered and its
   // line and button gone; instead the choice waits (localOnlyPending) for
   // 重試, and the network line stays up with both answers still offered.
-  async function runFirstRunPrepare({ button = null, localOnly = false, lan = null } = {}) {
+  //
+  // `noSearch` is the "no" to a consent line that asks for searching alone,
+  // pressed while the service still has to be started: the node and the
+  // service, and nothing on the network line. It carries no `lan` — null is
+  // already the press that writes no network setting, whatever the line
+  // showed — and, once those are done on an address that is reachable, goes
+  // on to step 2 as 「下一步，先不搜尋」 does, so the owner says no once.
+  async function runFirstRunPrepare({ button = null, localOnly = false, lan = null, noSearch = false } = {}) {
     const wizard = state.firstRun;
     if (state.busy || wizard.running) return;
     wizard.touched = true;
     wizard.localOnlyPending = localOnly;
+    wizard.noSearchPending = noSearch;
+    if (noSearch) lan = null;
     wizard.running = true;
     wizard.failed = {};
     wizard.phase = {};
@@ -1533,11 +1544,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         wizard.localOnly = true;
         wizard.localOnlyPending = false;
       }
+      let declined = false;
       if (!wizard.localOnly) {
         await loadPairing();
-        if (!firstRunChecks().lan.done && !(lan && await prepareFirstRunLan(lan))) return;
+        if (noSearch) {
+          wizard.noSearchPending = false;
+          const checks = firstRunChecks();
+          declined = checks.node.done && (checks.login.done || checks.login.na) && checks.lan.reachable;
+        } else if (!firstRunChecks().lan.done && !(lan && await prepareFirstRunLan(lan))) return;
       }
       complete = firstRunStepComplete(1);
+      if (declined && !complete && !wizard.suspended) wizard.step = 2;
     } finally {
       wizard.running = false;
       wizard.phase = {};
@@ -1621,12 +1638,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const summary = element("summary");
     const detail = element("p");
     details.append(summary, detail);
-    // 重試 runs the press that failed again: 「只在這台用」 again if that was
-    // it, and otherwise with the network line as it is on screen now.
+    // 重試 runs the press that failed again: 「只在這台用」 or 「先不搜尋」
+    // again if that was it, and otherwise with the network line as it is on
+    // screen now.
     const retry = firstRunButton("frretry", (event) => runFirstRunPrepare({
       button: event?.currentTarget ?? null,
       localOnly: Boolean(state.firstRun.localOnlyPending),
-      lan: state.firstRun.localOnlyPending ? null : firstRunShownLan(),
+      noSearch: Boolean(state.firstRun.noSearchPending),
+      lan: state.firstRun.localOnlyPending || state.firstRun.noSearchPending ? null : firstRunShownLan(),
     }).catch(() => {}));
     issue.append(issueText, details, retry);
     text.append(title, sub, issue);
@@ -1679,12 +1698,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       });
       // The "no" to searching, when searching is the only thing asked: on to
       // step 2 with nothing written, where the typed address still pairs and
-      // the switch is offered again in the list's place.
-      const skipSearch = firstRunButton("ghost", () => {
-        state.firstRun.touched = true;
-        state.firstRun.step = 2;
-        render();
-      });
+      // the switch is offered again in the list's place. Its press is set on
+      // every paint (below): with the service still to start, it starts it.
+      const skipSearch = firstRunButton("ghost", () => {});
       actions.append(primary, local, skipSearch);
       const why = whyDetails("firstRun.step1.why");
       root.append(heading, say, checks, pick, consent, noPrivate, actions, why);
@@ -1846,15 +1862,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // 「只在這台用」 only while there is a network question to say no to. With no
     // private address it is the only way on, so it carries the weight. Not
     // once the address is open and only searching is missing: 「不開放區網」
-    // would then be a choice already made the other way, and step 2 has its
-    // own 先跳過.
+    // would then be a choice already made the other way; the "no" to the
+    // search is 「下一步，先不搜尋」 (or 「準備好這台電腦，先不搜尋」) below.
     parts.local.className = `${run === null ? "primary" : "ghost"}${needAddress ? "" : " hidden"}`;
     parts.local.textContent = t("firstRun.localOnly");
     parts.local.disabled = state.busy || running;
     // Shown exactly when the primary button is the search switch.
     const searchOnlyAsked = !needNode && !needLogin && needLan && !needAddress && !(failed.lan?.searchOnly && !running);
-    parts.skipSearch.className = `ghost${searchOnlyAsked ? "" : " hidden"}`;
-    parts.skipSearch.textContent = t("firstRun.skipSearch");
+    // And when the primary button is 「準備好這台電腦」 with that same consent
+    // line above it — the node running on a reachable address, not searching,
+    // the service registered and stopped: the consent line is not left
+    // without its "no" (§3.2). That one does the service and writes nothing
+    // of the network line.
+    const prepareNoSearchAsked = !needNode && needLogin && needLan && !needAddress && needSearch;
+    parts.skipSearch.className = `ghost${searchOnlyAsked || prepareNoSearchAsked ? "" : " hidden"}`;
+    parts.skipSearch.textContent = t(prepareNoSearchAsked ? "firstRun.prepareNoSearch" : "firstRun.skipSearch");
+    parts.skipSearch.onclick = prepareNoSearchAsked
+      ? (event) => runFirstRunPrepare({ button: event?.currentTarget ?? null, noSearch: true }).catch(() => {})
+      : () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 2;
+        render();
+      };
     parts.skipSearch.disabled = state.busy || running;
     return parts.root;
   }
