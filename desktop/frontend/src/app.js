@@ -1377,17 +1377,17 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       }
       await loadPairing();
       await load();
+      // The save restarted the node, and a restarted node's window is shut:
+      // this step opens it again by being on screen, as on entering it —
+      // whether or not searching came on, since a typed address needs it too.
+      await openPairingWindowIfNeeded();
+      await keepFirstRunWindowOpen();
       if (state.pairing?.availability !== "on") {
         wizard.searchFailed = {
           text: t("firstRun.lan.searchFailed"),
           detail: noticesSince(mark) || t("firstRun.lan.searchFailedDetail", { availability: String(state.pairing?.availability ?? "") }),
         };
-        return;
       }
-      // The save restarted the node, and a restarted node's window is shut:
-      // this step opens it again by being on screen, as on entering it.
-      await openPairingWindowIfNeeded();
-      await keepFirstRunWindowOpen();
     } finally {
       wizard.searching = false;
       render();
@@ -1569,12 +1569,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       const local = firstRunButton("ghost", (event) => {
         runFirstRunPrepare({ button: event?.currentTarget ?? null, localOnly: true }).catch(() => {});
       });
-      actions.append(primary, local);
+      // The "no" to searching, when searching is the only thing asked: on to
+      // step 2 with nothing written, where the typed address still pairs and
+      // the switch is offered again in the list's place.
+      const skipSearch = firstRunButton("ghost", () => {
+        state.firstRun.touched = true;
+        state.firstRun.step = 2;
+        render();
+      });
+      actions.append(primary, local, skipSearch);
       const why = whyDetails("firstRun.step1.why");
       root.append(heading, say, checks, pick, consent, noPrivate, actions, why);
       parts = {
         root, heading, say, rows, consent, consentAddress, consentSearch, pick, pickLegend, pickList,
-        pickRows: new Map(), noPrivate, primary, local, why,
+        pickRows: new Map(), noPrivate, primary, local, skipSearch, why,
       };
       firstRunParts[1] = parts;
     }
@@ -1735,6 +1743,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.local.className = `${run === null ? "primary" : "ghost"}${needAddress ? "" : " hidden"}`;
     parts.local.textContent = t("firstRun.localOnly");
     parts.local.disabled = state.busy || running;
+    // Shown exactly when the primary button is the search switch.
+    const searchOnlyAsked = !needNode && !needLogin && needLan && !needAddress && !(failed.lan?.searchOnly && !running);
+    parts.skipSearch.className = `ghost${searchOnlyAsked ? "" : " hidden"}`;
+    parts.skipSearch.textContent = t("firstRun.skipSearch");
+    parts.skipSearch.disabled = state.busy || running;
     return parts.root;
   }
 

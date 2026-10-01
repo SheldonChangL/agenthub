@@ -251,6 +251,8 @@
     - **選擇合在同一行而不是第 4 行**：一顆按鈕、一次存檔、一次重啟同時做兩件事，使用者也只關心「另一台能不能找到、連到這台」；分成兩行只會讓兩行在同一次按下一起翻面。
       這一行把缺的那一半說出來：只差搜尋時副標是 `firstRun.lan.notSearching`（「其他電腦連得到 {address}，但這台還沒在區網上搜尋…」），
       按鈕是 `firstRun.turnOnSearch`「開始在區網上搜尋並繼續」，只寫 `discover`、不動位址與 `allowLan`。更早版本開過區網、沒開搜尋的機器因此開在第 1 步。
+      這時旁邊有 ghost「下一步，先不搜尋」（`firstRun.skipSearch`）：什麼都不寫、到第 2 步（輸入位址仍可配對，清單位置再提供一次開關）——
+      同意說明不能沒有「不要」；在設定頁刻意關掉搜尋的人不必為了配對而同意廣播（fresh-context 審查 2026-10-01）。
     - **節點什麼時候廣播（查證）**：`-discover` 開著時節點整個行程都在聽區網上的 mDNS（`main.go` 的 `discovery.Listen`，只收不送），
       但**只在配對視窗開著時**每 20 秒送出一次通告（`internal/pairing/announcer.go` 的 `announceIfOpen()` 先判 `mode.IsOpen()`；`AnnounceInterval`），
       內容是節點 ID、名稱、平台、指紋與 peer listener 的位址（`discovery.Offer`、`AnnounceOffering()`——`internal/discovery` 唯一送封包的地方）。
@@ -290,8 +292,8 @@
   - **開放區網是隱私決定**：主要按鈕上方一行藍底說明，寫出實際會用的位址（`LocalAddresses()` 裡 `private` 的那些，
     埠照節點存的 `peerListen`）與影響（`firstRun.lan.consent`：在那個位址接受配對請求，沒配對的電腦看不到任何 session——
     原本寫「什麼都看不到」，搜尋打開後配對期間別人看得到名稱與位址，那句就不成立了）。節點沒在搜尋時同一行再加一句
-    （`firstRun.lan.consentSearch`）：「在區網上搜尋：配對期間，同一個網路上的其他電腦看得到這台的名稱與位址（以及平台與指紋）；沒在配對時不廣播。」
-    ——照上面查證的事實，不誇大（沒在配對時不送任何東西）也不縮小（平台與指紋也在通告裡）。位址已可達、只差搜尋時只有這一句。
+    （`firstRun.lan.consentSearch`）：「在區網上搜尋：配對期間，同一個網路上的其他電腦看得到這台的名稱與位址（以及平台、指紋與節點 ID）；沒在配對時不廣播。」
+    ——照上面查證的事實，不誇大（沒在配對時不送任何東西）也不縮小（平台、指紋與節點 ID 也在通告裡）。位址已可達、只差搜尋時只有這一句。
     **兩個以上私有位址時列出單選**（`first-run-address`，
     預設節點已存的那個、否則第一個），說明句跟著選到的那個改；不替使用者決定。沒有私有位址時說明（`firstRun.lan.noPrivate`）
     並只提供「只在這台用」（此時它是主要按鈕）。
@@ -327,7 +329,7 @@
       第 1 步同一句 `firstRun.lan.consentSearch`（藍底）、失敗時的一句＋`<details>` 原文、一顆「開始在區網上搜尋」（`turnOnFirstRunSearch()`；
       沒配對時是主要按鈕、配對後降為 ghost）。按下走**同一個** `writeFirstRunNetwork({ discover: true })`：同一條未存修改的拒絕（這次只有 `discover`
       是它的，表單上沒存的位址或 `allowLan` 一樣被拒並點名，不帶走、不離開精靈）、同一個存檔＋重啟＋`didNotStick`；之後 `loadPairing()` + `load()`，
-      仍不是 `on` 就在原地說 `firstRun.lan.searchFailed`；成功時重啟關掉的視窗由 `openPairingWindowIfNeeded()` 再開一次（仍傳 0）。
+      重啟關掉的視窗不論成敗都由 `openPairingWindowIfNeeded()` 再開一次（仍傳 0；輸入位址也需要它），之後仍不是 `on` 就在原地說 `firstRun.lan.searchFailed`。
       「找不到另一台？」的位址欄不受影響，一直可用。
     - `<details class="frmanual">`「找不到另一台？」：位址欄＋「送出」（Enter 同按、trim、空的不送並給錯誤 toast——都是 `sendPairRequest()` 的）、
       這台的位址（`pairHereState()`，節點說了就聽節點的；多個開放位址時列出每個）＋「複製」（`copyPairAddress(address, 狀態列)`），

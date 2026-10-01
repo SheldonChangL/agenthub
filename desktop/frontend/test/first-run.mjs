@@ -783,12 +783,23 @@ const ready = { nodeUp: true, installed: true, running: true };
   // The network opened by an earlier build, which never turned searching on:
   // step 1 is not done, the wizard opens on it, and its one button writes the
   // switch alone — the address and allowLan stay as they are.
-  const older = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
+  let older = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
   if (older.state.firstRun.step !== 1) failures.push(`a reachable node that is not searching opened the wizard on step ${older.state.firstRun.step}, want 1`);
   if (rowState(2) === "ok") failures.push("a reachable node that is not searching has its network line ticked");
   if (primary()?.textContent !== ZH["firstRun.turnOnSearch"]) failures.push(`the older node's button reads ${primary()?.textContent}`);
   // 「不開放區網」 is not a choice left to make on a network already open.
   if (button(ZH["firstRun.localOnly"])) failures.push("「只在這台用，不開放區網」 is offered on a node whose network is already open");
+  // The "no" to searching: on to step 2, nothing written, and the switch is
+  // there again in the list's place.
+  const declined = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
+  const skip = button(ZH["firstRun.skipSearch"]);
+  if (!skip) failures.push(`a press that only turns searching on has no way to say no: ${buttons().map((node) => node.textContent).join(" | ")}`);
+  await skip?.onclick();
+  await flush();
+  if (saves().length !== 0) failures.push(`declining the search wrote ${JSON.stringify(saves())}`);
+  if (declined.state.firstRun.step !== 2) failures.push(`declining the search went to step ${declined.state.firstRun.step}, want 2`);
+  if (!searchBox()) failures.push("step 2 after declining the search does not offer the switch again");
+  older = await start({ ...ready, saved: { ...lan }, sessions: [session("a", "claude")] });
   await primary()?.onclick();
   await flush();
   if (JSON.stringify(saves()) !== JSON.stringify([{ discover: true }])) {
