@@ -29,8 +29,10 @@ Three views behind the title-bar tabs:
   sort; the default is last activity, newest first. Filters, sort and search
   persist in `localStorage`. Selecting rows floats an action bar over the
   table. Each row has two actions: the inbox drawer (with 送出紀錄 and
-  喚醒紀錄 tabs reading `/v1/outbound` and `/v1/wakes`) and `resume` (copies
-  `claude --resume <id>` or `codex resume <id>`). The MCP config it used to
+  喚醒紀錄 tabs reading `/v1/outbound` and `/v1/wakes`) and Copy ID (copies
+  the session's bare ID, for `claude --resume <id>` or `codex resume <id>`).
+  The working-directory cell copies its full path when clicked. Both say
+  「已複製 ✓」 on the control itself. The MCP config it used to
   offer is still reachable as `openMCPConfig`, with no entry point on the row:
   everything the four MCP tools do, `ah` does too.
 - **區網** — paired nodes with presence and a red mark when a node has no
