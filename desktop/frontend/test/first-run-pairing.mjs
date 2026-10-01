@@ -517,7 +517,8 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
 
 {
   // The compare screen's words name the button that is on it: 「不一樣，拒絕」,
-  // not the drawer's 拒絕 (PAIR_TEXT.compare is §4's and stays as it is).
+  // not the drawer's 拒絕 (PAIR_TEXT.compare, shared with the drawer, names
+  // no button at all since 2026-10-01).
   for (const [name, table] of [["zh-Hant", ZH], ["en", EN]]) {
     for (const key of ["firstRun.pair.compareSay", "firstRun.pair.compareWhy"]) {
       if (!table[key]?.includes(table["firstRun.pair.different"])) failures.push(`${name} ${key} does not name the button ${table["firstRun.pair.different"]}`);

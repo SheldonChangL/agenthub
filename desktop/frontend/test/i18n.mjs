@@ -623,6 +623,35 @@ if (setLanguage("en"), t("pair.nodeSaidWrap", { detail: "x" }) !== " (The node r
 setLanguage("zh-Hant");
 if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（節點回報：x）") failures.push(`zh pair.nodeSaidWrap reads ${t("pair.nodeSaidWrap", { detail: "x" })}`);
 
+// The settings page's discover switch says what it does, both halves (owner,
+// 2026-10-01): it searches the network for other computers, and while pairing
+// it lets them find this one. Its line under it says what each half sends,
+// as cmd/agenthub-node and internal/pairing/announcer.go do it: listening all
+// the time and sending nothing, broadcasting only while the window is open.
+{
+  const discoverRow = markup.slice(markup.indexOf('id="node-discover"'), markup.indexOf('id="node-autowake"'));
+  if (!discoverRow.includes('data-t="nodeSettings.discover"') || !discoverRow.includes('data-t="nodeSettings.discoverWhy"')) {
+    failures.push("the settings page's discover switch lost its label or the line that says what it sends");
+  }
+  if (!ZH["nodeSettings.discover"].includes("搜尋其他電腦") || !ZH["nodeSettings.discover"].includes("找到這台")) {
+    failures.push(`zh nodeSettings.discover does not say both halves: ${ZH["nodeSettings.discover"]}`);
+  }
+  if (!/other computers/.test(EN["nodeSettings.discover"]) || !/find this one/.test(EN["nodeSettings.discover"])) {
+    failures.push(`en nodeSettings.discover does not say both halves: ${EN["nodeSettings.discover"]}`);
+  }
+  for (const [name, table, needles] of [
+    ["zh-Hant", ZH, ["只收不送", "配對視窗開著", "名稱", "位址", "平台", "指紋", "節點 ID"]],
+    ["en", EN, ["only receives", "pairing window is open", "name", "address", "platform", "fingerprint", "node ID"]],
+  ]) {
+    for (const needle of needles) {
+      if (!table["nodeSettings.discoverWhy"].includes(needle)) failures.push(`${name} nodeSettings.discoverWhy does not say ${needle}`);
+    }
+    for (const needle of needles.slice(0, 1)) {
+      if (!table["firstRun.step1.why"].includes(needle)) failures.push(`${name} firstRun.step1.why does not say the search listens without sending (${needle})`);
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error(failures.map((line) => ` - ${line}`).join("\n"));
   process.exit(1);

@@ -16,6 +16,7 @@ import (
 	"agenthub.local/agenthub/internal/api"
 	"agenthub.local/agenthub/internal/model"
 	"agenthub.local/agenthub/internal/nodeconfig"
+	"agenthub.local/agenthub/internal/pairing"
 	"agenthub.local/agenthub/internal/protocol"
 	"agenthub.local/agenthub/internal/registry"
 )
@@ -251,5 +252,35 @@ func TestSettingsSaysADegradedNodeRetries(t *testing.T) {
 				t.Errorf("peer-listen row = %q, want %q:\n%s", got, testCase.row, out)
 			}
 		})
+	}
+}
+
+// The whole path, from the node's own answer: `ah pairing on` against the
+// owner API of a node started without -discover — the default — says that
+// discovery is off, and not that the node has no address it can announce,
+// which is what a zero announceableAddresses alone used to be read as.
+func TestPairingOnAgainstANodeWithoutDiscoverySaysDiscoveryIsOff(t *testing.T) {
+	ctx := context.Background()
+	store, err := registry.Open(ctx, filepath.Join(t.TempDir(), "agenthub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	node := model.NodeIdentity{ID: "node_1234567890123456", DisplayName: "test", Platform: "test"}
+	handler := api.NewServer(store, nil, protocol.NewHeartbeatBuilder(store, node, listTestSigner{}), node,
+		api.WithPairing(pairing.NewMode(), nil, nil)).Handler()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	var stdout, stderr bytes.Buffer
+	if code := Run(ctx, []string{"--url", server.URL, "pairing", "on"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	printed := stdout.String()
+	if !strings.Contains(printed, "announcing over mDNS  no (discovery is off: this node was started without -discover)") {
+		t.Errorf("the reason is not that discovery is off:\n%s", printed)
+	}
+	if strings.Contains(printed, "no address it can announce") {
+		t.Errorf("a node without -discover was said to have no address it can announce:\n%s", printed)
 	}
 }

@@ -35,7 +35,7 @@ type PairingAnnouncer interface {
 // should keep waiting. The message names the flags, since the fix is a restart
 // with more arguments.
 func (s *Server) discoveryUnavailable(w http.ResponseWriter) bool {
-	if s.candidates != nil && s.announcer != nil {
+	if s.discovering() {
 		return false
 	}
 	writeError(w, http.StatusConflict, "DISCOVERY_DISABLED",
@@ -44,6 +44,15 @@ func (s *Server) discoveryUnavailable(w http.ResponseWriter) bool {
 			"-peer-listen address on the local network so there is an address to announce; "+
 			"pairing by hand or with `ah pair request <host:port>` works either way")
 	return true
+}
+
+// discovering says this node was started with -discover: it listens on the
+// local network and has an announcer that announces an open window (a window
+// opens without one, it is just not announced). One condition,
+// asked by the endpoints that refuse without it and reported in the window's
+// answer, so the two can never disagree.
+func (s *Server) discovering() bool {
+	return s.candidates != nil && s.announcer != nil
 }
 
 // windowUnavailable answers when this node has no pairing window at all.
@@ -256,6 +265,12 @@ func (s *Server) writePairingState(w http.ResponseWriter, status int, state pair
 		// passing the flag, a chosen one only by passing the flag. A UI that
 		// states the wrong one sends its reader to the wrong place.
 		"nameIsChosen": s.node.NameIsChosen,
+		// Whether this node was started with -discover. Stated rather than left
+		// to be inferred from announceableAddresses being zero: a node without
+		// discovery and a node with no address to announce both report zero,
+		// and they have different remedies — `ah pairing on` printed the second
+		// one's ("no address it can announce") on a node whose address was fine.
+		"discovery": s.discovering(),
 	}
 	// The address the other machine would type, present whether or not this
 	// node is announcing. It used to appear only inside the notice a node that
