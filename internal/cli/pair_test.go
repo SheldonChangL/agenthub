@@ -354,6 +354,26 @@ func TestPairingOnPrintsWhatToDoNext(t *testing.T) {
 				"not announcing itself over mDNS",
 			},
 		},
+		// A node started without -discover reports zero announceable
+		// addresses because it has no announcer at all, and its address is
+		// fine. The reason printed is the one that is true.
+		"discovery off": {
+			reply: `{"open":true,"remainingSeconds":30,"expiresAt":"2026-09-17T10:05:12Z","discovery":false,` +
+				`"peerAddress":"10.0.0.9:7463","peerAddressReachable":true,"announcing":{"announceableAddresses":0},` +
+				`"notice":"this node is not announcing itself over mDNS, so a window opened here will not put it in anyone's candidate list: discovery is off (this node was started without -discover)"}`,
+			want: []string{
+				"announcing over mDNS  no (discovery is off: this node was started without -discover)",
+				"On the other machine, run: ah pair request 10.0.0.9:7463",
+			},
+			avoid: []string{"no address it can announce"},
+		},
+		// Discovery on and nothing to announce is still that.
+		"discovery on, no address": {
+			reply: `{"open":true,"remainingSeconds":30,"expiresAt":"2026-09-17T10:05:12Z","discovery":true,` +
+				`"announcing":{"announceableAddresses":0}}`,
+			want:  []string{"announcing over mDNS  no (this node has no address it can announce)"},
+			avoid: []string{"discovery is off"},
+		},
 		"closed": {
 			reply: `{"open":false,"announcing":{"announceableAddresses":0}}`,
 			want:  []string{"closed", "ah pairing on"},

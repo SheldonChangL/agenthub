@@ -126,6 +126,12 @@ func TestTheWindowOpensWithoutDiscovery(t *testing.T) {
 	if body["open"] != true {
 		t.Errorf("open = %v", body["open"])
 	}
+	// Said as a field, not only in the notice: zero announceable addresses is
+	// also what a node with discovery and no address reports, and `ah pairing
+	// on` told this node's owner it had no address it could announce.
+	if body["discovery"] != false {
+		t.Errorf("discovery = %v on a node started without -discover", body["discovery"])
+	}
 	// And it says, in the same answer, that nothing is being announced and why.
 	// An owner left believing an unannounced window is advertising waits at the
 	// wrong screen.
@@ -583,6 +589,7 @@ func TestTheStateSaysWhatTheAnnouncerIsActuallyDoing(t *testing.T) {
 	}
 	var body struct {
 		Open       bool           `json:"open"`
+		Discovery  *bool          `json:"discovery"`
 		Announcing pairing.Status `json:"announcing"`
 	}
 	response := perform(t, handler, http.MethodGet, "/v1/pairing", nil)
@@ -591,6 +598,11 @@ func TestTheStateSaysWhatTheAnnouncerIsActuallyDoing(t *testing.T) {
 	}
 	if body.Open {
 		t.Error("a fresh node reports the window open")
+	}
+	// A node with discovery says so, beside an announcer that has nothing to
+	// announce: the reason is the announcer's, not discovery being off.
+	if body.Discovery == nil || !*body.Discovery {
+		t.Errorf("discovery = %v on a node with an announcer: %s", body.Discovery, response.Body.String())
 	}
 	if body.Announcing.LastError == "" {
 		t.Errorf("the state does not carry the reason nothing is being announced: %s", response.Body.String())

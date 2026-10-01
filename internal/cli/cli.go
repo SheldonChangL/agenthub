@@ -481,9 +481,13 @@ type pairingStateRow struct {
 	// reports it has answered the question, and a node that does not is one
 	// from before the field existed, whose silence must not be read as "there
 	// is no address".
-	PeerAddressReachable *bool  `json:"peerAddressReachable"`
-	Notice               string `json:"notice"`
-	Announcing           struct {
+	PeerAddressReachable *bool `json:"peerAddressReachable"`
+	// Discovery is whether the node was started with -discover. A pointer for
+	// the same reason as PeerAddressReachable: a node from before the field
+	// says nothing, and its silence is not "off".
+	Discovery  *bool  `json:"discovery"`
+	Notice     string `json:"notice"`
+	Announcing struct {
 		Addresses   int       `json:"announceableAddresses"`
 		LastSuccess time.Time `json:"lastAnnouncedAt"`
 		LastError   string    `json:"lastError"`
@@ -494,6 +498,11 @@ type pairingStateRow struct {
 // not when nothing is.
 func (state pairingStateRow) announcing() (bool, string) {
 	switch {
+	// First: a node without discovery has no announcer, so it reports zero
+	// announceable addresses whatever its address is, and "no address it can
+	// announce" sent the owner to fix an address that was fine.
+	case state.Discovery != nil && !*state.Discovery:
+		return false, "discovery is off: this node was started without -discover"
 	case state.Announcing.LastError != "":
 		return false, state.Announcing.LastError
 	case state.Announcing.Addresses == 0:
