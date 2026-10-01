@@ -17,11 +17,13 @@ import (
 // reporting the retired listener's end as a failure. Reported, it would end
 // run() — the node would exit at the moment it became reachable.
 func TestRetiringTheFallbackLeavesTheConfiguredAddressServing(t *testing.T) {
-	configured := freeLoopback(t)
-	busy, err := net.Listen("tcp", configured)
+	// Held from the start, not picked free and bound again: the port is never
+	// open for another listener to take between the two (#219).
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	configured := busy.Addr().String()
 	set, err := bindPeerListeners([]string{configured}, freeLoopback(t), func(string, ...any) {})
 	if err != nil {
 		_ = busy.Close()

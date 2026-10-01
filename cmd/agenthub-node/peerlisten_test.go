@@ -69,15 +69,20 @@ func TestBindPeerListenersServesWhatBindsAndSkipsTheFallback(t *testing.T) {
 	if problem := set.Problem(); problem != nil {
 		t.Fatalf("one address bound and the node degraded: %+v", problem)
 	}
+	// The fallback was not reached for. served asks the set itself, and Serve
+	// hands out the fallback listener whenever there is one, so exactly one
+	// listener on the configured address means no fallback. Re-binding the
+	// fallback port to prove it free would race every other listener on the
+	// machine for that port (#219).
 	if got := served(t, set).Addr().String(); got != address {
 		t.Errorf("serving %s, want %s and nothing else", got, address)
 	}
-	// The fallback port is still free: nothing reached for it.
-	probe, err := net.Listen("tcp", fallback)
-	if err != nil {
-		t.Fatalf("the fallback %s was bound although an address came up: %v", fallback, err)
+	if bound := set.Bound(); len(bound) != 1 || bound[0] != address {
+		t.Errorf("bound = %v, want only %s", bound, address)
 	}
-	_ = probe.Close()
+	if running := set.Running(); running != address {
+		t.Errorf("running = %s, want %s rather than the fallback %s", running, address, fallback)
+	}
 	states := set.States()
 	if len(states) != 2 || states[0].State != nodeconfig.ListenerFailed ||
 		states[0].Reason != nodeconfig.ListenAddressGone || states[1].State != nodeconfig.ListenerBound {
