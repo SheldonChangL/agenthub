@@ -826,9 +826,12 @@ const ready = { nodeUp: true, installed: true, running: true };
     ["a stopped service", { nodeUp: true, installed: true, running: false, saved: { ...lan }, sessions: [session("a", "claude")] }, null],
     ["a node outside any service", { nodeUp: true, installed: false, saved: { ...lan }, sessions: [session("a", "claude")] }, null],
     ["a service status still being read", { ...ready, saved: { ...lan }, sessions: [session("a", "claude")] }, (app) => { app.state.service = null; app.renderFirstRun(); }],
+    // The primary pressed and the service failing to start: the consent line
+    // and 重試 stay, and the "no" has to stay with them.
+    ["a service that failed to start", { nodeUp: true, installed: true, running: false, restartError: "launchctl kickstart: 5: Input/output error", saved: { ...lan }, sessions: [session("a", "claude")] }, async () => { await primary()?.onclick(); await flush(); }],
   ]) {
     const app = await start(setup);
-    before?.(app);
+    await before?.(app);
     if (!stageText().includes(ZH["firstRun.lan.consentSearch"])) {
       failures.push(`${name}: the consent line does not ask for searching, so this check would prove nothing: ${stageText()}`);
       continue;
@@ -838,11 +841,12 @@ const ready = { nodeUp: true, installed: true, running: true };
       failures.push(`${name}: the consent line asks for searching with no "no" beside it: ${buttons().map((node) => node.textContent).join(" | ")}`);
       continue;
     }
+    const label = no.textContent;
     writes.length = 0;
     await no.onclick?.({ currentTarget: no });
     await flush();
     const searched = writes.some((entry) => entry[0] === "SaveNodeSettings" && entry[1]?.discover === true);
-    if (searched) failures.push(`${name}: 「${no.textContent}」 turned searching on: ${JSON.stringify(writes)}`);
+    if (searched) failures.push(`${name}: 「${label}」 turned searching on: ${JSON.stringify(writes)}`);
   }
 
   // Settings → 「顯示首次設定」 starts over: a "no" left from an earlier
@@ -958,9 +962,12 @@ const ready = { nodeUp: true, installed: true, running: true };
   if (!button(ZH["firstRun.retry"])) failures.push("a search that did not stick offers no 重試");
   // The address is open, so pairing by typing it works: the way on is there.
   if (primary()?.textContent !== ZH["firstRun.next"]) failures.push(`after a search that failed the way on reads ${primary()?.textContent}, want 下一步`);
+  // That 下一步 is the "no" here: it moves on and writes nothing.
+  writes.length = 0;
   await primary()?.onclick();
   await flush();
   if (dropped.state.firstRun.step !== 2) failures.push(`下一步 past a failed search went to step ${dropped.state.firstRun.step}`);
+  if (writes.some((entry) => entry[0] === "SaveNodeSettings")) failures.push(`下一步 past a failed search wrote ${JSON.stringify(writes)}`);
 
   // Step 2, not searching: the list's place says why, says what searching
   // shows of this machine, and offers the switch; the typed address stays.

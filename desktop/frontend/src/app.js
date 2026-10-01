@@ -1871,10 +1871,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // Shown exactly when the primary button is the search switch.
     const searchOnlyAsked = !needNode && !needLogin && needLan && !needAddress && !(failed.lan?.searchOnly && !running);
     // And when the primary button is 「準備好這台電腦」 with that same consent
-    // line above it — the node running on a reachable address, not searching,
-    // the service registered and stopped: the consent line is not left
-    // without its "no" (§3.2). That one does the service and writes nothing
-    // of the network line.
+    // line above it: the node running on a reachable address, not searching,
+    // and the service not running.
     // Whatever the service's state — registered and stopped, a node outside
     // any service, or a status still being read — this button does exactly
     // what the primary does with the service (start it, or send the owner to
