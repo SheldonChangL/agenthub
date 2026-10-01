@@ -27,6 +27,13 @@ points at the [user guide](guide.md), which describes the current window.
 
 - **Every session starts published to nobody.** Discovery never publishes
   anything, and re-discovery never changes a policy you set.
+- **Searching the network listens always and announces only while pairing.**
+  With `--discover` the node listens on the mDNS group for as long as it runs
+  (`cmd/agenthub-node/main.go`, `discovery.Listen`), and the announcer says
+  nothing until a pairing window is open (`internal/pairing/announcer.go`).
+  An announcement carries the name, address, platform, fingerprint and node ID.
+  Without `--discover` the node does neither. The first-run setup turns it on
+  in step 1, and reopens the window while step 2 is on screen.
 - **The owner's API is loopback-only.** It has no authentication: it is only
   reachable from this machine (by any account on it), and that is the whole of
   its protection. The desktop app refuses a non-loopback node URL for that

@@ -16,6 +16,12 @@ A few words used throughout:
   four characters. Two people read it off two screens to check that each
   computer is talking to the other one and nobody in between.
 - **Publishing** or **sharing** a session: letting paired computers see it.
+- **Heartbeat**: the short signed update each node sends every paired computer
+  every 15 seconds. It says the node is up and carries the sessions shared with
+  that computer. "No heartbeat yet" means nothing has arrived from it.
+- **Searching the network** (the node's `-discover`): listening for other
+  computers' announcements on the local network, and announcing this one while
+  pairing is open. A fresh node has it off; step 1 of the setup turns it on.
 
 Contents:
 
@@ -48,8 +54,10 @@ The script downloads the release for your machine and checks it against the
 release's own checksum list (`SHA256SUMS`) before it unpacks anything. It then
 puts the app in `/Applications` on macOS or `~/.local/share/agenthub` on Linux,
 adds the `ah` command to `~/.local/bin`, registers the background node, and
-installs a small Claude Code skill so agents on this machine know how to use
-`ah`. It never uses `sudo` and never asks for your password.
+installs a small Claude Code skill in `~/.claude/skills/agenthub-watch` so
+agents on this machine know how to use `ah` (put `sh -s -- --no-skill` in place
+of the last `sh` to leave it out). It never uses `sudo` and never asks for your
+password.
 
 Want to read it before running it? `curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | less`.
 Every file it writes and every option it takes is listed in
@@ -58,14 +66,31 @@ Every file it writes and every option it takes is listed in
 On Linux the window needs GTK 3 and WebKit2GTK. The script picks the right
 build for your system and tells you which package to install if it is missing.
 
+To open the app:
+
+- **macOS:** the script opens it when it finishes. After that, open
+  agenthub-desktop from Applications.
+- **Linux:** AgentHub in your applications menu, or `agenthub-desktop` in a new
+  terminal (the script puts it in `~/.local/bin`).
+
 ### Windows
+
+AgentHub has never been run on a real Windows computer. The Windows build is
+built and tested in CI only, and acceptance on real machines is still open
+([#21](https://github.com/SheldonChangL/agenthub/issues/21),
+[verification.md](verification.md#build-matrix)). What follows is what the
+installer is written to do.
 
 1. Open the [Releases page](https://github.com/SheldonChangL/agenthub/releases)
    and download `agenthub-desktop_<version>_windows_amd64-installer.exe`
    (Windows 10 or 11, 64-bit).
 2. Run it. Windows warns you first; see the next section.
-3. The installer puts the app in place, registers the background node with Task
-   Scheduler, starts it, and adds a Start menu entry.
+3. The installer puts the app in place (by default in
+   `C:\Program Files\agenthub-desktop\agenthub-desktop`), registers the
+   background node with Task Scheduler, starts it, and adds a Start menu entry
+   and a desktop shortcut, both named agenthub-desktop. Open the app from
+   either. The Claude Code skill is a box on the installer's components page,
+   unticked by default.
 
 Prefer no installer? The `..._windows_amd64.zip` from the same page unpacks and
 runs. Keep `ah.exe`, `agenthub-node.exe` and `agenthub-mcp.exe` in the same
@@ -118,7 +143,7 @@ The first time you open AgentHub, the window shows a three-step setup. The
 steps are listed on the left; the current one fills the right. Nothing is shared
 by any of this until you tick sessions in step 3.
 
-![First-run setup, step 1: three checks and the "Get this machine ready" button](screenshots/first-run.png)
+![First-run setup, step 1: three checks, the blue box naming the address and what searching the network shows, and the "Get this machine ready" and "Use it on this machine only" buttons](screenshots/first-run.png)
 
 ### Step 1: Get this machine ready
 
@@ -128,19 +153,32 @@ The heading reads **First, get this machine ready**, above three checks:
 |---|---|
 | **AgentHub is running in the background** | The node is running. It keeps going when the window is closed. |
 | **Starts when you log in** | The node is registered with launchd (macOS), `systemd --user` (Linux) or Task Scheduler (Windows). |
-| **Other machines on the network can reach it** | The node also listens on an address on your home or office network, so other computers can connect. |
+| **Other machines on the network can find and reach it** | The node listens on an address on your home or office network, so other computers can connect, and searches the network, so they can find it. |
 
-A blue box above the buttons names the address that will be opened, for
-example "Once pressed, this machine accepts pairing requests at
-192.168.50.10:7463. A machine that has not paired sees nothing." If the
-computer has more than one private network address, you pick one first under
-**Which network should other machines use to reach this one?**
+A blue box above the buttons says what the button will open, in two sentences:
+
+- the address, for example "Once pressed, this machine accepts pairing requests
+  at 192.168.50.10:7463. A machine that has not paired sees none of your
+  sessions."
+- the search: "Searching the network: while pairing is open, other machines on
+  this network can see this machine's name and address (and its platform,
+  fingerprint and node ID); while pairing is closed, nothing is broadcast."
+
+If the computer has more than one private network address, you pick one first
+under **Which network should other machines use to reach this one?**
 
 Press **Get this machine ready**. The window starts the node, registers it,
-opens the network address, restarts the node so the change takes effect, and
-ticks each row as it finishes. If only the network part is left, the button
-reads **Open to the network and continue** instead. When everything is done
-the step shows **This machine is ready** and moves on by itself.
+opens the network address, turns on searching, restarts the node so the change
+takes effect, and ticks each row as it finishes. When everything is done the
+step shows **This machine is ready** and moves on by itself.
+
+The button names what is left to do. If only the network part is left, it reads
+**Open to the network and continue**. If the address is already open and only
+searching is off (an older version opened it without searching), it reads
+**Search the network and continue**, with **Next, without searching** beside
+it. Without searching, the other computer does not show up in step 2's list,
+and you pair by typing its address. If searching could not be turned on, the
+step says so and offers **Next** anyway, for the same reason.
 
 Prefer to keep AgentHub on this one computer? Press **Use it on this machine
 only**. Step 2 is then marked **Staying on this machine** and skipped.
@@ -165,8 +203,10 @@ offers only **Use it on this machine only**.
 
 Step 2 is pairing, and it needs the other computer too. See
 [Pair another machine](#pair-another-machine) for every screen in it. In short:
-open AgentHub on the other computer, bring it to this same step, send a request
-from one to the other, and compare the fingerprints on both screens.
+finish step 1 on both computers, bring both to this step, send a request from
+one to the other, and compare the fingerprints on both screens. If this
+computer is not searching, the list's place says so and offers **Start
+searching the network**.
 
 **Skip for now, pair later** skips it. **Back** returns to step 1.
 
@@ -212,13 +252,19 @@ finished only when both screens have said yes.
 
 ### From the first-run setup
 
-1. On both computers, open AgentHub and go to step 2, **Connect to another
-   machine**. Each computer lists the other under **Machines found on this
-   network** within a few seconds. The name shown is the name that computer
-   gave itself, marked **self-named**, because nothing has been verified yet.
+1. On both computers, finish step 1 and go to step 2, **Connect to another
+   machine**. The other computer appears under **Machines found on this
+   network** only when both have finished step 1: a computer is seen only while
+   it searches and its pairing window is open, and sees others only while it
+   searches. If only one of the two searches, neither sees the other. Once both
+   search, it takes a few seconds. If this computer's list says it is not
+   looking, press **Start searching the network**.
+   The name shown is the name that computer gave itself, marked **self-named**,
+   because nothing has been verified yet.
 2. On one computer (call it studio-mac), press **Send pairing request** on the
    other computer's row. studio-mac now shows **Waiting for Demo-MacBook to
-   press Approve**, and **Cancel this request** if you change your mind.
+   press Approve**. Until Demo-MacBook approves, the only button there is
+   **Cancel this request**: there is nothing to compare yet.
 3. On the other computer, Demo-MacBook, a card reads **studio-mac (self-named)
    wants to pair with this machine**, with two fingerprints: the requester's on
    top, the receiver's underneath.
@@ -240,11 +286,47 @@ again.
 A request nobody answers times out after five minutes and leaves nothing
 behind.
 
+**If you approved and the other side never finished.** Once Demo-MacBook has
+pressed **Same — approve**, it trusts studio-mac, and nothing makes that
+expire: Demo-MacBook cannot tell whether studio-mac ever pressed **Same —
+finish pairing**. If the pairing was abandoned, remove it on Demo-MacBook with
+**Revoke trust** on the Network tab (or `ah revoke <node-id>`).
+
+### Reading the list of machines found
+
+Everything in that list comes from packets anyone on your network can send, so
+nothing in it has been checked. The Network tab's drawer says so above its
+list: "Nothing in this list has been verified and appearing in it grants
+nothing." Use a row to find the right machine, and let the fingerprint
+comparison settle which machine it is. Some rows carry a mark:
+
+- **(no name given)**: the announcement carried no name. Check the node ID and
+  address under **Details** against the other screen.
+- **identity contested** or **name or fingerprint duplicated**: another
+  announcement on the network conflicts with this one, and at least one of the
+  two is fake. Do not pair with it unless you can check on the other computer
+  directly.
+
+A machine stays in the list for 90 seconds after its last announcement, so one
+that just closed pairing can still be listed for a while.
+
+### What searching shows, and when
+
+While searching is on, this computer listens for announcements on the network
+all the time; listening sends nothing. It announces itself (name, address,
+platform, fingerprint, node ID) only while its pairing window is open. A window
+lasts five minutes. While the setup stays on step 2, it reopens by itself when
+it runs out, so this computer stays findable for as long as you are on that
+step. Leaving step 2, or closing the Network tab's pairing drawer, ends it
+unless a request is still waiting on someone.
+
 ### When the other machine does not show up
 
-Searching only works when both computers are on the same network and nothing
-between them blocks it. A firewall, a guest Wi-Fi, or two different networks
-all hide them from each other. Type the address instead:
+First check that both computers finished step 1 and that neither says it is
+not looking; if one does, press **Start searching the network** there.
+Searching also needs both computers on the same network, with nothing between
+them that blocks multicast. A firewall, a guest Wi-Fi, or two different
+networks all hide them from each other. Type the address instead:
 
 1. On step 2, open **Can't find the other machine?**
 2. That section shows this computer's own address, for example
@@ -408,8 +490,10 @@ Each copy speaks for exactly one session, so you tell it which one.
    - macOS: `/Applications/agenthub-desktop.app/Contents/MacOS/agenthub-mcp`
      (or under `~/Applications` if that is where the app went)
    - Linux: `~/.local/share/agenthub/agenthub-mcp`
-   - Windows: in the folder the installer put the app in, beside
-     `agenthub-desktop.exe`
+   - Windows: `C:\Program Files\agenthub-desktop\agenthub-desktop\agenthub-mcp.exe`
+     by default, or the folder you picked in the installer, beside
+     `agenthub-desktop.exe`. That path comes from the installer script and has
+     not been seen on a real Windows computer.
 3. **For Claude Code**, save this as `.mcp.json` in the session's project
    folder, with the full path and your session ID:
 
@@ -426,9 +510,12 @@ Each copy speaks for exactly one session, so you tell it which one.
 
    For Codex, add the same command and the same two arguments, with the
    `codex:` ID, to Codex's own MCP server settings.
-4. **Restart the session** so it loads the tools. The **resume** button on the
-   session's row copies the command that reopens that same session
-   (`claude --resume <id>` or `codex resume <id>`).
+4. **Restart the session** so it loads the tools. **Copy ID** on the session's
+   row copies only the session's own ID, without the `claude:` or `codex:` in
+   front, to paste after `claude --resume` or `codex resume`. (The `-as`
+   argument above needs the prefix.) Clicking the **WORKING DIRECTORY** cell
+   copies the full path. If the clipboard cannot be written, a field opens
+   beside it with the text in it, for you to copy by hand.
 
 Reading works right away. Sending needs **Let this session send messages out**
 on that session.
@@ -568,9 +655,10 @@ On macOS and Linux, run the install command again:
 curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install.sh | sh
 ```
 
-It replaces the app, keeps the node's database and identity (it prints
-`keeping the node's database at <path>`), and registers the service again so it
-points at the new copy. On macOS it first asks a running AgentHub window to
+It replaces the app, keeps the node's database and identity, and registers the
+service again so it points at the new copy. If the node uses a database you
+chose yourself (`--db`), it also prints `keeping the node's database at
+<path>`; with the default database there is no such line. On macOS it first asks a running AgentHub window to
 quit and waits up to 10 seconds. To install a particular version, add
 `sh -s -- --version vX.Y.Z` in place of the last `sh`.
 
@@ -607,11 +695,13 @@ service** → **Restart the node**, and read the log (paths in
 [The background service](#the-background-service)). A setting you just saved in
 **Node settings** is the first thing to suspect.
 
-**The other machine does not appear.** Check that both computers are on the same
-network and that both have AgentHub open at step 2, or the Network tab's drawer.
-If one says **This machine is not looking for others on the network**, discovery
-is off there; typing the address still works. A firewall on either computer can
-block port 7463. Use **Can't find the other machine?** and type the address.
+**The other machine does not appear.** Both computers must have finished step
+1, which turns on searching: if only one searches, neither sees the other. Both
+must be on the same network, with AgentHub open at step 2 or in the Network
+tab's drawer. If step 2 says this machine is not looking, press **Start
+searching the network**. A firewall on either computer can block port 7463, and
+some networks block the multicast that searching uses. Then use **Can't find
+the other machine?** and type the address: that works with searching off.
 
 **Pairing failed.** The message says why. The common ones:
 
@@ -621,7 +711,11 @@ block port 7463. Use **Can't find the other machine?** and type the address.
   network, and that the node on the other side is running.
 - "This machine will not send data to that address": the address is outside the
   ranges this computer treats as private. Two computers on a direct cable often
-  need the cable's range under **Treat as private ranges**, on both sides.
+  need the cable's range under **Treat as private ranges**, on both sides. A
+  range is an address, a slash and a number: `10.0.0.0/24` is every address
+  from `10.0.0.0` to `10.0.0.255` (the first three numbers fixed), and `/16`
+  fixes only the first two. For a cable between `10.0.0.1` and `10.0.0.2`,
+  `10.0.0.0/24` covers both.
 - "The other machine runs a build of AgentHub without the pairing exchange":
   update AgentHub there.
 

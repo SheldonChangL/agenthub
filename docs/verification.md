@@ -1006,3 +1006,52 @@ is fatal on Linux is two orders of magnitude from mattering there.
 Fourteen mutations across two rounds were confirmed red, including dropping the
 reclaim entirely (the #143 defect restored), lowering the two-enumeration rule
 to one, and matching on interface name instead of index.
+
+## Discovery on two real hosts, 2026-10-01
+
+The first-run setup in v0.1.9 promised that the other machine "shows up in a
+list", and `dev/mock.js` showed one. A fresh node has `-discover` off
+(`cmd/agenthub-node/main.go`, `nodeconfig.DefaultSettings`), and the mock had
+it on, so this run asked the question of real hosts. Since #216, step 1 of
+the setup turns searching on.
+
+**Machines.** The same two as above: a MacBook (`darwin/arm64`) and the Ubuntu
+box (`linux/amd64`), both on the v0.1.9 release. Two segments between them: the
+direct cable (`122.122.122.x`) and Wi-Fi (`192.168.161.x`). The run used
+separate test nodes, `ah-test-mac` and `ah-test-ubuntu`, each on a temporary
+database and its own ports (7570, 7571); the machines' everyday nodes were not
+touched. A candidate stays listed for 90 seconds after its last packet
+(`discovery.CandidateTTL`), so a test node has to be restarted between cases or
+the previous case's result carries over.
+
+**Results.**
+
+| `-discover` on | Mac sees Ubuntu | Ubuntu sees Mac |
+|---|---|---|
+| neither (the fresh default) | no: `DISCOVERY_DISABLED` | no: `DISCOVERY_DISABLED` |
+| both | yes, on the cable and on Wi-Fi, within 0–2 s | yes, on the cable and on Wi-Fi, within 0–2 s |
+| one only | no | no |
+
+- **With only one side searching, neither side sees the other.** The one with
+  `-discover` off neither listens nor announces, so it hears nothing; the one
+  with it on listens, but the other one announces nothing for it to hear. Both
+  machines have to turn searching on.
+- **To be seen, a node needs `-discover` and an open pairing window. To see
+  others, `-discover` alone is enough.** The listener runs for the process's
+  life under `-discover`; the announcer sends only while a window is open
+  (`internal/pairing/announcer.go`).
+- **Discovery crossed both segments**, the direct cable included.
+- Typing an address (`ah pair request <host:port>`, or **Can't find the other
+  machine?** in the window) does not use discovery, and is the fallback when
+  searching is off or a network drops multicast. This run did not exercise it.
+
+**A misleading CLI message.** On a node with `-discover` off, `ah pairing on`
+gives "this node has no address it can announce" as the reason nothing is
+announced (`internal/cli/cli.go`, `pairingStateRow.announcing`).
+The node had an address; what it lacked was `-discover`. Recorded here, not
+fixed.
+
+**What this run does not show.** The run drove the nodes from `ah`. The
+first-run setup in the app was not walked through from start to finish on two
+real machines: its step 1 and step 2 are covered by the dev mock and the
+frontend tests only. Nothing here ran on Windows.

@@ -14,19 +14,19 @@ server, no telemetry. Free and open source under the MIT license.
 ![The Local sessions table: nine Claude Code and Codex sessions with their status, who can see each one, and inbox counts](docs/screenshots/local-sessions.png)
 *Every session on this machine, with its status, who can see it, and how many messages are waiting.*
 
-![First-run setup, step 1: a checklist with "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
+![First-run setup, step 1: three checks, a box saying what opening the network and searching it will show, and the "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
 *A fresh install opens on a three-step setup. Nothing is shared until you choose it.*
 
 ![Pairing: two fingerprints to compare against the other machine's screen, with "Same — approve" and "Different — reject"](docs/screenshots/network-pairing.png)
 *Two machines pair only after both people compare the same codes on both screens.*
 
-The window is in English and 繁體中文. The pictures use made-up sessions and
-machines.
+The window is in English and 繁體中文. The pictures use made-up data.
 
 ## Get started
 
-You need two computers on the same network to get the most out of it, but one
-is enough to try it.
+One computer is enough to try it. To connect two, install AgentHub on both
+first: step 2 of the setup needs both computers open at that step at the same
+time.
 
 ### 1. Install
 
@@ -37,38 +37,50 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 ```
 
 It checks the download against the release's checksum, installs the app and the
-`ah` command, and starts AgentHub in the background. It never asks for your
-password.
+`ah` command, and starts AgentHub in the background. It also puts a Claude Code
+skill in `~/.claude/skills/agenthub-watch`, so agents on this machine know how
+to use `ah`; put `sh -s -- --no-skill` in place of the last `sh` to leave it
+out. It never asks for your password.
 
 **Windows:** download `agenthub-desktop_<version>_windows_amd64-installer.exe`
 from the [Releases page](https://github.com/SheldonChangL/agenthub/releases)
-and run it.
+and run it. AgentHub has never been run on a real Windows computer; the Windows
+build is only built and tested in CI
+([#21](https://github.com/SheldonChangL/agenthub/issues/21)).
 
 The files are not signed, so a manual download makes macOS and Windows warn you
 before the first launch. The guide explains
 [how to let it through and how to check the file](docs/guide.md#if-your-computer-warns-about-the-download).
 
-### 2. Open the app and follow the setup
+### 2. Open the app
 
-The first launch walks you through three steps:
+- **macOS:** the install opens it when it finishes. Later, open
+  agenthub-desktop from Applications.
+- **Linux:** AgentHub in your applications menu, or `agenthub-desktop` in a new
+  terminal.
+- **Windows:** agenthub-desktop in the Start menu.
+
+### 3. Follow the setup, on both computers
 
 1. **Get this machine ready.** One button starts AgentHub in the background,
-   makes it start when you log in, and lets other computers on your network
-   reach it. Prefer to keep it on one computer? Press **Use it on this machine
-   only**.
-2. **Connect another.** The other computer shows up in a list. Send it a
-   request, then both of you compare two short codes on your screens and press
-   **Same — approve** and **Same — finish pairing**.
+   makes it start when you log in, lets other computers on your network reach
+   it, and turns on searching the network. The box above the button says what
+   that shows: while pairing is open, other computers on the network can see
+   this one's name and address (and its platform, fingerprint and node ID).
+   Prefer to keep it on one computer? Press **Use it on this machine only**.
+2. **Connect another.** The other computer appears in the list once *both*
+   have finished step 1. If the list says this machine is not looking, press
+   **Start searching the network**. Still nothing? Open **Can't find the other
+   machine?** and type the address the other screen shows. Send the request
+   from one computer. The one that was asked compares the two codes with the
+   other screen and presses **Same — approve**; then the one that asked
+   compares them too and presses **Same — finish pairing**.
 3. **Share sessions.** Tick the sessions the other computer may see, and choose
    whether it can only leave messages or also wake the agent.
 
-### 3. Do the same on the other machine
-
-Pairing needs both computers. Install AgentHub on the second one and open it at
-step 2 at the same time as the first. Each computer then lists the other.
-
-The [user guide](docs/guide.md) covers every screen, including what to do when
-the other computer does not show up.
+If you approved and the other person never finished, your computer still trusts
+theirs, and that does not expire. Remove it with **Revoke trust** on the
+Network tab. The [user guide](docs/guide.md) covers every screen.
 
 ## What you can do
 
@@ -104,54 +116,57 @@ the other computer does not show up.
 - **Pairing needs both people.** Both screens show the same two fingerprints,
   short codes made from each computer's key. You compare them and each person
   approves on their own screen. If one group differs, you reject it.
-- **A paired computer sees only a short description.** It gets
-  each shared session's ID, Claude Code or Codex, its status and where that
-  status came from, whether AgentHub manages it, and when it was last active,
-  plus the working directory only if you allow it. Never your prompts or
-  transcripts.
+- **A paired computer sees only a short description:** each shared session's
+  ID, Claude Code or Codex, its status and where that came from, whether
+  AgentHub manages it, when it was last active, and the working directory only
+  if you allow it. Never your prompts or transcripts.
+- **Searching the network mostly listens.** With searching on, this computer
+  always listens for other computers' announcements, and announces itself only
+  while a pairing window is open. While the setup sits at step 2, that window
+  reopens by itself when it runs out.
 - **Messages stay in AgentHub's own inbox.** Nothing is written into Claude
   Code's or Codex's files. A message reaches an agent only when the agent reads
   it, or when you turned on waking.
 
-The [developer guide](docs/developer.md#how-it-stays-private) has the details
-and the design records.
+Details and design records: [developer guide](docs/developer.md#how-it-stays-private).
 
 ## Status
 
-One person built this and uses it daily on a Mac and an Ubuntu box. Nobody but
-its author has used it yet. What has been tested on two real machines is
-recorded in [docs/verification.md](docs/verification.md). The gaps below are
-real, including one where a feature reports success and may have done nothing.
+One person built this and uses it daily on a Mac and an Ubuntu box; nobody but
+its author has used it yet. What was tested on two real machines is in
+[docs/verification.md](docs/verification.md). The gaps below are real,
+including one where a feature reports success and may have done nothing.
 
 | What | State |
 |---|---|
 | Session list, status, sharing | Verified on macOS and Linux |
-| Pairing with fingerprint comparison | Verified between two real machines |
-| Heartbeats, messages, inbox between two machines | Verified between two real machines |
+| Pairing with fingerprint comparison | Verified between two real machines, from the command line |
+| Heartbeats (the signed update each machine sends its paired machines every 15 seconds), messages, inbox | Verified between two real machines |
+| First-run setup (new in v0.1.9) | Checked in the dev mock and in tests. Searching the network was checked on two real machines with test nodes (2026-10-01). The whole setup in the app has not yet been run from start to finish on two real machines. |
 | MCP tools, agent to agent across machines | Verified between two real machines |
 | Waking a **Codex** session | Verified on one machine: a turn was observed |
 | Waking a **Claude Code** session | **Unverified.** The node reports the message as woken, but no turn has been observed. [Details](docs/channel-push-not-observed.md) |
-| Windows background node | Starts at log-in only, and is not restarted if it exits |
+| Windows | **Never run on a real Windows computer**; built and tested in CI only. The background node starts at log-in only and is not restarted if it exits |
 | Acceptance on real Windows, macOS and Ubuntu machines | Open: [#21](https://github.com/SheldonChangL/agenthub/issues/21) |
 | Signed downloads | Not done, and not planned until this is worth a certificate |
 
 ## FAQ
 
-**Does it send anything to the internet?** No. AgentHub talks only to the
-computers you paired, directly, over your local network. It checks GitHub only
-when you run the install script, to download the release.
+**Does it send anything to the internet?** No. AgentHub talks only to your
+own computers, directly, over your local network. It reaches GitHub only when
+you run the install script.
 
 **Why does macOS or Windows warn me?** The downloads are not signed, because a
 signing certificate costs money every year. Each release ships checksums you
 can compare against. The one-line install on macOS checks them for you, so it
-shows no warning.
-[How to let it through](docs/guide.md#if-your-computer-warns-about-the-download).
+shows no warning. [How to let it through](docs/guide.md#if-your-computer-warns-about-the-download).
 
-**The other computer does not show up. What now?** Both have to be on the same
-network with AgentHub open at the pairing step. If they still cannot see each
-other (a firewall or a guest Wi-Fi often hides them), open **Can't find the
-other machine?** and type the address the other screen shows.
-[Troubleshooting](docs/guide.md#troubleshooting).
+**The other computer does not show up. What now?** Both have to finish step 1,
+which turns on searching, and be on the same network: if only one searches,
+neither sees the other. If step 2 says this machine is not looking, press
+**Start searching the network**. A firewall or a guest Wi-Fi can still hide
+them; then open **Can't find the other machine?** and type the address the
+other screen shows. [Troubleshooting](docs/guide.md#troubleshooting).
 
 **What can the other computer see after pairing?** Nothing, until you share a
 session. After that it sees the short description above, never the
@@ -179,9 +194,7 @@ has never been seen working. Waking Codex has been seen working on one machine.
 AgentHub is free and always will be. If it saves you time and you want to say
 so, there is a [Ko-fi page](https://ko-fi.com/sheldonchang). Nothing in the
 software changes either way — there is no paid tier and no telemetry that would
-notice.
-
-Bug reports and a note about what you were trying to do are worth more than
-money; they are the only way the rough edges get found.
+notice. Bug reports, with a note about what you were trying to do, are worth
+more than money.
 
 License: MIT — see [LICENSE](LICENSE).

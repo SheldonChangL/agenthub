@@ -13,17 +13,17 @@ AgentHub 會列出你各台電腦上正在跑的 coding agent session，告訴�
 ![本機 session 表格：九個 Claude Code 與 Codex session，各自的狀態、誰看得到、收件匣數量（截圖為英文介面）](docs/screenshots/local-sessions.png)
 *這台的每個 session：狀態、誰看得到、有幾則訊息在等。*
 
-![首次設定第 1 步：三項檢查，以及「準備好這台電腦」與「只在這台用」兩顆按鈕（截圖為英文介面）](docs/screenshots/first-run.png)
+![首次設定第 1 步：三項檢查、一格說明開放區網與在區網上搜尋會讓別人看到什麼，以及「準備好這台電腦」與「只在這台用，不開放區網」兩顆按鈕（截圖為英文介面）](docs/screenshots/first-run.png)
 *全新安裝會先打開三步設定。你沒選之前，什麼都不會分享出去。*
 
 ![配對：兩組指紋要和另一台螢幕比對，下方是「一樣，核准」與「不一樣，拒絕」（截圖為英文介面）](docs/screenshots/network-pairing.png)
 *兩邊的人在兩台螢幕上比對同一組短碼之後，兩台電腦才會配對。*
 
-視窗有英文與繁體中文兩種介面。截圖裡的 session 和電腦都是虛構的。
+視窗有英文與繁體中文兩種介面。截圖裡的資料都是虛構的。
 
 ## 開始使用
 
-有兩台在同一個網路上的電腦最能發揮它的用處，不過一台就能先試。
+一台就能先試。要連兩台的話，兩台都先裝好：設定的第 2 步需要兩台同時開在那一步。
 
 ### 1. 安裝
 
@@ -34,29 +34,35 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 ```
 
 它會先用該版本的檢查碼核對下載的檔案，再裝好 app 和 `ah` 指令，並讓 AgentHub 在背景執行。
-過程中不會要你輸入密碼。
+它也會在 `~/.claude/skills/agenthub-watch` 放一個 Claude Code skill，讓這台的 agent 知道怎麼用 `ah`；
+不要的話，把最後的 `sh` 換成 `sh -s -- --no-skill`。過程中不會要你輸入密碼。
 
 **Windows**：到 [Releases 頁面](https://github.com/SheldonChangL/agenthub/releases)
 下載 `agenthub-desktop_<版本>_windows_amd64-installer.exe` 並執行。
+AgentHub 從未在真的 Windows 電腦上跑過，Windows 版只在 CI 建置與測試
+（[#21](https://github.com/SheldonChangL/agenthub/issues/21)）。
 
 這些檔案沒有簽章，所以手動下載的話，macOS 和 Windows 第一次開啟前會跳警告。
 手冊裡寫了[怎麼放行、怎麼核對檔案](docs/guide.zh-Hant.md#電腦跳出下載警告時)。
 
-### 2. 打開 app，跟著設定走
+### 2. 打開 app
 
-第一次打開會帶你走三步：
+- **macOS**：安裝完會自動打開。之後從「應用程式」打開 agenthub-desktop。
+- **Linux**：應用程式選單裡的 AgentHub，或在新開的終端機執行 `agenthub-desktop`。
+- **Windows**：開始功能表裡的 agenthub-desktop。
 
-1. **準備這台電腦**：按一顆按鈕，AgentHub 就會在背景執行、登入時自動啟動，
-   並讓區網裡的其他電腦連得到它。只想在這台用，就按**只在這台用，不開放區網**。
-2. **連到另一台**：另一台電腦會出現在清單裡。送出請求後，兩邊的人比對螢幕上的兩組短碼，
-   分別按**一樣，核准**和**一樣，完成配對**。
+### 3. 跟著設定走，兩台都要做
+
+1. **準備這台電腦**：按一顆按鈕，AgentHub 就會在背景執行、登入時自動啟動、讓區網裡的其他電腦連得到它，
+   並開始在區網上搜尋。按鈕上方的說明寫著這會讓人看到什麼：配對期間，同一個網路上的其他電腦看得到這台的名稱與位址
+   （以及平台、指紋與節點 ID）。只想在這台用，就按**只在這台用，不開放區網**。
+2. **連到另一台**：兩台都完成第 1 步之後，對方才會出現在清單裡。清單說這台沒在搜尋時，按**開始在區網上搜尋**。
+   還是找不到，就打開**找不到另一台？**，輸入另一台螢幕上顯示的位址。從其中一台送出請求；
+   被請求的那台和另一台螢幕比對兩組短碼後按**一樣，核准**，送出請求的那台再比對一次，按**一樣，完成配對**。
 3. **分享 session**：勾選要讓另一台看到的 session，再選對方只能留訊息，還是也能叫醒 agent。
 
-### 3. 在另一台也做一次
-
-配對需要兩台電腦一起來。在第二台也裝好 AgentHub，和第一台同時開到第 2 步，兩台就會互相出現在清單上。
-
-[使用手冊](docs/guide.zh-Hant.md)把每個畫面都寫清楚了，包含另一台找不到時怎麼辦。
+你核准了、對方卻一直沒完成的話，這台仍然信任對方，而且不會過期。到「區網」分頁按**撤銷信任**移除它。
+[使用手冊](docs/guide.zh-Hant.md)把每個畫面都寫清楚了。
 
 ## 可以做什麼
 
@@ -86,6 +92,8 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
   你們比對之後，各自在自己的螢幕上核准。只要有一組不一樣，就拒絕。
 - **配對的電腦只看得到一段簡短描述。** 它拿到的是每個分享 session 的 ID、是 Claude Code 還是 Codex、
   狀態與狀態從哪裡判斷來的、是不是由 AgentHub 管理、最後活動時間；工作目錄要你允許才會給。你的提示詞和對話紀錄一律不會送出去。
+- **區網搜尋大多時候只是在聽。** 搜尋開著時，這台會一直收聽區網上其他電腦的通告（只收不送）；
+  只有配對視窗開著時才會廣播自己。停在設定第 2 步時，視窗到期會自動重開。
 - **訊息只進 AgentHub 自己的收件匣。** 不會寫進 Claude Code 或 Codex 的檔案。
   只有 agent 自己去讀，或你打開了喚醒，訊息才會到 agent 手上。
 
@@ -100,12 +108,13 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 | 項目 | 狀態 |
 |---|---|
 | Session 清單、狀態、分享 | 已在 macOS 與 Linux 驗證 |
-| 配對與指紋比對 | 已在兩台實機之間驗證 |
-| 兩台之間的心跳、訊息、收件匣 | 已在兩台實機之間驗證 |
+| 配對與指紋比對 | 已在兩台實機之間用命令列驗證 |
+| 兩台之間的心跳（每台每 15 秒送給已配對電腦的簽章更新）、訊息、收件匣 | 已在兩台實機之間驗證 |
+| 首次設定（v0.1.9 新增） | 在 dev mock 與測試裡驗過。區網搜尋在兩台實機的測試節點上驗過（2026-10-01）。完整的首次設定流程還沒有在兩台實機上從頭跑過一次。 |
 | MCP 工具、跨機器的 agent 對 agent | 已在兩台實機之間驗證 |
 | 喚醒 **Codex** session | 在一台電腦上驗證：實際觀察到一輪工作 |
 | 喚醒 **Claude Code** session | **未驗證。** 節點回報訊息已喚醒，但從沒觀察到那一輪真的開始。[細節](docs/channel-push-not-observed.md)（英文） |
-| Windows 背景節點 | 只在登入時啟動，程式結束後不會自動重啟 |
+| Windows | **從未在真的 Windows 電腦上跑過**，只在 CI 建置與測試。背景節點只在登入時啟動，結束後不會自動重啟 |
 | 在 Windows、macOS、Ubuntu 實機上的驗收 | 尚未完成：[#21](https://github.com/SheldonChangL/agenthub/issues/21) |
 | 簽章的下載檔 | 沒有做，在值得買憑證之前也不打算做 |
 
@@ -118,9 +127,10 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 每個版本都附了檢查碼可以核對。macOS 用一行指令安裝時會替你核對，所以不會跳警告。
 [怎麼放行](docs/guide.zh-Hant.md#電腦跳出下載警告時)。
 
-**另一台找不到怎麼辦？** 兩台要在同一個網路上，而且 AgentHub 都開在配對那一步。
-還是看不到彼此（防火牆或訪客 Wi-Fi 常常會擋），就打開**找不到另一台？**，
-輸入另一台螢幕上顯示的位址。見[疑難排解](docs/guide.zh-Hant.md#疑難排解)。
+**另一台找不到怎麼辦？** 兩台都要完成第 1 步（它會打開區網搜尋），而且在同一個網路上：
+只有一台在搜尋時，兩台都看不到對方。第 2 步說這台沒在搜尋時，按**開始在區網上搜尋**。
+防火牆或訪客 Wi-Fi 還是可能擋住，這時打開**找不到另一台？**，輸入另一台螢幕上顯示的位址。
+見[疑難排解](docs/guide.zh-Hant.md#疑難排解)。
 
 **配對後對方看得到什麼？** 你分享 session 之前，什麼都看不到。分享之後，對方看到的是上面說的那段簡短描述，看不到對話內容。
 
