@@ -242,7 +242,7 @@
     **沒人碰過、沒在跑**時每次 render 都再算一次，只往前、不往回；使用者按過任何東西（含「上一步」）之後步驟就是他的（`syncFirstRun()`，
     測試 `first-run.mjs` §1b、`first-run-pairing.mjs` §1）。
   - **每步的完成狀態每次 render 從 state 重算，不存**（`firstRunChecks()`、`firstRunStepComplete()`）：
-    ①「AgentHub 在背景執行」＝`state.nodeReachable`；「開機後自動啟動」＝`ServiceStatus` 已安裝且在跑（狀態還沒讀到＝確認中；
+    ①「AgentHub 在背景執行」＝`state.nodeReachable`；「登入後自動啟動」＝`ServiceStatus` 已安裝且在跑（狀態還沒讀到＝確認中；
     `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他電腦找得到、也連得到」＝`pairHereState(state.pairing.state).reachable`
     （節點說了就聽節點的，§3.3）**而且** `state.pairing.availability === "on"`（節點在區網上搜尋，2026-10-01）。在終端機移除服務，那一行自己變回未完成。②＝`state.nodes` 非空。③＝`counts.all_paired + selected > 0`。
     - **為什麼要搜尋（2026-10-01，產品 BLOCKER）**：節點的 `-discover` 預設關（`cmd/agenthub-node/main.go` 的旗標、`nodeconfig.DefaultSettings()`），
@@ -277,7 +277,7 @@
       說為什麼到了設定頁——兩道守衛任一道都擋得下安裝（測試 `first-run.mjs` §5 各自變異過）。沒有服務管理員（不支援、找不到 ah）
       而節點沒回應 → `restartNode()`（`RestartNode`）。之後節點還沒回答就 `waitForNode()` + `load()`，並**再讀一次**
       `ServiceStatus()` 才判定，並且用**那次讀取自己的回答**（`load()` 發出狀態讀取但不等它；被更新的讀取超車的那次不會存進
-    `state.service`，存著的可能還是安裝前的狀態）。服務那一步失敗記在「開機後自動啟動」那一行，節點那行只說還沒執行。
+    `state.service`，存著的可能還是安裝前的狀態）。服務那一步失敗記在「登入後自動啟動」那一行，節點那行只說還沒執行。
     - 區網（`prepareFirstRunLan()` → `writeFirstRunNetwork()`）：節點設定表單有使用者沒存的修改（`unsavedNodeSettingsFields(option)`，配對抽屜同一條；
       只有這次按下要設的欄位〔`repairFields()`〕不算）就停，列出欄位、不替他存；否則 `loadNodeSettings()` 取新基準，再走
       `applyPeerListenRepairFromCard({ peerListen, peerListens: [位址], allowLan: true, discover: true })`（說明句沒提位址就不帶前三個、沒提搜尋就不帶 `discover`）

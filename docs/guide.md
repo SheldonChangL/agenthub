@@ -180,6 +180,14 @@ it. Without searching, the other computer does not show up in step 2's list,
 and you pair by typing its address. If searching could not be turned on, the
 step says so and offers **Next** anyway, for the same reason.
 
+If the address is already open and searching is off, but the background service
+is not running — it is stopped, the node is running outside it, or its status is
+still being read — the button reads **Get this machine ready**, with **Get this
+machine ready, without searching** beside it. That second button does the same
+to the service as the first (it starts it, or sends you to Settings to confirm
+the database first) but writes no network setting, so searching stays off; then
+it moves on to step 2.
+
 Prefer to keep AgentHub on this one computer? Press **Use it on this machine
 only**. Step 2 is then marked **Staying on this machine** and skipped.
 
@@ -362,8 +370,9 @@ across the top shows **Find the other machine**, **Send a request** and
 **If the list stays empty.** A computer appears under **Machines broadcasting**
 only while both computers are searching. If the drawer says "This machine is
 neither looking nor broadcasting.", searching is off here. Turn it on in
-**Settings → Node settings**: tick **Look for paired machines' addresses on the
-LAN** and press **Save and restart the service**. Or press **Show first-run
+**Settings → Node settings**: tick
+**Search the LAN for other computers (and, while pairing, let them find this one)** and press **Save and restart the
+service**. Or press **Show first-run
 setup** in **Settings → Appearance**, go to step 2 and press **Start searching
 the network**. Typing the other computer's address works either way.
 
@@ -633,13 +642,15 @@ location. A different path means a different node identity, and every paired
 machine would have to pair again; the window asks before it does that.
 
 **Settings → Node settings** holds what the node reads when it starts: **Listen
-addresses**, **Allow LAN connections**, **Look for paired machines' addresses on
-the LAN**, **Treat as private ranges** and **Allow messages to wake agents
-automatically**. **Save and restart the service** saves them, restarts the
-node, and checks that the change stuck. **Look for paired machines' addresses on
-the LAN** is the searching switch: while it is ticked, this computer always
-listens for other computers' announcements, and while a pairing window is open
-it announces its own name, address, platform, fingerprint and node ID.
+addresses**, **Allow LAN connections**, **Search the LAN for other computers (and, while pairing, let them find this one)**,
+**Treat as private ranges** and **Allow messages to wake agents automatically**.
+**Save and restart the service** saves them, restarts the node, and checks that
+the change stuck. **Search the LAN for other computers (and, while pairing, let them find this one)** is
+the searching switch: while it is ticked, this computer always listens for other
+computers' announcements (it only receives), to list computers that want to pair
+and keep paired computers' addresses up to date, and only while a pairing window
+is open does it announce its own name, address, platform, fingerprint and node
+ID. The line under the switch says the same.
 
 Platform differences:
 
