@@ -86,8 +86,8 @@ if (mcpButtons.length !== 0) {
 if (findButtons(document.getElementById("rows"), "inbox").length !== 2) {
   failures.push("the inbox button disappeared from the row");
 }
-if (findButtons(document.getElementById("rows"), "resume").length !== 2) {
-  failures.push("the resume button disappeared from the row");
+if (findButtons(document.getElementById("rows"), "copyid").length !== 2) {
+  failures.push("the Copy ID button disappeared from the row");
 }
 
 // The config still has to name the session it was asked about: an agent bound

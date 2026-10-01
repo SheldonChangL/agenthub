@@ -80,7 +80,7 @@
 | `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（錯誤 toast `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
 | `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
-| `CopyText(text)` | MCP 設定、resume 指令、指紋等所有「複製」 | 寫入剪貼簿；結果顯示在原地（對話框內），不是 toast。例外：列上的 resume 沒有地方放結果，一直走 toast（原本是 banner） |
+| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，與公開對象選單同一套定位，Esc、點外面、捲動、縮放關閉；Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕，框沒開時不攔任何 Tab），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
 
 ## 3. 畫面與元件清單（現況，2026-09-15 對照 main 的 index.html 與 src/ 重寫）
 
@@ -145,7 +145,7 @@
     `repaintFromState()` → `relabelSessionRows()` 再掃一次 `sessionRows` 裡的每一列——
     也就是別的分頁在畫面上、沒有 `render()` 跟在後面時仍被留住的那些（被篩選條件擋掉的列
     每次 `renderRows` 都會從 map 移除，重新出現時是用當下語言重建的）。由 `frontend/test/i18n.mjs` 釘住：
-    zh 開兩列 → 切 en → 每列的 Inbox / resume 標籤與 tooltip 都是英文、`#rows` 整段
+    zh 開兩列 → 切 en → 每列的 Inbox / Copy ID 標籤與 tooltip（含 `aria-label`）、工作目錄按鈕的 tooltip 都是英文、`#rows` 整段
     textContent 不得出現任何漢字 → 再切回 zh。
 - **通知三層（2026-09-29，取代 `#banner`）**。原本的 banner 只有一則：成功 4 秒就消失、錯誤被下一則蓋掉，
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
@@ -411,7 +411,15 @@
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
-- 列動作兩顆：`收件匣 ｜ resume`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
+- 列動作兩顆：`收件匣 ｜ 複製 ID`，靠右 sticky，`col.c-actions` 172px。MCP 入口已移除，見 §10。
+  「複製 ID」（class `copyid`；en「Copy ID」）只複製 provider 自己的 session id，**不帶任何指令前綴**（§8）；
+  tooltip 與 `aria-label` 以按鈕文字開頭並寫出用途與 ID 本身（「複製 ID：這個 session 的 ID，可用於 claude --resume。<id>」，
+  Codex 列寫 `codex resume`）。按下後的「已複製 ✓」用 10.5px 字（13px 時按鈕從 60px 變 71px，
+  收件匣帶三位數徽章的列要 180px，超過欄寬 172px；dev/mock.html 900×760 量的），按鈕寬度不因此變大。
+- 工作目錄欄（2026-10-01）：有值時整格是一顆按鈕（`button.cwdcopy`，欄寬 × `--control-h` 高），按下複製完整路徑；
+  hover／鍵盤焦點時顯示邊框與複製圖示（圖示佔最後 22px，tooltip 有完整路徑）。路徑照舊以 textContent 進 `<bdi>`、
+  由右往左截斷。空值顯示純文字「—」（`span.cwdempty`），沒有按鈕。兩者在 `sessionRow` 建一次、`updateSessionRow` 切換，
+  tick 不換掉按鈕。
 - 空狀態：「沒有符合條件的 session。」
 
 ### 3.3 區網視圖
@@ -883,7 +891,13 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 | codex | `codex resume <providerSessionId>` | thread id |
 
 - 剪貼簿寫入用 #112 的 `CopyText` 綁定，同樣受序號守衛：遲到的回應不得寫剪貼簿。
-- 複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。
+- ~~複製後的回饋要帶工作目錄提示：「在 <cwd> 執行」，cwd 為空則省略。~~（2026-10-01 取代，見下）
+
+**2026-10-01 更新（擁有者指定：「resume 複製時只給 session id 就好，前面指令不用，工作目錄也要可以複製」）。**
+按鈕改名「複製 ID」／「Copy ID」，複製的是**純 ID**：`providerSessionId`；沒有這個欄位時退回 `id` 第一個冒號之後的部分——
+兩者依構造相同：節點以 `model.SessionID(provider, providerSessionID)` 組出 `<provider>:<providerSessionId>`，
+`registry.validateSessionFields` 拒絕 id 與此不符的 session，`model.ValidateProviderSessionID` 拒絕含冒號的 providerSessionId，所以 id 裡只有一個冒號。上表的指令只出現在 tooltip 裡說明用途。
+工作目錄改由工作目錄欄自己複製（§3.2），所以回饋不再帶「在 <cwd> 執行」；回饋顯示在原地（§2 `CopyText`）。
 - 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 
 ### 4.2 Go 端靜態測試的硬性要求（`desktop/frontend_test.go`）
@@ -993,7 +1007,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 
 契約：
 
-1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `resume` 各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
+1. 列動作是兩顆，`frontend/test/mcp-config.mjs` §1 斷言 `mcp` class 的按鈕數為 **0**、`inbox` 與 `copyid`（原 `resume`，2026-10-01 改名，§8）各為 2。放回按鈕會讓測試失敗，所以那是個明確的決定而不是意外。
 2. `openMCPConfig(sessionId)` 產生的設定必須帶**傳進去的那個** session。這條保護不能跟著入口一起拿掉：綁錯 session 之後從任何一側都看不出來（server 起得來、四個工具都回答，只是回答別人的 session）。2026-09-10 就發生過把另一台的 session id 手貼進設定。
 3. `col.c-actions` 寬度下限從 250px 降到 **160px**，實際寬度 176px。
    154px 是**算**出來的不是量出來的：沿用三顆按鈕那次量到的單顆寬度（收件匣 63、resume 67），

@@ -473,6 +473,11 @@ for (const button of buttonsOf("inbox")) {
     failures.push(`a row's Inbox button is not the Chinese label to begin with: ${JSON.stringify(labelOf(button))}`);
   }
 }
+for (const button of buttonsOf("copyid")) {
+  if (labelOf(button) !== ZH["row.copyId"] || !han.test(button.title)) {
+    failures.push(`a row's Copy ID button is not Chinese to begin with: ${JSON.stringify(labelOf(button))} / ${JSON.stringify(button.title)}`);
+  }
+}
 if (!han.test(el("rows").textContent)) {
   failures.push("the table holds no Chinese before the switch, so the check below proves nothing");
 }
@@ -495,16 +500,25 @@ for (const [index, button] of buttonsOf("inbox").entries()) {
     failures.push(`row ${index}'s Inbox tooltip is empty or a raw key: ${JSON.stringify(button.title)}`);
   }
 }
-for (const [index, button] of buttonsOf("resume").entries()) {
-  // Not a translated word: it names the command the button copies. It is
-  // asserted anyway, because it is written by the same pass.
-  if (labelOf(button) !== "resume") {
-    failures.push(`row ${index}'s resume button reads ${JSON.stringify(labelOf(button))}`);
+for (const [index, button] of buttonsOf("copyid").entries()) {
+  if (labelOf(button) !== EN["row.copyId"]) {
+    failures.push(`row ${index}'s Copy ID button reads ${JSON.stringify(labelOf(button))}`);
   }
   // Part sentence, part command: the sentence has to be English and the
-  // command has to still be there.
-  if (han.test(button.title) || !button.title.includes("resume") || rawKey(button.title)) {
-    failures.push(`row ${index}'s resume tooltip did not follow the language: ${JSON.stringify(button.title)}`);
+  // command it is for has to still be there. The accessible name is the same
+  // sentence and follows it.
+  for (const [what, text] of [["tooltip", button.title], ["accessible name", button.getAttribute("aria-label")]]) {
+    if (!text || han.test(text) || !text.includes("resume") || !text.startsWith(EN["row.copyId"]) || rawKey(text)) {
+      failures.push(`row ${index}'s Copy ID ${what} did not follow the language: ${JSON.stringify(text)}`);
+    }
+  }
+}
+// The working directory's copy control is a button in a kept row too.
+for (const [index, button] of buttonsOf("cwdcopy").entries()) {
+  for (const [what, text] of [["tooltip", button?.title], ["accessible name", button?.getAttribute("aria-label")]]) {
+    if (!text || han.test(text) || !text.includes("/tmp/work") || rawKey(text)) {
+      failures.push(`row ${index}'s working-directory ${what} did not follow the language: ${JSON.stringify(text)}`);
+    }
   }
 }
 // And the whole table, which is the assertion that does not have to be updated
@@ -523,6 +537,11 @@ app.setUILanguage("zh-Hant");
 for (const [index, button] of buttonsOf("inbox").entries()) {
   if (labelOf(button) !== ZH["inbox.title"]) {
     failures.push(`row ${index}'s Inbox button did not come back to Chinese: ${JSON.stringify(labelOf(button))}`);
+  }
+}
+for (const [index, button] of buttonsOf("copyid").entries()) {
+  if (labelOf(button) !== ZH["row.copyId"]) {
+    failures.push(`row ${index}'s Copy ID button did not come back to Chinese: ${JSON.stringify(labelOf(button))}`);
   }
 }
 if (!han.test(el("rows").textContent)) {
