@@ -6,19 +6,13 @@ English | [繁體中文](README.zh-Hant.md)
 
 **One window for every Claude Code and Codex session on all of your machines.**
 
-AgentHub lists the coding-agent sessions running on your computers, shows which
-ones are waiting on you, and lets an agent on one machine send a message to an
-agent on another. It all stays on your own network: no account, no cloud
+AgentHub lists the coding-agent sessions on each of your computers, marks each
+one active, idle or gone quiet, and lets an agent on one machine send a message
+to an agent on another. It all stays on your own network: no account, no cloud
 server, no telemetry. Free and open source under the MIT license.
 
 ![The Local sessions table: nine Claude Code and Codex sessions with their status, who can see each one, and inbox counts](docs/screenshots/local-sessions.png)
 *Every session on this machine, with its status, who can see it, and how many messages are waiting.*
-
-![First-run setup, step 1: three checks, a box saying what opening the network and searching it will show, and the "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
-*A fresh install opens on a three-step setup. Nothing is shared until you choose it.*
-
-![Pairing: two fingerprints to compare against the other machine's screen, with "Same — approve" and "Different — reject"](docs/screenshots/network-pairing.png)
-*Two machines pair only after both people compare the same codes on both screens.*
 
 The window is in English and 繁體中文. The pictures use made-up data.
 
@@ -62,6 +56,9 @@ before the first launch. The guide explains
 
 ### 3. Follow the setup, on both computers
 
+![First-run setup, step 1: three checks, a box saying what opening the network and searching it will show, and the "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
+*A fresh install opens on a three-step setup. Nothing is shared until you choose it.*
+
 1. **Get this machine ready.** One button starts AgentHub in the background,
    makes it start when you log in, lets other computers on your network reach
    it, and turns on searching the network. The box above the button says what
@@ -71,10 +68,10 @@ before the first launch. The guide explains
 2. **Connect another.** The other computer appears in the list once *both*
    have finished step 1. If the list says this machine is not looking, press
    **Start searching the network**. Still nothing? Open **Can't find the other
-   machine?** and type the address the other screen shows. Send the request
-   from one computer. The one that was asked compares the two codes with the
-   other screen and presses **Same — approve**; then the one that asked
-   compares them too and presses **Same — finish pairing**.
+   machine?** on both and type the address one shows into the other. Send the
+   request from one computer. The one that was asked compares the two codes
+   with the other screen and presses **Same — approve**; then the one that
+   asked compares them too and presses **Same — finish pairing**.
 3. **Share sessions.** Tick the sessions the other computer may see, and choose
    whether it can only leave messages or also wake the agent.
 
@@ -85,9 +82,9 @@ Network tab. The [user guide](docs/guide.md) covers every screen.
 ## What you can do
 
 - **See every session and its status.** Claude Code and Codex, on a Mac, a
-  Linux box or a Windows PC, in one list. Each session shows `active`, `idle`,
-  `inactive` or `unknown`, read from the agent's own files without touching
-  the agent.
+  Linux box or a Windows PC (the Windows build exists, but has never run on a
+  real Windows computer), in one list. Each session shows `active`, `idle`,
+  `inactive` or `unknown`, read from the agent's own files without touching it.
 - **Share a session, one row at a time or many at once.** Each session's
   audience button has three choices: **Not published**, **Can leave messages**,
   or **Messages and waking**. A chosen-machines dialog handles the rest.
@@ -128,14 +125,17 @@ Network tab. The [user guide](docs/guide.md) covers every screen.
   Code's or Codex's files. A message reaches an agent only when the agent reads
   it, or when you turned on waking.
 
+![Pairing: two fingerprints to compare against the other machine's screen, with "Same — approve" and "Different — reject"](docs/screenshots/network-pairing.png)
+*Two machines pair only after both people compare the same codes on both screens.*
+
 Details and design records: [developer guide](docs/developer.md#how-it-stays-private).
 
 ## Status
 
-One person built this and uses it daily on a Mac and an Ubuntu box; nobody but
-its author has used it yet. What was tested on two real machines is in
-[docs/verification.md](docs/verification.md). The gaps below are real,
-including one where a feature reports success and may have done nothing.
+One person built this and uses it daily on a Mac and an Ubuntu box; nobody else
+has used it yet. What was tested on two real machines is in
+[docs/verification.md](docs/verification.md). The gaps below are real, including
+one where a feature reports success and may have done nothing.
 
 | What | State |
 |---|---|
@@ -152,9 +152,10 @@ including one where a feature reports success and may have done nothing.
 
 ## FAQ
 
-**Does it send anything to the internet?** No. AgentHub talks only to your
-own computers, directly, over your local network. It reaches GitHub only when
-you run the install script.
+**Does it send anything to the internet?** No. AgentHub talks only to
+computers on your local network, normally just the ones you paired with. While
+a pairing window is open, anyone on the same network can see this computer's
+name and address. It reaches GitHub only when you run the install script.
 
 **Why does macOS or Windows warn me?** The downloads are not signed, because a
 signing certificate costs money every year. Each release ships checksums you
@@ -165,8 +166,8 @@ shows no warning. [How to let it through](docs/guide.md#if-your-computer-warns-a
 which turns on searching, and be on the same network: if only one searches,
 neither sees the other. If step 2 says this machine is not looking, press
 **Start searching the network**. A firewall or a guest Wi-Fi can still hide
-them; then open **Can't find the other machine?** and type the address the
-other screen shows. [Troubleshooting](docs/guide.md#troubleshooting).
+them; then open **Can't find the other machine?** on both and type the address
+one shows into the other. [Troubleshooting](docs/guide.md#troubleshooting).
 
 **What can the other computer see after pairing?** Nothing, until you share a
 session. After that it sees the short description above, never the
@@ -193,8 +194,7 @@ has never been seen working. Waking Codex has been seen working on one machine.
 
 AgentHub is free and always will be. If it saves you time and you want to say
 so, there is a [Ko-fi page](https://ko-fi.com/sheldonchang). Nothing in the
-software changes either way — there is no paid tier and no telemetry that would
-notice. Bug reports, with a note about what you were trying to do, are worth
-more than money.
+software changes either way: no paid tier, no telemetry that would notice. Bug
+reports, with a note about what you were trying to do, are worth more than money.
 
 License: MIT — see [LICENSE](LICENSE).

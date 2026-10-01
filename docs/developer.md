@@ -477,6 +477,7 @@ Without it each node refuses to list the other, because it will not deliver to
 an address outside the ranges it trusts.
 
 > **Outdated:** the Network tab's drawer is now titled **Pair with another machine** and opens the pairing window by itself; a fresh install pairs from step 2 of the first-run setup. See [Pair another machine](guide.md#pair-another-machine).
+
 **2. Find each other.** Open the desktop app on both, go to the Network tab,
 press **Pair another machine…** to open the Pairing mode drawer and press
 **Pair with another machine** on one. It appears on the other's
@@ -534,6 +535,7 @@ a heartbeat. `ah peers` on the other machine saying `No paired nodes` is what
 half-done looks like.
 
 > **Outdated:** the drawer now opens the pairing window by itself and shows a three-step progress bar; the button names below still match. See [Pair another machine](guide.md#pair-another-machine) for what the window shows now.
+
 **In the desktop app**, the same exchange runs from the Network tab's Pairing
 mode drawer, which **Pair another machine…** opens: press **Pair with another
 machine** on the machine that decides,
@@ -565,6 +567,7 @@ With `--discover` running, each node learns the other's address from the
 announcements; no `PUT /v1/nodes/{id}/address` is needed.
 
 > **Outdated:** there is no **Set the audience…** button any more. Each row's audience button, and **Publish** on the selection bar, open a menu with three choices; the full dialog is behind **Chosen machines, individual flags…**. See [Share a session](guide.md#share-a-session).
+
 **4. Publish a session.** Pairing on its own shares nothing. In the app's
 Local sessions tab, tick the sessions and press **Set the audience…**, then choose
 who and tick **Let them queue messages** and **Let this session send messages
@@ -882,6 +885,7 @@ install the service or write an MCP config.
 The app requires a running node and talks to it over the same local HTTP API as the CLI. It refuses non-loopback node URLs, because the owner's API has no authentication and stays on loopback for that reason.
 
 > **Outdated:** the service form now has one field, the database path; the network settings moved to Settings → Node settings, and a fresh install sets them from the first-run setup. See [The background service](guide.md#the-background-service).
+
 When the node is not running, the panel under the header offers to install it
 as a background service, with the node's flags as form fields: the address other
 machines connect to is picked from this machine's interfaces, `--allow-lan` is

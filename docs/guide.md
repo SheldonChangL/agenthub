@@ -295,8 +295,8 @@ finish pairing**. If the pairing was abandoned, remove it on Demo-MacBook with
 ### Reading the list of machines found
 
 Everything in that list comes from packets anyone on your network can send, so
-nothing in it has been checked. The Network tab's drawer says so above its
-list: "Nothing in this list has been verified and appearing in it grants
+nothing in it has been checked. Step 2 and the Network tab's drawer both say
+so above the list: "Nothing in this list has been verified and appearing in it grants
 nothing." Use a row to find the right machine, and let the fingerprint
 comparison settle which machine it is. Some rows carry a mark:
 
@@ -358,6 +358,14 @@ across the top shows **Find the other machine**, **Send a request** and
 - The buttons on a request are **Fingerprints match, approve** (on the computer
   that was asked), **Fingerprints match, confirm** (on the computer that asked)
   and **Reject**.
+
+**If the list stays empty.** A computer appears under **Machines broadcasting**
+only while both computers are searching. If the drawer says "This machine is
+neither looking nor broadcasting.", searching is off here. Turn it on in
+**Settings → Node settings**: tick **Look for paired machines' addresses on the
+LAN** and press **Save and restart the service**. Or press **Show first-run
+setup** in **Settings → Appearance**, go to step 2 and press **Start searching
+the network**. Typing the other computer's address works either way.
 
 Closing the drawer ends pairing, unless a request is still waiting on someone.
 Paired computers are listed on the left of the Network tab under **Paired
@@ -628,7 +636,10 @@ machine would have to pair again; the window asks before it does that.
 addresses**, **Allow LAN connections**, **Look for paired machines' addresses on
 the LAN**, **Treat as private ranges** and **Allow messages to wake agents
 automatically**. **Save and restart the service** saves them, restarts the
-node, and checks that the change stuck.
+node, and checks that the change stuck. **Look for paired machines' addresses on
+the LAN** is the searching switch: while it is ticked, this computer always
+listens for other computers' announcements, and while a pairing window is open
+it announces its own name, address, platform, fingerprint and node ID.
 
 Platform differences:
 
@@ -710,12 +721,14 @@ the other machine?** and type the address: that works with searching off.
 - "Could not reach that address": check the address, that both computers share a
   network, and that the node on the other side is running.
 - "This machine will not send data to that address": the address is outside the
-  ranges this computer treats as private. Two computers on a direct cable often
-  need the cable's range under **Treat as private ranges**, on both sides. A
-  range is an address, a slash and a number: `10.0.0.0/24` is every address
-  from `10.0.0.0` to `10.0.0.255` (the first three numbers fixed), and `/16`
-  fixes only the first two. For a cable between `10.0.0.1` and `10.0.0.2`,
-  `10.0.0.0/24` covers both.
+  ranges this computer treats as private. Addresses starting with `10.`,
+  `172.16.` to `172.31.`, `192.168.` or `169.254.` already count as private and
+  need nothing. Only a direct cable whose two ends were given addresses outside
+  those, for example `122.122.122.1` and `122.122.122.2`, needs its range under
+  **Treat as private ranges**, on both sides. A range is an address, a slash and
+  a number: `122.122.0.0/16` covers every address starting with `122.122.`, and
+  `122.122.122.0/24` fixes the first three numbers. Either one covers both ends
+  of that cable.
 - "The other machine runs a build of AgentHub without the pairing exchange":
   update AgentHub there.
 
