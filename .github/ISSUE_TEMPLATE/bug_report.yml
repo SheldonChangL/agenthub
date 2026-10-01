@@ -1,0 +1,84 @@
+name: Bug report
+description: Something does not work the way the README says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. English or 中文 are both fine.
+
+        **A security problem?** Do not file it here — use a
+        [private security advisory](https://github.com/SheldonChangL/agenthub/security/advisories/new).
+
+        **Before you paste anything:** remove session contents (titles,
+        messages, working directories you would not publish), node ids, host
+        names and IP addresses. Replace them with placeholders such as
+        `node_A`, `machine-1`, `192.168.x.y`.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `ah --version` (and the app's version from its title bar, if it is the desktop app).
+      placeholder: ah v0.1.9 (darwin/arm64 go1.27.0)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Name, version and architecture. For two machines, list both.
+      placeholder: macOS 15.5 arm64 / Ubuntu 24.04 amd64 / Windows 11 x64
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - install.sh (the one-line installer)
+        - macOS .dmg
+        - Windows installer (.exe)
+        - Windows .zip
+        - Linux .tar.gz
+        - CLI-only archive
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What you ran or clicked, in order. Say which machine each step was on if more than one is involved.
+      placeholder: |
+        1. ah pairing on (machine-1)
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include the exact error text if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: ah output or node log
+      description: |
+        The relevant lines only. Node logs are at `~/Library/Logs/agenthub/node.log` (macOS),
+        `journalctl --user -u agenthub-node` (Linux) and `%LOCALAPPDATA%\agenthub\node.log` (Windows).
+        **Remove session contents, node ids, host names and addresses first.**
+      render: text
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Screenshots (with the same things removed), what you were trying to do, workarounds you found.
