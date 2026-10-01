@@ -1166,6 +1166,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (reset) {
       wizard.localOnly = false;
       wizard.localOnlyPending = false;
+      wizard.noSearchPending = false;
       wizard.pairSkipped = false;
       wizard.shareSkipped = false;
       wizard.shared = null;
@@ -1874,7 +1875,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // the service registered and stopped: the consent line is not left
     // without its "no" (§3.2). That one does the service and writes nothing
     // of the network line.
-    const prepareNoSearchAsked = !needNode && needLogin && needLan && !needAddress && needSearch;
+    // Only for a service that is registered and stopped: needLogin is also
+    // true for a node running outside any service and while the status is
+    // still being read, and there this button would open the service form,
+    // which is not what its words say.
+    const serviceStopped = state.service?.installed === true && state.service?.running === false;
+    const prepareNoSearchAsked = !needNode && needLogin && serviceStopped && needLan && !needAddress && needSearch;
     parts.skipSearch.className = `ghost${searchOnlyAsked || prepareNoSearchAsked ? "" : " hidden"}`;
     parts.skipSearch.textContent = t(prepareNoSearchAsked ? "firstRun.prepareNoSearch" : "firstRun.skipSearch");
     parts.skipSearch.onclick = prepareNoSearchAsked

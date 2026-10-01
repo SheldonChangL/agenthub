@@ -47,7 +47,8 @@ func (s *Server) discoveryUnavailable(w http.ResponseWriter) bool {
 }
 
 // discovering says this node was started with -discover: it listens on the
-// local network and has an announcer to open a window with. One condition,
+// local network and has an announcer that announces an open window (a window
+// opens without one, it is just not announced). One condition,
 // asked by the endpoints that refuse without it and reported in the window's
 // answer, so the two can never disagree.
 func (s *Server) discovering() bool {

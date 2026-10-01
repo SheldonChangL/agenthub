@@ -811,6 +811,29 @@ const ready = { nodeUp: true, installed: true, running: true };
     if (setup.nodeUp && !button(ZH["firstRun.localOnly"])) failures.push(`${name} has no 「只在這台用」 to say no with`);
   }
 
+  // 「準備好這台電腦，先不搜尋」 says what it does only where the service is
+  // registered and stopped. On loopback the address is still to open (the
+  // "no" there is 「只在這台用」); with no service at all, or while the status
+  // is still being read, pressing it would open the service form instead.
+  for (const [name, setup] of [
+    ["a stopped service on loopback", { nodeUp: true, installed: true, running: false, sessions: [session("a", "claude")] }],
+    ["a running node outside any service", { nodeUp: true, installed: false, saved: { ...lan }, sessions: [session("a", "claude")] }],
+  ]) {
+    await start(setup);
+    for (const key of ["firstRun.skipSearch", "firstRun.prepareNoSearch"]) {
+      if (button(ZH[key])) failures.push(`${name} offers ${ZH[key]}: ${buttons().map((node) => node.textContent).join(" | ")}`);
+    }
+  }
+
+  // Settings → 「顯示首次設定」 starts over: a "no" left from an earlier
+  // press is not carried into the new run's 重試.
+  {
+    const again = await start({ nodeUp: true, installed: true, running: false, saved: { ...lan }, sessions: [session("a", "claude")] });
+    again.state.firstRun.noSearchPending = true;
+    again.openFirstRun({ reset: true });
+    if (again.state.firstRun.noSearchPending) failures.push("starting the setup over kept an earlier 「先不搜尋」 for the next 重試");
+  }
+
   // The node running on a reachable address and not searching, its service
   // registered and stopped: the one button is 「準備好這台電腦」 under a
   // consent line asking for searching, and that line has its "no" too. It
