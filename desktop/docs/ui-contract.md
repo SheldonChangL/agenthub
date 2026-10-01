@@ -80,7 +80,7 @@
 | `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（錯誤 toast `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
 | `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
-| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，與公開對象選單同一套定位，Esc、點外面、捲動、縮放關閉），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
+| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，與公開對象選單同一套定位，Esc、點外面、捲動、縮放關閉；Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕，框沒開時不攔任何 Tab），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
 
 ## 3. 畫面與元件清單（現況，2026-09-15 對照 main 的 index.html 與 src/ 重寫）
 
@@ -858,7 +858,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 **2026-10-01 更新（擁有者指定：「resume 複製時只給 session id 就好，前面指令不用，工作目錄也要可以複製」）。**
 按鈕改名「複製 ID」／「Copy ID」，複製的是**純 ID**：`providerSessionId`；沒有這個欄位時退回 `id` 第一個冒號之後的部分——
 兩者依構造相同：節點以 `model.SessionID(provider, providerSessionID)` 組出 `<provider>:<providerSessionId>`，
-`registry.validateSessionFields` 拒絕 id 與此不符的 session，`model.ValidateProviderSessionID` 拒絕含冒號的 providerSessionId，所以 id 裡只有一個冒號。失敗框裡 Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕（同公開對象選單）。上表的指令只出現在 tooltip 裡說明用途。
+`registry.validateSessionFields` 拒絕 id 與此不符的 session，`model.ValidateProviderSessionID` 拒絕含冒號的 providerSessionId，所以 id 裡只有一個冒號。上表的指令只出現在 tooltip 裡說明用途。
 工作目錄改由工作目錄欄自己複製（§3.2），所以回饋不再帶「在 <cwd> 執行」；回饋顯示在原地（§2 `CopyText`）。
 - 與「收件匣」並排為兩個列動作（MCP 那顆已移除，§10）；設計稿與實作都要有。
 

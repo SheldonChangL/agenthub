@@ -4225,8 +4225,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const box = el("copy-fallback");
     const stops = Array.from(box.children ?? []).filter((child) => /^(input|button)$/i.test(child?.tagName ?? ""));
     const at = stops.indexOf(document.activeElement);
-    const next = at + (event.shiftKey ? -1 : 1);
     event.preventDefault?.();
+    // Focus on the box's own text (a click on the note) is still inside it:
+    // the next Tab enters at the near end, as confirmKey does.
+    if (at === -1 && within(document.activeElement, box)) {
+      stops[event.shiftKey ? stops.length - 1 : 0]?.focus?.();
+      return;
+    }
+    const next = at + (event.shiftKey ? -1 : 1);
     if (at === -1 || next < 0 || next >= stops.length) {
       closeCopyFallback({ focus: true });
       return;

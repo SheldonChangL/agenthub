@@ -169,6 +169,13 @@ const noticesBefore = app.state.notices.length;
     const tabBox = el("copy-fallback");
     const [tabField, tabClose] = ["input", "button"].map((tag) => tabBox.children.find((child) => child?.tagName === tag));
     const tab = (shiftKey = false) => app.copyFallbackKey({ key: "Tab", shiftKey, preventDefault() {}, stopPropagation() {} });
+    // Real browsers spell tagName in capitals; the stops must still be found.
+    for (const child of tabBox.children) if (child?.tagName) child.tagName = child.tagName.toUpperCase();
+    // A click on the box's note leaves the keyboard on the note, inside the
+    // box: the next Tab enters the box at its first stop, it does not close it.
+    tabBox.children.find((child) => child?.tagName?.toLowerCase() === "p")?.focus?.();
+    tab();
+    check(app.copyFallbackOpen() && document.activeElement === tabField, "Tab from the box's own note closed it instead of entering the field");
     tabField?.focus?.();
     tab();
     check(app.copyFallbackOpen() && document.activeElement === tabClose, "Tab from the field did not move to Close inside the box");
@@ -185,6 +192,10 @@ const noticesBefore = app.state.notices.length;
     tab();
     check(!app.copyFallbackOpen(), "Tab past Close left the box open, holding the tick off");
     check(!app.interactionInProgress(), "the tick is still held off after the box closed by Tab");
+    // With the box closed, Tab belongs to the page: nothing may swallow it.
+    let swallowed = false;
+    app.copyFallbackKey({ key: "Tab", preventDefault() { swallowed = true; }, stopPropagation() {} });
+    check(!swallowed, "a Tab with no box open was intercepted: the whole window would lose Tab");
   }
 
   // The working directory's copy, refused, offers the path — as a field's
