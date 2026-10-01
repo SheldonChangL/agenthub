@@ -59,6 +59,20 @@ let pairingOpen = !globalThis.location?.search?.includes("onboarding=");
 const query = new URLSearchParams(globalThis.location?.search ?? "");
 const pairShape = query.get("pair") ?? "";
 
+// `?demo=readme`: the page the README screenshots are taken from. The hostile
+// row above stays in every other load — it is what proves the table escapes
+// what a session file says — but a picture of it on the project's front page
+// would read as a bug. The background photo is off too (see the storage
+// override before boot), so the table is what the picture shows.
+const readmeDemo = query.get("demo") === "readme";
+if (readmeDemo) {
+  const hostile = sessions.findIndex((s) => s.providerSessionId.includes("hostile"));
+  if (hostile >= 0) {
+    sessions.splice(hostile, 1);
+    Object.assign(counts, { total: sessions.length, claude: counts.claude - 1, none: counts.none - 1 });
+  }
+}
+
 // The first-run wizard, which the finished window above can never show: every
 // one of its triggers is a thing this preview already has. `?onboarding=`
 // takes them away.
@@ -543,7 +557,10 @@ configure({
   // The build the window reports in its title bar. "unreleased" is what a
   // build that no tag stamped really answers, so that is what the dev page
   // shows rather than a version number nothing produced.
-  Version: async () => ({ release: "unreleased", goos: "darwin", goarch: "arm64" }),
+  // The README page leaves the version off: a picture on the front page that
+  // said "unreleased" would be wrong for every reader, and one with a number in
+  // it would be wrong after the next release.
+  Version: async () => ({ release: readmeDemo ? "" : "unreleased", goos: "darwin", goarch: "arm64" }),
   RestartService: async () => { log("RestartService"); await sleep(600); serviceShape = ""; unreachable = false; servicePid += 1; return { command: "ah service restart", output: `restarted (pid ${servicePid})` }; },
   // What the window actually calls. It was missing, so every save on this page
   // ended in "could not restart the node: api.RestartNode is not a function" — the dev
@@ -592,6 +609,17 @@ if (onboarding) {
     localStorage.setItem(key, JSON.stringify(ui));
   } catch {
     // Storage disabled: nothing was remembered either.
+  }
+}
+// The README page turns the photo and the rain off through the same stored
+// switches Settings → Appearance writes, so app.js keeps its own defaults.
+if (readmeDemo) {
+  try {
+    const key = "agenthub.desktop.ui.v1";
+    const ui = JSON.parse(localStorage.getItem(key) ?? "{}") ?? {};
+    localStorage.setItem(key, JSON.stringify({ ...ui, backdrop: false, motion: false }));
+  } catch {
+    // Storage disabled: the photo stays on, which only changes the picture.
   }
 }
 const preview = boot({ backdropUrl: backdrop });
