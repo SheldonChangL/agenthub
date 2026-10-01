@@ -14,11 +14,18 @@ Private by default (every session it finds starts invisible; you choose what
 each peer sees). No cloud, no account, no telemetry. Written in Go, open source
 under the MIT license.
 
-![Local sessions](docs/screenshots/local-sessions.png)
+![The Local sessions table: nine Claude Code and Codex sessions with their status, audience button, CWD/IN/OUT/WAKE flags and inbox counts, a notification bell, and an "Inbox full" row asking for attention](docs/screenshots/local-sessions.png)
 
-![Network: a paired machine, and a pairing request to compare](docs/screenshots/network-pairing.png)
+![Pairing: the first-run wizard's step 2, showing the requester's and receiver's fingerprints to compare against the other machine's screen, with "Same — approve" and "Different — reject" buttons](docs/screenshots/network-pairing.png)
 
-The window is in English and 繁體中文.
+On a fresh install the window opens on a three-step setup — get this machine
+ready, connect another, share sessions — and nothing is published until you
+choose it, session by session.
+
+![First-run setup, step 1: a checklist for running AgentHub in the background, starting it at login and letting other machines on the network reach it, with "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
+
+The window is in English and 繁體中文. These pictures are the app's own preview
+page with made-up sessions and machines.
 
 ## What it does
 
@@ -41,6 +48,10 @@ The window is in English and 繁體中文.
 - **Never writes into a provider's files or process.** Messages live in
   AgentHub's own SQLite database; handing one to an agent goes through that
   provider's own API, or not at all.
+
+A session's audience is a menu on its own row:
+
+![The inline audience menu open on a session published to two chosen machines: Not published, Can leave messages (ticked), and Messages and waking (unavailable for a Claude Code session), with a link to the full dialog](docs/screenshots/inline-publish.png)
 
 ## Install
 

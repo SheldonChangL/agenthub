@@ -1,0 +1,35 @@
+name: Feature request
+description: Something AgentHub could do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or 中文 are both fine. Describing the problem matters more than
+        the solution: what you were trying to do, and where AgentHub got in
+        the way.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you are trying to do
+      description: The situation and the goal — for example, which machines and agents are involved.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How you imagine it working, in the window, the CLI or the MCP tools.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: What it would share, and with whom
+      description: |
+        AgentHub publishes nothing by default. If this would send anything to another machine
+        or to an agent, say what and when, so the privacy side can be thought through.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
