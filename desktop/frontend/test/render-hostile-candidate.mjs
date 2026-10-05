@@ -85,7 +85,7 @@ if (!row.includes("AAAA BBBB CCCC DDDD EEEE FFFF")) {
 }
 // Nothing a sender chose may decide a class name.
 for (const cls of row.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(candidaterow|line|name|meta|fingerprint|muted|pill bad|ghost|primary|decide|disabledwhy)"$/.test(cls)) {
+  if (!/^class="(candidaterow|line|name|claimed|meta|candflags|candflag|fingerprint|muted|ghost|primary|decide|disabledwhy|why canddetails|candfield)"$/.test(cls)) {
     failures.push(`a candidate-supplied value reached a class name: ${cls}`);
   }
 }
@@ -93,6 +93,18 @@ for (const cls of row.match(/class="[^"]*"/g) ?? []) {
 // this side, so it has to be flagged on the row itself.
 if (!row.includes("身分有爭用") || !row.includes("名稱或指紋重複")) {
   failures.push("a contested or duplicate candidate was not flagged");
+}
+// Each flag is a label and its reason, in the row: not a pill whose reason is
+// somewhere the keyboard cannot reach.
+{
+  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
+  if (!row.includes(ZH["candidate.contestedWhy"]) || !row.includes(ZH["candidate.duplicateWhy"])) {
+    failures.push("a flagged candidate row does not say why it is flagged");
+  }
+  const clean = candidateRow({ ...hostile, contested: false, duplicate: false }).serialize();
+  if (clean.includes("candflag\"")) {
+    failures.push("an unflagged candidate row carries a flag line");
+  }
 }
 
 // `ah candidates` prints every field the node returns, and #61 asks the desktop
@@ -389,6 +401,9 @@ if (!listFailed.includes("connection reset by peer")) {
 if (!listFailed.includes("不代表沒有人在廣播")) {
   failures.push("a failed candidate read did not say what it does not mean");
 }
+if (!el("candidate-notice-fold").classList.contains("hidden")) {
+  failures.push("a failed candidate read left the notice fold showing");
+}
 
 // 4e. An empty list means two different things, because the node filters
 //     paired nodes out of it on purpose. Two machines that are already paired
@@ -454,6 +469,11 @@ if (!el("candidate-full").serialize().includes("候選清單已滿")) {
 }
 if (!full.includes("nothing here has been verified")) {
   failures.push("the node's own notice about the list was not shown");
+}
+// The notice is folded under "can this list be trusted?", which exists only
+// while there is a notice to put in it.
+if (el("candidate-notice-fold").classList.contains("hidden")) {
+  failures.push("the list's notice has a fold that stayed hidden while there was a notice");
 }
 
 // 5b. With a code this window knows, the notice is said in the window's own
