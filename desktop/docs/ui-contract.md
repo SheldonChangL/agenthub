@@ -17,9 +17,9 @@
 | `provider` | `claude` / `codex` | 欄位 + 篩選 |
 | `status` | `active` / `idle` / `inactive` / 其他 | pill；未知值 class 只能是 `pill` |
 | `management` | string | 「管理」欄，muted |
-| `audience.mode` | `none` / `all_paired` / `selected` | 「公開對象」欄 + 篩選 |
-| `audience.nodes` | string[] | mode=selected 時顯示「N 個節點」，0 個顯示「指定節點（無）」且不算已公開 |
-| `audience.exportCwd / acceptMessages / allowOutbound / autoWake` | bool | 目前**沒有顯示**，只在對話框設定 |
+| `audience.mode` | `none` / `all_paired` / `selected` | 「分享」欄 + 篩選 |
+| `audience.nodes` | string[] | mode=selected 時顯示「N 台機器」；0 台一律當未分享（欄位顯示「未分享」，篩選與排序算 `none`，`describeAudience()`／`audienceMode()` 同一條規則） |
+| `audience.exportCwd / acceptMessages / allowOutbound / autoWake` | bool | 「分享」欄 pill 後面最多三個圖示（訊息、鈴鐺、資料夾，只畫開著的）；在分享面板設定 |
 | `cwd` | string, 可空 | 「工作目錄」欄，空顯示 `—`，title 帶完整路徑 |
 | `lastSeenAt` | ISO | 相對時間（秒/分/小時/天前） |
 | `providerSessionId`, `visibility`, `statusSource`, `source`, `updatedAt` | | 目前未使用 |
@@ -51,7 +51,7 @@
 | `Overview()` | 啟動、`btn-reload`、每次寫入後、待處理列「節點沒有回應」的「重試」、首次設定精靈第 1 步結束時（§3.2） | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取；讀不到節點時在**待處理列**（§3.1）說明（保留上次清單或從未載入過），不再用 toast |
 | `Discover()` | `btn-discover`；首次設定精靈第 3 步沒有 session 時的「重新掃描」（同一個 `discoverSessions()`）；視窗第一次**連得到節點**而且 0 筆 session 時自動呼叫一次（`state.busy` 時不算，留給下一次不忙的讀取） | 掃描後 reload；toast 報 claude/codex/total/skipped 數 |
 | `Heartbeat()` | `btn-heartbeat`（在設定頁的身分區 `settings-identity`） | 對話框顯示已簽章 envelope 純文字 |
-| `SetAudience(ids, audience)` | 公開對象對話框「套用」；行內公開選單（列上的公開對象按鈕、批次列「公開 ▾」，§3.2）的三個選項與它 toast 上的「復原」；`btn-unpublish`；首次設定精靈第 3 步「分享 N 個 session」（走選單同一個 `applyAudienceChoice()`，帶 `withoutCwd`：一律 `exportCwd: false`，復原仍寫回原值） | 成功：清空選取（批次列與對話框；列上的選單不動選取）、關對話框、成功 toast；部分失敗：留著選取、錯誤 toast 顯示第一個錯誤（對話框開著時浮在對話框上方，§3.1）；行內選單與 `btn-unpublish` 的部分失敗 toast 也帶「復原」（至少一個成功時；寫回每個 session 的原值，對失敗的那些是同值重寫、冪等），全部失敗時不帶。選單與復原**依結果分組**：每個不同的 audience 呼叫一次，帶所有得到它的 session（`writeAudiences()`）；整次呼叫丟錯時該組全部算失敗，走同一條部分失敗規則 |
+| `SetAudience(ids, audience)` | 分享面板「套用」（列上的分享按鈕、批次列「分享…」，§3.2；`applySharePanel()`）、toast 的「復原」、首次設定精靈第 3 步「分享 N 個 session」（`applyAudienceChoice()`→`applyAudiencePairs()`，帶 `withoutCwd`：一律 `exportCwd: false`，`peerAction: false`：toast 沒有「在區網頁看」，復原仍寫回原值） | 成功：關面板、批次時清空選取（列上的面板不動選取）、toast＝標題＋`peerOutcome()` 的一句對方視角（「alice 現在看得到 N 個 session。」／「N 台機器看得到這些 session。」／已停止分享時「其他機器不再看得到。」／還沒配對任何機器時「…日後配對的機器才看得到」）＋〔在區網頁看 X〕＋〔復原〕；部分失敗：面板不關、留著選取、錯誤 toast 顯示第一個錯誤（面板開著時浮在面板上方，§3.1），至少一個成功時才帶「復原」（寫回每個 session 的原值，對失敗的那些是同值重寫、冪等），全部失敗時不帶。寫入**依結果分組**：每個不同的 audience 呼叫一次，帶所有得到它的 session（`writeAudiences()`）；整次呼叫丟錯時該組全部算失敗，走同一條部分失敗規則 |
 | `SetVisibility(ids, visibility)` | 目前**沒有** UI 入口 | 保留為未接綁定；不算缺功能 |
 | `TrustNode(id, name, platform, key, fingerprint)` | 配對對話框「指紋一致，信任此節點」 | 關對話框、選中新節點、reload、警告 toast（「對方那台也要做一次」，不自動消失） |
 | `RevokeNode(id)` | 節點詳情「撤銷信任」 | confirm 後執行；toast 說明同時移除授權 |
@@ -80,7 +80,7 @@
 | `SetNodeAddresses(id, addresses)` | 節點詳情的位址清單（首選＋備援，每列可改可移除，「新增備援」最多到 4 列）、「記錄位址」 | **整組取代**（`PUT /v1/nodes/{id}/addresses`）：移除的位址就從節點上消失，打錯的備援刪得掉；送出前 trim、丟掉空列，全空不送（錯誤 toast `network.addressEmpty`）；清單是草稿，`interactionInProgress()` 期間不被背景重畫蓋掉，增刪列保留其他列已打的字。舊節點（該路由 404/405、且不是節點自己的 JSON 錯誤）由綁定改走單一位址端點只記第一個，回 `olderNode: true`，視窗用 `network.addressSavedOlderNode` 說明備援在舊節點上無法編輯，不當成功顯示。測試：`app_test.go` 的 `TestSetNodeAddresses*`、`frontend/test/node-addresses.mjs` |
 | `SetNodeAddress(...)` | 目前**沒有** UI 入口（節點詳情改用 `SetNodeAddresses`；它會把被取代的首選留成備援） | 保留為未接綁定 |
 | `HostPlatform()` | 啟動一次 | 回 `runtime.GOOS`；`darwin` 時加 `body.mac` 讓標題列留出視窗按鈕的位置。問的是**主機**不是節點，兩者是不同的事實，而節點的那份正好在連不上時缺席 |
-| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，與公開對象選單同一套定位，Esc、點外面、捲動、縮放關閉；Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕，框沒開時不攔任何 Tab），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
+| `CopyText(text)` | MCP 設定、指紋、列上的「複製 ID」與工作目錄等所有「複製」 | 寫入剪貼簿；結果顯示在原地，不是 toast。列上的兩個複製（2026-10-01，擁有者指定；原本列上的 resume 沒有地方放結果而走 toast）：成功時按下的那個控制項本身顯示「已複製 ✓」1.5 秒（`flashCopied`，狀態存在列上，15 秒 tick 與切語言重畫時照樣保留）；失敗時在它旁邊開 `#copy-fallback`（`openCopyFallback`，用 `positionPopover`（從前行內公開選單留下的定位函式）定位，Esc、點外面、捲動、縮放關閉；Tab 只在欄位與「關閉」之間移動，移出框外就關閉並把焦點還給按鈕，框沒開時不攔任何 Tab），說出原因並把要複製的文字放在已選取的唯讀欄位裡讓使用者手動複製。兩者都不出 toast。序號守衛照舊：連按兩列時剪貼簿留最後一次，也只有最後一次回報（測試 `frontend/test/row-copy.mjs`） |
 
 ## 3. 畫面與元件清單（現況，2026-09-15 對照 main 的 index.html 與 src/ 重寫）
 
@@ -362,12 +362,13 @@
       dev mock `?onboarding=mixed&lan=open` 加 `&pair=none|outgoing|confirm|incoming|mismatch`（沒有 `&pair=` 時是兩台候選，送出後 6 秒對方「核准」）。
   - **第 3 步**：本機 session 依最後活動新到舊，先顯示 8 個、多的「顯示全部 N 個」；每列 checkbox＋標題（沒有就用 id）＋工作目錄
     （`<bdi>`、從左邊裁）＋provider badge，全部 `textContent`；預設全不勾。兩個情境卡片（`first-run-preset`：能留訊息／留訊息並喚醒，
-    喚醒下是 `wake.caveat`）；勾的全是 Claude Code 時喚醒 disabled 並寫 `popover.wakeClaudeOnly`（與選單、對話框同一條）。
-    主要按鈕「分享 N 個 session」（沒勾時 disabled，寫「先勾選要分享的 session」）走 `applyAudienceChoice(ids, preset, { withoutCwd: true })`：
-    mode 規則同行內選單（未公開 → `all_paired`、已公開保留原本的 mode 與 nodes），`exportCwd` 一律 false（畫面上沒有任何地方說會帶工作目錄），
-    成功 toast 與「復原」照舊。全部成功才到完成畫面。0 個 session：`firstRun.step3.noSessions`＋「重新掃描」（`discoverSessions()`）。「先跳過」。
+    喚醒下是 `wake.caveat`）；勾的全是 Claude Code 時喚醒 disabled 並寫 `popover.wakeClaudeOnly`（與分享面板同一條）。
+    主要按鈕「分享 N 個 session」（沒勾時 disabled，寫「先勾選要分享的 session」）走 `applyAudienceChoice(ids, preset, { withoutCwd: true, peerAction: false })`：
+    mode 規則是 `audienceForChoice()` 的（未分享 → `all_paired`、已分享保留原本的 mode 與 nodes），`exportCwd` 一律 false（畫面上沒有任何地方說會帶工作目錄），
+    「可留訊息」現在也寫 `allowOutbound`（與分享面板同一組 preset，`AUDIENCE_PRESETS`），Claude Code 一律 `autoWake: false`；
+    成功 toast 與「復原」照舊，但沒有「在區網頁看」（會把人帶出精靈，同 `decidePairRequest` 的 `fromWizard`）。全部成功才到完成畫面。0 個 session：`firstRun.step3.noSessions`＋「重新掃描」（`discoverSessions()`）。「先跳過」。
   - **完成畫面**：一句結果（分享了幾個、給誰〔`describeTargets()`〕／只在這台用／還沒分享），「開始使用」＝寫入
-    `onboardingDismissed` 與 `firstRunFinished`、回主視窗。主視窗「公開對象」欄的一次性提示**沒有做**（規格標為可選）。
+    `onboardingDismissed` 與 `firstRunFinished`、回主視窗。主視窗「分享」欄的一次性提示**沒有做**（規格標為可選）。
   - **稍後再設定**：收起、寫入 `onboardingDismissed`、回主視窗、info toast 說「繼續設定」在哪。之後只要 `firstRunFinished` 不是 true
     且（精靈被暫時讓開，或使用者見過精靈〔這個視窗出現過，或 `onboardingDismissed`〕而觸發條件仍成立），標題列就有「繼續設定」
     ——沒見過精靈的已設定機器，節點掉線時不會冒出這顆：按了重新打開並跳到第一個未完成（也沒被略過）的步驟
@@ -389,34 +390,51 @@
 - **8 個篩選 chip，三組**（`provider` 2、`status` 3、`audience` 3），由 `sessions/filter.js` 的 `CHIPS` 產生。
   **組內可多選（OR），組間 AND**（`matchesGroups`）。每個 chip 帶的是 **facet 計數**——把**其他**組的篩選與
   搜尋都套用後這個 chip 會match到幾筆，所以開著「Codex」時「active」旁邊的數字跟表格一致。計數為 0 且未選取的 chip 加 `zero` 樣式。
-- **浮動批次列**（`#selectionbar`，有選取才出現，表格卡片底部中間）：「已選取 N 個 session」、`btn-audience`「公開 ▾」
-  （開**同一個**行內公開選單，對象是全部選取）、`btn-unpublish`「收回公開」（＝選單的「不公開」，同樣清掉 `exportCwd`、同樣帶復原）、`btn-deselect`「取消選取」。
+- **浮動批次列**（`#selectionbar`，有選取才出現，表格卡片底部中間）：「已選取 N 個 session」、`btn-audience`「分享…」
+  （`aria-haspopup="dialog"`，開**同一個**分享面板，對象是全部選取）、`btn-deselect`「取消選取」。`btn-unpublish`「收回公開」已移除
+  （2026-10 PR E）：面板的「不分享」取代它，同樣清掉 `exportCwd`、同樣帶復原。
   全選只在表頭（`#select-all`，含 indeterminate）；原本列上的 `select-all-visible` 已移除。批次列出現時 `body.selecting`
   把 toast 疊往上推 124px（18 + 56 的列、12 的卡片外距、26 的狀態列），toast 不蓋住它。批次套用成功後清空選取；部分失敗留著。
-- **行內公開選單**（`#audience-popover`，`role="menu"`，2026-09-29）。表格的公開對象欄是一顆按鈕（`button.audbtn`，
-  文字與 tooltip 同原本的 pill，▾ 由 CSS 畫；`aria-haspopup`／`aria-expanded`），點了在按鈕旁邊（下方放不下改上方，
-  兩邊都放不下取大的那邊並捲動）打開，選了**立即套用**：
-  - 選項：「不公開」（`mode: none`，`exportCwd` 與三個訊息旗標全 off——同 main 原本的收回公開；復原會寫回原值）、「能留訊息」（`acceptMessages`）、「留訊息並喚醒」
-    （`acceptMessages`＋`allowOutbound`＋`autoWake`，下方 amber 小字是喚醒備註 `wake.caveat`）、分隔線、
-    「指定機器、進階旗標…」（開 `audience-modal`；從列上來時那一列暫時成為選取，對話框關掉——套用或取消——就還原原本的選取）。
-  - **對象不問**：未公開（`describeAudience().published` 為 false：`none`，或 `selected` 且 0 個節點）→ `all_paired, nodes: []`；
-    已公開 → **保留原本的 mode 與 nodes**，只改旗標。兩個公開選項的 `exportCwd` 保留現值（`audienceForChoice()`）；
-    「不公開」把它清掉，因為未公開的列不顯示旗標，留著的 `exportCwd` 會在下一次「能留訊息」時在使用者看不到的情況下公開工作目錄。
-    頂端一行寫這次公開給誰（所有已配對機器／原本指定的 N 台／多選時各自或混合的說法）；按下公開會帶上 `exportCwd` 時
-    （例如舊資料或進階對話框留下的、未公開卻勾著的）多一句「含工作目錄」（`popover.withCwd`，多選時只有部分帶上寫數量
-    `popover.withCwdSome`）＋「選了立即套用」。
-  - 打勾：這一列（或全部選取）目前正是哪一個情境就勾哪一個；已公開但旗標不是兩個 preset 之一（全 off 也是）→ 不勾＋「目前是自訂設定。」；
-    多選且不一致 → 不勾＋「選取的 session 目前設定不一樣。」
-  - 還沒有配對任何機器（`state.nodes` 空且 `nodesError` 為空）時照樣能用，頂端多一句「公開後配對的機器才看得到」＋「配對另一台機器」（`goToPairing()`）。
-  - 只有 Claude Code 的選取，「留訊息並喚醒」disabled 並說明——與對話框的喚醒 preset 同一條規則（§3.5）。
+- **分享面板**（`#audience-modal`，沿用這個 id，2026-10 PR E；取代行內公開選單 `#audience-popover` 與原本的完整對話框）。
+  表格「分享」欄的按鈕（`button.audbtn`，`aria-haspopup="dialog"`）與批次列「分享…」開同一個置中對話框（`.sharecard`，寬 min(560px, 92vw)；
+  900×700 與 1100×760 都不需捲動），列上開的對象是那一列、批次列開的是全部選取，**不再**暫時改寫選取。內容：
+  標題（單選 `share.titleOne`「分享「{標題}」」，多選 `share.titleMany`）、「誰看得到」（不分享／所有已配對機器／指定機器，radio，`name="share-who"`）、
+  指定機器時的機器清單、「他們可以做什麼」（只看得到／可留訊息／可留訊息並喚醒，radio，`name="share-what"`）、獨立的「附上工作目錄路徑」勾選框、取消、套用。
+  - **三種「可以做什麼」**：只看得到＝三旗標全關；可留訊息＝`acceptMessages`＋`allowOutbound`；可留訊息並喚醒＝三個全開（`AUDIENCE_PRESETS`）。
+    「可留訊息」含回覆，因為對話是雙向的。「只看得到」回來（2026-09-29 曾拿掉），是為了讓每個已分享的 session 都對得到一個選項。
+    **GUI 不再能單獨設只收或只送**（擁有者 2026-10 的決定）；舊資料裡只開一個旗標的 session 仍顯示得出來（見下），只是不會被面板新寫出來。
+  - **打勾規則（每個 session 各自推導）**：誰看得到＝`writableAudience()` 後的 mode（`selected` 且 0 台→「不分享」）；可以做什麼＝`autoWake`（且不是 Claude Code）→喚醒，
+    否則 `acceptMessages`→可留訊息，否則→只看得到（只開 `allowOutbound` 的算「只看得到」，因為對方不能留訊息）。多選時兩區各自：推導結果全相同才勾，
+    不一致就**不勾任何選項**，下面一行「選取的 session 目前…不同；不改這一區就各自保留。」（`share.mixedWho`／`share.mixedWhat`）。
+    全部未分享時「可以做什麼」預設勾「可留訊息」（等於已動過）。單選但實際細項不等於該選項（例如收得到、不能回覆）：仍勾推導出的選項，下面一行灰字寫出實際值
+    （`share.whatDiffers`）；點一下該選項（含已勾的那個，`onclick`）才改成選項的定義。
+  - **沒動的區塊照各 session 原值保留**（`whoTouched`／`whatTouched`／`cwdTouched`）。`audienceFromPanel(session, panel, form)`：誰看得到沒動就用該 session 的 mode 與 nodes；
+    選了「不分享」才寫四旗標全關（沒動的未分享 session 原樣保留）；旗標沒動就用該 session 現值（未分享的 session 改成已分享時用「可留訊息」）；
+    工作目錄沒動就用現值；**Claude Code 一律 `autoWake: false`**。
+  - **工作目錄是獨立勾選框，永遠看得到**（「不分享」時連同「可以做什麼」一起隱藏）；多選不一致用 `indeterminate`。它既然看得到，就不需要「含工作目錄」這類事前警告
+    （`popover.withCwd` 系列已刪）。
+  - **喚醒**：全是 Claude Code 時「可留訊息並喚醒」disabled＋`popover.wakeClaudeOnly`；混合時可選，並說「其中 N 個 Claude Code session 叫不醒…」（`share.wakeSomeClaude`）；
+    節點沒開自動喚醒時勾喚醒多一句 `share.wakeNodeOff`；選取裡有 `autoWake` 的 Claude Code session 時多一句 `audience.autoWakeWillTurnOff`。
+    喚醒備註 `wake.caveat` **不在面板、列、toast 出現**，只在設定頁節點設定「允許訊息自動喚醒」的第二行與精靈第 3 步。
+  - **機器清單只給名字＋線上點**，node id 進 `title`（刪了手打節點 ID 欄）。指定機器但一台都沒勾：「套用」disabled，左側灰字 `share.pickAMachine`。
+    單選且該 session 已授權但不在 `state.nodes` 的節點另列一列「這次沒讀到配對清單中的這台機器」（`audience.unlistedNode`），預設勾著，取消勾選才會撤銷；
+    否則套用會把它靜默撤掉（#194）。這一列不說「已不在配對」：`RevokeNode` 在同一交易刪授權、`SetAudience` 拒絕未配對節點，所以它實際只出現在 `Overview`
+    的配對清單讀取失敗、`nodes` 回 `[]` 時（此時節點仍配對著）。可達的 `Overview` 帶 `error` 即表示這種失敗，存進 `state.nodesError`，
+    面板以 `audience.nodesReadFailed` 說明讀取失敗，不顯示「還沒有配對任何機器」。還沒有配對任何機器（`state.nodes` 空且 `nodesError` 為空）時照樣能用，
+    「誰看得到」下一句「公開後配對的機器才看得到」＋〔配對另一台機器〕（`goToPairing()`）。
   - 成功 toast 帶「復原」（部分失敗的錯誤 toast 也帶，§2）：把每個 session **原本的** audience 物件寫回（旗標、mode、nodes；不同的原值分批呼叫）。唯一不是原樣的：
-    `selected` 且 0 個節點 `SetAudience` 會拒絕，寫回成 `none`＋同樣的旗標（兩者一樣沒人看得到）。套用喚醒時 toast 內文加喚醒備註。
-  - 鍵盤：按鈕本身 Enter/Space 開、再按一次關；方向鍵上下（循環）、Home/End；Esc 與 Tab 關並把焦點還給按鈕；點外面關；
-    頁面捲動或視窗縮放關。選了之後寫入期間按鈕 disabled，寫完焦點回到那顆按鈕。另一個寫入進行中時按「復原」不會被靜默吞掉：
-    警告 toast 說這次沒有復原（`popover.undoBusy`）。開著時 `interactionInProgress()` 為真，15 秒 tick 不讀清單、不動列（它是畫在那一列旁邊的）。
-  - 測試 `inline-publish.mjs` §1–§5。
-- **旗標欄的喚醒 ⚠**：已公開且 `autoWake` 的列，醒 chip 旁邊一個 amber `⚠`（`.wakecaveat`），`title`／`aria-label` 是喚醒備註全文。
-- **表格 8 欄**：勾選、SESSION（兩行：標題、下一行 provider badge；**唯一沒有寬度的欄**，最後才裁；`management` 進 badge 的 `title`）、狀態、公開對象（表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 與篩選 chip 用完整說法；欄寬 108px——2026-09-29 它成了按鈕，加上 ▾ 與按鈕內距，量過「Not published」要 89px 內容；旗標欄 156→160px 放 ⚠；900px 下每個標籤都放得下，#194）、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。工作目錄欄 136px，視窗 ≤1000px 時 96px（2026-10-05，原本與 SESSION 平分剩餘寬度，900 寬下標題只剩兩個字）。
+    `selected` 且 0 個節點 `SetAudience` 會拒絕，寫回成 `none`＋同樣的旗標（兩者一樣沒人看得到）。toast 還有對方視角一句與〔在區網頁看 X〕
+    （`peerOutcome()`、`goToMachine()`：切到區網頁並選取那台機器；多台時〔在區網頁看〕不選機器）。另一個寫入進行中時按「復原」不會被靜默吞掉：
+    警告 toast 說這次沒有復原（`popover.undoBusy`）。
+  - 鍵盤：開啟時焦點在勾著的「誰看得到」radio（沒有就第一個）；Esc（`overlayKey`）、取消、點背景都關面板並把焦點還給原本的按鈕；套用寫入期間按鈕 disabled，
+    寫完焦點回到那顆按鈕。開著時 `anyModalOpen()` 為真，15 秒 tick 不讀清單、不動列。
+  - 測試：`audience-dialog.mjs`（面板規則；成功輸出必須含 `one session opens as itself`，Go 的 `TestFrontendAudienceDialogStartsOffForManyAndAsItselfForOne` 斷言）、
+    `inline-publish.mjs` §1–§5（寫入對象、復原分組、toast 與「在區網頁看」、焦點與 tick、圖示）、`row-audience.mjs`、`sessions-filter.mjs`。
+- **表格 7 欄**：勾選、SESSION（兩行：標題、下一行 provider badge；**唯一沒有寬度的欄**，最後才裁；`management` 進 badge 的 `title`）、狀態、**分享**（`span.sharewrap`：
+  pill＋後面最多三個 14px 遮罩圖示——訊息、鈴鐺、資料夾，只畫開著的、未分享的列不畫；hover 一句話，`title`／`aria-label` 每次更新都寫；Claude Code 的鈴鐺加 `.off` 變灰並說叫不醒。
+  表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 用 `share.who.*Title`，篩選 chip 用完整說法；
+  `selected` 且 0 個節點顯示「未分享」，與 `describeAudience().published`、`audienceMode()` 同一條規則；欄寬 156px＝pill 約 84px＋6px＋三個圖示與間距＋12px 內距，
+  比原本「公開對象」108px＋「旗標」160px 少 112px，全給 SESSION；測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23），旗標欄隨分享面板合併進分享欄（2026-10）。工作目錄欄 136px，視窗 ≤1000px 時 96px（2026-10-05，原本與 SESSION 平分剩餘寬度，900 寬下標題只剩兩個字）。
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
@@ -554,7 +572,7 @@
 
 ### 3.5 覆蓋層（8 個：3 個抽屜 + 5 個對話框）
 
-**Esc**（2026-10-05）：每按一次關掉最上層的一個，對話框先於抽屜（`overlayKey`：heartbeat → MCP → 手動配對 → 公開對象對話框 → 通知紀錄 → 配對抽屜〔走 ✕ 同一條 `dismissPairingDrawer`〕→ 收件匣）。確認對話框、公開對象選單、複製失敗框開著時由它們自己處理（測試 `escape-closes.mjs`）。
+**Esc**（2026-10-05）：每按一次關掉最上層的一個，對話框先於抽屜（`overlayKey`：heartbeat → MCP → 手動配對 → 分享面板 → 通知紀錄 → 配對抽屜〔走 ✕ 同一條 `dismissPairingDrawer`〕→ 收件匣）。確認對話框、複製失敗框開著時由它們自己處理（測試 `escape-closes.mjs`）。
 
 抽屜（`.drawer`，從右側滑出）：
 - `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
@@ -565,27 +583,7 @@
 對話框（`.modal`）：卡片本身捲動，`.modal-actions`（每個對話框的最後一塊）`position: sticky` 貼在卡片底部，
 900×760 下內容比卡片高時動作鈕仍在可視範圍內（#194）。
 - `pair-modal` 手動配對（只從抽屜頁尾或候選列進來，見 §3.3）：說明（`ah node`、指紋逐組相符）、五個欄位、prefill note、本機指紋、送出。
-- `audience-modal` 設定公開對象：套用到 N 個；三種 mode radio；指定節點的 ID 輸入；四個旗標；套用。
-  **多選時四個旗標一律從 off 開始；單選時載入那個 session 自己的現值**（測試 `audience-dialog.mjs`）。
-  單選且 mode `selected` 時，已授權但不在 `state.nodes` 的節點另列一列「這次沒讀到配對清單中的這台機器」
-  （`audience.unlistedNode`），預設勾著，取消勾選才會撤銷；否則套用會把它靜默撤掉（#194）。這一列不說
-  「已不在配對」：`RevokeNode` 在同一交易刪授權、`SetAudience` 拒絕未配對節點，所以它實際只出現在 `Overview`
-  的配對清單讀取失敗、`nodes` 回 `[]` 時（此時節點仍配對著）。可達的 `Overview` 帶 `error` 即表示這種失敗，
-  存進 `state.nodesError`，對話框以 `audience.nodesReadFailed` 說明讀取失敗，不顯示「還沒有配對任何機器」。
-  **兩個**情境 preset（2026-09-29 拿掉「只讓他們看見」：對方看得到卻不能寫訊息，等於沒給它任何事做），只寫三個訊息旗標
-  （能留訊息：`acceptMessages`；留訊息並喚醒：`acceptMessages`＋`allowOutbound`＋`autoWake`），`exportCwd` 保留現值。
-  「自訂」（`audienceFormIsCustom()`）：mode 不是 `none`，**而且**旗標不是兩個 preset 之一——
-  所以已公開但全部 off 的 session 開啟即展開進階區並顯示「自訂」，而 mode `none` 一律不算自訂、不展開；換 mode radio 會重算這一句。
-  **mode `none` 套用時四個旗標一律寫 false**（`readAudienceForm()`，含 `exportCwd`，與選單的「不公開」相同）：單選照樣載入現值，
-  所以勾選框可能還勾著，此時 preset 下方多一句 `audience.noneClearsFlags`（套用時四個旗標一律關掉）；
-  mode `none` 時兩個 preset radio 都不勾（`syncAudiencePreset()`：勾著的框湊巧符合某個 preset 也不勾——套用寫的是全關，
-  不是那個 preset；測試 `audience-dialog.mjs`）。
-  mode 不是 `none`、`audience-cwd` 勾著、進階區收合時，preset 下方另有選單同一句「含工作目錄」（`popover.withCwd`）——
-  符合 preset 的 session 開啟時進階區是收合的，工作目錄的勾選框在裡面看不到；展開進階區（`toggle` 事件）這句就收起，
-  再收合又出現（測試 `inline-publish.mjs`：未公開但帶 `exportCwd` 的 session 從對話框公開、已公開帶 `exportCwd` 的 session 在對話框改不公開）。喚醒的說明 `audience-autowake-note` 在進階區**外面**，除了只有
-  Claude Code 的選取（那裡直接說叫不醒），第一行一律是喚醒備註 `wake.caveat`，節點沒帶 `-auto-wake`、Codex、Claude 的句子接在後面。
-  喚醒備註另外出現在：行內選單的喚醒選項下、旗標欄的 ⚠、套用喚醒後的 toast、設定頁節點設定「允許訊息自動喚醒」的第二行說明
-  （第一行「每個 session 仍要各自打開。」不變，兩句不重複）。
+- `audience-modal` 分享面板，見 §3.2。（未列出的授權與 `nodesReadFailed` 兩條規則已搬到 §3.2 那條下。）
 - `mcp-modal` MCP 設定：**列上已無入口**（§10），由 `openMCPConfig(sessionId)` 開啟，顯示該 session 的 `.mcp.json` 片段，文案說明 per-project 與 `--outbound` 的限制。
 - `modal` Heartbeat 預覽：說明 + `<pre>`。
 - `confirm-modal` 是非題（`askConfirm({title, body, confirmLabel, danger})`，回 Promise<boolean>）：
@@ -662,7 +660,7 @@
   （同一個 `reconcileRows()`），「任何地方都不得有自動核准或略過比對的入口」也包括它。開著時待處理列整個隱藏；`state.busy` 期間它的每顆寫入按鈕 disabled；
   它顯示的 session 標題、工作目錄、provider 與節點的原始錯誤都以 `textContent` 進 DOM。
 - `inbox-clear` 在 `askConfirm` 回 false（取消／Esc／背景）時不呼叫 `ClearInbox`；回 true 時呼叫並把結果畫在抽屜內（測試 `confirm-dialog.mjs`）。app.js 不得呼叫 `window.confirm`／`alert`／`prompt`（同一個測試逐字檢查原始碼）。
-- 公開對象對話框多選開啟時四個旗標為 false，且 `readAudienceForm()` 回傳四個 false；單選開啟時四個旗標是該 session 的現值。mode 為 `none` 時 `readAudienceForm()` 不論勾選框一律回傳四個 false（與選單「不公開」相同）。
+- 分享面板沒動的區塊照各 session 原值寫回（`audienceFromPanel()`）；選了「不分享」才寫四旗標全關；Claude Code 一律 `autoWake: false`；只收或只送不再是 GUI 能單獨設的組合（「可留訊息」同時寫 `acceptMessages` 與 `allowOutbound`）。
 
 ### 4.1 測試架構的耦合
 
@@ -691,7 +689,12 @@
    `first-run-rail`、`first-run-steps`、`first-run-later`、`first-run-stage`、`btn-resume-setup`；`settings-show-onboarding` 保留 id，
    意思變成「顯示首次設定」。
    2026-09-29 第二段拿掉 `select-all-visible`、`select-label`，加了 `audience-popover`、`pair-stepper`；`btn-audience`
-   保留 id，意思變成「公開 ▾」（開行內選單，不再直接開對話框）。`dom-shim.mjs` 的 `querySelectorAll("#view-switch [data-view]")`
+   保留 id，意思變成「公開 ▾」（開行內選單，不再直接開對話框）。
+   2026-10 PR E：分享面板。刪 `audience-popover`、`btn-unpublish`、`audience-count`、`audience-selected`、`audience-node-input`、`audience-presets`、`audience-preset-wake`、
+   `audience-preset-note`、`audience-autowake-note`、`audience-advanced`、`audience-messages`、`audience-outbound`、`audience-autowake`、`audience-note`；
+   加 `audience-title`、`share-who-none`／`share-who-all`／`share-who-selected`、`share-who-note`、`share-what-block`、`share-what-view`／`share-what-messages`／`share-what-wake`、
+   `share-what-note`、`share-apply-why`；保留 `audience-modal`、`audience-close`（仍是「取消」，移到動作列）、`audience-apply`、`audience-cwd`、`audience-nodes`、`audience-node-list`、`btn-audience`（意思變成「分享…」）、`btn-deselect`。
+   radio 必須寫 `name`＋`value`＋`id`：`dom-shim.mjs` 的 `radioGroups()` 只從 index.html 的 `<input name=…>` 建群組。`dom-shim.mjs` 的 `querySelectorAll("#view-switch [data-view]")`
    從 index.html 解出三個分頁按鈕。
 
 ### 4.3 配對交換的錯誤碼 → 中文句子（#63）
@@ -740,6 +743,10 @@
 公開對象對話框剩兩個 preset。點擊數（從起點到完成）：公開一個 session 2（列上的公開對象 → 選項）；批次公開 3 起
 （勾選 N 列 → 公開 ▾ → 選項，勾選每多一列多一下，用表頭全選則固定 3）；發起配對 3（區網分頁 → 配對另一台機器… → 候選列的送出配對請求）；
 核准對方請求 2（待處理列「比對並核准」→ 核准）；啟動背景服務 1（待處理列或標題列 pill）；讀收件匣 1（列上的收件匣）。
+
+**2026-10 狀態（分支 `feat/desktop-share-panel`，PR E）**：上面第 8 條的行內選單與完整對話框合併成一個分享面板（§3.2），
+「公開對象」與「旗標」兩欄合成一欄「分享」（pill＋最多三個圖示），批次列只剩「分享…」與「取消選取」。上一段的點擊數換成：分享一個 session 3
+（列上的分享 → 選項 → 套用）；批次 4 起（勾選 N 列 → 分享… → 選項 → 套用）。
 
 ## 6. 驗收清單（2026-09-11 實作分支 `feat/desktop-ui-redesign` 的狀態）
 
