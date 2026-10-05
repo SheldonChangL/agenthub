@@ -56,7 +56,8 @@ let counts = facetCounts(rows, { filters: f });
 check(counts["status:active"] === 1, `status:active under codex should be 1, got ${counts["status:active"]}`);
 check(counts["status:inactive"] === 0, "status:inactive under codex should be 0");
 check(counts["provider:claude"] === 3, `provider:claude should still be 3 (own group ignored), got ${counts["provider:claude"]}`);
-check(counts["audience:selected"] === 1, "audience:selected under codex should be 1 (c2, empty node list still counts as selected)");
+check(counts["audience:selected"] === 0 && counts["audience:none"] === 2,
+  `audience under codex: selected ${counts["audience:selected"]}, none ${counts["audience:none"]}; want 0 and 2 (c2's empty node list is shared with nobody, so it counts as none)`);
 
 // Facet counts respect the search term too.
 counts = facetCounts(rows, { search: "app-server" });
@@ -78,7 +79,7 @@ order = sorted(rows, { key: "status", dir: "asc" }).map((r) => r.id);
 check(order.slice(0, 2).join() === "claude:a1,codex:c1" && order[4] === "claude:a3", `status asc active..inactive, got ${order}`);
 order = sorted(rows, { key: "audience", dir: "asc" }).map((r) => r.id);
 check(order[0] === "claude:a1", "audience asc puts all_paired first");
-check(order[1] === "claude:a2" && order[2] === "codex:c2", "within selected, more nodes first");
+check(order[1] === "claude:a2" && order.indexOf("codex:c2") > 1, "within selected, more nodes first; an empty node list is shared with nobody, so it sorts with none");
 order = sorted(rows, { key: "cwd", dir: "asc" }).map((r) => r.id);
 check(order[0] === "claude:a3" && order[1] === "codex:c2", `cwd asc puts empty cwd first, got ${order}`);
 check(sorted(rows, { key: "bogus", dir: "asc" }).length === 5, "unknown key falls back, never throws");

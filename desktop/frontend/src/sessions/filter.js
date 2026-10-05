@@ -31,12 +31,13 @@ export function emptyFilters() {
   return { provider: new Set(), status: new Set(), audience: new Set() };
 }
 
-// audienceMode is the value the audience group filters on. A "selected" mode
-// with no nodes is not published to anyone, but it is still what the owner
-// chose, so it filters as "selected" — the table cell says so, under the key
-// audience.cell.selectedNone.
+// audienceMode is the value the audience group filters, sorts and searches on.
+// A "selected" mode with no nodes is not shared with anyone — the table says
+// 「未分享」 for it, as for none — so it counts as "none" here too.
 export function audienceMode(session) {
-  return session?.audience?.mode ?? "none";
+  const mode = session?.audience?.mode ?? "none";
+  if (mode === "selected" && (session?.audience?.nodes?.length ?? 0) === 0) return "none";
+  return mode;
 }
 
 function groupValue(session, group) {

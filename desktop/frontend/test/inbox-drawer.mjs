@@ -93,11 +93,13 @@ wakesAnswer = async () => ({ wakes: [], limits: { hops: 3, pair: 6, pairWindow: 
 await app.loadWakes();
 if (!el("wakes-limits").serialize().includes("3 hops")) failures.push("real limits were not shown");
 
-// 5. The audience dialog's mode radio starts at 不公開 every time.
-//    The shim has no querySelectorAll, so the reset is checked through the
-//    form reader, which falls back to "none" when nothing is checked.
-app.openAudienceModal();
-if (app.readAudienceForm().mode !== "none") failures.push(`a fresh dialog reads mode ${app.readAudienceForm().mode}, want none`);
+// 5. The share panel opens over a session nobody can see as 「不分享」, every
+//    time, whatever the last use left in the radios.
+app.state.sessions = [{ id: "codex:unshared", provider: "codex", audience: { mode: "none", nodes: [] } }];
+app.openSharePanel(["codex:unshared"]);
+if (app.readSharePanel().who !== "none") failures.push(`a fresh panel reads who ${app.readSharePanel().who}, want none`);
+app.closeSharePanel();
+app.state.sessions = [];
 
 // 6. A clear that succeeded is reported even when the re-read fails.
 inboxAnswer = async (sessionId) => ({ sessionId, messages: [], error: "connection refused" });

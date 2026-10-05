@@ -1,18 +1,20 @@
-// The audience dialog must not carry a flag from one use to the next, and the
-// two presets in front of the flags have to agree with them.
+// The share panel's rules (docs/ui-contract.md §3.2): what it shows for the
+// sessions it is opened over, and what it writes back.
 //
-// It applies to whatever is selected and reads its values straight from the
-// boxes, so a box left ticked from last time is a setting about to be applied
-// to a different set of sessions. That was survivable while the flags only
-// governed what could be read; one of them now starts turns in an agent with
-// nobody watching. Exactly one session is the case where nothing is left over:
-// the values shown are that session's own, read from the overview, and blanking
-// them meant changing 「誰看得到」 silently withdrew every flag it had.
+// The panel replaced an inline menu and a full dialog that said the same thing
+// in two vocabularies. Its one safety rule is the one the dialog had to learn:
+// it applies to whatever is selected, so a block the owner has not touched must
+// keep each session's own value — otherwise opening it over a session whose
+// settings no option names, or over several that disagree, would rewrite them
+// to something nobody chose, and one of those flags starts turns in an agent
+// with nobody watching.
 //
 //   node frontend/test/audience-dialog.mjs
 
+import fs from "node:fs";
 import { document } from "./dom-shim.mjs";
-import { TEXT as EN_TEXT } from "../src/i18n/en.js";
+import { latestToast, toastButtons } from "./fixtures/toasts.mjs";
+import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 globalThis.document = document;
 globalThis.setInterval = () => 0;
@@ -20,393 +22,406 @@ const { configure, boot } = await import("../src/app.js");
 
 const failures = [];
 const el = (id) => document.getElementById(id);
-const noop = async () => ({});
+const fill = (template, params) => template.replace(/\{(\w+)\}/g, (_, name) => String(params[name]));
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+const walk = (node, visit) => {
+  if (!node || typeof node !== "object") return;
+  visit(node);
+  for (const child of node.children ?? []) walk(child, visit);
+};
+
+const now = new Date().toISOString();
+const session = (id, audience, provider = id.split(":")[0]) => ({
+  id, provider, status: "idle", management: "managed", cwd: "/tmp", title: `title of ${id}`, audience, lastSeenAt: now,
+});
+const aud = (mode, nodes, on = {}) => ({
+  mode, nodes, exportCwd: Boolean(on.cwd), acceptMessages: Boolean(on.msg), allowOutbound: Boolean(on.out), autoWake: Boolean(on.wake),
+});
+
+let sessions = [];
+let nodes = [{ nodeId: "node_a", displayName: "alice" }, { nodeId: "node_b", displayName: "bob" }];
+const calls = [];
+let setAudienceFails = null;
 configure({
-  Overview: async () => ({ sessions: [], nodes: [], node: {} }),
-  Discover: noop, SetAudience: noop, TrustNode: noop, RevokeNode: noop, Heartbeat: noop,
+  Overview: async () => ({
+    reachable: true, node: { id: "node_local", displayName: "local", autoWake: true },
+    sessions, nodes, peers: [], counts: { total: sessions.length },
+  }),
+  Discover: async () => ({}), TrustNode: async () => ({}), RevokeNode: async () => ({}), Heartbeat: async () => "",
   Pairing: async () => ({ availability: "unknown", candidates: [] }),
-  OpenPairing: noop, ClosePairing: noop,
+  OpenPairing: async () => ({}), ClosePairing: async () => ({}), PairRequests: async () => [],
+  InboxCounts: async () => ({ ok: true, counts: {} }), NodeSettings: async () => ({ settings: {}, saved: {} }),
+  ServiceStatus: async () => ({ supported: true, installed: true, running: true, pid: 1 }),
+  SetAudience: async (ids, audience) => {
+    calls.push({ ids: [...ids], audience: JSON.parse(JSON.stringify(audience)) });
+    if (setAudienceFails) return setAudienceFails(ids, audience);
+    for (const s of sessions) if (ids.includes(s.id)) s.audience = JSON.parse(JSON.stringify(audience));
+    return { changed: ids.length, failed: 0, errors: [] };
+  },
 });
 const module = boot({ start: false });
 
-const flags = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
-// Picks a 誰看得到 radio the way a press does: checked, then its onchange.
-const setMode = (mode) => {
-  for (const radio of document.querySelectorAll('input[name="audience-mode"]')) radio.checked = radio.value === mode;
-  document.querySelectorAll('input[name="audience-mode"]').find((radio) => radio.value === mode)?.onchange?.();
+const radios = (name) => document.querySelectorAll(`input[name="${name}"]`);
+const checkedOf = (name) => radios(name).find((radio) => radio.checked)?.value ?? "";
+// Picks an option the way a press does: checked, then its handlers.
+const choose = (name, value) => {
+  for (const radio of radios(name)) radio.checked = radio.value === value;
+  const picked = radios(name).find((radio) => radio.value === value);
+  picked.onchange?.();
 };
-
-// Somebody opens the dialog, publishes and ticks everything, for one session.
-module.openAudienceModal();
-setMode("all_paired");
-for (const id of flags) el(id).checked = true;
-if (!module.readAudienceForm().autoWake) {
-  failures.push("the dialog does not read the auto-wake box at all");
-}
-
-// They come back later, for a different session, and open it again.
-module.openAudienceModal();
-for (const id of flags) {
-  if (el(id).checked) {
-    failures.push(`${id} was still ticked when the dialog reopened`);
-  }
-}
-for (const [name, value] of Object.entries(module.readAudienceForm())) {
-  if (value === true) {
-    failures.push(`${name} came back true from a freshly opened dialog`);
-  }
-}
-
-/* ---------------- the two presets in front of the four flags -------------- */
-
-// A preset writes the boxes. Nothing else does, and a box never writes another
-// box — so what the dialog applies is always what its own advanced section
-// shows, whichever half the owner used.
-const presetOf = () =>
-  [...document.querySelectorAll('input[name="audience-preset"]')].find((radio) => radio.checked)?.value ?? "";
-// Under 不公開 every flag is written off whatever the boxes say (below), so
-// what the presets write is read under a mode that publishes.
-setMode("all_paired");
-
-module.applyAudiencePreset("messages");
-const afterMessages = module.readAudienceForm();
-if (!afterMessages.acceptMessages || afterMessages.autoWake || afterMessages.exportCwd
-  || afterMessages.allowOutbound) {
-  failures.push(`"let them leave messages" wrote ${JSON.stringify(afterMessages)}`);
-}
-if (presetOf() !== "messages") {
-  failures.push(`the preset radio reads ${presetOf()} after writing the messages preset`);
-}
-
-module.applyAudiencePreset("wake");
-const afterWake = module.readAudienceForm();
-// Waking includes replying: a woken agent is told to answer the peer
-// (AGENTS.md), and the node refuses that send without allowOutbound.
-if (!afterWake.acceptMessages || !afterWake.autoWake || !afterWake.allowOutbound) {
-  failures.push(`"and wake it" did not turn messages, outbound and wake on: ${JSON.stringify(afterWake)}`);
-}
-
-// Two presets, not three (2026-09-29): 「只讓他們看見」 wrote every message
-// flag off, and a session another machine can see but not write to gives that
-// machine nothing to do. The markup offers exactly the other two, and asking
-// for the old one writes nothing.
-{
-  const values = [...document.querySelectorAll('input[name="audience-preset"]')].map((radio) => radio.value);
-  if (JSON.stringify(values) !== JSON.stringify(["messages", "wake"])) {
-    failures.push(`the dialog offers the presets ${JSON.stringify(values)}, want exactly messages and wake`);
-  }
-  module.applyAudiencePreset("view");
-  if (!module.readAudienceForm().autoWake) failures.push("the removed 'view' preset still writes the boxes");
-}
-
-// A combination no preset names unsets both radios and says so, rather
-// than leaving one of them checked over flags it does not describe.
-for (const id of ["audience-messages", "audience-outbound", "audience-autowake"]) el(id).checked = false;
-el("audience-outbound").checked = true;
-module.syncAudiencePreset();
-if (presetOf() !== "") {
-  failures.push(`a hand-set flag left the ${presetOf()} preset selected`);
-}
-if (!el("audience-preset-note").textContent.includes("自訂")) {
-  failures.push(`a hand-set flag was not reported as custom: ${el("audience-preset-note").textContent}`);
-}
-if (module.presetForFlags({ acceptMessages: true, allowOutbound: true, autoWake: true }) !== "wake") {
-  failures.push("the wake combination is not recognised as a preset");
-}
-if (module.presetForFlags({ acceptMessages: true, autoWake: true }) !== "") {
-  failures.push("waking without outbound is read as the wake preset, which can never reply");
-}
-
-// The working directory is not a preset's to write. It lives in the collapsed
-// section, so a preset that cleared it withdrew a setting nobody saw change.
-for (const name of ["messages", "wake"]) {
-  for (const cwd of [true, false]) {
-    el("audience-cwd").checked = cwd;
-    module.applyAudiencePreset(name);
-    if (el("audience-cwd").checked !== cwd) {
-      failures.push(`the ${name} preset rewrote the working-directory box from ${cwd} to ${!cwd}`);
-    }
-    if (presetOf() !== name) {
-      failures.push(`with the working directory ${cwd ? "on" : "off"}, the ${name} preset does not read as itself`);
-    }
-  }
-}
-el("audience-cwd").checked = false;
-
-/* ---------------- one session opens as itself ----------------------------- */
-
-// A session whose flags are no preset's opens with the flags in view, because
-// the radios are all empty then and the section below is the only thing that
-// says what the session does. One that matches a preset opens folded.
-const opened = (audience) => {
-  const session = { id: "codex:shape", provider: "codex", audience: { mode: "all_paired", nodes: [], ...audience } };
-  module.state.sessions = [session];
-  module.state.selected.clear();
-  module.state.selected.add(session.id);
-  module.openAudienceModal();
-  return el("audience-advanced").open;
+const hidden = (id) => el(id).classList.contains("hidden");
+const whoNote = () => el("share-who-note").textContent;
+const whatNote = () => el("share-what-note").textContent;
+const boxes = () => {
+  const found = [];
+  walk(el("audience-node-list"), (node) => { if (node.className === "audience-node-box") found.push(node); });
+  return found;
 };
-if (!opened({ acceptMessages: true, autoWake: true })) {
-  failures.push("a session with a custom combination opened with the advanced section folded away");
-}
-if (!el("audience-preset-note").textContent.includes("自訂")) {
-  failures.push("a session with a custom combination opened without saying it is custom");
-}
-if (opened({ exportCwd: true, acceptMessages: true })) {
-  failures.push("a session matching a preset opened with the advanced section unfolded");
-}
-
-// Every message flag off on a session that is published is what the removed
-// preset used to name, so it is now custom: unfolded, and said.
-if (!opened({ exportCwd: true })) {
-  failures.push("a published session with every message flag off opened folded, with no preset naming it");
-}
-if (!el("audience-preset-note").textContent.includes("自訂")) {
-  failures.push(`a published session with every flag off was not called custom: ${el("audience-preset-note").textContent}`);
-}
-if (presetOf() !== "") failures.push(`a published session with every flag off opened on the ${presetOf()} preset`);
-// The same flags on a session nobody can see are just where it starts.
-{
-  const quiet = { id: "codex:quiet", provider: "codex", audience: { mode: "none", nodes: [] } };
-  module.state.sessions = [quiet];
-  module.state.selected.clear();
-  module.state.selected.add(quiet.id);
-  module.openAudienceModal();
-  if (el("audience-advanced").open) failures.push("an unpublished session with every flag off opened unfolded");
-  if (el("audience-preset-note").textContent.includes("自訂")) failures.push("an unpublished session with every flag off was called custom");
-}
-
-// Reopening with exactly one session selected shows that session's own
-// audience. Blanking it here is not caution: the dialog applies everything it
-// shows, so an owner changing who can see a session used to withdraw the flags
-// it already had, in the same press, without a word.
-const published = {
-  id: "codex:already",
-  provider: "codex",
-  audience: { mode: "all_paired", nodes: [], exportCwd: true, acceptMessages: true, allowOutbound: false, autoWake: false },
+const box = (nodeId) => boxes().find((candidate) => candidate.value === nodeId);
+const tick = (nodeId, on) => {
+  const target = box(nodeId);
+  target.checked = on;
+  target.onchange?.();
 };
-module.state.sessions = [published];
-module.state.selected.clear();
-module.state.selected.add(published.id);
-module.openAudienceModal();
-const loaded = module.readAudienceForm();
-if (loaded.mode !== "all_paired") {
-  failures.push(`one session opened at mode ${loaded.mode}, not its own`);
-}
-if (!loaded.exportCwd || !loaded.acceptMessages || loaded.allowOutbound || loaded.autoWake) {
-  failures.push(`one session opened with ${JSON.stringify(loaded)}, not its own flags`);
-}
-if (el("audience-preset-note").textContent.includes("歸零") ||
-  el("audience-preset-note").textContent.includes("全關")) {
-  failures.push("a single selection was told its flags had been reset");
-}
-
-// Under 不公開 the boxes can still be ticked — a single session loads its own
-// values — and they can happen to spell a preset. 套用 writes every flag off
-// there, so neither radio is ticked: a ticked 「能留訊息」 over a dialog about to
-// write it off is the screen contradicting itself. Picking a publishing mode
-// again names the preset the boxes spell.
-setMode("none");
-module.applyAudiencePreset("messages");
-if (presetOf() !== "") failures.push(`under 不公開 the preset radio reads ${presetOf()}, want none ticked`);
-setMode("all_paired");
-if (presetOf() !== "messages") failures.push(`back on a publishing mode the preset radio reads ${presetOf()}, want messages`);
-setMode("none");
-if (presetOf() !== "") failures.push(`switching to 不公開 left the preset radio at ${presetOf()}`);
-
-// Two sessions can disagree, and there is no honest way to show one state for
-// many — so they open off, and the dialog says so.
-const second = { id: "codex:other", provider: "codex", audience: { mode: "none" } };
-module.state.sessions = [published, second];
-module.state.selected.add(second.id);
-module.openAudienceModal();
-const many = module.readAudienceForm();
-if (many.mode !== "none" || Object.values(many).some((value) => value === true)) {
-  failures.push(`a multiple selection did not open closed: ${JSON.stringify(many)}`);
-}
-if (!el("audience-preset-note").textContent.includes("全關")) {
-  failures.push(`a multiple selection did not say the flags start off: ${el("audience-preset-note").textContent}`);
-}
-if (el("audience-preset-note").textContent.includes("自訂") || el("audience-advanced").open) {
-  failures.push("a multiple selection, which starts at 不公開 with every flag off, was shown as custom");
-}
-
-// The dependencies of the auto-wake box, said next to the auto-wake box.
-//
-// Ticking it does nothing unless the node itself was started with -auto-wake,
-// and for a Claude Code session not even then: that path needs the session's
-// own agenthub-mcp -channel, and the push was measured arriving at Claude Code
-// and never being injected. Every one of those failures looks identical from
-// the owner's chair — the message sits in the inbox — so the dialog has to name
-// which one applies before they tick the box and wait.
-const noteText = () => el("audience-autowake-note").textContent;
-
-const withSelection = (autoWake, sessions) => {
-  module.state.nodeAutoWake = autoWake;
-  module.state.sessions = sessions;
-  module.state.selected.clear();
-  for (const session of sessions) module.state.selected.add(session.id);
-  module.openAudienceModal();
-  return noteText();
-};
-
-const codex = { id: "codex:one", provider: "codex" };
-const claude = { id: "claude:two", provider: "claude" };
-
-const nodeOff = withSelection(false, [codex]);
-if (!nodeOff.includes("-auto-wake") || !nodeOff.includes("不會有任何 session 被叫醒")) {
-  failures.push(`a node without -auto-wake is not named: ${nodeOff}`);
-}
-if (nodeOff.includes("app-server")) {
-  failures.push("the node-off note also promised the Codex path would work");
-}
-
-// What waking cannot promise, said where the box is, whatever else is said.
-{
-  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
-  for (const [autoWake, selection] of [[false, [codex]], [true, [codex]], [true, [codex, claude]]]) {
-    if (!withSelection(autoWake, selection).includes(ZH["wake.caveat"])) {
-      failures.push(`the auto-wake note does not say waking can fail (node auto-wake ${autoWake}): ${noteText()}`);
-    }
-  }
-}
-
-const codexOnly = withSelection(true, [codex]);
-if (!codexOnly.includes("app-server") || !codexOnly.includes("真機驗過")) {
-  failures.push(`an all-Codex selection is not told the wake works: ${codexOnly}`);
-}
-if (codexOnly.includes("Claude Code")) {
-  failures.push("an all-Codex selection was warned about Claude Code");
-}
-
-const claudeOnly = withSelection(true, [claude]);
-if (!claudeOnly.includes("-channel") || !claudeOnly.includes("不會處理這類推送")) {
-  failures.push(`a Claude selection is not told the push was never observed: ${claudeOnly}`);
-}
-if (claudeOnly.includes("app-server")) {
-  failures.push("a Claude-only selection was told the Codex path applies");
-}
-
-const mixed = withSelection(true, [codex, claude]);
-if (!mixed.includes("app-server") || !mixed.includes("不會處理這類推送")) {
-  failures.push(`a mixed selection does not get both sentences: ${mixed}`);
-}
-
-// The box stays usable wherever the obstacle is one an owner can clear: a node
-// started without -auto-wake is restarted, and setting a session up first is
-// reasonable. A selection that is nothing but Claude Code is the one case that
-// no restart fixes — the push was measured arriving and never being injected —
-// so there the box is turned off rather than explained, and the preset that
-// would tick it goes with it.
-if (el("audience-autowake").disabled) {
-  failures.push("the auto-wake box was disabled on a mixed selection instead of explained");
-}
-withSelection(false, [codex]);
-if (el("audience-autowake").disabled) {
-  failures.push("a node without -auto-wake disabled the box; a restart is the remedy, not a dead control");
-}
-withSelection(true, [claude]);
-if (!el("audience-autowake").disabled) {
-  failures.push("an all-Claude selection left the wake box live, where ticking it can never do anything");
-}
-if (!el("audience-preset-wake").disabled) {
-  failures.push("an all-Claude selection left the wake preset selectable");
-}
-if (module.readAudienceForm().autoWake) {
-  failures.push("an all-Claude selection could still apply auto-wake");
-}
-
-// A Claude Code session that has auto-wake on loses it when this is applied,
-// and the dialog says so where it is read without unfolding anything: the note
-// is outside the collapsed section, and shown.
-const markup = (await import("node:fs")).readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const advanced = markup.slice(markup.indexOf('id="audience-advanced"'), markup.indexOf("</details>", markup.indexOf('id="audience-advanced"')));
-if (advanced.includes('id="audience-autowake-note"')) {
-  failures.push("the auto-wake note is inside the collapsed advanced section");
-}
-const wakingClaude = { id: "claude:woken", provider: "claude", audience: { mode: "all_paired", nodes: [], acceptMessages: true, autoWake: true } };
-withSelection(true, [wakingClaude]);
-if (!noteText().includes("套用後會關閉喚醒")) {
-  failures.push(`a Claude session with auto-wake on was not told applying turns it off: ${noteText()}`);
-}
-if (el("audience-autowake-note").classList.contains("hidden")) {
-  failures.push("the auto-wake note was hidden while it had something to say");
-}
-withSelection(true, [claude]);
-if (noteText().includes("套用後會關閉喚醒")) {
-  failures.push("a Claude session that never had auto-wake was told it would be turned off");
-}
-
-/* ---------------- a grant to a machine the read did not list (#194) ------ */
-
-// One session in selected mode, published to a paired node and to one that is
-// not in the paired list this read returned. The dialog used to draw boxes only for paired
-// nodes, so the second grant had no box, readAudienceForm left it out and 套用
-// withdrew it without a word. It gets a row of its own now, ticked, saying
-// what it is — and unticking it is how it is withdrawn on purpose.
-{
-  const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
-  module.state.nodes = [{ nodeId: "node_paired", displayName: "bench" }];
-  const granted = { id: "codex:granted", provider: "codex",
-    audience: { mode: "selected", nodes: ["node_paired", "node_gone"], acceptMessages: true } };
-  withSelection(true, [granted]);
-  const form = module.readAudienceForm();
-  if (form.mode !== "selected") failures.push(`the dialog opened a selected session as ${form.mode}`);
-  if (!form.nodes.includes("node_paired")) failures.push("the paired grant was not ticked");
-  if (!form.nodes.includes("node_gone")) {
-    failures.push(`a grant to a machine the read did not list was dropped by opening and applying: ${JSON.stringify(form.nodes)}`);
-  }
-  const list = el("audience-node-list").serialize();
-  if (!list.includes("node_gone") || !list.includes(ZH["audience.unlistedNode"])) {
-    failures.push(`the unlisted grant is not shown as a machine this read did not list: ${list}`);
-  }
-  // Not called unpaired: a revoke deletes the grants with the trust, so the
-  // one way this row appears is a pairing-list read that failed.
-  if (/已不在配對|no longer (a )?paired/i.test(ZH["audience.unlistedNode"] + EN_TEXT["audience.unlistedNode"])) {
-    failures.push("the unlisted grant is still described as a machine no longer paired");
-  }
-  // Unticked on purpose, it goes.
-  const box = el("audience-node-list").children
-    .flatMap((label) => label.children ?? [])
-    .find((child) => child && child.value === "node_gone");
-  if (!box) {
-    failures.push("no box to untick for the unlisted grant");
-  } else {
-    box.checked = false;
-    box.onchange?.();
-    if (module.readAudienceForm().nodes.includes("node_gone")) {
-      failures.push("unticking the unlisted grant did not withdraw it");
-    }
-  }
-  // Several sessions still open empty: nothing is carried from one to many.
-  const other = { id: "codex:other", provider: "codex", audience: { mode: "selected", nodes: ["node_gone"] } };
-  withSelection(true, [granted, other]);
-  if (el("audience-node-list").serialize().includes("node_gone")) {
-    failures.push("a multi-session dialog listed one session's unlisted grant");
-  }
-  module.state.nodes = [];
-
-  // The read that actually produces that row: Overview reached the node but
-  // its pairing list failed, and came back as no nodes. The dialog says the
-  // list could not be read — not 「還沒有配對任何機器」 — and keeps the grant.
-  module.state.nodesError = "trusted nodes: 500 Internal Server Error";
-  withSelection(true, [granted]);
-  const failed = el("audience-node-list").textContent;
-  if (!failed.includes(ZH["audience.nodesReadFailed"].replace("{error}", module.state.nodesError))) {
-    failures.push(`a failed pairing-list read is not said in the dialog: ${failed}`);
-  }
-  if (failed.includes(ZH["audience.noNodesYet"])) {
-    failures.push("a failed pairing-list read was described as no machine being paired");
-  }
-  if (!module.readAudienceForm().nodes.includes("node_paired") || !module.readAudienceForm().nodes.includes("node_gone")) {
-    failures.push(`a failed pairing-list read dropped a grant: ${JSON.stringify(module.readAudienceForm().nodes)}`);
-  }
+const open = (list, { nodeAutoWake = true } = {}) => {
+  sessions = list;
+  module.state.sessions = list;
+  module.state.nodes = nodes;
   module.state.nodesError = "";
+  module.state.nodeAutoWake = nodeAutoWake;
+  module.state.selected.clear();
+  module.state.busy = false;
+  if (module.sharePanelOpen()) module.closeSharePanel();
+  module.openSharePanel(list.map((s) => s.id));
+};
+const apply = async () => {
+  calls.length = 0;
+  el("audience-apply").onclick();
+  await settle();
+};
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/* ---------------- 1. one session, all paired, messages ---------------- */
+
+{
+  const all = session("codex:one", aud("all_paired", [], { msg: true, out: true }));
+  open([all]);
+  if (checkedOf("share-who") !== "all_paired") failures.push(`an all-paired session opened with who ${checkedOf("share-who")}`);
+  if (checkedOf("share-what") !== "messages") failures.push(`a session that takes and sends messages opened with what ${checkedOf("share-what")}`);
+  if (whatNote().includes(ZH["share.whatDiffers"].slice(0, 5))) failures.push(`a session that is exactly 「可留訊息」 got a whatDiffers line: ${whatNote()}`);
+  if (el("audience-title").textContent !== fill(ZH["share.titleOne"], { title: all.title })) {
+    failures.push(`the title reads ${el("audience-title").textContent}`);
+  }
+  if (!hidden("audience-nodes")) failures.push("the machine list is open over an all-paired session");
+  if (hidden("share-what-block")) failures.push("the what block is hidden over a shared session");
+  if (el("audience-apply").disabled) failures.push("套用 is disabled over an all-paired session");
+  module.closeSharePanel();
+}
+
+/* ---------------- 2. flags no option names stay as they are ---------------- */
+
+// Selected, accept only: ticks 「指定機器」 and the one machine, ticks
+// 「可留訊息」 because that is the nearest, and says what is really on. Applied
+// without touching anything it writes the session back as it was — not with
+// allowOutbound switched on under it.
+{
+  const only = session("codex:accept", aud("selected", ["node_a"], { msg: true }));
+  open([only]);
+  if (checkedOf("share-who") !== "selected") failures.push(`a selected session opened with who ${checkedOf("share-who")}`);
+  if (!box("node_a")?.checked || box("node_b")?.checked) failures.push("the machine boxes do not match the session's machines");
+  if (hidden("audience-nodes")) failures.push("the machine list is hidden over a selected session");
+  if (checkedOf("share-what") !== "messages") failures.push(`an accept-only session opened with what ${checkedOf("share-what")}`);
+  if (!whatNote().includes(fill(ZH["share.whatDiffers"], { detail: fill(ZH["share.detail"], { accept: ZH["share.on"], reply: ZH["share.off"], wake: ZH["share.off"] }) }))) {
+    failures.push(`the real flags are not said: ${whatNote()}`);
+  }
+  const original = plain(only.audience);
+  await apply();
+  if (calls.length !== 1 || !same(calls[0].audience, original) || !same(calls[0].ids, ["codex:accept"])) {
+    failures.push(`applying an untouched panel wrote ${JSON.stringify(calls)}, want the session as it was ${JSON.stringify(original)}`);
+  }
+  if (module.sharePanelOpen()) failures.push("the panel stayed open after a write that went through");
+}
+
+// Clicking the option — even the one already ticked — writes the option's own
+// definition: 「可留訊息」 is both directions.
+{
+  const only = session("codex:accept", aud("selected", ["node_a"], { msg: true }));
+  open([only]);
+  const messages = radios("share-what").find((radio) => radio.value === "messages");
+  messages.onclick?.();
+  if (whatNote().includes("目前實際是")) failures.push("the note about the real flags stays after the owner picked an option");
+  await apply();
+  const want = aud("selected", ["node_a"], { msg: true, out: true });
+  if (!same(calls[0]?.audience, want)) failures.push(`clicking 「可留訊息」 wrote ${JSON.stringify(calls[0]?.audience)}, want ${JSON.stringify(want)}`);
+}
+
+/* ---------------- 3. not shared, with a working directory ---------------- */
+
+{
+  const quiet = session("codex:quiet", aud("none", [], { cwd: true }));
+  open([quiet]);
+  if (checkedOf("share-who") !== "none") failures.push(`an unshared session opened with who ${checkedOf("share-who")}`);
+  if (!hidden("share-what-block")) failures.push("the what block is shown over an unshared session");
+  if (!el("audience-cwd").checked || el("audience-cwd").indeterminate) failures.push("the working-directory box does not show the session's own value");
+  choose("share-who", "all_paired");
+  if (hidden("share-what-block")) failures.push("choosing who can see it did not bring the what block back");
+  if (checkedOf("share-what") !== "messages") failures.push(`an unshared session opened with what ${checkedOf("share-what")}, want 「可留訊息」`);
+  await apply();
+  const want = aud("all_paired", [], { cwd: true, msg: true, out: true });
+  if (!same(calls[0]?.audience, want)) failures.push(`sharing an unshared session wrote ${JSON.stringify(calls[0]?.audience)}, want ${JSON.stringify(want)}`);
+}
+
+// Selected with no nodes is nobody, so it opens as 「不分享」.
+{
+  open([session("codex:nobody", aud("selected", [], { msg: true }))]);
+  if (checkedOf("share-who") !== "none") failures.push(`a selected session with no machines opened with who ${checkedOf("share-who")}`);
+  module.closeSharePanel();
+}
+
+/* ---------------- 4. several that disagree ---------------- */
+
+{
+  const a = session("codex:a", aud("all_paired", [], { cwd: true, msg: true, out: true }));
+  const b = session("codex:b", aud("none", []));
+  open([a, b]);
+  if (checkedOf("share-who") !== "") failures.push(`two sessions shared differently opened with who ${checkedOf("share-who")}`);
+  if (!whoNote().includes(ZH["share.mixedWho"])) failures.push(`a mixed selection is not told so: ${whoNote()}`);
+  if (checkedOf("share-what") !== "") failures.push(`two sessions that allow different things opened with what ${checkedOf("share-what")}`);
+  if (!whatNote().includes(ZH["share.mixedWhat"])) failures.push(`a mixed selection's permissions are not said to differ: ${whatNote()}`);
+  if (!el("audience-cwd").indeterminate || el("audience-cwd").checked) failures.push("the working-directory box is not indeterminate over sessions that differ");
+  if (el("audience-title").textContent !== fill(ZH["share.titleMany.other"], { n: 2 })) failures.push(`the title reads ${el("audience-title").textContent}`);
+  const before = [plain(a.audience), plain(b.audience)];
+  await apply();
+  if (!same(sessions.map((s) => s.audience), before)) {
+    failures.push(`an untouched panel over two different sessions wrote ${JSON.stringify(sessions.map((s) => s.audience))}, want each as it was`);
+  }
+}
+
+// A selection that disagrees about permissions as well as audience: the what
+// group shows nothing ticked and says each is kept.
+{
+  const a = session("codex:a", aud("selected", ["node_a"], { msg: true }));
+  const b = session("codex:b", aud("all_paired", [], { msg: true, out: true, wake: true }));
+  open([a, b]);
+  if (checkedOf("share-who") !== "" || checkedOf("share-what") !== "") failures.push("a selection that disagrees twice ticked an option");
+  // Touching only 「誰看得到」 keeps each session's own flags.
+  choose("share-who", "all_paired");
+  await apply();
+  if (!same(plain(a.audience), aud("all_paired", [], { msg: true })) || !same(plain(b.audience), aud("all_paired", [], { msg: true, out: true, wake: true }))) {
+    failures.push(`changing only who rewrote the flags: ${JSON.stringify(sessions.map((s) => s.audience))}`);
+  }
+}
+
+/* ---------------- 5. Claude Code cannot be woken ---------------- */
+
+{
+  const claude = session("claude:one", aud("all_paired", [], { msg: true, out: true, wake: true }));
+  open([claude]);
+  if (!el("share-what-wake").disabled) failures.push("the wake option is live over a Claude-only selection");
+  if (!whatNote().includes(ZH["popover.wakeClaudeOnly"])) failures.push(`a Claude-only selection is not told why waking is off: ${whatNote()}`);
+  if (!whatNote().includes(ZH["audience.autoWakeWillTurnOff"])) failures.push(`a Claude session with waking on is not told applying turns it off: ${whatNote()}`);
+  if (checkedOf("share-what") === "wake") failures.push("a Claude session opened on 「可留訊息並喚醒」");
+  await apply();
+  if (claude.audience.autoWake !== false) failures.push("applying over a Claude session left autoWake on");
+  if (!claude.audience.acceptMessages || !claude.audience.allowOutbound) failures.push("applying over a Claude session lost its message flags");
+
+  // A Codex session next to it can be woken.
+  open([session("codex:other", aud("all_paired", [], { msg: true, out: true }))]);
+  if (el("share-what-wake").disabled) failures.push("the wake option is disabled over a Codex session");
+  if (whatNote().includes(ZH["popover.wakeClaudeOnly"])) failures.push("a Codex session was told it cannot be woken");
+}
+
+// Claude and Codex together: waking can be picked, and it says which only
+// take messages; the write turns it on for Codex alone.
+{
+  const claude = session("claude:mix", aud("all_paired", [], { msg: true, out: true }));
+  const codex = session("codex:mix", aud("all_paired", [], { msg: true, out: true }));
+  open([claude, codex]);
+  if (el("share-what-wake").disabled) failures.push("the wake option is disabled over a mixed selection");
+  choose("share-what", "wake");
+  if (!whatNote().includes(fill(ZH["share.wakeSomeClaude.one"], { n: 1 }))) failures.push(`a mixed selection is not told which one only takes messages: ${whatNote()}`);
+  await apply();
+  if (codex.audience.autoWake !== true || claude.audience.autoWake !== false) {
+    failures.push(`waking was written Codex ${codex.audience.autoWake}, Claude ${claude.audience.autoWake}; want true and false`);
+  }
+}
+
+/* ---------------- 6. a node that will not wake anything ---------------- */
+
+{
+  open([session("codex:nodeoff", aud("all_paired", [], { msg: true, out: true }))], { nodeAutoWake: false });
+  choose("share-what", "wake");
+  if (!whatNote().includes(ZH["share.wakeNodeOff"])) failures.push(`waking without the node's auto-wake is not said: ${whatNote()}`);
+  choose("share-what", "messages");
+  if (whatNote().includes(ZH["share.wakeNodeOff"])) failures.push("the node-off line stays after waking is unpicked");
+  module.closeSharePanel();
+}
+
+/* ---------------- 7. grants the read did not list (#194) ---------------- */
+
+{
+  nodes = [{ nodeId: "node_paired", displayName: "bench" }];
+  const granted = session("codex:granted", aud("selected", ["node_paired", "node_gone"], { msg: true, out: true }));
+  open([granted]);
+  if (!box("node_paired")?.checked) failures.push("the paired grant was not ticked");
+  if (!box("node_gone")?.checked) failures.push("a grant to a machine the read did not list has no ticked box");
+  const list = el("audience-node-list").serialize();
+  if (!list.includes(ZH["audience.unlistedNode"])) failures.push(`the unlisted grant is not marked as such: ${list}`);
+  if (!list.includes("node_gone")) failures.push("the unlisted grant's id is nowhere in its row");
+  if (!/title="node_gone"/.test(list)) failures.push("the unlisted grant's id is not in its tooltip");
+  // Applied untouched, it is kept; unticked on purpose, it is withdrawn.
+  await apply();
+  if (!same(calls[0]?.audience.nodes, ["node_paired", "node_gone"])) failures.push(`an untouched panel dropped a grant: ${JSON.stringify(calls[0]?.audience.nodes)}`);
+  open([session("codex:granted2", aud("selected", ["node_paired", "node_gone"], { msg: true, out: true }))]);
+  tick("node_gone", false);
+  await apply();
+  if (!same(calls[0]?.audience.nodes, ["node_paired"])) failures.push(`unticking the unlisted grant wrote ${JSON.stringify(calls[0]?.audience.nodes)}`);
+  // Several sessions never list one session's unlisted grant.
+  open([granted, session("codex:other", aud("selected", ["node_gone"], { msg: true }))]);
+  if (el("audience-node-list").serialize().includes("node_gone")) failures.push("a multi-session panel listed an unlisted grant");
+
+  // The read that really produces that row: Overview reached the node but the
+  // pairing list failed and came back as no nodes.
+  nodes = [];
+  open([session("codex:granted3", aud("selected", ["node_gone"], { msg: true, out: true }))]);
+  module.state.nodesError = "trusted nodes: 500 Internal Server Error";
+  module.renderSharePanel();
+  if (!whoNote().includes(fill(ZH["audience.nodesReadFailed"], { error: module.state.nodesError }))) failures.push(`a failed pairing-list read is not said: ${whoNote()}`);
+  if (whoNote().includes(ZH["popover.noNodes"])) failures.push("a failed pairing-list read was described as no machine being paired");
+  if (!box("node_gone")?.checked) failures.push("the grant is not kept while the pairing list is unreadable");
+  module.state.nodesError = "";
+  module.closeSharePanel();
+  nodes = [{ nodeId: "node_a", displayName: "alice" }, { nodeId: "node_b", displayName: "bob" }];
+}
+
+// Nothing paired yet: the panel says so and offers the way to pair, and sharing
+// is still allowed (a machine paired later sees it).
+{
+  nodes = [];
+  open([session("codex:lonely", aud("none", []))]);
+  if (!whoNote().includes(ZH["popover.noNodes"])) failures.push(`with nothing paired the panel does not say so: ${whoNote()}`);
+  let pair = null;
+  walk(el("share-who-note"), (node) => { if (node.tagName === "button" && node.textContent === ZH["popover.pairAction"]) pair = node; });
+  if (!pair) failures.push("with nothing paired the panel offers no way to pair");
+  else {
+    pair.onclick();
+    await settle();
+    if (module.sharePanelOpen()) failures.push("配對另一台機器 left the panel open");
+    if (module.state.view !== "network") failures.push(`配對另一台機器 left the view at ${module.state.view}`);
+    module.closePairingDrawer?.();
+    module.state.view = "local";
+    module.render();
+  }
+  nodes = [{ nodeId: "node_a", displayName: "alice" }, { nodeId: "node_b", displayName: "bob" }];
+}
+
+/* ---------------- 8. 「指定機器」 with no machine ticked ---------------- */
+
+{
+  open([session("codex:pick", aud("none", []))]);
+  choose("share-who", "selected");
+  if (!el("audience-apply").disabled) failures.push("套用 is live with 「指定機器」 and no machine ticked");
+  if (el("share-apply-why").textContent !== ZH["share.pickAMachine"]) failures.push(`the reason reads ${el("share-apply-why").textContent}`);
+  tick("node_b", true);
+  if (el("audience-apply").disabled) failures.push("套用 stayed disabled after a machine was ticked");
+  if (el("share-apply-why").textContent !== "") failures.push("the reason stayed after a machine was ticked");
+  await apply();
+  if (!same(calls[0]?.audience.nodes, ["node_b"]) || calls[0]?.audience.mode !== "selected") failures.push(`wrote ${JSON.stringify(calls[0]?.audience)}, want selected [node_b]`);
+}
+
+/* ---------------- 9. the two explicit choices ---------------- */
+
+// 「不分享」 is every flag off, the working directory included — but only when
+// the owner chose it.
+{
+  const shared = session("codex:stop", aud("selected", ["node_a"], { cwd: true, msg: true, out: true, wake: true }));
+  open([shared]);
+  choose("share-who", "none");
+  if (!hidden("share-what-block")) failures.push("the what block stays over 「不分享」");
+  await apply();
+  if (!same(calls[0]?.audience, aud("none", []))) failures.push(`「不分享」 wrote ${JSON.stringify(calls[0]?.audience)}`);
+  if (!latestToast(document).textContent.includes(fill(ZH["audience.applied.none.one"], { n: 1 }))) failures.push(`the toast after 「不分享」 reads ${latestToast(document).textContent}`);
+}
+
+// 「只看得到」 is the three message flags off, with the machines kept.
+{
+  const shared = session("codex:view", aud("selected", ["node_a"], { cwd: true, msg: true, out: true, wake: true }));
+  open([shared]);
+  choose("share-what", "view");
+  await apply();
+  const want = aud("selected", ["node_a"], { cwd: true });
+  if (!same(calls[0]?.audience, want)) failures.push(`「只看得到」 wrote ${JSON.stringify(calls[0]?.audience)}, want ${JSON.stringify(want)}`);
+  // And such a session opens as itself.
+  open([session("codex:viewonly", aud("all_paired", [], {}))]);
+  if (checkedOf("share-what") !== "view") failures.push(`a shared session with every flag off opened with what ${checkedOf("share-what")}`);
+  if (whatNote().includes("目前實際是")) failures.push(`a view-only session got a whatDiffers line: ${whatNote()}`);
+  // allowOutbound alone cannot be received from, so it is 「只看得到」 too.
+  open([session("codex:outonly", aud("all_paired", [], { out: true }))]);
+  if (checkedOf("share-what") !== "view") failures.push(`an outbound-only session opened with what ${checkedOf("share-what")}`);
+  if (!whatNote().includes("目前實際是")) failures.push(`an outbound-only session's real flags are not said: ${whatNote()}`);
+}
+
+/* ---------------- 10. nothing is carried to the next opening ---------------- */
+
+{
+  const first = session("codex:first", aud("none", []));
+  const second = session("codex:second", aud("all_paired", [], { cwd: true, msg: true }));
+  open([first]);
+  choose("share-who", "selected");
+  tick("node_a", true);
+  el("audience-cwd").checked = true;
+  el("audience-cwd").onchange();
+  el("audience-close").onclick();
+  if (module.sharePanelOpen()) failures.push("取消 left the panel open");
+  open([second]);
+  if (checkedOf("share-who") !== "all_paired" || checkedOf("share-what") !== "messages") failures.push("the second opening did not show the second session");
+  if (box("node_a")?.checked) failures.push("a machine ticked in the last opening is still ticked");
+  const original = plain(second.audience);
+  await apply();
+  if (!same(calls[0]?.audience, original)) failures.push(`an untouched second opening wrote ${JSON.stringify(calls[0]?.audience)}, want ${JSON.stringify(original)}`);
+}
+
+/* ---------------- 11. what the panel never says ---------------- */
+
+// The wake caveat belongs on the settings page and the wizard, not here.
+{
+  open([session("codex:wake", aud("all_paired", [], { msg: true, out: true }))]);
+  choose("share-what", "wake");
+  if (el("audience-modal").textContent.includes(ZH["wake.caveat"])) failures.push("the panel carries the wake caveat");
+}
+
+// A write that partly fails keeps the panel open and the sessions as they are.
+{
+  const a = session("codex:fail-a", aud("none", [], { cwd: true }));
+  const b = session("codex:fail-b", aud("none", []));
+  open([a, b]);
+  choose("share-who", "all_paired");
+  setAudienceFails = (ids) => ({ changed: 0, failed: ids.length, errors: ["refused by the node"] });
+  await apply();
+  setAudienceFails = null;
+  if (!module.sharePanelOpen()) failures.push("a write that failed closed the panel");
+  const toast = latestToast(document);
+  if (toast.kind !== "error" || !toast.textContent.includes("refused by the node")) failures.push(`a failed write said ${toast.kind}: ${toast.textContent}`);
+  if (toastButtons(toast.node).some((button) => button.textContent === ZH["popover.undo"])) failures.push("a write that changed nothing offered 復原");
+  if (el("audience-apply").disabled) failures.push("套用 stayed disabled after a failed write");
+  module.closeSharePanel();
+}
+
+// Every key the panel names exists, and the retired ones are gone from the markup.
+{
+  const markup = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  for (const gone of ["audience-popover", "btn-unpublish", "audience-messages", "audience-outbound", "audience-autowake", "audience-advanced", "audience-presets"]) {
+    if (markup.includes(`id="${gone}"`)) failures.push(`index.html still has #${gone}`);
+  }
+  for (const radio of ["share-who-none", "share-who-all", "share-who-selected", "share-what-view", "share-what-messages", "share-what-wake"]) {
+    if (!markup.includes(`id="${radio}"`)) failures.push(`index.html has no #${radio}`);
+  }
 }
 
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("the audience dialog presets write the flags, one session opens as itself, "
-  + "and auto-wake is off where it cannot work");
+console.log("the share panel: one session opens as itself, an untouched block keeps each session's own value, "
+  + "and Claude Code is never written as waking");

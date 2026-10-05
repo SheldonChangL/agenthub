@@ -750,8 +750,8 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
    column then sat on top of the working-directory and last-seen columns
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
-   6px cell padding below): all four flag chips, both row buttons and every
-   audience pill the table uses fit. They add up to 660px. SESSION is the only
+   6px cell padding below): the SHARING pill with its icons, both row buttons
+   and every wording the table uses fit. SESSION is the only
    column without a width, so it takes what is left and clips with an ellipsis
    — the full title stays in the cell's title. WORKING DIRECTORY is 136px, 96px
    at a window of 1000px or less. */
@@ -759,20 +759,12 @@ table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: 
 /* 40px: the whole cell toggles its checkbox (app.js), so this is the target. */
 col.c-check { width: 40px; }
 col.c-status { width: 76px; }
-/* 104px: 92px of pill inside 6px of padding each side. Measured in
-   dev/mock.html (#194): the widest table wordings are 「Not published」 87px
-   and 「Chosen: none」 86px; 「All paired」 is 64px, 「所有已配對」 73px. At 96px
-   the first two lost their last letters, and 「Every paired machine」 (124px),
-   which the cell no longer uses, lost a whole word. The 5px over the widest
-   is for a WebView font that renders a little wider than the mock's.
-   108px since the cell became a button (2026-09-29): 「Not published」 with
-   the ▾ and the button's own padding is 89px of content (button.audbtn),
-   measured in dev/mock.html at 900x760; 4px over it for the WebView's font.
-   FLAGS went from 156px to 160px for the ⚠ beside the wake chip: the four
-   English chips are 131px, the ⚠ about 11px and its margin 2px. Every pixel
-   added here comes out of SESSION, the one column a person reads. */
-col.c-audience { width: 108px; }
-col.c-flags { width: 160px; }
+/* The SHARING column: the pill (the widest wording, 「所有已配對」 / the
+   English short form, is about 84px with the button's padding) + 6px + three
+   14px icons with 4px between them + 12px of cell padding = about 152px. The
+   column replaced SHARING (108px) and FLAGS (160px): 112px that all went to
+   SESSION, the one column a person reads. */
+col.c-audience { width: 156px; }
 col.c-last { width: 104px; }
 col.c-cwd { width: 136px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when
@@ -950,36 +942,31 @@ td.cwd button.cwdcopy.copied::after { content: none; }
 /* required by frontend_test.go: a contested or duplicate flag */
 .pill.bad { color: #f0908a; border-color: rgba(229, 84, 75, 0.45); }
 
-/* The AUDIENCE cell is a button that opens the inline menu: the pill's
-   colours, a control's height, and a caret that says it opens something.
-   The caret is ::after because ::before is withBusy's spinner. */
+/* The SHARING cell is a button that opens the share panel: the pill's
+   colours and a control's height. ::before is withBusy's spinner. */
 button.audbtn {
   height: var(--control-h);
   max-width: 100%;
-  padding: 0 4px 0 7px;
+  padding: 0 8px;
   gap: 3px;
   border-radius: 999px;
   font-size: 11px;
   overflow: hidden;
+  cursor: pointer;
 }
-button.audbtn::after, button.menubtn::after { content: "▾"; flex: none; font-size: 10px; opacity: 0.7; }
-/* The ⚠ beside the wake chip on a row that has waking on; the tooltip says
-   what waking cannot promise. */
-.wakecaveat { margin-left: 2px; color: var(--amber); font-size: 11px; cursor: help; }
-.wakecaveat-line { color: var(--amber); }
-
-/* The four audience flags, as small squares that are lit or dashed. */
-.flagchips { display: inline-flex; gap: 3px; }
-.flag {
-  display: inline-flex; align-items: center;
-  height: 16px; padding: 0 4px;
-  border-radius: 4px;
-  font-size: 10px;
-  border: 1px dashed var(--line);
-  color: var(--dim);
-}
-.flag.on { border: 1px solid transparent; background: var(--accent-dim); color: var(--accent); }
-.flag.warn.on { background: rgba(224, 163, 62, 0.16); color: var(--amber); }
+/* The pill and, after it, what the other machine may do: messages, waking,
+   the working directory. Masks, not emoji, so they take the colour of the
+   state they say; only the ones that are on are drawn. */
+.sharewrap { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.shareicons { display: inline-flex; gap: 4px; flex: none; }
+.shareicon { width: 14px; height: 14px; flex: none; background: var(--accent); cursor: help;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; -webkit-mask-size: contain; mask-size: contain;
+  -webkit-mask-position: center; mask-position: center; }
+.shareicon.wake { background: var(--amber); }
+.shareicon.wake.off { background: var(--dim); }
+.shareicon.msg { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Crect x='1.75' y='3.25' width='12.5' height='9.5' rx='1.5'/%3E%3Cpath d='M2.5 4.5 8 9l5.5-4.5'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Crect x='1.75' y='3.25' width='12.5' height='9.5' rx='1.5'/%3E%3Cpath d='M2.5 4.5 8 9l5.5-4.5'/%3E%3C/svg%3E"); }
+.shareicon.wake { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Cpath d='M8 1.75a4 4 0 0 0-4 4V9l-1.5 2.25h11L12 9V5.75a4 4 0 0 0-4-4z'/%3E%3Cpath d='M6.5 13.25a1.5 1.5 0 0 0 3 0'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Cpath d='M8 1.75a4 4 0 0 0-4 4V9l-1.5 2.25h11L12 9V5.75a4 4 0 0 0-4-4z'/%3E%3Cpath d='M6.5 13.25a1.5 1.5 0 0 0 3 0'/%3E%3C/svg%3E"); }
+.shareicon.cwd { -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Cpath d='M1.75 3.75h4.5l1.5 1.5h6.5v7H1.75z'/%3E%3C/svg%3E"); mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5'%3E%3Cpath d='M1.75 3.75h4.5l1.5 1.5h6.5v7H1.75z'/%3E%3C/svg%3E"); }
 
 .rowactions { display: inline-flex; gap: 4px; justify-content: flex-end; }
 .rowactions button { padding: 0 8px; }
@@ -1062,12 +1049,12 @@ button.audbtn::after, button.menubtn::after { content: "▾"; flex: none; font-s
 }
 .selectionbar .vr { width: 1px; height: 20px; background: var(--line); }
 /* The toast stack rises above the bar while it is up: both sit at the bottom,
-   and a toast over 「公開 ▾」 would hide the button the toast is about. The bar
+   and a toast over 「分享…」 would hide the button the toast is about. The bar
    is 18px above the table card's foot, and under the card are its 12px margin
    and the 26px status bar: 18 + 56 + 12 + 26 = 112px, plus a gap. */
 body.selecting .toasts { bottom: 124px; }
 
-/* ---------- the inline audience menu (openAudiencePopover) ---------- */
+/* ---------- the copy fallback (openCopyFallback) ---------- */
 
 .popover {
   position: fixed;
@@ -1081,27 +1068,6 @@ body.selecting .toasts { bottom: 124px; }
   border: 1px solid var(--line-strong);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
 }
-.popover .pophead { display: grid; gap: 2px; padding: 6px 8px 8px; font-size: 12px; }
-.popover .pophead .muted { font-size: 11.5px; }
-.popover .pophead .popcwd { color: var(--amber); }
-.popover .popnote { padding: 0 8px 8px; font-size: 12px; color: var(--amber); display: grid; gap: 6px; justify-items: start; }
-.popover .popnote span { color: var(--muted); }
-.popover button.popitem {
-  width: 100%;
-  height: auto; min-height: 48px;
-  padding: 8px 10px;
-  display: grid; grid-template-columns: 18px 1fr; gap: 2px 8px; align-items: start;
-  text-align: left; white-space: normal;
-  border: 0; border-radius: 6px;
-  background: transparent;
-}
-.popover button.popitem:hover:not(:disabled),
-.popover button.popitem:focus-visible { background: var(--panel-2); border: 0; }
-.popover .popitem .mk { grid-row: span 3; color: var(--accent); }
-.popover .popitem .poplabel { font-size: 13px; }
-.popover .popitem small { grid-column: 2; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
-.popover .popitem small.caveat { color: var(--amber); }
-.popover hr { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; }
 
 /* ---------- status bar ---------- */
 
@@ -1621,9 +1587,10 @@ details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
 .modal-card > header,
 .modal-card > p,
 .modal-card > .sectionlabel,
-.modal-card > .options,
-.modal-card > .flags,
-.modal-card > .selectedlist,
+.modal-card > .sharechoices,
+.modal-card > .sharenodes,
+.modal-card > .sharenote,
+.modal-card > #share-what-block,
 .modal-card > details,
 .modal-card > .pairform,
 .modal-card > .localidentity,
@@ -1683,71 +1650,18 @@ details.why > p { margin: 4px 0 0; line-height: 1.6; white-space: normal; }
 
 .sectionlabel { font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); margin: 10px 0 8px; }
 
-.options { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
-.option {
-  display: flex; gap: 10px;
-  padding: 11px 13px;
-  border-bottom: 1px solid var(--line);
-  cursor: pointer;
-}
-.option:last-of-type { border-bottom: none; }
-.option:hover { background: rgba(255, 255, 255, 0.02); }
-.option.on { background: rgba(57, 224, 122, 0.06); }
-.option input { margin-top: 3px; flex: none; }
-.option b { font-weight: 500; display: block; }
-.option em { font-style: normal; color: var(--muted); font-size: 11.5px; }
-.nodes { padding: 10px 13px 13px 36px; display: flex; flex-direction: column; gap: 6px; background: rgba(57, 224, 122, 0.04); }
-.nodes .nodepick {
-  display: flex; align-items: center; gap: 10px;
-  padding: 7px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  cursor: pointer;
-}
-.nodes .nodepick.on { border-color: var(--accent); background: var(--accent-dim); }
-.nodes .nodepick .mono { margin-left: auto; color: var(--muted); }
-/* A machine this session is published to that this read did not list: kept, and
-   said to be what it is, so 套用 does not withdraw it unseen (#194). */
-.nodes .nodepick.former { border-style: dashed; }
-.nodes p { margin: 4px 0 0; font-size: 11.5px; }
-
-.flags { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin: 0 0 4px; }
-.flags label {
-  display: flex; gap: 10px;
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  cursor: pointer;
-}
-.flags label input { margin-top: 3px; }
-.flags label b { display: block; font-weight: 500; }
-.flags label em { font-style: normal; font-size: 11px; color: var(--muted); }
-.flags label.warn { border-color: rgba(224, 163, 62, 0.4); background: rgba(224, 163, 62, 0.05); }
-.flags label.warn em { color: var(--amber); }
-/* The eight combinations, folded behind the three situations that name them. */
-.audienceadvanced { margin: 10px 0 4px; }
-.audienceadvanced > summary {
-  cursor: pointer; color: var(--muted); font-size: 12px;
-  list-style: none; margin-bottom: 8px;
-}
-.audienceadvanced > summary::-webkit-details-marker { display: none; }
-.audienceadvanced > summary::before { content: "\25B8 "; }
-.audienceadvanced[open] > summary::before { content: "\25BE "; }
-.audienceadvanced > summary:hover { color: var(--text); }
-.flags label input:disabled + span b { color: var(--dim); }
-#audience-preset-note { margin: 8px 0 0; font-size: 11.5px; line-height: 1.6; }
-#audience-preset-note:empty { display: none; }
-#audience-autowake-note { font-size: 11.5px; line-height: 1.6; }
-#audience-autowake-note > div { margin-top: 6px; }
-.selectedlist {
-  display: flex; flex-wrap: wrap; gap: 6px 10px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  font-family: var(--mono); font-size: 11.5px;
-  max-height: 72px; overflow: auto;
-}
+/* The share panel (#audience-modal): two groups of radios, the machines under
+   the first, a note under each, and the working-directory box. */
+.sharecard { width: min(560px, 92vw); }
+.sharechoices { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 2px 0 6px; }
+.sharechoice { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.sharechoice input:disabled + span { color: var(--dim); }
+.sharenodes { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 4px 0 6px 22px; }
+.sharenodes .nodepick { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+.sharenote { display: flex; flex-direction: column; gap: 4px; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.sharenote:empty { display: none; }
+.sharenote button { align-self: flex-start; }
+.sharecwd { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; cursor: pointer; }
 
 #pair-modal .pairform { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; padding: 0; }
 #pair-modal .pairform label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); }

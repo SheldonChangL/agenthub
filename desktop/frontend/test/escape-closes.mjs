@@ -1,8 +1,7 @@
-// Esc on the window's overlays. Before this, only the confirm question, the
-// audience menu and the copy fallback listened for it; none of the three
-// drawers (inbox, notification log, pairing) nor the four dialogs (heartbeat
-// preview, MCP, manual pairing, audience) did, and a click on the backdrop was
-// the only way out. overlayKey closes the topmost one per press.
+// Esc on the window's overlays. Before this, only the confirm question and the
+// copy fallback listened for it; none of the three drawers (inbox, notification
+// log, pairing) nor the four dialogs (heartbeat preview, MCP, manual pairing,
+// share panel) did, and a click on the backdrop was the only way out. overlayKey closes the topmost one per press.
 //
 // dom-shim's document has no addEventListener, so the exported overlayKey is
 // called directly, as confirm-dialog.mjs does with confirmKey.
@@ -72,7 +71,7 @@ await settle();
 if (!isHidden("inbox-modal")) failures.push("the second Esc left the drawer open");
 
 // 3. Nothing open: Esc is not ours. Other keys and an Esc somebody already
-//    took (the audience menu, the copy fallback) close nothing.
+//    took (the copy fallback) close nothing.
 {
   const event = press();
   if (event.returned !== false || event.prevented) failures.push("Esc with nothing open was handled");
@@ -93,4 +92,4 @@ if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);
 }
-console.log("escape: Esc closes the topmost drawer or dialog, one per press, and leaves an Esc the menu took alone");
+console.log("escape: Esc closes the topmost drawer or dialog, one per press, and leaves an Esc somebody else took alone");

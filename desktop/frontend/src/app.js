@@ -399,24 +399,27 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
 
-  // describeAudience answers "published to whom" in one cell.
+  // describeAudience answers "shared with whom" in one cell.
+  //
+  // It reads the audience as SetAudience would take it (writableAudience), so
+  // "selected" with no nodes — a session nobody can see — is 「未分享」 here, in
+  // the filter and in the sort, and never a row of its own wording.
   function describeAudience(audience) {
-    const mode = audience?.mode ?? "none";
-    // The table's own wording, shorter than the chip's and the dialog's: at
-    // 900px the column holds 88px of pill, and 「Every paired machine」 is
-    // 124px, so it was cut to 「Every paired ma」 (#194). The tooltip and the
-    // filter chip keep the whole phrase.
-    if (mode === "all_paired") {
-      return { text: t("audience.cell.allPairedShort"), title: t("audience.cell.allPaired"), published: true };
+    const a = writableAudience(audience);
+    // The table's own wording, shorter than the chip's and the panel's: the
+    // column holds about 84px of pill, and 「Every paired machine」 is 124px
+    // (#194). The tooltip and the filter chip keep the whole phrase.
+    if (a.mode === "all_paired") {
+      return { text: t("audience.cell.allPairedShort"), title: t("share.who.allTitle"), published: true };
     }
-    if (mode === "selected") {
-      const count = audience?.nodes?.length ?? 0;
+    if (a.mode === "selected") {
       return {
-        text: count === 0 ? t("audience.cell.selectedNone") : plural(count, "audience.cell.nodeCount"),
-        published: count > 0,
+        text: plural(a.nodes.length, "audience.cell.nodeCount"),
+        title: t("share.who.someTitle", { names: a.nodes.map(nodeName).join(t("share.nameJoin")) }),
+        published: true,
       };
     }
-    return { text: t("audience.cell.none"), published: false };
+    return { text: t("audience.cell.none"), title: t("share.who.noneTitle"), published: false };
   }
 
   function shortId(id) {
@@ -528,16 +531,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // The fallback for a clipboard that refused: the sentence that says so and
   // the text itself in a read-only field, selected, beside the control that
-  // was pressed. Drawn like the audience menu and closed the same ways — Esc,
-  // a press outside, a scroll or a resize — because it is drawn against a row
-  // that would otherwise move out from under it.
+  // was pressed. Closed by Esc, a press outside, a scroll or a resize, because
+  // it is drawn against a row that would otherwise move out from under it.
   let copyFallbackAnchor = null;
   function copyFallbackOpen() {
     return !el("copy-fallback").classList.contains("hidden");
   }
 
   function openCopyFallback(anchor, message, text) {
-    closeAudiencePopover();
     const box = el("copy-fallback");
     const field = element("input", "copyfield");
     field.type = "text";
@@ -616,7 +617,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
-  // sessionRow builds the eight cells once. Everything that changes between
+  // sessionRow builds the seven cells once. Everything that changes between
   // ticks is written by updateSessionRow into these same elements.
   //
   // There is no MANAGED cell. The node sends model.Management, and every
@@ -656,31 +657,23 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const statusPill = element("span", "pill");
     statusCell.append(statusPill);
 
-    // The audience is a button now: pressing it opens the inline menu over
-    // this row (openAudiencePopover), and picking an entry applies it at once.
-    // Worded by updateSessionRow, like everything else in a kept row; the ▾ is
-    // drawn by the stylesheet so the label stays exactly the cell's text.
+    // The SHARING cell: a button that opens the share panel for this row
+    // (openSharePanel), and up to three icons after it that say what the other
+    // machine may do — messages, waking, the working directory — drawn only
+    // when they are on, and not at all on a session nobody can see. Worded by
+    // updateSessionRow, like everything else in a kept row.
     const audienceCell = element("td");
+    const shareWrap = element("span", "sharewrap");
     const audiencePill = element("button", "audbtn pill");
-    audiencePill.setAttribute("aria-haspopup", "menu");
-    audiencePill.setAttribute("aria-expanded", "false");
-    audienceCell.append(audiencePill);
-
-    // The four audience flags, readable without opening the dialog. They say
-    // what a peer may do with this session, so on a session no peer can see
-    // they say nothing at all — an unpublished row leaves the cell empty rather
-    // than showing four dashed boxes that are dim for a reason nothing states.
-    const flagsCell = element("td");
-    const chips = element("span", "flagchips");
-    const flagCwd = element("span", "flag", "CWD");
-    const flagIn = element("span", "flag");
-    const flagOut = element("span", "flag");
-    const flagWake = element("span", "flag");
-    chips.append(flagCwd, flagIn, flagOut, flagWake);
-    // Beside the wake chip on a row that has it: waking is a request, not a
-    // promise, and the reasons it can fail are in the tooltip (wake.caveat).
-    const wakeCaveat = element("span", "wakecaveat hidden", "⚠");
-    flagsCell.append(chips, wakeCaveat);
+    audiencePill.setAttribute("aria-haspopup", "dialog");
+    const shareIcons = element("span", "shareicons");
+    const iconMsg = element("span", "shareicon msg");
+    const iconWake = element("span", "shareicon wake");
+    const iconCwd = element("span", "shareicon cwd");
+    for (const icon of [iconMsg, iconWake, iconCwd]) icon.setAttribute("role", "img");
+    shareIcons.append(iconMsg, iconWake, iconCwd);
+    shareWrap.append(audiencePill, shareIcons);
+    audienceCell.append(shareWrap);
 
     // The path goes in a <bdi> because the cell is laid out right-to-left so
     // that a path too long for the column loses its head rather than its tail —
@@ -740,10 +733,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     actionsCell.append(group);
 
     tr.append(checkCell, idCell, statusCell, audienceCell,
-      flagsCell, cwdCell, seenCell, actionsCell);
+      cwdCell, seenCell, actionsCell);
     tr.sessionParts = {
       checkbox, idCell, providerTag, label, statusPill,
-      audiencePill, chips, flagCwd, flagIn, flagOut, flagWake, wakeCaveat, cwdCell, cwdText,
+      audiencePill, shareIcons, iconMsg, iconWake, iconCwd, cwdCell, cwdText,
       cwdButton, cwdFlash, cwdEmpty,
       seenCell, inboxButton, inboxLabel, badge, resumeButton, resumeLabel,
       // Which of the row's two copy controls is showing 「已複製 ✓」 right now,
@@ -791,9 +784,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.statusPill.textContent = session.status;
 
     const audience = describeAudience(session.audience);
-    // classList, not className: a menu choice applied from this button leaves
-    // it spinning (withBusy's `busy`), and the render withBusy runs must not
-    // take the spinner away.
+    // classList, not className: a choice applied from this button leaves it
+    // spinning (withBusy's `busy`), and the render withBusy runs must not take
+    // the spinner away.
     parts.audiencePill.classList.toggle("public", audience.published);
     parts.audiencePill.textContent = audience.text;
     // The column is sized for the 900px window, with every table wording
@@ -801,25 +794,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // whole of it anyway, and the long form where the cell uses a short one.
     parts.audiencePill.title = audience.title ?? audience.text;
     parts.audiencePill.disabled = state.busy;
-    parts.audiencePill.onclick = () => openAudiencePopover(parts.audiencePill, [session.id]);
+    parts.audiencePill.onclick = () => openSharePanel([session.id], { anchor: parts.audiencePill });
 
-    // The flags describe what a peer is allowed to do with this session, so on
-    // one no peer has been given they describe nothing. Hidden rather than
-    // drawn dim: four boxes per row, on the rows where they mean least, were
-    // most of the ink in this table.
-    //
-    // "No peer has been given it" is describeAudience's `published`, not the
-    // mode: 「指定：無」 — selected, with no nodes — is as unpublished as 不公開,
-    // and it used to wear four chips anyway (#194).
-    const a = session.audience ?? {};
-    parts.chips.classList.toggle("hidden", !audience.published);
-    setFlagChip(parts.flagCwd, "CWD", Boolean(a.exportCwd));
-    setFlagChip(parts.flagIn, t("row.flagIn"), Boolean(a.acceptMessages));
-    setFlagChip(parts.flagOut, t("row.flagOut"), Boolean(a.allowOutbound));
-    setFlagChip(parts.flagWake, t("row.flagWake"), Boolean(a.autoWake), true);
-    parts.wakeCaveat.classList.toggle("hidden", !(audience.published && a.autoWake));
-    parts.wakeCaveat.title = t("wake.caveat");
-    parts.wakeCaveat.setAttribute("aria-label", t("wake.caveat"));
+    // What the other machine may do, for a session it can see. Titles and
+    // aria-labels are written every pass, so a language switch reaches them.
+    const a = writableAudience(session.audience);
+    parts.shareIcons.classList.toggle("hidden", !audience.published);
+    const messages = a.acceptMessages || a.allowOutbound;
+    parts.iconMsg.classList.toggle("hidden", !messages);
+    const messagesTitle = t(a.acceptMessages && a.allowOutbound ? "share.icon.messages"
+      : a.acceptMessages ? "share.icon.messagesNoReply" : "share.icon.replyOnly");
+    parts.iconMsg.title = messagesTitle;
+    parts.iconMsg.setAttribute("aria-label", messagesTitle);
+    // A Claude Code session cannot be woken (docs/channel-push-not-observed.md):
+    // the bell is there because the setting is, grey because it does nothing.
+    const claude = session.provider === "claude";
+    parts.iconWake.classList.toggle("hidden", !a.autoWake);
+    parts.iconWake.classList.toggle("off", claude);
+    const wakeTitle = t(claude ? "share.icon.wakeClaude" : "share.icon.wake");
+    parts.iconWake.title = wakeTitle;
+    parts.iconWake.setAttribute("aria-label", wakeTitle);
+    parts.iconCwd.classList.toggle("hidden", !a.exportCwd);
+    parts.iconCwd.title = t("share.icon.cwd");
+    parts.iconCwd.setAttribute("aria-label", t("share.icon.cwd"));
 
     // The path is text (textContent), whatever it holds: it is the provider's
     // metadata, not this window's. The tooltip carries it whole, since the
@@ -845,12 +842,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.resumeButton.onclick = () => copyFromRow(tr, "id", id, parts.resumeButton);
     paintCopyControls(parts);
     updateInboxBadge(parts.inboxButton, parts.badge, session.id);
-  }
-
-  // setFlagChip writes one of the four audience flags in place.
-  function setFlagChip(node, label, on, warn = false) {
-    node.className = `flag${on ? " on" : ""}${warn ? " warn" : ""}`;
-    node.textContent = label;
   }
 
   /* ---------------- inbox badges (#146) ---------------- */
@@ -1183,7 +1174,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     wizard.touched = true;
     wizard.failed = {};
     wizard.step = firstIncompleteStep();
-    closeAudiencePopover();
+    closeSharePanel();
     readForFirstRun();
     render();
   }
@@ -1590,18 +1581,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return picked.length > 0 && picked.every((session) => session.provider === "claude");
   }
 
-  // Through the inline menu's own write (applyAudienceChoice): the same mode
-  // rule — nobody sees it yet → every paired machine, already shared → the
-  // machines it has — the same grouping, the same toast and its 復原. The one
-  // difference is the working directory, which is never published from here:
-  // nothing on this screen says it would be.
+  // Through the panel's own write (applyAudienceChoice): the same mode rule —
+  // nobody sees it yet → every paired machine, already shared → the machines it
+  // has — the same grouping, the same toast and its 復原. The differences: the
+  // working directory is never published from here (nothing on this screen
+  // says it would be), and the toast has no 「在區網頁看」, which would take
+  // the owner out of the wizard.
   async function shareFromFirstRun(button) {
     const wizard = state.firstRun;
     const ids = firstRunPicked();
     if (ids.length === 0 || state.busy) return;
     wizard.touched = true;
     if (wizard.preset === "wake" && firstRunWakeBlocked()) wizard.preset = "messages";
-    await applyAudienceChoice(ids, wizard.preset, { button, withoutCwd: true });
+    await applyAudienceChoice(ids, wizard.preset, { button, withoutCwd: true, peerAction: false });
     const shared = sessionsFor(ids).filter((session) => isPublished(session.audience));
     if (shared.length === ids.length) {
       wizard.shared = {
@@ -2799,7 +2791,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     document.body?.classList?.toggle("selecting", count > 0 && state.view === "local");
     el("selection-count").textContent = count ? plural(count, "table.selectedCount") : t("local.noneSelected");
     el("btn-audience").disabled = count === 0 || state.busy;
-    el("btn-unpublish").disabled = count === 0 || state.busy;
     // The settings panel's own read and write are held off while ANY write is
     // in flight, not only a settings one: state.busy is the window's single
     // "something is being changed" flag. The case that matters is a reload
@@ -3680,14 +3671,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // guards still apply: a decision in flight, rows selected, or a caret in a
   // field all stop the read, because those are the reads that pull the ground
   // out from under someone.
-  //
-  // The inline audience menu counts as well. It is not a modal, but it is drawn
-  // against the row it was opened from, and a tick that re-sorted or re-filled
-  // the table under it would leave the menu pointing at a different row.
   function interactionInProgress({ exceptPairingDrawer = false } = {}) {
     return state.busy || state.selected.size > 0
-      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus() || audiencePopoverOpen()
-      || copyFallbackOpen();
+      || anyModalOpen({ exceptPairingDrawer }) || fieldHasFocus() || copyFallbackOpen();
   }
 
   // background: this read is the 15-second tick's, not the owner's. A background
@@ -3994,68 +3980,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
   }
 
-  // mode is the audience's own mode, not a sentence: the two languages put the
-  // verb and the count in different places, so each one gets its own key rather
-  // than a noun glued to a template.
-  async function applyAudience(audience, mode, { button = null } = {}) {
-    const ids = [...state.selected];
-    await withBusy(t("audience.verb." + mode), async () => {
-      const result = await api.SetAudience(ids, audience);
-      await load();
-      if (result.failed > 0) {
-        banner(t("audience.partlyApplied", {
-          action: t("audience.verb." + mode),
-          changed: result.changed,
-          failed: result.failed,
-          error: (result.errors || [])[0] || "",
-        }));
-      } else {
-        state.selected.clear();
-        closeAudienceModal();
-        banner(plural(result.changed, "audience.applied." + mode), true);
-      }
-    }, { button });
-  }
+  /* ---------------- the share panel ---------------- */
 
-  /* ---------------- the inline audience menu ---------------- */
-
-  // The AUDIENCE cell is a button, and so is 「公開 ▾」 on the selection bar.
-  // Both open this one menu: three situations and a way into the full dialog,
-  // and a choice is applied the moment it is picked. The dialog needed four
-  // presses for the commonest change there is — open, pick a preset, pick who,
-  // apply — and asked "who" of a session whose answer almost always stays the
-  // same.
+  // The SHARING cell is a button, and so is 「分享…」 on the selection bar.
+  // Both open this one panel (#audience-modal): who can see the session, what
+  // they may do with it, and whether the working directory goes along. It
+  // replaced an inline menu and a full dialog that said the same thing in two
+  // vocabularies.
   //
-  // So "who" is not asked here. It is worked out per session: a session nobody
-  // can see yet goes to every paired machine, and one that is already
-  // published keeps exactly the machines it has (mode and nodes). The line at
-  // the top of the menu says which of those this press is going to do.
+  // A block the owner has not touched keeps each session's own value
+  // (whoTouched / whatTouched / cwdTouched), so a panel opened over a session
+  // whose settings no option names, or over several that disagree, shows one
+  // honest state and changes nothing the owner did not choose.
   //
-  // The working directory is not this menu's to turn on, for the reason the
-  // dialog's presets leave it alone (AUDIENCE_PRESETS): publishing keeps what
-  // the session holds. 「不公開」 is the exception and clears it, as it always
-  // did before this menu. A flag kept on an unpublished session is invisible —
-  // the row shows no flags for a session nobody can see — so keeping it meant
-  // the next 「能留訊息」 published a directory the owner could not see was
-  // switched on. One can still be held from older data or the full dialog, so
-  // the top line says when a press is about to publish one.
-  //
-  // What "published" means is describeAudience's, so 「指定：無」 — selected,
-  // no nodes — is a session nobody can see, and publishing it goes to every
-  // paired machine rather than to the empty list it had.
+  // What "shared" means is describeAudience's, so 「指定機器」 with no nodes is
+  // a session nobody can see, and sharing it goes to the machines picked now.
 
   function isPublished(audience) {
     return describeAudience(audience).published;
   }
 
-  // Which of the menu's three a session is in, or "" for a combination none
-  // of them names (a published session with every flag off is one).
-  function presetOfAudience(audience) {
-    if (!isPublished(audience)) return "none";
-    return presetForFlags(audience ?? {});
-  }
-
-  // What one choice writes for one session.
+  // What one choice writes for one session: the first-run wizard's, which has
+  // no panel to ask "who" and "what" in.
   function audienceForChoice(session, choice) {
     const current = session?.audience ?? {};
     if (choice === "none") {
@@ -4119,7 +4065,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   function choiceLabel(choice) {
-    return t(`popover.${choice}`);
+    return choice === "view" ? t("share.whatView") : t(`popover.${choice}`);
   }
 
   // Who this press publishes to, as a sentence, from the audiences it writes.
@@ -4137,29 +4083,42 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return ids.map((id) => state.sessions.find((session) => session.id === id)).filter(Boolean);
   }
 
-  // applyAudienceChoice writes one choice to these sessions and offers to put
-  // back what they had. The undo writes each session's own previous audience —
-  // flags, mode and nodes — so a batch that held three different settings goes
-  // back to three different settings (writeAudiences groups them again).
+  // applyAudienceChoice is the first-run wizard's write: one preset for these
+  // sessions, through the same grouping, toast and undo as the share panel
+  // (applyAudiencePairs). The undo writes each session's own previous audience,
+  // so a batch that held three different settings goes back to three.
   //
-  // clearSelection is for the selection bar: its sessions are the selection,
-  // and a batch that went through leaves nothing selected, as the dialog does.
-  // A row's own menu leaves the selection as it was.
-  //
-  // withoutCwd is the first-run wizard's: it publishes without the working
-  // directory whatever the session held, because nothing on that screen says
-  // a directory is going with it (the menu says so, popover.withCwd). The
-  // undo still writes back what each session had.
-  async function applyAudienceChoice(ids, choice, { button = null, clearSelection = false, withoutCwd = false } = {}) {
+  // withoutCwd publishes without the working directory whatever the session
+  // held, because nothing on the wizard's screen says a directory is going
+  // with it. peerAction: false leaves the toast's 「在區網頁看」 out, because
+  // it would take the owner out of the wizard (decidePairRequest's fromWizard).
+  async function applyAudienceChoice(ids, choice, { button = null, clearSelection = false, withoutCwd = false, peerAction = true } = {}) {
     const sessions = sessionsFor(ids);
     if (sessions.length === 0 || !(choice === "none" || AUDIENCE_PRESETS[choice])) return;
-    const before = sessions.map((session) => ({ id: session.id, audience: writableAudience(session.audience) }));
     const after = sessions.map((session) => {
       const audience = audienceForChoice(session, choice);
       if (withoutCwd) audience.exportCwd = false;
+      // Claude Code cannot be woken (docs/channel-push-not-observed.md): the
+      // setting is never written for it, whatever preset this is.
+      if (session.provider === "claude") audience.autoWake = false;
       return { id: session.id, audience };
     });
     const action = choice === "none" ? t("audience.verb.none") : t("popover.verb", { preset: choiceLabel(choice) });
+    const n = sessions.length;
+    const title = choice === "none" ? plural(n, "audience.applied.none")
+      : choice === "view" ? plural(n, "share.applied")
+      : plural(n, `popover.applied.${choice}`);
+    await applyAudiencePairs(sessions, after, { action, title, button, clearSelection, peerAction });
+  }
+
+  // applyAudiencePairs writes `after` (one {id, audience} per session) and
+  // offers to put back what the sessions had. clearSelection is for the
+  // selection bar: its sessions are the selection, and a batch that went
+  // through leaves nothing selected. closePanel closes the share panel on
+  // success; on a failure it stays open and the selection stays, so the owner
+  // can try again.
+  async function applyAudiencePairs(sessions, after, { action, title, button = null, clearSelection = false, peerAction = true, closePanel = false }) {
+    const before = sessions.map((session) => ({ id: session.id, audience: writableAudience(session.audience) }));
     const undo = { label: t("popover.undo"), run: () => undoAudience(before) };
     await withBusy(action, async () => {
       const result = await writeAudiences(after);
@@ -4178,16 +4137,62 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         return;
       }
       if (clearSelection) state.selected.clear();
-      const n = sessions.length;
-      const title = choice === "none"
-        ? plural(n, "audience.applied.none")
-        : plural(n, `popover.applied.${choice}`);
-      let body = choice === "none"
-        ? t("popover.appliedNoneBody")
-        : describeTargets(after.map((pair) => pair.audience));
-      if (choice === "wake") body = `${body} ${t("wake.caveat")}`;
-      notify("ok", title, { body, actions: [undo] });
+      if (closePanel) closeSharePanel();
+      const peer = peerOutcome(after);
+      notify("ok", title, {
+        body: peer.body,
+        actions: peerAction && peer.action ? [peer.action, undo] : [undo],
+      });
     }, { button });
+    // A panel that stayed open after a failure was drawn while busy.
+    if (sharePanelOpen()) renderSharePanel();
+  }
+
+  // How many sessions this machine can see now, from the sessions as loaded.
+  function grantedCount(nodeId) {
+    return state.sessions.filter((session) => {
+      const a = writableAudience(session.audience);
+      return a.mode === "all_paired" || (a.mode === "selected" && a.nodes.includes(nodeId));
+    }).length;
+  }
+
+  // peerOutcome says what the write did from the other machine's side, and
+  // where to go and look. Called after load(), so it counts the sessions as the
+  // node now holds them.
+  function peerOutcome(after) {
+    const audiences = after.map(({ audience }) => writableAudience(audience));
+    if (audiences.every((a) => a.mode === "none")) return { body: t("popover.appliedNoneBody") };
+    // Nothing paired yet is not a reason to refuse: sharing now is how a
+    // machine paired later gets to see it. A failed read of the pairing list
+    // is not "nothing paired", so it is not said then.
+    if (state.nodes.length === 0 && !state.nodesError) return { body: t("popover.noNodes") };
+    const seen = new Set();
+    for (const a of audiences) {
+      if (a.mode === "all_paired") for (const node of state.nodes) seen.add(node.nodeId);
+      else if (a.mode === "selected") for (const id of a.nodes) seen.add(id);
+    }
+    if (seen.size === 0) return { body: "" };
+    if (seen.size === 1) {
+      const [id] = seen;
+      const name = nodeName(id);
+      return {
+        body: plural(grantedCount(id), "share.peerSees", { name }),
+        action: { label: t("share.toastSee", { name }), run: () => goToMachine(id) },
+      };
+    }
+    return {
+      body: plural(seen.size, "share.peersSee"),
+      action: { label: t("share.toastSeeAll"), run: () => goToMachine(null) },
+    };
+  }
+
+  // goToMachine is the toast's way to the network view, with that machine
+  // selected when there is one to select.
+  function goToMachine(nodeId) {
+    closeSharePanel();
+    state.view = "network";
+    if (nodeId) state.selectedNode = nodeId;
+    render();
   }
 
   async function undoAudience(before) {
@@ -4214,131 +4219,314 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     });
   }
 
-  // What the menu is open for: the sessions, the button it hangs from (which
-  // gets the keyboard back and spins while the choice is written), and whether
-  // it came from the selection bar.
-  let popover = null;
-  let popoverButtons = [];
-
-  function audiencePopoverOpen() {
-    return !el("audience-popover").classList.contains("hidden");
+  // What the panel works out from a session, one at a time. "Who" is the mode
+  // SetAudience would take (so selected-with-no-nodes is none); "what" is read
+  // from the three flags, with Claude Code's autoWake counted as off because it
+  // cannot be woken.
+  function whoOf(audience) {
+    return writableAudience(audience).mode;
   }
 
-  function openAudiencePopover(anchor, ids, { clearSelection = false } = {}) {
-    // A second press on the same button closes it, as a menu button does.
-    if (audiencePopoverOpen() && popover?.anchor === anchor) {
-      closeAudiencePopover({ focus: true });
+  // Two sessions with the same key are shared with the same machines.
+  function whoKey(audience) {
+    const a = writableAudience(audience);
+    return a.mode === "selected" ? `selected:${[...a.nodes].sort().join(",")}` : a.mode;
+  }
+
+  function effectiveFlags(session) {
+    const a = writableAudience(session.audience);
+    return {
+      acceptMessages: a.acceptMessages,
+      allowOutbound: a.allowOutbound,
+      autoWake: a.autoWake && session.provider !== "claude",
+    };
+  }
+
+  // The option a session's flags are filed under. Waking wins, then messages;
+  // a session that only has allowOutbound on is 「只看得到」, because the other
+  // machine cannot leave it a message.
+  function whatOf(session) {
+    const flags = effectiveFlags(session);
+    if (flags.autoWake) return "wake";
+    if (flags.acceptMessages) return "messages";
+    return "view";
+  }
+
+  // What the open panel is about, and which blocks the owner has touched.
+  // {ids, anchor, clearSelection, whoTouched, whatTouched, cwdTouched}
+  let sharePanel = null;
+  // The machine boxes and the labels of the unlisted ones, kept so a repaint
+  // reads and rewrites them in place.
+  let shareNodeBoxes = [];
+  let shareFormerLabels = [];
+
+  function sharePanelOpen() {
+    return !el("audience-modal").classList.contains("hidden");
+  }
+
+  // renderShareNodes offers every paired machine as a checkbox: the name and
+  // whether it is online, with its node id in the tooltip. `checked` is the set
+  // the panel opens ticked.
+  //
+  // `former` are ids the one session being edited is already shared with but
+  // that are not in state.nodes. They get a row of their own, ticked (#194):
+  // with no box, 套用 withdrew the grant without a word. Unticking one is how
+  // the owner withdraws it on purpose.
+  //
+  // Not "a machine no longer paired", though that is what the row first said.
+  // A revoke deletes the node's grants in the same transaction
+  // (internal/registry/trust.go, RevokeNode) and SetAudience refuses a node
+  // that is not paired (internal/registry/registry.go), so a grant to a node
+  // that really is gone does not survive to be shown here. The one way this
+  // row appears is an Overview whose pairing-list read failed and came back
+  // as no nodes (desktop/app.go) — and then the machine is still paired. So
+  // the label says only that this read did not list it.
+  function renderShareNodes(checked, former) {
+    const list = el("audience-node-list");
+    list.replaceChildren();
+    shareNodeBoxes = [];
+    shareFormerLabels = [];
+    const row = (nodeId, className, on, ...parts) => {
+      const label = element("label", className);
+      label.title = nodeId;
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = nodeId;
+      box.className = "audience-node-box";
+      box.checked = on;
+      box.onchange = () => {
+        if (sharePanel) sharePanel.whoTouched = true;
+        renderSharePanel();
+      };
+      label.append(box, ...parts);
+      list.append(label);
+      shareNodeBoxes.push(box);
+    };
+    for (const node of state.nodes) {
+      const presence = presenceLabel(presenceFor(node.nodeId));
+      row(node.nodeId, "nodepick", checked.has(node.nodeId),
+        element("span", `dot ${presence.className}`), element("span", "", node.displayName));
+    }
+    for (const nodeId of former) {
+      const unlisted = element("span", "muted", "");
+      shareFormerLabels.push(unlisted);
+      const short = nodeId.length > 12 ? `${nodeId.slice(0, 12)}…` : nodeId;
+      row(nodeId, "nodepick former", true, unlisted, element("span", "mono", short));
+    }
+  }
+
+  // openSharePanel opens the panel over these sessions. A single session opens
+  // showing what that session is; several open showing what they have in
+  // common, and a block they disagree about shows no option at all and says
+  // that leaving it alone keeps each as it is (audienceFromPanel).
+  function openSharePanel(ids, { anchor = null, clearSelection = false } = {}) {
+    const sessions = sessionsFor(ids);
+    if (state.busy || sessions.length === 0) return;
+    sharePanel = {
+      ids: sessions.map((session) => session.id),
+      anchor,
+      clearSelection,
+      whoTouched: false,
+      whatTouched: false,
+      cwdTouched: false,
+    };
+
+    // Who can see it.
+    const whoKeys = new Set(sessions.map((session) => whoKey(session.audience)));
+    const same = whoKeys.size === 1;
+    const who = same ? whoOf(sessions[0].audience) : "";
+    for (const radio of document.querySelectorAll('input[name="share-who"]')) {
+      radio.checked = radio.value === who;
+    }
+    const first = writableAudience(sessions[0].audience);
+    const granted = new Set(same && who === "selected" ? first.nodes : []);
+    const listed = new Set(state.nodes.map((node) => node.nodeId));
+    const former = sessions.length === 1 && first.mode === "selected"
+      ? first.nodes.filter((nodeId) => nodeId && !listed.has(nodeId))
+      : [];
+    renderShareNodes(granted, former);
+
+    // What they can do. Nothing shared yet starts at 「可留訊息」, which is what
+    // sharing is for; otherwise every session answers for itself, and the
+    // option is ticked only when they all give the same answer.
+    let what = "";
+    if (!sessions.some((session) => isPublished(session.audience))) {
+      what = "messages";
+      sharePanel.whatTouched = true;
+    } else if (new Set(sessions.map((session) => JSON.stringify(effectiveFlags(session)))).size === 1) {
+      what = whatOf(sessions[0]);
+    }
+    for (const radio of document.querySelectorAll('input[name="share-what"]')) {
+      radio.checked = radio.value === what;
+    }
+
+    // The working directory is a box of its own, and always shown.
+    const cwds = new Set(sessions.map((session) => writableAudience(session.audience).exportCwd));
+    const cwd = el("audience-cwd");
+    if (cwds.size === 1) {
+      cwd.checked = [...cwds][0];
+      cwd.indeterminate = false;
+    } else {
+      cwd.checked = false;
+      cwd.indeterminate = true;
+    }
+
+    el("audience-modal").classList.remove("hidden");
+    renderSharePanel();
+    const radios = [...document.querySelectorAll('input[name="share-who"]')];
+    (radios.find((radio) => radio.checked) ?? radios[0])?.focus?.();
+  }
+
+  // readSharePanel reads what the form says right now.
+  function readSharePanel() {
+    const who = document.querySelector('input[name="share-who"]:checked');
+    const what = document.querySelector('input[name="share-what"]:checked');
+    return {
+      who: who ? who.value : "",
+      nodes: shareNodeBoxes.filter((box) => box.checked).map((box) => box.value),
+      what: what ? what.value : "",
+      cwd: el("audience-cwd").checked,
+    };
+  }
+
+  // renderSharePanel writes everything the panel derives: the title, which
+  // blocks show, the notes under them, and whether 套用 can be pressed. Called
+  // on open, after every change, and from repaintFromState.
+  function renderSharePanel() {
+    if (!sharePanel) return;
+    const sessions = sessionsFor(sharePanel.ids);
+    if (sessions.length === 0) {
+      closeSharePanel();
       return;
     }
-    closeAudiencePopover();
-    const sessions = sessionsFor(ids);
-    if (sessions.length === 0 || state.busy) return;
-    popover = { anchor, ids: sessions.map((session) => session.id), clearSelection };
+    const form = readSharePanel();
+    const only = sessions.length === 1 ? sessions[0] : null;
+    el("audience-title").textContent = only
+      ? t("share.titleOne", { title: only.title || shortId(only.id).rest })
+      : plural(sessions.length, "share.titleMany");
+    el("audience-nodes").classList.toggle("hidden", form.who !== "selected");
+    el("share-what-block").classList.toggle("hidden", form.who === "none");
+    for (const label of shareFormerLabels) label.textContent = t("audience.unlistedNode");
 
-    const presets = new Set(sessions.map((session) => presetOfAudience(session.audience)));
-    const current = presets.size === 1 ? [...presets][0] : "";
-    const menu = el("audience-popover");
-    const parts = [];
-    popoverButtons = [];
-
-    // Who, first: the one thing this menu decides without asking.
-    const publishing = sessions.map((session) => audienceForChoice(session, "messages"));
-    const head = element("div", "pophead");
-    if (sessions.length > 1) head.append(element("b", "", plural(sessions.length, "popover.count")));
-    head.append(element("span", "", describeTargets(publishing)));
-    // Said before the press rather than after it: a working directory held by
-    // a session nobody can see yet has no flag on its row (audienceForChoice).
-    const withCwd = publishing.filter((audience) => audience.exportCwd).length;
-    if (withCwd > 0) {
-      head.append(element("span", "popcwd", withCwd === sessions.length
-        ? t("popover.withCwd")
-        : plural(withCwd, "popover.withCwdSome")));
-    }
-    head.append(element("span", "muted", t("popover.instant")));
-    parts.push(head);
-    if (presets.size > 1) parts.push(element("div", "popnote", t("popover.mixed")));
-    else if (current === "") parts.push(element("div", "popnote", t("popover.custom")));
-    // Nothing paired yet is not a reason to refuse: publishing now is how a
-    // machine paired later gets to see it. A failed read of the pairing list
-    // is not "nothing paired", so it is not said then.
-    if (state.nodes.length === 0 && !state.nodesError) {
-      const none = element("div", "popnote");
-      none.append(element("span", "", t("popover.noNodes")));
-      const pair = element("button", "ghost popaction", t("popover.pairAction"));
-      pair.setAttribute("role", "menuitem");
+    // Under "who".
+    const whoNotes = [];
+    if (state.nodesError) {
+      whoNotes.push(element("div", "muted", t("audience.nodesReadFailed", { error: state.nodesError })));
+    } else if (state.nodes.length === 0) {
+      const none = element("div", "muted", t("popover.noNodes"));
+      const pair = element("button", "ghost", t("popover.pairAction"));
       pair.onclick = () => {
-        closeAudiencePopover();
+        closeSharePanel();
         goToPairing();
       };
-      none.append(pair);
-      popoverButtons.push(pair);
-      parts.push(none);
+      whoNotes.push(none, pair);
     }
+    const whoMixed = new Set(sessions.map((session) => whoKey(session.audience))).size > 1;
+    if (whoMixed && !sharePanel.whoTouched) whoNotes.push(element("div", "muted", t("share.mixedWho")));
+    el("share-who-note").replaceChildren(...whoNotes);
 
-    // The same rule as the dialog's wake preset: a selection that is nothing
-    // but Claude Code cannot be woken, and no restart changes that
-    // (renderAutoWakeNoteLines), so the entry is there but cannot be picked.
-    const claudeOnly = sessions.every((session) => session.provider === "claude");
-    const item = (choice, hint, extra = []) => {
-      const button = element("button", "popitem");
-      button.setAttribute("role", "menuitemradio");
-      button.setAttribute("aria-checked", String(current === choice));
-      button.dataset.choice = choice;
-      button.append(
-        element("span", "mk", current === choice ? "✓" : ""),
-        element("span", "poplabel", choiceLabel(choice)),
-        element("small", "pophint", hint),
-        ...extra,
-      );
-      button.onclick = () => {
-        const target = popover;
-        closeAudiencePopover({ focus: true });
-        if (!target) return;
-        // withBusy disables the button while the write is out, which drops the
-        // keyboard; it goes back once the button can take it again.
-        applyAudienceChoice(target.ids, choice, { button: target.anchor, clearSelection: target.clearSelection })
-          .catch(() => {})
-          .then(() => {
-            const anchor = target.anchor;
-            if (anchor && !anchor.disabled && anchor.isConnected !== false) anchor.focus?.();
-          });
-      };
-      popoverButtons.push(button);
-      return button;
-    };
-    parts.push(item("none", t("popover.noneHint")));
-    parts.push(item("messages", t("popover.messagesHint")));
-    const wakeExtra = [element("small", "caveat", `⚠ ${t("wake.caveat")}`)];
-    if (claudeOnly) wakeExtra.push(element("small", "pophint", t("popover.wakeClaudeOnly")));
-    const wake = item("wake", t("popover.wakeHint"), wakeExtra);
-    wake.disabled = claudeOnly;
-    parts.push(wake);
-    parts.push(element("hr"));
-    const advanced = element("button", "popitem");
-    advanced.setAttribute("role", "menuitem");
-    advanced.append(element("span", "mk", ""), element("span", "poplabel", t("popover.advanced")),
-      element("small", "pophint", t("popover.advancedHint")));
-    advanced.onclick = () => {
-      const target = popover;
-      closeAudiencePopover();
-      if (target) openAudienceModalFor(target.ids);
-    };
-    popoverButtons.push(advanced);
-    parts.push(advanced);
+    // Under "what".
+    const published = sessions.filter((session) => isPublished(session.audience));
+    const whatNotes = [];
+    const line = (text, className = "muted") => whatNotes.push(element("div", className, text));
+    if (!sharePanel.whatTouched) {
+      const kinds = new Set(sessions.map((session) => JSON.stringify(effectiveFlags(session))));
+      if (kinds.size > 1) {
+        line(t("share.mixedWhat"));
+      } else if (only && published.length === 1) {
+        const flags = effectiveFlags(only);
+        const preset = AUDIENCE_PRESETS[whatOf(only)];
+        if (JSON.stringify(flags) !== JSON.stringify(preset)) {
+          const word = (on) => t(on ? "share.on" : "share.off");
+          line(t("share.whatDiffers", {
+            detail: t("share.detail", {
+              accept: word(flags.acceptMessages),
+              reply: word(flags.allowOutbound),
+              wake: word(flags.autoWake),
+            }),
+          }));
+        }
+      }
+    }
+    // A selection that is nothing but Claude Code cannot be woken, and no
+    // restart changes that (docs/channel-push-not-observed.md): the option is
+    // there but cannot be picked.
+    const claudeCount = sessions.filter((session) => session.provider === "claude").length;
+    const claudeOnly = claudeCount === sessions.length;
+    el("share-what-wake").disabled = claudeOnly;
+    if (claudeOnly) line(t("popover.wakeClaudeOnly"));
+    else if (form.what === "wake" && claudeCount > 0) line(plural(claudeCount, "share.wakeSomeClaude"));
+    if (form.what === "wake" && !state.nodeAutoWake) line(t("share.wakeNodeOff"));
+    if (sessions.some((session) => session.provider === "claude" && writableAudience(session.audience).autoWake)) {
+      line(t("audience.autoWakeWillTurnOff"), "warning");
+    }
+    el("share-what-note").replaceChildren(...whatNotes);
 
-    menu.replaceChildren(...parts);
-    menu.setAttribute("aria-label", t("popover.title"));
-    menu.classList.remove("hidden");
-    anchor?.setAttribute?.("aria-expanded", "true");
-    positionPopover(menu, anchor);
-    const checked = popoverButtons.find((button) => button.getAttribute("aria-checked") === "true" && !button.disabled);
-    (checked ?? popoverButtons.find((button) => !button.disabled))?.focus?.();
+    // 套用.
+    const needsAMachine = form.who === "selected" && form.nodes.length === 0;
+    el("audience-apply").disabled = state.busy || needsAMachine;
+    el("share-apply-why").textContent = needsAMachine ? t("share.pickAMachine") : "";
   }
 
-  // Below the button when it fits, above it when it does not (the selection
-  // bar is at the bottom of the window), and never over the button itself:
-  // when neither side holds the whole menu it takes the larger one and
-  // scrolls, rather than being pushed up over the row it is about.
+  // audienceFromPanel is what one session is written as: a block the owner has
+  // not touched keeps that session's own value, so a panel opened over several
+  // sessions that disagree writes each of them back as it was.
+  //
+  // Claude Code is always written with autoWake off: it cannot be woken, and a
+  // setting that does nothing is one more thing for a row to explain.
+  function audienceFromPanel(session, panel, form) {
+    const cur = writableAudience(session.audience);
+    const who = panel.whoTouched ? form.who : whoOf(cur);
+    if (who === "none") {
+      return panel.whoTouched
+        ? { mode: "none", nodes: [], exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false }
+        : cur;
+    }
+    const nodes = who === "selected" ? [...(panel.whoTouched ? form.nodes : cur.nodes)] : [];
+    const flags = panel.whatTouched && form.what ? { ...AUDIENCE_PRESETS[form.what] }
+      : isPublished(cur) ? { acceptMessages: cur.acceptMessages, allowOutbound: cur.allowOutbound, autoWake: cur.autoWake }
+      : { ...AUDIENCE_PRESETS.messages };
+    if (session.provider === "claude") flags.autoWake = false;
+    return { mode: who, nodes, exportCwd: panel.cwdTouched ? form.cwd : cur.exportCwd, ...flags };
+  }
+
+  async function applySharePanel() {
+    const panel = sharePanel;
+    if (!panel || state.busy) return;
+    const sessions = sessionsFor(panel.ids);
+    if (sessions.length === 0) return;
+    const form = readSharePanel();
+    if (form.who === "selected" && form.nodes.length === 0 && panel.whoTouched) return;
+    const after = sessions.map((session) => ({ id: session.id, audience: audienceFromPanel(session, panel, form) }));
+    const n = sessions.length;
+    const title = panel.whoTouched && form.who === "none"
+      ? plural(n, "audience.applied.none")
+      : plural(n, "share.applied");
+    await applyAudiencePairs(sessions, after, {
+      action: t("share.verb"),
+      title,
+      button: el("audience-apply"),
+      clearSelection: panel.clearSelection,
+      closePanel: true,
+    });
+    // withBusy disables the button while the write is out, which drops the
+    // keyboard; it goes back once the button can take it again.
+    const anchor = panel.anchor;
+    if (!sharePanelOpen() && anchor && !anchor.disabled && anchor.isConnected !== false) anchor.focus?.();
+  }
+
+  function closeSharePanel({ focus = false } = {}) {
+    if (!sharePanelOpen()) return;
+    el("audience-modal").classList.add("hidden");
+    const anchor = sharePanel?.anchor;
+    sharePanel = null;
+    if (focus) anchor?.focus?.();
+  }
+
+  // Below the button when it fits, above it when it does not, and never over
+  // the button itself: when neither side holds the whole box it takes the
+  // larger one and scrolls, rather than being pushed up over the row it is
+  // about. The copy fallback is the one thing drawn this way now.
   function positionPopover(menu, anchor) {
     const rect = anchor?.getBoundingClientRect?.();
     if (!rect || !menu.style) return;
@@ -4368,69 +4556,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     menu.style.left = `${Math.round(left)}px`;
   }
 
-  function closeAudiencePopover({ focus = false } = {}) {
-    const menu = el("audience-popover");
-    if (menu.classList.contains("hidden")) return;
-    menu.classList.add("hidden");
-    const anchor = popover?.anchor;
-    anchor?.setAttribute?.("aria-expanded", "false");
-    popover = null;
-    popoverButtons = [];
-    if (focus) anchor?.focus?.();
-  }
-
-  // Arrow keys move through the entries, Home and End go to either end, Esc
-  // closes and gives the keyboard back to the button, and Tab closes and lets
-  // the keyboard go on. Enter and Space are the buttons' own.
-  function popoverKey(event) {
-    if (!audiencePopoverOpen()) return;
-    const key = event?.key;
-    if (key === "Escape") {
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      closeAudiencePopover({ focus: true });
-      return;
-    }
-    // The menu sits at the end of the page, so a Tab left to itself would go
-    // on from there; it goes back to the button, and the next Tab onward.
-    if (key === "Tab") {
-      event.preventDefault?.();
-      closeAudiencePopover({ focus: true });
-      return;
-    }
-    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(key)) return;
-    const live = popoverButtons.filter((button) => !button.disabled);
-    if (live.length === 0) return;
-    event.preventDefault?.();
-    const at = live.indexOf(document.activeElement);
-    let next = 0;
-    if (key === "End") next = live.length - 1;
-    else if (key === "ArrowDown") next = at === -1 ? 0 : (at + 1) % live.length;
-    else if (key === "ArrowUp") next = at <= 0 ? live.length - 1 : at - 1;
-    live[next].focus();
-  }
-
   function within(node, container) {
     for (let at = node; at; at = at.parentNode) if (at === container) return true;
     return false;
   }
 
-  // A press anywhere but the menu and its own button closes it. The button is
-  // left to its click, which toggles.
-  function popoverOutsidePress(event) {
-    if (!audiencePopoverOpen()) return;
-    const target = event?.target;
-    if (within(target, el("audience-popover")) || (popover?.anchor && within(target, popover.anchor))) return;
-    closeAudiencePopover();
-  }
-
   if (typeof document.addEventListener === "function") {
-    document.addEventListener("keydown", popoverKey);
-    document.addEventListener("pointerdown", popoverOutsidePress, true);
-    // Drawn where the button was; once the page under it moves, it is not.
-    document.addEventListener("scroll", (event) => {
-      if (!within(event?.target, el("audience-popover"))) closeAudiencePopover();
-    }, true);
     // The copy fallback (openCopyFallback) closes the same ways.
     document.addEventListener("keydown", copyFallbackKey);
     document.addEventListener("pointerdown", copyFallbackOutsidePress, true);
@@ -4439,21 +4570,21 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }, true);
   }
 
-  // Esc closes the topmost overlay, one per press. The confirm question, the
-  // audience menu and the copy fallback answer Esc first (they mark it
-  // handled or stop it), and while any of them is open this does nothing.
+  // Esc closes the topmost overlay, one per press. The confirm question and the
+  // copy fallback answer Esc first (they mark it handled or stop it), and while
+  // either is open this does nothing.
   const ESC_CLOSERS = [
     ["modal", () => el("modal").classList.add("hidden")],
     ["mcp-modal", () => closeMCPConfig()],
     ["pair-modal", () => closePairModal()],
-    ["audience-modal", () => closeAudienceModal()],
+    ["audience-modal", () => closeSharePanel({ focus: true })],
     ["notify-modal", () => closeNotices()],
     ["pairing-modal", () => dismissPairingDrawer().catch(() => {})],
     ["inbox-modal", () => closeInbox()],
   ];
   function overlayKey(event) {
     if (event?.key !== "Escape" || event.defaultPrevented) return false;
-    if (confirmPending || audiencePopoverOpen() || copyFallbackOpen()) return false;
+    if (confirmPending || copyFallbackOpen()) return false;
     const open = ESC_CLOSERS.find(([id]) => !el(id).classList.contains("hidden"));
     if (!open) return false;
     event.preventDefault?.();
@@ -4462,7 +4593,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   if (typeof document.addEventListener === "function") document.addEventListener("keydown", overlayKey);
   globalThis.addEventListener?.("resize", () => {
-    closeAudiencePopover();
     closeCopyFallback();
   });
 
@@ -4506,21 +4636,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const target = event?.target;
     if (within(target, el("copy-fallback")) || (copyFallbackAnchor && within(target, copyFallbackAnchor))) return;
     closeCopyFallback();
-  }
-
-  // The dialog from a row's menu. The dialog applies to the selection, so for
-  // a row that is not the whole selection it becomes the selection while the
-  // dialog is open, and the owner's own selection comes back when it closes.
-  let audienceModalRestore = null;
-  function openAudienceModalFor(ids) {
-    const same = ids.length === state.selected.size && ids.every((id) => state.selected.has(id));
-    if (!same) {
-      audienceModalRestore = new Set(state.selected);
-      state.selected.clear();
-      for (const id of ids) state.selected.add(id);
-      render();
-    }
-    openAudienceModal();
   }
 
   /* ---------------- network view ---------------- */
@@ -4776,7 +4891,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // pending is closed rather than left announcing behind a view nobody sees.
   function goToPublish() {
     stepOutOfFirstRun();
-    closeAudiencePopover();
+    closeSharePanel();
     if (pairingDrawerOpen()) dismissPairingDrawer().catch(() => {});
     state.view = "local";
     render();
@@ -6382,349 +6497,26 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     note.classList.add("hidden");
   }
 
-  /* ---------------- audience picker ---------------- */
+  /* ---------------- audience presets ---------------- */
 
-  function selectedMode() {
-    const checked = document.querySelector('input[name="audience-mode"]:checked');
-    return checked ? checked.value : "none";
-  }
-
-  function syncAudienceForm() {
-    el("audience-nodes").classList.toggle("hidden", selectedMode() !== "selected");
-  }
-
-  // renderAudienceNodeList offers every paired node as a checkbox, so the
-  // owner picks a name rather than typing an id; the text field stays for an
-  // id the list does not show. Unchecked every time, like the flags.
+  // The three things the other machine may do, as the flags they write.
   //
-  // formerNodes are ids the one session being edited is already published to
-  // but that are not in state.nodes. They get a row of their own, ticked
-  // (#194): with no box, readAudienceForm left them out and 套用 withdrew the
-  // grant without a word. Unticking one is how the owner withdraws it on
-  // purpose.
+  // A preset answers "what may they do with this session", so it writes all
+  // three message flags — an answer that leaves one wherever the last one left
+  // it is not one. Whether the working directory goes along is a different
+  // question, and a preset leaves it alone.
   //
-  // Not "a machine no longer paired", though that is what the row first said.
-  // A revoke deletes the node's grants in the same transaction
-  // (internal/registry/trust.go, RevokeNode) and SetAudience refuses a node
-  // that is not paired (internal/registry/registry.go), so a grant to a node
-  // that really is gone does not survive to be shown here. The one way this
-  // row appears is an Overview whose pairing-list read failed and came back
-  // as no nodes (desktop/app.go) — and then the machine is still paired. So
-  // the label says only that this read did not list it, and when the read is
-  // known to have failed, the dialog says that instead of 「還沒有配對任何機器」.
-  //
-  // The boxes are kept in audienceNodeBoxes, which openAudienceModal ticks and
-  // readAudienceForm reads, so the three agree on one list.
-  let audienceNodeBoxes = [];
-  function renderAudienceNodeList(formerNodes = []) {
-    const list = el("audience-node-list");
-    list.replaceChildren();
-    audienceNodeBoxes = [];
-    const row = (nodeId, className, ...parts) => {
-      const label = element("label", className);
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.value = nodeId;
-      box.className = "audience-node-box";
-      box.onchange = () => label.classList.toggle("on", box.checked);
-      label.append(box, ...parts);
-      list.append(label);
-      audienceNodeBoxes.push(box);
-    };
-    for (const node of state.nodes) {
-      const presence = presenceLabel(presenceFor(node.nodeId));
-      row(node.nodeId, "nodepick", element("span", `dot ${presence.className}`),
-        element("span", "", node.displayName), element("span", "mono", node.nodeId));
-    }
-    if (state.nodesError) {
-      list.append(element("p", "stale", t("audience.nodesReadFailed", { error: state.nodesError })));
-    } else if (state.nodes.length === 0) {
-      list.append(element("p", "muted", t("audience.noNodesYet")));
-    }
-    for (const nodeId of formerNodes) {
-      row(nodeId, "nodepick former", element("span", "muted", t("audience.unlistedNode")),
-        element("span", "mono", nodeId));
-    }
-    el("audience-node-input").value = "";
-  }
-
-  // renderAudienceCount says how many sessions the dialog is about.
-  //
-  // One sentence through plural() rather than two fragments around a bold
-  // number: English wanted "session(s)" for the singular, which is the one
-  // place a table of finished sentences gives up, and (s) in a dialog that
-  // publishes things reads as a draft.
-  function renderAudienceCount() {
-    el("audience-count").textContent = plural(state.selected.size, "audience.count");
-  }
-
-  // The four flag boxes, in the order the dialog lists them.
-  const AUDIENCE_FLAG_IDS = ["audience-cwd", "audience-messages", "audience-outbound", "audience-autowake"];
-
-  // The three situations the presets name, as the flags they write.
-  //
-  // A preset answers "what may they do with messages", so it writes the three
-  // message flags and all three of them — an answer that leaves one wherever
-  // the last one left it is not one. Whether the working directory is shown is
-  // a different question, and a preset leaves that box as it found it: writing
-  // it off silently withdrew a setting the owner could not see change, because
-  // the box is in the collapsed advanced section (#193 review).
-  //
-  // Waking includes replying. A woken agent is told to answer the peer
-  // (AGENTS.md, "When AgentHub wakes you"), and without allowOutbound the node
-  // refuses that send, so a wake preset without it wakes an agent that cannot
-  // do the one thing it was woken for.
-  //
-  // There were three. The first, 「只讓他們看見」, wrote every message flag off,
-  // and the owner took it out (2026-09-29): a session another machine can see
-  // but not write to gives that machine nothing to do with it. A published
-  // session with every flag off is still a thing the node can hold, and the
-  // dialog shows it as what it now is — a custom combination.
+  // 「可留訊息」 is both directions: a conversation is two-way, and without
+  // allowOutbound the node refuses the reply a woken agent is told to send
+  // (AGENTS.md, "When AgentHub wakes you"). So `messages` writes acceptMessages
+  // and allowOutbound together, and the GUI no longer sets only one of them
+  // (owner's decision, 2026-10). 「只看得到」 is every flag off: the other machine
+  // sees the session and can do nothing with it.
   const AUDIENCE_PRESETS = {
-    messages: { acceptMessages: true, allowOutbound: false, autoWake: false },
+    view: { acceptMessages: false, allowOutbound: false, autoWake: false },
+    messages: { acceptMessages: true, allowOutbound: true, autoWake: false },
     wake: { acceptMessages: true, allowOutbound: true, autoWake: true },
   };
-
-  function audienceFlagsOnForm() {
-    return {
-      exportCwd: el("audience-cwd").checked,
-      acceptMessages: el("audience-messages").checked,
-      allowOutbound: el("audience-outbound").checked,
-      autoWake: el("audience-autowake").checked,
-    };
-  }
-
-  // presetForFlags names the combination on screen, or "" for one no preset
-  // covers — which is what the advanced section is for, and what the line under
-  // the presets says out loud.
-  function presetForFlags(flags) {
-    for (const [name, wanted] of Object.entries(AUDIENCE_PRESETS)) {
-      if (Object.keys(wanted).every((key) => Boolean(flags[key]) === wanted[key])) return name;
-    }
-    return "";
-  }
-
-  // Whether the form holds something neither preset names, as far as that is
-  // worth saying. Nothing under 不公開 is "custom": readAudienceForm writes
-  // every flag off there, whatever the boxes say, so there is no combination
-  // to name — only the line saying the boxes will go off
-  // (audienceFlagsCleared). Off under a mode that shares the session is custom
-  // — that is the combination the preset that was taken out used to name.
-  function audienceFormIsCustom() {
-    if (selectedMode() === "none") return false;
-    return presetForFlags(audienceFlagsOnForm()) === "";
-  }
-
-  // 不公開 with a box still ticked: what 套用 writes is every flag off, the same
-  // as the menu's 不公開, and the boxes on screen say otherwise until the
-  // owner is told.
-  function audienceFlagsCleared() {
-    if (selectedMode() !== "none") return false;
-    return AUDIENCE_FLAG_IDS.some((id) => el(id).checked);
-  }
-
-  function applyAudiencePreset(name) {
-    const wanted = AUDIENCE_PRESETS[name];
-    if (!wanted) return;
-    el("audience-messages").checked = wanted.acceptMessages;
-    el("audience-outbound").checked = wanted.allowOutbound;
-    el("audience-autowake").checked = wanted.autoWake;
-    syncAudiencePreset();
-  }
-
-  // syncAudiencePreset points the radios at whatever the boxes say, and says so
-  // in words when nothing fits. It writes no box: the presets write the boxes,
-  // the boxes never write each other.
-  function syncAudiencePreset() {
-    // Nothing under 不公開: what 套用 writes there is every flag off, whatever
-    // the boxes say, so a radio ticked because the boxes happen to match a
-    // preset would name a combination that is not going to be applied.
-    const name = selectedMode() === "none" ? "" : presetForFlags(audienceFlagsOnForm());
-    for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
-      radio.checked = radio.value === name;
-    }
-    const note = el("audience-preset-note");
-    const lines = [];
-    if (audienceFormIsCustom()) lines.push(t("audience.presetCustom"));
-    if (audienceFlagsCleared()) lines.push(t("audience.noneClearsFlags"));
-    // A preset leaves the working-directory box as it found it, and the box is
-    // in the section that starts folded for a session a preset names. So a
-    // directory about to be published is said here, in the menu's words,
-    // whenever the section that holds its box is folded: a session loaded
-    // with it on, 不公開 turned into a publish, or the section folded again.
-    if (selectedMode() !== "none" && el("audience-cwd").checked && !el("audience-advanced").open) {
-      lines.push(t("popover.withCwd"));
-    }
-    // Only on a selection of more than one. A single session opens showing its
-    // own settings, so the sentence about them being reset is untrue there —
-    // and it was the sentence the whole dialog was read through.
-    if (state.selected.size > 1) lines.push(t("audience.resetNote"));
-    note.textContent = lines.join(" ");
-  }
-
-  function openAudienceModal() {
-    renderAudienceCount();
-    const picked = state.sessions.filter((session) => state.selected.has(session.id));
-    el("audience-selected").replaceChildren(...picked.map((session) => element("span", "", session.id)));
-    // Exactly one session: see below. Worked out before the list is drawn,
-    // because it decides what the list holds — that session's grants that no
-    // paired node accounts for.
-    const only = picked.length === 1 && state.selected.size === 1 ? picked[0] : null;
-    const listed = new Set(state.nodes.map((node) => node.nodeId));
-    const former = only?.audience?.mode === "selected"
-      ? [...new Set(only.audience.nodes ?? [])].filter((nodeId) => nodeId && !listed.has(nodeId))
-      : [];
-    renderAudienceNodeList(former);
-
-    // One session opens showing what that session already is; several open at
-    // 不公開 with every flag off.
-    //
-    // The reset was there because the dialog applies to whatever is selected
-    // and reads its values from the boxes, so a value left over from the last
-    // time it was opened is a setting about to be applied to a different set of
-    // sessions — and one of these flags starts turns in an agent with nobody
-    // watching. That argument is about leftovers, and it is untouched: several
-    // sessions may disagree, and there is no honest way to show one state for
-    // many, so off stays the safe half of that disagreement. For exactly one
-    // session there is no disagreement and nothing left over — the values shown
-    // are that session's own, read from the overview — and blanking them meant
-    // that changing 「誰看得到」 silently withdrew every flag the session had.
-    const current = only?.audience ?? {};
-    const mode = only ? (current.mode ?? "none") : "none";
-    for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
-      radio.checked = radio.value === mode;
-    }
-    if (only && mode === "selected") {
-      const granted = new Set(current.nodes ?? []);
-      for (const box of audienceNodeBoxes) {
-        box.checked = granted.has(box.value);
-        // renderAudienceNodeList paints the row from the box's own onchange, so
-        // a box ticked here has to say so itself.
-        box.onchange?.();
-      }
-    }
-    el("audience-cwd").checked = Boolean(only && current.exportCwd);
-    el("audience-messages").checked = Boolean(only && current.acceptMessages);
-    el("audience-outbound").checked = Boolean(only && current.allowOutbound);
-    el("audience-autowake").checked = Boolean(only && current.autoWake);
-
-    renderAutoWakeNote();
-    // A session whose flags are no preset's opens with the flags in view: the
-    // radios are all empty then, and the only place that says what the session
-    // actually does is the section that would otherwise start collapsed.
-    el("audience-advanced").open = audienceFormIsCustom();
-    // After the section is set: whether it is folded decides whether the line
-    // under the presets has to say the working directory is published.
-    syncAudiencePreset();
-    el("audience-modal").classList.remove("hidden");
-    syncAudienceForm();
-  }
-
-  // What the auto-wake box will actually do, next to the auto-wake box.
-  //
-  // Waking needs more than the one switch this dialog offers, and every missing
-  // piece fails silently: the message lands in the inbox and nothing else
-  // happens, which is indistinguishable from the box not having been ticked. The
-  // node's own -auto-wake flag is one piece; for a Claude Code session there is
-  // also its agenthub-mcp -channel, and beyond that a push that was measured
-  // arriving at Claude Code and never being injected (docs/channel-push-not-
-  // observed.md). None of it is a reason to disable the box — an owner may
-  // reasonably set a session up before restarting the node — so this only says
-  // what will happen, and never blocks the dialog.
-  //
-  // It sits above the collapsed advanced section, not inside it: the sentence
-  // that says the box was turned off is about something the owner is about to
-  // apply, and folded away it was a flag withdrawn without a word (#193
-  // review). Hidden when it has nothing to say.
-  function renderAutoWakeNote() {
-    const note = el("audience-autowake-note");
-    note.replaceChildren();
-    renderAutoWakeNoteLines(note);
-    note.classList.toggle("hidden", note.children.length === 0);
-  }
-
-  function renderAutoWakeNoteLines(note) {
-    // Which providers are selected decides which of the remaining obstacles
-    // apply, and a mixed selection gets both sentences: the owner is about to
-    // apply one setting to sessions that will behave differently.
-    const picked = state.sessions.filter((session) => state.selected.has(session.id));
-    const providers = new Set(picked.map((session) => session.provider));
-    // A selection that is nothing but Claude Code is the one case where this
-    // box cannot work and no restart will change that: the push was measured
-    // arriving and never being injected (docs/channel-push-not-observed.md).
-    // So it is turned off here rather than explained — the argument for leaving
-    // it live is that an owner may set a session up before restarting the node,
-    // and there is nothing here to restart into.
-    const claudeOnly = providers.size === 1 && providers.has("claude");
-    el("audience-autowake").disabled = claudeOnly;
-    el("audience-preset-wake").disabled = claudeOnly;
-    if (claudeOnly) {
-      el("audience-autowake").checked = false;
-      // Read from the sessions, not the box, which the line above has just
-      // cleared — and a language switch repaints this after it.
-      if (picked.some((session) => session.audience?.autoWake)) {
-        note.append(element("div", "warning", t("audience.autoWakeWillTurnOff")));
-      }
-      note.append(element("div", "muted", t("audience.autoWakeClaude")));
-      return;
-    }
-    // What waking can and cannot promise, before what this node and these
-    // sessions add to it. Not on the all-Claude branch above: that one says
-    // plainly that nothing will wake, which is the stronger sentence.
-    note.append(element("div", "wakecaveat-line", t("wake.caveat")));
-    if (!state.nodeAutoWake) {
-      note.append(element("div", "muted", t("audience.autoWakeNodeOff")));
-      return;
-    }
-    if (providers.has("codex")) {
-      note.append(element("div", "muted", t("audience.autoWakeCodex")));
-    }
-    if (providers.has("claude")) {
-      note.append(element("div", "muted", t("audience.autoWakeClaude")));
-    }
-  }
-
-  function closeAudienceModal() {
-    el("audience-modal").classList.add("hidden");
-    // Opened from a row's menu over somebody else's selection: that selection
-    // comes back, whether the dialog was applied or put away.
-    if (audienceModalRestore) {
-      const restore = audienceModalRestore;
-      audienceModalRestore = null;
-      state.selected.clear();
-      const alive = new Set(state.sessions.map((session) => session.id));
-      for (const id of restore) if (alive.has(id)) state.selected.add(id);
-      render();
-    }
-  }
-
-  function readAudienceForm() {
-    const mode = selectedMode();
-    const typed = el("audience-node-input")
-      .value.split(/[\s,]+/)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const checked = audienceNodeBoxes
-      .filter((box) => box.checked)
-      .map((box) => box.value);
-    const nodes = mode === "selected" ? [...new Set([...checked, ...typed])] : [];
-    // 不公開 is every flag off, as the menu's 不公開 writes it
-    // (audienceForChoice): a flag kept on a session nobody can see is shown
-    // nowhere — the row's flag column is for published sessions — and a
-    // working directory kept that way is published by the next 能留訊息
-    // without anything on screen saying so.
-    if (mode === "none") {
-      return { mode, nodes, exportCwd: false, acceptMessages: false, allowOutbound: false, autoWake: false };
-    }
-    return {
-      mode,
-      nodes,
-      exportCwd: el("audience-cwd").checked,
-      acceptMessages: el("audience-messages").checked,
-      allowOutbound: el("audience-outbound").checked,
-      autoWake: el("audience-autowake").checked,
-    };
-  }
 
   /* ---------------- inbox ---------------- */
 
@@ -7851,7 +7643,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   for (const segment of document.querySelectorAll("#view-switch [data-view]")) {
     segment.onclick = () => {
-      closeAudiencePopover();
+      closeSharePanel();
       state.view = segment.dataset.view;
       render();
       // Read on arrival rather than on the next poll: a candidate list that is up
@@ -7894,45 +7686,37 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       notify("warn", t("pairManual.trusted", { name: node.displayName }));
     }, { button: el("pair-submit") });
 
-  // 「公開 ▾」 on the selection bar: the row's own menu, for every selected
-  // session at once. The full dialog is its last entry.
+  // 「分享…」 on the selection bar: the row's own panel, for every selected
+  // session at once.
   el("btn-audience").onclick = () =>
-    openAudiencePopover(el("btn-audience"), [...state.selected], { clearSelection: true });
-  el("audience-close").onclick = closeAudienceModal;
+    openSharePanel([...state.selected], { anchor: el("btn-audience"), clearSelection: true });
+  el("audience-close").onclick = () => closeSharePanel({ focus: true });
   el("audience-modal").onclick = (event) => {
-    if (event.target === el("audience-modal")) closeAudienceModal();
+    if (event.target === el("audience-modal")) closeSharePanel({ focus: true });
   };
-  // The mode decides whether every flag off is custom (audienceFormIsCustom),
-  // so the line under the presets follows it.
-  for (const radio of document.querySelectorAll('input[name="audience-mode"]')) {
+  // Touching a block says it is the owner's choice now (audienceFromPanel); a
+  // click on an option that is already ticked counts, which is how the owner
+  // asks for the option's own definition over what the session held.
+  for (const radio of document.querySelectorAll('input[name="share-who"]')) {
     radio.onchange = () => {
-      syncAudienceForm();
-      syncAudiencePreset();
+      if (sharePanel) sharePanel.whoTouched = true;
+      renderSharePanel();
     };
   }
-  // A preset writes the boxes; a box unsets the preset. Never the other way
-  // round, so nothing this dialog shows is a value it invented.
-  for (const radio of document.querySelectorAll('input[name="audience-preset"]')) {
-    radio.onchange = () => applyAudiencePreset(radio.value);
+  for (const radio of document.querySelectorAll('input[name="share-what"]')) {
+    const touched = () => {
+      if (sharePanel) sharePanel.whatTouched = true;
+      renderSharePanel();
+    };
+    radio.onchange = touched;
+    radio.onclick = touched;
   }
-  for (const id of AUDIENCE_FLAG_IDS) {
-    el(id).onchange = syncAudiencePreset;
-  }
-  // Folding the section hides the working-directory box, and the line under
-  // the presets takes over saying it (syncAudiencePreset).
-  el("audience-advanced").addEventListener?.("toggle", syncAudiencePreset);
-  el("audience-apply").onclick = () => {
-    const audience = readAudienceForm();
-    if (audience.mode === "selected" && audience.nodes.length === 0) {
-      banner(t("audience.needsANode"));
-      return;
-    }
-    applyAudience(audience, audience.mode, { button: el("audience-apply") });
+  el("audience-cwd").onchange = () => {
+    if (sharePanel) sharePanel.cwdTouched = true;
+    el("audience-cwd").indeterminate = false;
+    renderSharePanel();
   };
-
-  // The menu's 不公開, for the selection: same write, same undo.
-  el("btn-unpublish").onclick = () =>
-    applyAudienceChoice([...state.selected], "none", { button: el("btn-unpublish"), clearSelection: true });
+  el("audience-apply").onclick = () => applySharePanel().catch(() => {});
 
   el("btn-reload").onclick = () => withBusy(t("app.reload"), load, { button: el("btn-reload") });
 
@@ -9562,13 +9346,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (state.inboxView) renderInbox(state.inboxView);
       renderOutbound();
     }
-    if (!el("audience-modal").classList.contains("hidden")) {
-      renderAudienceCount();
-      // Both are sentences this dialog derives rather than reads off a key, so
-      // paintStatic cannot reach them.
-      renderAutoWakeNote();
-      syncAudiencePreset();
-    }
+    // The panel's title and notes are sentences it derives rather than reads
+    // off a key, so paintStatic cannot reach them.
+    if (sharePanelOpen()) renderSharePanel();
     if (state.mcpSession) {
       el("mcp-title").textContent = `${t("mcp.title")} · ${state.mcpSession}`;
       renderMCPStatus(state.mcpStatus);
@@ -9737,8 +9517,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing, askConfirm, confirmKey,
     renderPairScreens, candidateFlagLines,
-    openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
-    syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
+    openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, candidateNoticeText, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,
     loadPairRequests, renderPairRequests, pairRequestRow, sendPairRequest, decidePairRequest,
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
@@ -9761,8 +9540,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     peerListenRows: () => peerListenRows,
     notify, banner, withBusy, openNotices, closeNotices, renderAttention, attentionItems,
     refreshIncomingPairRequests,
-    openAudiencePopover, closeAudiencePopover, audiencePopoverOpen, popoverKey, popoverOutsidePress,
-    applyAudienceChoice, audienceForChoice, presetOfAudience, writableAudience, interactionInProgress,
+    openSharePanel, closeSharePanel, sharePanelOpen, renderSharePanel, readSharePanel, audienceFromPanel,
+    applySharePanel, goToMachine, describeAudience,
+    applyAudienceChoice, audienceForChoice, writableAudience, interactionInProgress,
     serviceQuickAction, runServiceQuickAction, pairStepperPhase, renderPairStepper, goToPublish, viewSwitchKey,
     overlayKey,
   };
