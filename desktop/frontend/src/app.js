@@ -2036,6 +2036,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const claimed = element("span", "claimed frclaimed");
     line.append(name, claimed);
     const sub = element("small");
+    const flags = element("div", "candflags");
     const why = element("div", "disabledwhy");
     const details = document.createElement("details");
     details.className = "why frmachinedetails";
@@ -2054,10 +2055,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const address = field();
     const seen = element("div", "muted");
     details.append(seen);
-    who.append(line, sub, why, details);
+    who.append(line, sub, flags, why, details);
     const send = element("button", "primary");
     row.append(avatar, who, send);
-    row.candidateParts = { avatar, line, name, claimed, sub, why, summary, nodeId, fingerprint, address, seen, send };
+    row.candidateParts = { avatar, line, name, claimed, sub, flags, why, summary, nodeId, fingerprint, address, seen, send };
     row.candidateFlags = "";
     updateFirstRunCandidateRow(row, candidate);
     return row;
@@ -2070,14 +2071,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.claimed.textContent = t("firstRun.pair.claimed");
     // The flags on the row itself, as in the drawer (§4): rewritten only when
     // they change, and the button is not in this line.
-    const flags = `${candidate.contested ? "c" : ""}${candidate.duplicate ? "d" : ""}`;
-    if (row.candidateFlags !== flags) {
-      row.candidateFlags = flags;
-      const pills = [];
-      if (candidate.contested) pills.push(pill(t("candidate.contested"), "bad"));
-      if (candidate.duplicate) pills.push(pill(t("candidate.duplicate"), "bad"));
-      parts.line.replaceChildren(parts.name, parts.claimed, ...pills);
-    }
+    writeCandidateFlags(row, candidate);
     parts.sub.textContent = t("firstRun.pair.machineSub", {
       platform: candidate.platform || t("pair.noPlatform"),
       when: relative(candidate.lastSeen),
@@ -2256,7 +2250,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     parts.full.textContent = t("candidate.listFull");
     const said = pairing?.availability === "on" && !pairing?.candidatesError ? candidateNoticeText(pairing) : "";
     parts.notice.textContent = said;
-    parts.notice.classList.toggle("hidden", said === "" || candidates.length === 0);
+    parts.noticeFold.classList.toggle("hidden", said === "" || candidates.length === 0);
+    parts.noticeSummary.textContent = t("candidate.noticeSummary");
     if (message) {
       // Off screen, the kept rows are forgotten: a machine's old claims are
       // not put back without a read that says them again.
@@ -2343,8 +2338,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       searchIssue.append(searchIssueText, searchDetails);
       const searchButton = firstRunButton("primary", () => turnOnFirstRunSearch().catch(() => {}));
       search.append(searchSay, searchWhat, searchIssue, searchButton);
-      const notice = element("p", "frnotice muted hidden");
-      card.append(cardTitle, full, machines, search, notice);
+      // The caveat about the list, folded, as in the drawer; the amber
+      // "claimed" tag by each name is what marks a row as the sender's word.
+      const notice = element("p", "frnotice muted");
+      const noticeFold = document.createElement("details");
+      noticeFold.className = "why frnoticefold hidden";
+      const noticeSummary = element("summary");
+      noticeFold.append(noticeSummary, notice);
+      card.append(cardTitle, full, machines, search, noticeFold);
       const manual = document.createElement("details");
       manual.className = "frmanual";
       const manualSummary = element("summary");
@@ -2399,7 +2400,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       root.append(heading, say, ended, hint, requestsError, live, find, actions);
       parts = {
         root, heading, say, hint, hintBold, hintRest, ended, endedText, endedNode, endedOk, requestsError,
-        live, find, cardTitle, full, machines, notice, manual, manualSummary, input, send, mineLead, mineList,
+        live, find, cardTitle, full, machines, notice, noticeFold, noticeSummary, manual, manualSummary, input, send, mineLead, mineList,
         search, searchSay, searchWhat, searchIssue, searchIssueText, searchDetails, searchSummary, searchDetail, searchButton,
         mineStatus, mineBack, when, manualForm, actions, next, skip, back,
         candidateRows: new Map(), requestCards: new Map(),
@@ -2937,6 +2938,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("pairing-modal").classList.remove("hidden");
     loadPairRequests().catch(() => {});
     await loadPairing();
+    // "Can't find them?" opens by itself when this node is not listening: the
+    // list above it cannot have anybody in it, so typing is the way on. Only
+    // here, on opening; later renders leave it however the owner set it.
+    el("pair-manual").open = state.pairing?.availability !== "on";
     // Step 1 offers the settings form's own repair buttons, and
     // applyPeerListenRepair fills that real form, so the node's answer has to
     // be in it before any of them can be pressed.
@@ -4598,6 +4603,35 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return name === "" ? t("pair.noName") : name;
   }
 
+  // The flag lines of a candidate, one per flag: the label, then the reason in
+  // the same line. Shared by the drawer's row and the wizard's, so the one place
+  // impersonation is visible says the same thing in both. A line, not a pill: a
+  // pill is a label with its reason somewhere the keyboard cannot reach. Both
+  // class names are fixed; nothing the candidate sent decides one.
+  function candidateFlagLines(candidate) {
+    const lines = [];
+    const line = (label, why) => {
+      const box = element("div", "candflag");
+      box.append(element("b", "", label), element("span", "", why));
+      lines.push(box);
+    };
+    if (candidate.contested) line(t("candidate.contested"), t("candidate.contestedWhy"));
+    if (candidate.duplicate) line(t("candidate.duplicate"), t("candidate.duplicateWhy"));
+    return lines;
+  }
+
+  // writeCandidateFlags writes a row's flag lines into row.candidateParts.flags,
+  // and only when what they say has changed. The signature is the words
+  // themselves rather than which flags are set, so a language switch reaches
+  // a kept row too; the lines hold no button, so nothing pressable moves.
+  function writeCandidateFlags(row, candidate) {
+    const lines = candidateFlagLines(candidate);
+    const said = lines.map((line) => line.textContent).join("\n");
+    if (row.candidateFlags === said) return;
+    row.candidateFlags = said;
+    row.candidateParts.flags.replaceChildren(...lines);
+  }
+
   // remainingSeconds arrives from the node and is then counted down locally from
   // the moment it was read.
   //
@@ -4877,15 +4911,25 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function pairRequestRow(request) {
     const row = element("div", "pairrow");
     const line = element("div", "line");
+    // The spinner is only for a request this machine sent and the other owner
+    // has not answered; it is hidden otherwise (updateRequestRow).
+    const spin = element("span", "spin");
+    spin.setAttribute("aria-hidden", "true");
     const name = element("span", "name");
     const statePill = pill("");
-    line.append(name, statePill);
+    line.append(spin, name, statePill);
+    // Where it is, which node it says it is, and the request id, folded: the
+    // owner's decision is made on the fingerprints, not on these. The request id
+    // is kept because it is the handle the other surface uses: an owner holding
+    // this window and a terminal has to be able to tell that the row here and
+    // the row `ah pair pending` prints are the same exchange.
+    const details = document.createElement("details");
+    details.className = "why reqdetails";
+    const summary = element("summary");
     const meta = element("div", "meta");
     const nodeId = element("div", "fingerprint");
-    // The request id, because it is the handle the other surface uses: an owner
-    // holding this window and a terminal has to be able to tell that the row
-    // here and the row `ah pair pending` prints are the same exchange.
     const id = element("div", "meta");
+    details.append(summary, meta, nodeId, id);
     // The notice once, above the block it describes — the layout the node's own
     // wording assumes ("two fingerprints are shown: the requester first…"). Put
     // below them it read as a comment on the decision rather than as the
@@ -4918,8 +4962,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const buttons = element("div", "decide");
     const primary = element("button", "primary");
     const reject = element("button", "ghost", PAIR_TEXT.reject);
-    row.append(line, meta, nodeId, id, compare, fingerprints, step, nodeStep, buttons);
-    row.pairParts = { name, statePill, meta, nodeId, id, compare, fingerprints, step, nodeStep, buttons, primary, reject };
+    row.append(line, compare, fingerprints, step, buttons, nodeStep, details);
+    row.pairParts = {
+      spin, name, statePill, details, summary, meta, nodeId, id, compare, fingerprints, step, nodeStep,
+      buttons, primary, reject,
+    };
     // Neither written yet. Both differ from every value updateRequestRow can
     // compute, so the first update fills them.
     row.pairCompare = null;
@@ -4939,18 +4986,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function updateRequestRow(row, request) {
     const parts = row.pairParts;
     const undecided = request.state === "pending" || request.state === "awaiting-confirm";
-    row.className = undecided ? "pairrow waiting" : "pairrow";
-    parts.name.textContent = request.displayName || request.nodeId || t("pair.noName");
+    // Two kinds of undecided card. One to compare: the other machine's request,
+    // or ours once they approved, so there is a pair of fingerprints to read
+    // here. One to wait: ours, still pending there, with nothing to compare.
+    const comparing = (request.state === "pending" && request.direction === "incoming")
+      || request.state === "awaiting-confirm";
+    const waiting = request.state === "pending" && request.direction === "outgoing";
+    row.className = comparing ? "pairrow comparing" : waiting ? "pairrow waiting" : "pairrow";
+    parts.spin.classList.toggle("hidden", !waiting);
+    const name = request.displayName || request.nodeId || t("pair.noName");
+    parts.name.textContent = request.state === "awaiting-confirm"
+      ? t("firstRun.pair.confirmTitle", { name })
+      : comparing ? t("firstRun.pair.incomingTitle", { name })
+        : waiting ? t("firstRun.pair.waitTitle", { name }) : name;
+    parts.summary.textContent = t("firstRun.pair.details");
     parts.statePill.className = undecided ? "pill idle" : "pill";
     parts.statePill.textContent = PAIR_TEXT.state[pairStateKey(request)] ?? request.state;
     parts.meta.textContent =
       `${request.platform || t("pair.noPlatform")} · ${request.address || t("pair.noAddress")}`;
     parts.nodeId.textContent = request.nodeId || "";
     parts.id.textContent = request.id || "";
-    if (row.pairCompare !== undecided) {
-      row.pairCompare = undecided;
+    if (row.pairCompare !== comparing) {
+      row.pairCompare = comparing;
       parts.compare.replaceChildren(
-        ...(undecided
+        ...(comparing
           ? [...PAIR_TEXT.compare.map((sentence) => element("div", "stale", sentence)),
             whyDetails("why.compareFingerprints")]
           : []));
@@ -4964,6 +5023,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       row.pairFingerprints = signature;
       writeFingerprintBlock(parts.fingerprints, request);
     }
+    // A waiting card shows no fingerprints: the moment to compare is after the
+    // other owner approves, and the value then comes from the connection.
+    parts.fingerprints.classList.toggle("hidden", !comparing);
     parts.step.textContent = pairStepText(request);
     parts.nodeStep.textContent = !undecided && request.nextStep ? String(request.nextStep) : "";
 
@@ -4978,6 +5040,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       wanted.push(parts.primary);
     }
     if (undecided) {
+      parts.reject.textContent = waiting ? t("firstRun.pair.cancel") : PAIR_TEXT.reject;
       parts.reject.disabled = state.busy;
       parts.reject.onclick = () => decidePairRequest(request.id, "reject", { button: parts.reject });
       wanted.push(parts.reject);
@@ -4987,22 +5050,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     keepChildren(parts.buttons, wanted);
   }
 
-  // renderPairWaiting is the one line at the top of the drawer.
-  //
-  // The requests panel is below the candidate list, which is where the order of
-  // prominence puts it and which also puts it below the fold on a short window.
-  // A row waiting for this owner is the only time-critical thing in here —
-  // somebody at another keyboard is looking at their screen — so its existence
-  // is stated where the drawer opens, and the panel itself is where it is
-  // acted on.
-  function renderPairWaiting() {
-    const line = el("pair-waiting");
-    line.replaceChildren();
-    const waiting = (state.pairRequests ?? []).filter(
-      (request) => request.state === "pending" ? request.direction === "incoming" : request.state === "awaiting-confirm");
-    if (waiting.length === 0) return;
-    line.append(element("div", "stale",
-      plural(waiting.length, "pair.waiting", { panel: t("pair.step3Heading") })));
+  // renderPairScreens shows one of the drawer's two screens. Anything pending
+  // is the exchange, and nothing else is on screen while it is; with nothing
+  // pending it is the search for the other machine. "Show finished" adds the
+  // exchange screen under the search, and so does a failed read, which must
+  // not look like an empty list. The same rule as the wizard's second step,
+  // from the same rows the stepper reads.
+  function renderPairScreens() {
+    const failed = Boolean(state.pairRequestsError);
+    const live = failed ? [] : (state.pairRequests ?? [])
+      .filter((request) => request?.state === "pending" || request?.state === "awaiting-confirm");
+    el("pair-screen-find").classList.toggle("hidden", live.length > 0);
+    el("pair-screen-exchange").classList.toggle("hidden", live.length === 0 && !state.pairRequestsAll && !failed);
   }
 
   // The exchange's rows, keyed by request id and kept across renders.
@@ -5022,8 +5081,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const note = el("pair-requests-note");
     note.textContent = "";
     el("pair-requests-all").checked = state.pairRequestsAll;
-    renderPairWaiting();
     renderPairStepper();
+    renderPairScreens();
 
     // Every path that shows a message instead of rows forgets the kept rows:
     // they are off screen, and reusing one when the list comes back would put a
@@ -5169,6 +5228,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       return;
     }
     box.classList.remove("hidden");
+    // CSS floats an unreachable block to the top of its screen: it is then the
+    // only thing worth doing first.
+    box.classList.toggle("unreachable", !here.reachable);
     // Only the list of open addresses hides it, each of its rows carrying its
     // own; every other state has the one address and the one button.
     el("copy-pair-address").classList.remove("hidden");
@@ -5413,7 +5475,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       : PAIR_TEXT.drawerSubUnreachable;
   }
 
+  // The broadcast-privacy note is folded under "說明" (#pairing-more) and the
+  // fold exists only while there is a note to put in it.
   function renderPairingWindow() {
+    paintPairingWindow();
+    el("pairing-more").classList.toggle("hidden", el("pairing-note").textContent === "");
+  }
+
+  function paintPairingWindow() {
     const headline = el("pairing-headline");
     const detail = el("pairing-detail");
     const note = el("pairing-note");
@@ -5609,6 +5678,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const full = el("candidate-full");
     full.replaceChildren();
     notice.textContent = "";
+    el("candidate-notice-fold").classList.add("hidden");
     // Every path that shows a message instead of rows forgets the kept rows:
     // they are off screen, and reusing one when the list comes back would put a
     // machine's old claims on screen without anything having re-read them.
@@ -5683,7 +5753,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // after this build, or a node from before codes (#194). A zh-Hant window
     // used to show this paragraph in English whatever it was set to.
     const said = candidateNoticeText(pairing);
-    if (said) notice.textContent = said;
+    if (said) {
+      notice.textContent = said;
+      el("candidate-notice-fold").classList.remove("hidden");
+    }
   }
 
   // candidateNoticeText is the candidate list's notice in this window's words.
@@ -5699,25 +5772,24 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   // candidateRow builds the row once. Everything that changes between renders is
   // written by updateCandidateRow into these same elements, so the row and its
-  // two buttons outlive every tick.
+  // buttons outlive every tick.
+  //
+  // The shape is the wizard's: the name with the amber "claimed" tag, one line
+  // of platform and last-heard, the flag lines, the send button. The node id,
+  // the announced fingerprint and the address are in the row, folded: they are
+  // the candidate's claims, and the fingerprint only matters at the one moment
+  // it is compared, which is on the exchange screen, from the connection.
   function candidateRow(candidate) {
     const row = element("div", "candidaterow");
     const line = element("div", "line");
     const name = element("span", "name");
-    line.append(name);
+    const claimed = element("span", "claimed");
+    line.append(name, claimed);
     row.append(line);
     const meta = element("div", "meta");
     row.append(meta);
-    // The node id and the fingerprint in full, never a prefix: comparing the
-    // first few groups is exactly what a forger can defeat, and these are the two
-    // values that decide which machine gets trusted. `ah candidates` prints every
-    // field, and #61 asks the two surfaces to agree, so nothing is omitted here
-    // either.
-    const nodeId = element("div", "fingerprint");
-    const fingerprint = element("div", "fingerprint");
-    row.append(nodeId, fingerprint);
-    const seen = element("div", "muted");
-    row.append(seen);
+    const flags = element("div", "candflags");
+    row.append(flags);
     // One click, and it carries the announced address and nothing else. The
     // address is where to knock; everything that decides identity — the key,
     // and the fingerprint derived from it — arrives over the connection this
@@ -5727,18 +5799,47 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const actions = element("div", "decide");
     const send = element("button", "primary", PAIR_TEXT.sendFromCandidate);
     actions.append(send);
-    // The manual five-field form stays reachable from the row, as a secondary
-    // path for two machines that cannot open a connection to each other.
-    const use = element("button", "ghost", PAIR_TEXT.sendManual);
-    actions.append(use);
     row.append(actions);
     // Why 送出 is greyed out, when it is: said beside it, because a disabled
     // button with its reason in a tooltip is a button that does nothing.
     const why = element("div", "disabledwhy");
     row.append(why);
-    row.candidateParts = { line, name, meta, nodeId, fingerprint, seen, send, use, why };
+    // The node id and the fingerprint in full, never a prefix: comparing the
+    // first few groups is exactly what a forger can defeat, and these are the two
+    // values that decide which machine gets trusted. `ah candidates` prints every
+    // field, and #61 asks the two surfaces to agree, so nothing is omitted here
+    // either: they are folded, not cut.
+    const details = document.createElement("details");
+    details.className = "why canddetails";
+    const summary = element("summary");
+    details.append(summary);
+    const field = () => {
+      const box = element("div", "candfield");
+      const label = element("span", "muted");
+      const value = element("span", "fingerprint");
+      box.append(label, value);
+      details.append(box);
+      return { label, value };
+    };
+    const nodeId = field();
+    const fingerprint = field();
+    const address = field();
+    const seen = element("div", "muted");
+    details.append(seen);
+    // The manual five-field form stays reachable from the row, as a secondary
+    // path for two machines that cannot open a connection to each other.
+    const use = element("button", "ghost", PAIR_TEXT.sendManual);
+    details.append(use);
+    row.append(details);
+    row.candidateParts = {
+      line, name, claimed, meta, flags, send, why, summary,
+      nodeIdLabel: nodeId.label, nodeId: nodeId.value,
+      fingerprintLabel: fingerprint.label, fingerprint: fingerprint.value,
+      addressLabel: address.label, address: address.value,
+      seen, use,
+    };
     // No flags yet, which is what the empty string means: a row that does carry
-    // one differs from this and gets its line written on the first update.
+    // one differs from this and gets its lines written on the first update.
     row.candidateFlags = "";
     updateCandidateRow(row, candidate);
     return row;
@@ -5747,26 +5848,28 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // updateCandidateRow writes this candidate into an existing row.
   //
   // textContent on the element that already holds the text, never a rebuilt
-  // subtree: the two buttons must survive, and 「最後 X 秒前」 changes on every
+  // subtree: the buttons must survive, and 「最後 X 秒前」 changes on every
   // single tick, so a row compared as a whole would never be reusable at all.
   function updateCandidateRow(row, candidate) {
     const parts = row.candidateParts;
     parts.name.textContent = candidateName(candidate);
+    parts.claimed.textContent = t("firstRun.pair.claimed");
     // A flag is how impersonation is visible at all from this side, so it is
     // shown on the row rather than in a detail view someone has to open. The
-    // line is rewritten only when the flags themselves change; the buttons are
-    // not in it, so nothing pressable moves when they do.
-    const flags = `${candidate.contested ? "c" : ""}${candidate.duplicate ? "d" : ""}`;
-    if (row.candidateFlags !== flags) {
-      row.candidateFlags = flags;
-      const pills = [];
-      if (candidate.contested) pills.push(pill(t("candidate.contested"), "bad"));
-      if (candidate.duplicate) pills.push(pill(t("candidate.duplicate"), "bad"));
-      parts.line.replaceChildren(parts.name, ...pills);
-    }
-    parts.meta.textContent = `${candidate.platform || t("pair.noPlatform")} · ${candidate.address}`;
+    // lines are rewritten only when the flags themselves change; the buttons
+    // are not in them, so nothing pressable moves when they do.
+    writeCandidateFlags(row, candidate);
+    parts.meta.textContent = t("firstRun.pair.machineSub", {
+      platform: candidate.platform || t("pair.noPlatform"),
+      when: relative(candidate.lastSeen),
+    });
+    parts.summary.textContent = t("firstRun.pair.details");
+    parts.nodeIdLabel.textContent = t("firstRun.pair.nodeIdLabel");
     parts.nodeId.textContent = candidate.nodeId;
+    parts.fingerprintLabel.textContent = t("firstRun.pair.fingerprintLabel");
     parts.fingerprint.textContent = candidate.fingerprint;
+    parts.addressLabel.textContent = t("firstRun.pair.addressLabel");
+    parts.address.textContent = candidate.address || t("pair.noAddress");
     parts.seen.textContent = t("candidate.seen", {
       first: relative(candidate.firstSeen),
       last: relative(candidate.lastSeen),
@@ -9633,6 +9736,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // through the DOM, and these are the same functions the handlers call.
   const internals = {
     state, load, loadPairing, render, renderRows, renderInbox, renderPairing, askConfirm, confirmKey,
+    renderPairScreens, candidateFlagLines,
     openAudienceModal, renderAudienceCount, readAudienceForm, presetForFlags, applyAudiencePreset,
     syncAudiencePreset, openInbox, openMCPConfig, closeMCPConfig,
     candidateRow, candidateNoticeText, prefillPairFrom, nodeDetail, nodeSessions, presenceLabel, heardFrom,

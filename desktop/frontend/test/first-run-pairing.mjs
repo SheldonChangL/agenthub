@@ -357,8 +357,17 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   for (const node of all(() => true, flagged, false)) {
     if (/ubuntu|linux|node_cand|AAAA/.test(String(node.className ?? ""))) failures.push(`candidate data reached a class: ${node.className}`);
   }
-  // The notice, in the window's own words.
+  // Each flag is a line with its reason, shared with the drawer.
+  if (!flaggedText.includes(ZH["candidate.contestedWhy"])) failures.push(`the contested flag has no reason in the row: ${flaggedText}`);
+  // The notice, in the window's own words, folded under "can this list be
+  // trusted?".
   if (!shownText().includes(ZH["candidate.notice.candidates_unverified"])) failures.push("the candidate notice is not shown");
+  const noticeFold = all((node) => hasClass(node, "frnoticefold"))[0];
+  if (!noticeFold) failures.push("the candidate notice is not in a fold");
+  else {
+    if (noticeFold.tagName !== "details") failures.push(`the notice fold is a ${noticeFold.tagName}, want details`);
+    if (!allText(noticeFold).includes(ZH["candidate.notice.candidates_unverified"])) failures.push("the notice fold does not hold the notice");
+  }
 
   // Send carries the address and nothing else.
   calls.length = 0;

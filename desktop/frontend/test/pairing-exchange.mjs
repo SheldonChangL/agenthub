@@ -443,8 +443,9 @@ if (!send) {
     failures.push(`the candidate button sent ${JSON.stringify(started.at(-1))}, want its own row's address`);
   }
 }
-// And the manual five-field path is still reachable from the row.
-if (!buttonsIn(candidateRow).some((b) => b.textContent === PAIR_TEXT.sendManual)) {
+// And the manual five-field path is still reachable from the row: now inside
+// the row's details fold, so it is looked for in the whole row.
+if (!find(candidateRow, "ghost").some((b) => b.textContent === PAIR_TEXT.sendManual)) {
   failures.push("the manual path is no longer reachable from a candidate row");
 }
 
@@ -608,6 +609,9 @@ await scope.loadPairing();
 if (el("pair-here").classList.contains("hidden")) {
   failures.push("a node that gave no address hid the block, so nothing on screen says why nobody can connect");
 }
+if (!el("pair-here").classList.contains("unreachable")) {
+  failures.push("an address nobody can reach did not float the block to the top of its screen (unreachable)");
+}
 const noAddress = el("pair-here").serialize() + el("pair-here-note").serialize();
 for (const required of ["允許區網連線", "節點設定"]) {
   if (!noAddress.includes(required)) {
@@ -665,6 +669,9 @@ pairingAnswer = {
 await scope.loadPairing();
 if (el("pair-local-address").textContent !== "192.168.50.10:7463") {
   failures.push(`a reachable LAN address is shown as ${JSON.stringify(el("pair-local-address").textContent)}`);
+}
+if (el("pair-here").classList.contains("unreachable")) {
+  failures.push("a reachable LAN address still carries the unreachable class");
 }
 if (el("copy-pair-address").disabled) {
   failures.push("the copy button is dead on an address that works");
@@ -1166,6 +1173,100 @@ if (!withoutAddress.includes(ZH["network.pairNew"])) {
   failures.push(`the no-address summary names nowhere to go next: ${withoutAddress}`);
 }
 
+/* ---------------- 8f. one screen at a time ------------------------------- */
+
+// The drawer shows the search or the exchange, never both: anything pending is
+// the exchange, nothing pending is the search (renderPairScreens).
+{
+  const hidden = (id) => el(id).classList.contains("hidden");
+  const reload = async () => {
+    await scope.loadPairRequests();
+    await settle();
+  };
+  const savedPending = pending;
+  const savedAll = state.pairRequestsAll;
+
+  pending = [];
+  await reload();
+  if (hidden("pair-screen-find") || !hidden("pair-screen-exchange")) {
+    failures.push("with nothing pending the drawer did not show only the search screen");
+  }
+
+  pending = [incoming];
+  await reload();
+  if (!hidden("pair-screen-find") || hidden("pair-screen-exchange")) {
+    failures.push("with a request to compare the drawer did not show only the exchange screen");
+  }
+  const compareCard = el("pair-requests").children[0];
+  if (compareCard.className !== "pairrow comparing") {
+    failures.push(`an incoming request's card is class ${JSON.stringify(compareCard.className)}, want "pairrow comparing"`);
+  }
+
+  pending = [outgoingPending];
+  await reload();
+  const waitCard = el("pair-requests").children[0];
+  if (waitCard.className !== "pairrow waiting") {
+    failures.push(`a request we sent is class ${JSON.stringify(waitCard.className)}, want "pairrow waiting"`);
+  }
+  const waitBlock = waitCard.children.find((child) => typeof child !== "string" && /^fingerprints\b/.test(child.className));
+  if (!waitBlock || !waitBlock.classList.contains("hidden")) {
+    failures.push("a waiting card shows the fingerprint block; the moment to compare is after the other owner approves");
+  }
+  if (waitCard.serialize().includes(PAIR_TEXT.compare[0])) {
+    failures.push("a waiting card carries the compare instruction");
+  }
+  const cancel = waitCard.serialize();
+  if (!cancel.includes(ZH["firstRun.pair.cancel"])) {
+    failures.push("a waiting card has no button that cancels the request");
+  }
+
+  // Both kinds of card at once: each is its own, and the nodeId and request id
+  // are inside a details element only.
+  pending = [incoming, outgoing, outgoingPending];
+  await reload();
+  const insideDetails = (node, needle) => {
+    let found = 0;
+    let inside = 0;
+    const walk = (n, within) => {
+      if (typeof n === "string") return;
+      const here = within || n.tagName === "details";
+      if (n._text === needle) {
+        found += 1;
+        if (here) inside += 1;
+      }
+      for (const c of n.children) walk(c, here);
+    };
+    walk(node, false);
+    return { found, inside };
+  };
+  for (const card of el("pair-requests").children) {
+    for (const needle of [card.pairParts.nodeId.textContent, card.pairParts.id.textContent]) {
+      const { found, inside } = insideDetails(card, needle);
+      if (found === 0 || found !== inside) {
+        failures.push(`a request's node id or request id (${needle}) is outside its details fold (${inside}/${found})`);
+      }
+    }
+  }
+
+  pending = [];
+  state.pairRequestsAll = true;
+  await reload();
+  if (hidden("pair-screen-find") || hidden("pair-screen-exchange")) {
+    failures.push("Show finished with nothing pending did not show both screens");
+  }
+  state.pairRequestsAll = savedAll;
+
+  requestsThrow = "x";
+  await reload();
+  if (hidden("pair-screen-exchange")) {
+    failures.push("a failed read hid the exchange screen, which is where the failure is said");
+  }
+  requestsThrow = "";
+
+  pending = savedPending;
+  await reload();
+}
+
 /* ---------------- 9. every string from the wire is text ------------------ */
 
 const hostile = {
@@ -1203,7 +1304,7 @@ if (!hostileHTML.includes("&lt;script&gt;alert(&quot;name&quot;)&lt;/script&gt;"
 // Nothing a peer chose may decide a class name — including the role and whose
 // labels, which are mapped through a fixed table and otherwise shown as text.
 for (const cls of hostileHTML.match(/class="[^"]*"/g) ?? []) {
-  if (!/^class="(pairrow waiting|pairrow|line|name|meta|fingerprint|fingerprints|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty|why)"$/.test(cls)) {
+  if (!/^class="(pairrow waiting|pairrow comparing|pairrow|line|name|meta|fingerprint|fingerprints|fingerprints hidden|who|mine|muted|nextstep|stale|compare|decide|primary|ghost|pill idle|pill|empty|why|why reqdetails|spin|spin hidden)"$/.test(cls)) {
     failures.push(`a peer-supplied value reached a class name: ${cls}`);
   }
 }
