@@ -519,7 +519,7 @@
 
 ### 3.4 設定頁
 
-三個區塊，由 `settingsSection` 決定捲到哪一個：
+五個分頁（左側直排 `role="tablist"`，方向鍵上下／Home／End），只顯示 `settingsSection` 那一個：
 
 - **背景服務**：狀態行、重新讀取、安裝／重新安裝、移除；展開表單**只有一個欄位：資料庫路徑**
   （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
@@ -534,7 +534,9 @@
   每列狀態比 `peerListeners` 與 `saved`／`settings.peerListens`：已開放／重啟後開放／重啟後關閉／沒開放＋原因
   （`address_gone`、`port_in_use`、其餘附節點的 message）。舊節點（沒有 `peerListens`）保留單選下拉
   `#node-peerlisten`，只送 `peerListen`。測試：`frontend/test/listen-addresses.mjs`。
-- **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；語言；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
+  「視為私有網段」收在 `#node-advanced`（`<details>`），欄位有值、建議值說明出現、或出現 `warnNotPrivate` 時自動展開，不自動收；自動喚醒下的 `wake.caveat` 只在勾選時顯示。
+- **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
+- **語言**：`settings-lang`（2026-10-05 自外觀獨立）。
 
 ### 3.5 覆蓋層（8 個：3 個抽屜 + 5 個對話框）
 

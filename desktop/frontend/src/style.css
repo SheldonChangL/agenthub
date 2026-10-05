@@ -1465,12 +1465,13 @@ body.selecting .toasts { bottom: 124px; }
   background: var(--panel);
   display: flex; flex-direction: column; gap: 2px;
 }
-.settingsnav a {
-  padding: 7px 12px; border-radius: 6px;
-  color: var(--muted); text-decoration: none; cursor: pointer;
-}
-.settingsnav a:hover { color: var(--text); }
-.settingsnav a.on { background: var(--panel-2); color: var(--text); font-weight: 500; }
+@media (max-width: 1000px) { .settingsnav { width: 180px; } }
+button.settab { justify-content: flex-start; text-align: left; border: 0; background: transparent; color: var(--muted); padding: 0 12px; border-radius: 6px; font: inherit; }
+button.settab:hover:not(:disabled) { border: 0; background: rgba(255, 255, 255, 0.04); color: var(--text); }
+button.settab.on, button.settab.on:hover:not(:disabled) { background: var(--panel-2); color: var(--text); font-weight: 500; }
+details.advanced { margin: 0; }
+details.advanced > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+details.advanced[open] > summary { color: var(--text); margin-bottom: 10px; }
 .settingsbody {
   flex: 1; min-width: 0;
   overflow: auto;

@@ -158,6 +158,7 @@ export const TEXT = {
   "nodeSettings.peerListenLabel": "對外位址",
   "nodeSettings.peerListenHint": "其他機器連進來的地方",
   "nodeSettings.loopbackOption": "只在本機（127.0.0.1:7463）",
+  "nodeSettings.advancedSummary": "進階",
   "nodeSettings.privateLabel": "視為私有網段",
   "nodeSettings.privateHint": "直連網路線常需要，逗號分隔",
   "nodeSettings.privatePlaceholder": "例如 122.122.0.0/16",

@@ -163,6 +163,7 @@ export const TEXT = {
   "nodeSettings.peerListenLabel": "Listen address",
   "nodeSettings.peerListenHint": "where other machines connect in",
   "nodeSettings.loopbackOption": "This machine only (127.0.0.1:7463)",
+  "nodeSettings.advancedSummary": "Advanced",
   "nodeSettings.privateLabel": "Treat as private ranges",
   "nodeSettings.privateHint": "often needed on a direct cable, comma separated",
   "nodeSettings.privatePlaceholder": "for example 122.122.0.0/16",

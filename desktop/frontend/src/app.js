@@ -2732,6 +2732,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   const VIEWS = ["local", "network", "settings"];
+  const SETTINGS_SECTIONS = ["settings-service", "settings-node", "settings-identity", "settings-appearance", "settings-language"];
 
   // Where the photo may show: places with no data on them. The owner's two
   // switches decide whether there is a photo at all (applyBackdrop).
@@ -2855,8 +2856,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // override stored the window is following the OS, and a blank box over a
     // window that is plainly in one language reads as a bug.
     el("settings-lang").value = language();
-    for (const link of document.querySelectorAll("#settings-nav a")) {
-      link.className = link.dataset.target === state.settingsSection ? "on" : "";
+    for (const id of SETTINGS_SECTIONS) el(id).classList.toggle("hidden", state.settingsSection !== id);
+    for (const tab of document.querySelectorAll("#settings-nav [data-target]")) {
+      const on = tab.dataset.target === state.settingsSection;
+      tab.className = on ? "settab on" : "settab";
+      tab.setAttribute?.("aria-selected", String(on));
+      tab.setAttribute?.("tabindex", on ? "0" : "-1");
     }
   }
 
@@ -3530,7 +3535,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // (runServiceQuickAction's re-read, before withBusy), and stays unpressable
     // through a render that lands in the middle of it.
     entry.action.disabled = state.busy || entry.action.classList.contains("busy");
-    entry.action.onclick = () => item.run(entry.action);
+    // The drawer is out of the way for every row but the retry: those go
+    // somewhere (the inbox, the pairing drawer, the settings page) and would
+    // open behind it. The retry stays, to show the row clear.
+    entry.action.onclick = () => {
+      if (item.kind !== "node") closeNotices();
+      item.run(entry.action);
+    };
     entry.later.textContent = t("attention.later");
     entry.later.title = t("attention.laterTitle");
     return entry.row;
@@ -8816,6 +8827,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
+      el("node-advanced").open = true;
     }
   }
 
@@ -8886,6 +8898,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const allowLan = el("node-allow-lan").checked;
 
     el("node-lan-note").classList.toggle("hidden", !allowLan);
+    el("node-autowake-caveat").classList.toggle("hidden", !el("node-autowake").checked);
     if (peerListensSupported()) {
       const warning = el("node-settings-combination");
       warning.replaceChildren();
@@ -8931,6 +8944,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
+      el("node-advanced").open = true;
     }
 
     syncPrivateNote();
@@ -8952,6 +8966,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         (peerListensSupported() ? ` ${t("nodeSettings.otherNeedsRange")}` : "")
       : "";
     note.classList.toggle("hidden", !showing);
+    if (showing || el("node-private").value.trim() !== "") el("node-advanced").open = true;
   }
 
   // suggestPrivateRange runs when the owner picks a different address, and only
@@ -9491,13 +9506,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   el("outbound-more").onclick = () => loadOutbound().catch(() => {});
 
-  for (const link of document.querySelectorAll("#settings-nav a")) {
-    link.onclick = () => {
-      state.settingsSection = link.dataset.target;
+  for (const tab of document.querySelectorAll("#settings-nav [data-target]")) {
+    tab.onclick = () => {
+      state.settingsSection = tab.dataset.target;
       render();
-      el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      document.querySelector(".settingsbody")?.scrollTo?.(0, 0);
     };
   }
+  // A vertical tablist: the arrow keys move between the tabs and open the one
+  // they land on, like viewSwitchKey does for the view switch.
+  function settingsNavKey(event) {
+    const tabs = [...document.querySelectorAll("#settings-nav [data-target]")];
+    const at = tabs.findIndex((tab) => tab.dataset.target === state.settingsSection);
+    const key = event?.key;
+    let next = -1;
+    if (key === "ArrowDown") next = (at + 1) % tabs.length;
+    else if (key === "ArrowUp") next = (at - 1 + tabs.length) % tabs.length;
+    else if (key === "Home") next = 0;
+    else if (key === "End") next = tabs.length - 1;
+    if (next < 0 || tabs.length === 0) return;
+    event.preventDefault?.();
+    tabs[next].onclick?.();
+    tabs[next].focus?.();
+  }
+  el("settings-nav").onkeydown = settingsNavKey;
   el("node-settings-reload").onclick = () => (state.nodeSettingsTried = true, loadNodeSettings())
     .catch((error) => banner(t("busy.failed", { action: t("nodeSettings.busyRead"), error })));
   el("node-settings-save").onclick = () => saveNodeSettings()
@@ -9509,6 +9541,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     syncNodeSettingsForm();
   };
   el("node-allow-lan").onchange = syncNodeSettingsForm;
+  el("node-autowake").onchange = syncNodeSettingsForm;
   el("node-private").oninput = syncNodeSettingsForm;
 
   // One press: install or start when that is what it needs, the settings

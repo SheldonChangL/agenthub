@@ -723,7 +723,8 @@ globalThis.layoutCheck = async () => {
   await view("local");
   results.push(measure("local table", $(".tablescroll")));
   await view("settings");
-  for (const id of ["settings-service", "settings-node", "settings-identity", "settings-appearance"]) {
+  for (const id of ["settings-service", "settings-node", "settings-identity", "settings-appearance", "settings-language"]) {
+    $(`#settings-nav [data-target="${id}"]`).click(); await pause();
     results.push(measure(`settings ${id.slice(9)}`, $(`#${id}`)));
   }
   results.push(measure("settings body", $(".settingsbody")));
