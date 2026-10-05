@@ -598,6 +598,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!seen.has(key)) sessionRows.delete(key);
     }
     keepChildren(body, wanted);
+    el("empty").textContent = state.sessions.length === 0 ? t("local.emptyNone") : t("local.empty");
     el("empty").classList.toggle("hidden", rows.length > 0);
   }
 
@@ -2732,6 +2733,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
 
   const VIEWS = ["local", "network", "settings"];
 
+  // Where the photo may show: places with no data on them. The owner's two
+  // switches decide whether there is a photo at all (applyBackdrop).
+  function photoWanted() {
+    if (firstRunVisible()) return true;
+    if (state.view === "local") return state.sessions.length === 0;
+    if (state.view === "network") return !state.nodes.some((node) => node.nodeId === state.selectedNode);
+    return false;
+  }
+
   function render() {
     renderFirstRun();
     // The wizard takes the whole window while it is up: no view under it.
@@ -2819,6 +2829,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       selected: state.counts.selected ?? 0,
       none: state.counts.none ?? 0,
     });
+
+    el("local-view").classList.toggle("isempty", state.sessions.length === 0);
+    document.body?.classList?.toggle("photo-away", !photoWanted());
 
     // On every view, so last: every read above may have changed what is
     // waiting on the owner.
@@ -9572,7 +9585,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeId,
-    copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    photoWanted, copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,

@@ -126,6 +126,7 @@ export const TEXT = {
   "local.colLastSeen": "LAST SEEN",
   "local.colActions": "ACTIONS",
   "local.empty": "No session matches these filters.",
+  "local.emptyNone": "No Claude Code or Codex session on this machine yet. Start a conversation, then press Rescan.",
   "local.noneSelected": "Nothing selected",
   "local.unpublish": "Unpublish",
   "local.deselect": "Clear selection",

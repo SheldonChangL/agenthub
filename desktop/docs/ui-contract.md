@@ -428,6 +428,7 @@
   由右往左截斷。空值顯示純文字「—」（`span.cwdempty`），沒有按鈕。兩者在 `sessionRow` 建一次、`updateSessionRow` 切換，
   tick 不換掉按鈕。
 - 空狀態：「沒有符合條件的 session。」
+- 沒有任何 session 時表格隱藏，`#empty` 改說 `local.emptyNone`，背景照片露出（§9）。
 
 ### 3.3 區網視圖
 
@@ -1008,6 +1009,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 4. 設定頁那句話兩種狀態都要講出成本，字串含「CPU」；關閉時另含「預設關閉」。`frontend/test/backdrop-switches.mjs` 逐字斷言。
 5. `index.html` 的 `#toggle-motion` 不得帶 `checked`（`TestFrontendMotionToggleStartsUnchecked`）。
 6. `style.css` 不得有任何 `backdrop-filter:`（`TestFrontendDoesNotBlurOverMovingPixels`）。注意：毛玻璃**沒有**被單獨量過，這條靠推論成立，不要對外宣稱它有數字。
+7. 照片只畫在精靈、沒有 session 的本機視圖、區網頁沒選機器時（`photoWanted()`→`body.photo-away`）；兩個開關決定有沒有照片，這條決定照片在哪（測試 `backdrop-switches.mjs` §6）。
 
 
 ## 10. 列動作只剩兩顆：MCP 入口已移除（2026-09-15，owner 指定）

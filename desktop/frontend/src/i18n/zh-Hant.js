@@ -121,6 +121,7 @@ export const TEXT = {
   "local.colLastSeen": "最後活動",
   "local.colActions": "動作",
   "local.empty": "沒有符合條件的 session。",
+  "local.emptyNone": "這台機器還沒有 Claude Code 或 Codex 的 session。開一段對話，再按「重新掃描」。",
   "local.noneSelected": "未選取",
   "local.unpublish": "收回公開",
   "local.deselect": "取消選取",

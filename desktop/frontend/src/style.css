@@ -115,6 +115,15 @@ body.bg-paused .rain { display: none; }
 }
 body.no-backdrop .backdrop img,
 body.no-backdrop .backdrop .rain { display: none; }
+/* The photo is the window's identity, not a texture behind data: only on the
+   wizard, an empty session list and a network view with nothing picked
+   (app.js photoWanted). */
+body.photo-away .backdrop img,
+body.photo-away .backdrop .shade,
+body.photo-away .backdrop .rain { display: none; }
+#local-view.isempty .tablewrap { background: transparent; border-color: transparent; box-shadow: none; }
+#local-view.isempty table { display: none; }
+#local-view.isempty #empty { display: table; margin: 120px auto 0; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-solid); }
 
 #app > :not(.backdrop) { position: relative; z-index: 1; }
 
