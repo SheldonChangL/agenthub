@@ -645,7 +645,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const idCell = element("td", "sid");
     const providerTag = element("span", "providertag");
     const label = element("b");
-    idCell.append(providerTag, label);
+    // Two lines: the title alone on the first, so it is the last thing the
+    // column gives up; the provider under it.
+    const sub = element("span", "sidsub");
+    sub.append(providerTag);
+    idCell.append(label, sub);
 
     const statusCell = element("td");
     const statusPill = element("span", "pill");
