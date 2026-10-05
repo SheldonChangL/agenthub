@@ -520,6 +520,12 @@ func TestFrontendAsksInItsOwnDialog(t *testing.T) {
 	runNodeCheck(t, "confirm-dialog.mjs")
 }
 
+// TestFrontendEscapeClosesEveryOverlay covers Esc on the three drawers and
+// the four dialogs: one press closes the topmost one (docs/ui-contract.md §3.5).
+func TestFrontendEscapeClosesEveryOverlay(t *testing.T) {
+	runNodeCheck(t, "escape-closes.mjs")
+}
+
 // TestFrontendKeepsAnOpenedWhyOpen covers the 「說明」 folds #194 added in two
 // places redrawn on a timer — the pairing drawer's step 1 and the node detail
 // pane: after a background redraw an opened one is the same element, still

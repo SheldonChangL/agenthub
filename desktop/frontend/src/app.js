@@ -4428,6 +4428,29 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!within(event?.target, el("copy-fallback"))) closeCopyFallback();
     }, true);
   }
+
+  // Esc closes the topmost overlay, one per press. The confirm question, the
+  // audience menu and the copy fallback answer Esc first (they mark it
+  // handled or stop it), and while any of them is open this does nothing.
+  const ESC_CLOSERS = [
+    ["modal", () => el("modal").classList.add("hidden")],
+    ["mcp-modal", () => closeMCPConfig()],
+    ["pair-modal", () => closePairModal()],
+    ["audience-modal", () => closeAudienceModal()],
+    ["notify-modal", () => closeNotices()],
+    ["pairing-modal", () => dismissPairingDrawer().catch(() => {})],
+    ["inbox-modal", () => closeInbox()],
+  ];
+  function overlayKey(event) {
+    if (event?.key !== "Escape" || event.defaultPrevented) return false;
+    if (confirmPending || audiencePopoverOpen() || copyFallbackOpen()) return false;
+    const open = ESC_CLOSERS.find(([id]) => !el(id).classList.contains("hidden"));
+    if (!open) return false;
+    event.preventDefault?.();
+    open[1]();
+    return true;
+  }
+  if (typeof document.addEventListener === "function") document.addEventListener("keydown", overlayKey);
   globalThis.addEventListener?.("resize", () => {
     closeAudiencePopover();
     closeCopyFallback();
@@ -9588,6 +9611,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     openAudiencePopover, closeAudiencePopover, audiencePopoverOpen, popoverKey, popoverOutsidePress,
     applyAudienceChoice, audienceForChoice, presetOfAudience, writableAudience, interactionInProgress,
     serviceQuickAction, runServiceQuickAction, pairStepperPhase, renderPairStepper, goToPublish, viewSwitchKey,
+    overlayKey,
   };
   if (!start) return internals;
   // The panel is polled only while it is on screen: the network view, or the
