@@ -12,7 +12,7 @@
 //   node frontend/test/onboarding.mjs
 
 import { document } from "./dom-shim.mjs";
-import { latestToast, toastNodes } from "./fixtures/toasts.mjs";
+import { latestToast, toastButtons, toastNodes } from "./fixtures/toasts.mjs";
 import { TEXT as ZH } from "../src/i18n/zh-Hant.js";
 
 globalThis.document = document;
@@ -238,7 +238,7 @@ if (openPairingCalls.length !== 0) {
 }
 // A window the node refuses to reopen after the repair is said after what the
 // repair did, not instead of it: the toast that says the save went through is
-// still on screen when the refusal arrives as a toast of its own.
+// still in the log when the refusal arrives, and the refusal's toast points at it.
 el("pairing-modal").classList.remove("hidden");
 openPairingCalls.length = 0;
 const savedToast = toast();
@@ -250,8 +250,14 @@ await app.applyPeerListenRepairFromCard(lanRepair);
 openPairingRefusal = null;
 const afterRefusal = toast().textContent;
 if (openPairingCalls.length !== 1) failures.push(`the refused reopen was tried ${openPairingCalls.length} times, want 1`);
-if (savedToast.node && !toastNodes(document).includes(savedToast.node)) {
+// One toast at a time (§3.1): the refusal takes the slot, the save's sentence
+// stays in the log, and the refusal's toast says there is more there.
+const logged = app.state.notices.map((notice) => [notice.title, notice.body].filter(Boolean).join(" "));
+if (!logged.includes(savedToast.textContent)) {
   failures.push(`a refused reopen took away what the save said: ${savedToast.textContent}`);
+}
+if (!toastButtons(toast().node).some((button) => String(button.className).split(/\s+/).includes("toastmore"))) {
+  failures.push("the refusal's toast does not point at the save's sentence in the log");
 }
 if (!afterRefusal.includes("node refused")) {
   failures.push(`a refused reopen was not said: ${afterRefusal}`);

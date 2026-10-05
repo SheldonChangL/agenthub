@@ -3145,8 +3145,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // the title bar for that: a success went after four seconds, and every new
   // message replaced the last — so an error was gone the moment anything else
   // was said, and the load() that follows most writes hid whatever the write
-  // had just reported. Toasts stack instead (three at most, newest at the
-  // bottom); successes and plain information still go by themselves, but after
+  // had just reported. One toast at a time: a new one takes the place of the
+  // last, and says how many it replaced, which are all in the bell's log;
+  // successes and plain information still go by themselves, but after
   // six seconds and with a bar that shows it happening, and errors and
   // warnings stay until someone closes them.
   //
@@ -3157,7 +3158,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // The attention strip answers "what is waiting on me", on every view: a node
   // that is not answering, a service that is not running, a full inbox, a
   // machine asking to pair. Each row has the button that deals with it.
-  const TOAST_LIMIT = 3;
+  const TOAST_LIMIT = 1;
   const TOAST_MS = 6000;
   // One that carries a button (復原, 去公開 session) stays longer: six seconds
   // is too short to read the sentence and then aim at the button.
@@ -3214,7 +3215,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // alert for the two that stay: those interrupt a screen reader, the rest
     // wait their turn behind the container's aria-live="polite".
     node.setAttribute("role", lasting(kind) ? "alert" : "status");
-    const record = { node, kind, ms: actions.length > 0 ? TOAST_ACTION_MS : TOAST_MS, timer: null, bar: null, holds: { pointer: false, focus: false } };
+    const displaced = toastsShown.reduce((sum, shown) => sum + 1 + shown.displaced, 0);
+    const record = { node, kind, displaced, ms: actions.length > 0 ? TOAST_ACTION_MS : TOAST_MS, timer: null, bar: null, holds: { pointer: false, focus: false } };
     if (actions.length > 0) node.classList.add("long");
     const main = element("div", "toastmain");
     main.append(element("div", "toasttitle", title));
@@ -3230,6 +3232,14 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         row.append(button);
       }
       main.append(row);
+    }
+    if (displaced > 0) {
+      const more = element("button", "link toastmore", plural(displaced, "notify.more"));
+      more.onclick = () => {
+        dismissToast(record);
+        openNotices();
+      };
+      main.append(more);
     }
     const close = element("button", "ghost iconbtn toastclose", "✕");
     close.title = t("notify.close");
@@ -3259,16 +3269,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     toastsShown.push(record);
     el("toasts").append(node);
-    // Past three, the oldest that would have gone by itself goes first; a
-    // warning or an error is pushed off only when there is nothing else to
-    // push. Both are still in the bell's log, and a column of errors taller
-    // than the window is one nobody reads. The one just shown is never the
-    // one pushed off: behind three errors it is the only one that would go by
-    // itself, and taking it would take its 復原 with it — the log keeps the
-    // sentence, not the buttons.
-    while (toastsShown.length > TOAST_LIMIT) {
-      dismissToast(toastsShown.slice(0, -1).find((shown) => !lasting(shown.kind)) ?? toastsShown[0]);
-    }
+    // One at a time: whatever was showing goes, and is still in the log.
+    while (toastsShown.length > TOAST_LIMIT) dismissToast(toastsShown[0]);
     return record;
   }
 

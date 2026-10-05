@@ -337,7 +337,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   transform: translateX(-50%);
   width: min(560px, calc(100vw - 32px));
 }
-.modal:not(.hidden) ~ .toasts .toast:not(:last-child),
+.modal:not(.hidden) ~ .toasts .toastmore,
 .modal:not(.hidden) ~ .toasts .toastbody,
 .modal:not(.hidden) ~ .toasts .toastacts { display: none; }
 .modal:not(.hidden) ~ .toasts .toast { padding-top: 8px; padding-bottom: 8px; max-height: calc(10vh - 8px); }
@@ -368,6 +368,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .toastbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; margin-top: 2px; }
 .toastacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .toast .toastclose { flex: none; margin-top: -4px; }
+.toast .toastmore { display: block; margin-top: 6px; font-size: 12px; color: var(--sev-info); }
 /* The six seconds a success or a piece of information stays, draining;
    fifteen when it carries a button. */
 .toast .timer {

@@ -800,6 +800,8 @@ export const TEXT = {
   "notify.bellUnread.other": "Notification log: {n} errors or warnings not yet seen",
   "notify.title": "Notifications",
   "notify.sub": "Everything this window has told you since it opened, newest first. Closing the window clears it.",
+  "notify.more.one": "{n} earlier notice in the log",
+  "notify.more.other": "{n} earlier notices in the log",
   "notify.close": "Close this notification",
   "notify.empty": "No notifications yet.",
   "notify.kind.ok": "Success",

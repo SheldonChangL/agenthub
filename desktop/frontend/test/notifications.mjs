@@ -150,24 +150,28 @@ clearToasts();
 toastTimers = [];
 
 // An error stays however long it is left; a success and an info go by
-// themselves, on the six-second timer, and only then.
-app.notify("error", "the write failed");
-app.notify("ok", "the write worked");
-app.notify("info", "for your information");
-const [errorToast, okToast, infoToast] = toastNodes(document);
-if (toastKind(errorToast) !== "error" || toastKind(okToast) !== "ok" || toastKind(infoToast) !== "info") {
-  failures.push(`the stack is ${toastNodes(document).map(toastKind).join(",")}, want error,ok,info in the order they were said`);
+// themselves, on the six-second timer, and only then. One toast at a time
+// (§3.1), so each is said into an empty slot here.
+{
+  const errorRecord = app.notify("error", "the write failed");
+  if (errorRecord.node.getAttribute("role") !== "alert") failures.push(`an error toast has role ${errorRecord.node.getAttribute("role")}, want alert`);
+  if (toastTimers.some((timer) => timer.ms === 6000 || timer.ms === 15000)) failures.push("an error toast was given a timer to go by itself");
+  runToastTimers();
+  if (!toastNodes(document).includes(errorRecord.node)) failures.push("the error toast went away by itself");
+  clearToasts();
 }
-if (latestToast(document).textContent !== "for your information") {
-  failures.push(`the newest toast is not the last one said: ${latestToast(document).textContent}`);
+for (const [kind, title] of [["ok", "the write worked"], ["info", "for your information"]]) {
+  toastTimers = [];
+  const record = app.notify(kind, title);
+  if (toastKind(record.node) !== kind) failures.push(`a ${kind} toast is drawn as ${toastKind(record.node)}`);
+  if (latestToast(document).textContent !== title) failures.push(`the newest toast is not the last one said: ${latestToast(document).textContent}`);
+  if (record.node.getAttribute("role") === "alert") failures.push(`a ${kind} toast interrupts a screen reader as an alert`);
+  if (toastTimers.length !== 1 || toastTimers[0].ms !== 6000) {
+    failures.push(`a ${kind} toast got timers ${JSON.stringify(toastTimers.map((timer) => timer.ms))}, want one of 6000`);
+  }
+  runToastTimers();
+  if (toastNodes(document).includes(record.node)) failures.push(`a ${kind} toast outlived its six seconds`);
 }
-if (errorToast.getAttribute("role") !== "alert") failures.push(`an error toast has role ${errorToast.getAttribute("role")}, want alert`);
-if (okToast.getAttribute("role") === "alert") failures.push("a success toast interrupts a screen reader as an alert");
-if (toastTimers.length !== 2) failures.push(`${toastTimers.length} toasts were given the six-second timer, want the two that are not errors`);
-runToastTimers();
-const afterTimers = toastNodes(document);
-if (!afterTimers.includes(errorToast)) failures.push("the error toast went away by itself");
-if (afterTimers.includes(okToast) || afterTimers.includes(infoToast)) failures.push("a success or info toast outlived its six seconds");
 
 // One that carries a button gets fifteen seconds, one without gets six: the
 // owner asked for the longer time so 復原 can still be reached.
@@ -188,48 +192,55 @@ app.notify("warn", "half done");
 runToastTimers();
 if (latestToast(document).kind !== "warn") failures.push("a warning toast went away by itself");
 
-// ✕ closes one and only one.
-const warnNode = latestToast(document).node;
-toastButtons(warnNode).at(-1).onclick();
-if (toastNodes(document).includes(warnNode)) failures.push("the close button did not close its toast");
-if (!toastNodes(document).includes(errorToast)) failures.push("closing one toast took another with it");
-toastButtons(errorToast).at(-1).onclick();
+// ✕ closes it.
+toastButtons(latestToast(document).node).at(-1).onclick();
+if (toastNodes(document).length !== 0) failures.push("the close button did not close its toast");
 
-// Three at most, the oldest goes first — and is still in the log.
-for (const n of [1, 2, 3, 4]) app.notify("error", `failure ${n}`);
-const stack = toastNodes(document).map(toastMessage);
-if (stack.join("|") !== "failure 2|failure 3|failure 4") failures.push(`four toasts left ${JSON.stringify(stack)}, want the newest three`);
-if (!app.state.notices.some((notice) => notice.title === "failure 1")) failures.push("the toast pushed off the stack is not in the log");
+// One at a time: each new toast takes the place of the last, whatever either
+// is, and the ones it replaced are all in the log. The new one says how many.
 clearToasts();
-// But what would have gone by itself goes before what would not: an error
-// or a warning is pushed off only when there is nothing else to push.
-app.notify("error", "kept error");
-app.notify("ok", "passing ok");
-app.notify("warn", "kept warning");
-app.notify("info", "passing info");
+toastTimers = [];
+for (const [n, kind] of [[1, "error"], [2, "ok"], [3, "error"], [4, "error"]]) app.notify(kind, `failure ${n}`);
 {
-  const order = toastNodes(document).map(toastMessage).join("|");
-  if (order !== "kept error|kept warning|passing info") failures.push(`a fourth toast pushed off the wrong one: ${order}`);
-  app.notify("ok", "newest ok");
-  const next = toastNodes(document).map(toastMessage).join("|");
-  if (next !== "kept error|kept warning|newest ok") failures.push(`a fifth toast pushed off the wrong one: ${next}`);
+  const stack = toastNodes(document).map(toastMessage);
+  if (stack.join("|") !== "failure 4") failures.push(`four toasts left ${JSON.stringify(stack)}, want only the newest`);
+  for (const n of [1, 2, 3]) {
+    if (!app.state.notices.some((notice) => notice.title === `failure ${n}`)) failures.push(`failure ${n}, replaced on screen, is not in the log`);
+  }
+  const buttons = toastButtons(latestToast(document).node);
+  const more = buttons.find((button) => String(button.className).split(/\s+/).includes("toastmore"));
+  if (!more) failures.push("the toast that replaced three has no button pointing at them");
+  else if (more.textContent !== fill(ZH["notify.more.other"], { n: 3 })) failures.push(`the button reads ${more.textContent}, want the count of three`);
+  if (buttons.at(-1)?.textContent !== "✕") failures.push("the close button is not the last button of a toast");
+  if (more) {
+    more.onclick();
+    if (el("notify-modal").classList.contains("hidden")) failures.push("the button did not open the notification log");
+    if (toastNodes(document).length !== 0) failures.push("the button left the toast on screen");
+    app.closeNotices();
+  }
+}
+clearToasts();
+{
+  const alone = app.notify("ok", "alone");
+  const hasMore = toastButtons(alone.node).some((button) => String(button.className).split(/\s+/).includes("toastmore"));
+  if (hasMore) failures.push("a toast that replaced nothing offers earlier notices");
+  runToastTimers();
 }
 clearToasts();
 toastTimers = [];
-// Behind three that stay, the new one that would go by itself is still the
-// one just shown: the oldest of the three goes, not it and its 復原.
+// A success with 復原 after an error and a warning is the only toast, and its
+// 復原 still runs.
 {
   app.notify("error", "stays 1");
   app.notify("warn", "stays 2");
-  app.notify("error", "stays 3");
   let undid = 0;
   const record = app.notify("ok", "done, undo?", { actions: [{ label: "復原", run() { undid += 1; } }] });
   const order = toastNodes(document).map(toastMessage).join("|");
-  if (order !== "stays 2|stays 3|done, undo?") failures.push(`a success behind three errors pushed off the wrong one: ${order}`);
-  if (!toastNodes(document).includes(record.node)) failures.push("a success with 復原 behind three errors pushed itself off");
+  if (order !== "done, undo?") failures.push(`a success after an error and a warning left ${order}`);
+  if (!toastNodes(document).includes(record.node)) failures.push("a success with 復原 is not on screen");
   else {
     toastButtons(record.node)[0].onclick();
-    if (undid !== 1) failures.push("the 復原 on a success behind three errors did not run");
+    if (undid !== 1) failures.push("the 復原 on a success after an error and a warning did not run");
   }
 }
 clearToasts();
