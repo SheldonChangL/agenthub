@@ -50,9 +50,11 @@ idle, from either machine.
   an answer.
 - **It does not gather every session automatically.** Another machine's
   sessions stay invisible to you until you pair with it and it shares them.
-- **It does not send your conversations anywhere.** To list a session it reads
-  a few fields from the agent's files, such as the ID and working directory.
-  Prompts and transcripts never leave the machine.
+- **It does not export your conversations.** To list a session it reads a few
+  fields from the agent's files, such as the ID and working directory. Sharing
+  a session does not include its prompts or transcript, and AgentHub never
+  sends conversation content on its own: a message carries only what an agent
+  or you write into it.
 
 ## Privacy and trust
 
@@ -65,11 +67,14 @@ idle, from either machine.
   them with the other screen and approves on their own machine. After that,
   the connection is pinned to the keys you compared.
 - **Sharing is opt-in, per session.** Every session starts as **Not
-  published**. Pairing shares nothing by itself. You choose each session's
+  published**. Pairing shares no session by itself, although a paired machine
+  does see that yours is online. You choose each session's
   audience: every paired machine, or only the machines you tick.
-- **A paired machine sees a short description** of each session you share: its
-  ID, Claude Code or Codex, its status, when it was last active, and its
-  working directory only if you allow it.
+- **A paired machine receives a short summary** of each session you share,
+  such as its ID, whether it is Claude Code or Codex, its status and when it
+  was last active. The working directory is included only if you allow it;
+  prompts and transcript bodies are not included. More on what is sent: the
+  [developer guide](docs/developer.md#privacy-model).
 - **While a pairing window is open**, other computers on the same network can
   see this machine's name, address, platform, fingerprint and node ID.
   Outside pairing, it does not announce itself.
@@ -141,9 +146,10 @@ prompt, and Codex keeps that turn in its own history.
 - **Agents send and read, not the window.** The desktop window has no send
   button. Agents use the four MCP tools (`agent_list`, `agent_status`,
   `agent_inbox`, `agent_send`), or the `ah` command. You can also send from a
-  terminal, as one of your sessions:
-  `ah send --from <your-session-id> <their-session-id> -- "message"`. The window shows each inbox, what was sent, and
-  whether it was delivered or refused.
+  terminal, as one of your sessions, to the address in the SEND TO column of
+  `ah peers`: `ah send --from <your-session-id> <send-to-address> -- "message"`.
+  The window shows each inbox, what was sent, and whether it was delivered or
+  refused.
 - **The agent needs a way in.** The MCP tools need a small config for each
   session, naming the session it speaks for. The `ah` command needs no config;
   on macOS and Linux, a Claude Code session started after the install learns
@@ -208,7 +214,8 @@ into the other. [Troubleshooting](docs/guide.md#troubleshooting).
 
 **What can the other computer see after pairing?** That your machine is there
 and online, with its name, platform, fingerprint and address. No session, until
-you share one; then the short description above, never the conversation.
+you share one; then the short summary above, without its prompts or
+transcript.
 
 **How do I remove it?** Run the install command with `sh -s -- --uninstall` in
 place of the last `sh`. Pairings survive a reinstall unless you add `--purge`.
