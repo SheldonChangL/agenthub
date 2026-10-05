@@ -328,9 +328,10 @@
       **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，拒絕」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
       成功 toast 同抽屜（`pairStepText()` 的句子＋「（節點回報：…）」），但**不帶「去公開 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
     - 沒有未決請求時：「同一個網路上找到的電腦」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
-      `contested`／`duplicate` pill、平台 · 最後看到；完整 nodeId、宣告的指紋、位址、首次／最後看到收進該列的 `<details>`
+      旗標行（`candidateFlagLines()`，與抽屜共用：標籤＋原因）、平台 · 最後看到；完整 nodeId、宣告的指紋、位址、首次／最後看到收進該列的 `<details>`
       （§4 的候選列斷言是對抽屜的 `candidate-rows`，在 DOM 裡就算數；精靈這份在 details 裡，也在 DOM 裡）；「送出配對請求」。
       清單狀態同抽屜：讀取中、沒在看、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
+      節點的免責文字（`frnotice`）收在「這份清單可信嗎？」摺疊（`details.why.frnoticefold`），與抽屜共用 `candidate.noticeSummary`。
     - **沒在看＝補救**（2026-10-01）：`availability` 是 `off` 或 `openNotAnnouncing`（第 1 步被跳過、存檔沒被保留、搜尋失敗後按了下一步、
       之後在設定頁關掉）時，清單的位置換成 `.frsearchoff`：`firstRun.pair.notLooking`（為什麼是空的、這台也不會出現在對方清單、按「開始在區網上搜尋」或打開「找不到另一台？」用位址配對）、
       第 1 步同一句 `firstRun.lan.consentSearch`（藍底）、失敗時的一句＋`<details>` 原文、一顆「開始在區網上搜尋」（`turnOnFirstRunSearch()`；
@@ -441,7 +442,7 @@
   **這裡沒有自己的按鈕**（2026-09-17）：原本的 `#btn-open-pairing`「開啟配對面板」在 `#btn-pair` 改成開抽屜之後，
   和它變成同一個 handler（`openPairingDrawer`）、同一個視圖上的兩顆一模一樣的按鈕，只是文字不同。
   重複的入口只會讓人以為兩顆做的事不一樣，所以留下節點列表上那顆 primary 的 `#btn-pair`，把這顆刪掉。
-- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱、爭用/重複 pill、平台 · 位址、完整 nodeId、完整指紋、首次/最後看到、「送出配對請求」＋「改用手動填入…」）、`candidate-notice`（節點自己的免責文字；節點另回穩定代碼 `noticeCode`，目前只有 `candidates_unverified`，視窗認得就用 `candidate.notice.<code>` 以介面語言顯示，不認得或沒有代碼就顯示節點的英文 `notice`，#194）。
+- 正在廣播的機器：`candidate-full` 警告（在捲動區**外面**）、候選列（名稱＋「自稱」標、平台 · 最後看到、旗標行〔標籤＋原因，`candidateFlagLines()`，不是 pill〕、「送出配對請求」；完整 nodeId、宣告的指紋、位址、首次/最後看到、「改用手動填入…」在列內「詳細資料」）、`candidate-notice`（收在「這份清單可信嗎？」摺疊 `#candidate-notice-fold`，節點自己的免責文字；節點另回穩定代碼 `noticeCode`，目前只有 `candidates_unverified`，視窗認得就用 `candidate.notice.<code>` 以介面語言顯示，不認得或沒有代碼就顯示節點的英文 `notice`，#194）。
 - **`#btn-pair`「配對另一台機器…」（節點列表的 primary 按鈕）開的是配對抽屜，不是手動表單**（2026-09-17）。
   它本來開 `pair-modal`——那是兩台機器互相連不到時的退路，要手動填五個欄位、還要自己把 base64 公鑰帶過去。
   結果這個視圖上最顯眼的按鈕把新手丟進退路，而真正會幫他找到對方機器的交換流程躲在次要連結後面。
@@ -449,7 +450,12 @@
   （候選列的「改用手動填入…」＝ `prefillPairFrom()` 不變，它本來就是帶著資料進那個表單。）
   `pair-modal` 的標題因此改成「手動配對」。`frontend/test/pairing-completeness.mjs` 逐項斷言這件事。
 
-**配對抽屜（`pairing-modal`）的順序，由上而下（#63）**：
+**配對抽屜（`pairing-modal`）：一步一屏，由上而下（#63；2026-10 PR C）**：
+
+順序：步驟條（0，不變）→ 狀態列（`#pairing-headline`、倒數、開/關鈕、`#pairing-detail`；廣播隱私說明 `#pairing-note`
+收進 `#pairing-more`「說明」摺疊，沒有內容時整個摺疊隱藏）→ 一屏規則（2）→ 找對方畫面 `#pair-screen-find`（候選列、
+「這份清單可信嗎？」摺疊、`#pair-here`、「找不到另一台？」摺疊）→ 交換畫面 `#pair-screen-exchange`（等待卡／比對卡）→ footer
+「顯示已結束」。下面各項的編號沿用舊的，內容只改位置描述；`#pair-here` 的可達性規則（1）與請求面板的指紋／按鈕／已結束規則（5）逐條保留。
 
 0. **步驟條 `#pair-stepper`**（2026-09-29，標題列下、捲動區外）：「找到對方 → 送出請求 → 比對指紋」，**純顯示**，沒有任何可按的東西，
    不改變下面 1–6 的順序與 id。由請求列推導（`pairStepperPhase()`，只看 `pending`／`awaiting-confirm` 的列）：
@@ -457,7 +463,7 @@
    `incoming`＋`pending`＝前兩步完成、第 3 步進行中。每次 `renderPairRequests()` 就地改寫三個 `<li>`，元素不重建
    （測試 `inline-publish.mjs` §7）。核准或確認成功的 toast 帶「去公開 session」（`goToPublish()`：照關閉鈕的規則收抽屜、切到本機視圖）。
 
-1. **`btn-pairing-on`「與另一台機器配對」**：開視窗，**永遠可按**（`windowAvailable`；
+1. **`btn-pairing-on`「與另一台機器配對」**（`#pair-here` 在找對方畫面，DOM 順序在候選列與免責摺疊之後、「找不到另一台？」之前；不可達時 `#pair-here.unreachable` 以 CSS `order:-1` 浮到該畫面最上方，因為那時它是唯一該先做的事；`renderPairHere()` 寫這個 class）：開視窗，**永遠可按**（`windowAvailable`；
    availability 為 `off` 或 `openNotAnnouncing` 都不影響）。只要節點給了 `state.peerAddress`，
    下面就出現 `#pair-here`：`#pair-local-address` 用 `.keyvalue` 大字顯示它，旁邊 `copy-pair-address`
    走 `CopyText`，複製失敗要說出來。**有廣播也要顯示**——mDNS 過不去跟 mDNS 沒開一樣安靜，
@@ -488,13 +494,20 @@
    **抽屜標題底下那句是 render 出來的，不是寫死在 `index.html` 的**（`#pairing-sub`，
    `renderPairingSubtitle()`）：「開啟後同網段的人都會知道這台機器在跑 AgentHub。」只有在
    `announceableAddresses > 0` 時才成立，寫死在標記裡就是在一個不廣播的節點上開頭第一句就說謊。
-2. **`#pair-waiting`**：等你決定的請求有幾個，一句話。請求面板在候選清單下面，短視窗時會在摺線以下。
-3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑。
-4. **`#pair-address` + `btn-pair-send`**：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。
-5. **`#pair-requests` 請求面板**：
-   - 每列，由上而下：名稱 + 狀態 pill、平台 · 位址、完整 nodeId、request id、
+2. **一屏規則**（`renderPairScreens()`，由 `renderPairRequests()` 在 `renderPairStepper()` 之後呼叫；與精靈第 2 步同一條規則，同樣從
+   `state.pairRequests` 推導）：有 `pending`／`awaiting-confirm` 的列時**只顯示交換畫面**，沒有時**只顯示找對方畫面**。
+   勾「顯示已結束」或讀取請求失敗時，交換畫面也顯示（失敗要在那裡說，不能看起來像沒人要求）。不再有 `#pair-waiting` 那一行——
+   它存在只因為請求區在摺線下，現在請求區就是整個畫面。畫面由資料決定，沒有「下一步」按鈕。
+3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑，在列內「詳細資料」裡。
+4. **`#pair-address` + `btn-pair-send`**（在 `#pair-manual`「找不到另一台？」摺疊裡，連同 `pair.addressNote` 與手動五欄位入口）：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。打開抽屜時，若 `state.pairing.availability !== "on"`（這台沒在看，清單不可能有人）預設展開，否則收合；之後 render 不碰它的 `open`（`openPairingDrawer()` 寫一次）。
+5. **`#pair-requests` 請求面板**（交換畫面；兩種卡）：
+   - 比對卡（`pairrow comparing`：`incoming`＋`pending`，或 `awaiting-confirm`）：標題「{name}（自稱）想和這台配對」／「和 {name}（自稱）比對指紋」、
+     警語、兩組指紋各一行 17px、按鈕。等待卡（`pairrow waiting`：`outgoing`＋`pending`）：轉圈（`.spin`）、「等 {name} 按「核准」」、
+     **不顯示指紋與警語**（要比對的時刻是對方核准之後，值來自連線）、拒絕鈕寫「取消這次請求」。指紋區塊元素永不替換，只切 `hidden`。
+   - 每列，由上而下：標題（名稱）+ 狀態 pill、
      **`PAIR_TEXT.compare` 警語（在指紋區塊之上，一列只印一次）**、**指紋區塊**、
-     一句中文指示、按鈕。警語在上面是因為節點自己的文案就是這樣假設的
+     一句中文指示、按鈕、已結束列的節點 `nextStep`，最後是列內「詳細資料」摺疊（平台 · 位址、完整 nodeId、request id；
+     nodeId 與 request id 只出現在 `<details>` 子樹內）。警語在上面是因為節點自己的文案就是這樣假設的
      （「下面兩組指紋，上面是發起方…」）；放在下面會被讀成對「決定」的註解，而不是對「怎麼讀上面兩行」的指示。
    - **指紋區塊照節點給的 `fingerprints` 陣列原樣渲染**：順序是節點排的（發起方在上，兩台一致），
      標籤 `role`／`whose` 走固定對照表，值本身一個字都不動。前端**不得**自己排序、推導或只顯示一組。
@@ -509,9 +522,9 @@
      （`pairStepText()`，退回 `PAIR_TEXT.decided`），節點的英文 `nextStep` 以
      「（節點回報：…）」跟在後面——既不能只丟英文，也不能把它吞掉。
    - 已結束（approved/rejected/expired，含 `reason: displaced`）不進預設清單，
-     `pair-requests-all` 勾選 → `all=true`。已結束的列才顯示節點的 `nextStep`。
+     `pair-requests-all` 勾選（現在在抽屜底部 footer，永遠可見）→ `all=true`。已結束的列才顯示節點的 `nextStep`。
    - **任何地方都不得有自動核准或略過比對的入口。**
-6. 底部 footer：手動 5 欄位配對，是兩台連不上彼此時的退路。
+6. 底部 footer：「顯示已結束」勾選框（`#pair-requests-all`）。手動 5 欄位配對（兩台連不上彼此時的退路）在「找不到另一台？」摺疊裡（4）。
 
 右欄（`nodedetail`）：
 - 節點詳情：名稱、完整指紋、核對說明、節點 ID／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
@@ -546,7 +559,7 @@
 抽屜（`.drawer`，從右側滑出）：
 - `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
   訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
-- `pairing-modal` 配對：把 §3.3 左欄的配對模式與候選清單裝進抽屜。
+- `pairing-modal` 配對：一步一屏（§3.3）。
 - `notify-modal` 通知紀錄（2026-09-29）：鈴鐺打開，唯讀，見 §3.1「通知三層」。不在 `MODAL_IDS` 裡。
 
 對話框（`.modal`）：卡片本身捲動，`.modal-actions`（每個對話框的最後一塊）`position: sticky` 貼在卡片底部，
@@ -664,9 +677,11 @@
    `audience-autowake`、以及 peer 測試自己插入的 `probe-*` 容器。
    改 id 就要同步改測試；改前先確認測試仍在測同一件事。
    #63 又加了一組：`pair-here`、`pair-local-address`、`copy-pair-address`、
-   `copy-pair-address-status`、`pair-here-note`、`pair-waiting`、`pair-address`、
+   `copy-pair-address-status`、`pair-here-note`、`pair-address`、
    `btn-pair-send`、`pair-address-note`、`pair-requests`、`pair-requests-all`、`pair-requests-note`、
    以及 `pairing-sub`（抽屜標題下那句，現在由 `renderPairingSubtitle()` 寫）。
+   2026-10 PR C：配對抽屜一步一屏，刪 `pair-waiting`，加 `pairing-more`、`pair-screen-find`、`pair-screen-exchange`、
+   `candidate-notice-fold`、`pair-manual`。
    2026-09-29 拿掉 `banner`，加了 `toasts`、`attention`、`btn-bell`、`bell-n`、`notify-modal`、`notify-list`、
    `notify-close`、`select-all-cell`、`motion-why`。測試讀「最新一則 toast」與待處理列都經過
    `frontend/test/fixtures/toasts.mjs`（`latestToast()` 的 `textContent` 只取標題與第二行，不含 ✕ 與動作鈕文字）；
