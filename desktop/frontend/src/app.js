@@ -8194,6 +8194,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-discover").checked = Boolean(saved.discover);
     el("node-autowake").checked = Boolean(saved.autoWake);
     el("node-private").value = (saved.treatAsPrivate ?? []).join(", ");
+    // The one place the fold opens for a value: the form has just been filled
+    // from the node. Never from a sync, or a fold the owner closed would spring
+    // open on the next keystroke. A warning that appears next is a new
+    // transition again, so forget the last one.
+    notPrivateWarned = false;
+    if (el("node-private").value.trim() !== "") el("node-advanced").open = true;
     // Whatever the node holds is the owner's, not a suggestion of ours.
     state.nodePrivateSuggested = "";
 
@@ -8827,7 +8833,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
-      el("node-advanced").open = true;
+      notPrivateWarnedNow = true;
     }
   }
 
@@ -8892,7 +8898,20 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // node's answer is this function's job; making the owner's choice for them is
   // not — the one suggestion this form offers lives in suggestPrivateRange,
   // which runs only when the owner changes the address.
+  // Whether the "not a private range" warning was on screen after the last sync,
+  // and whether it is in the one being built. #node-advanced opens when the
+  // warning goes from absent to present (it names a field folded inside), not
+  // whenever it is present.
+  let notPrivateWarned = false;
+  let notPrivateWarnedNow = false;
+
+  function settleAdvancedFold() {
+    if (notPrivateWarnedNow && !notPrivateWarned) el("node-advanced").open = true;
+    notPrivateWarned = notPrivateWarnedNow;
+  }
+
   function syncNodeSettingsForm() {
+    notPrivateWarnedNow = false;
     const address = el("node-peerlisten").value || LOOPBACK_LISTEN;
     const lanAddress = !isLoopbackListen(address);
     const allowLan = el("node-allow-lan").checked;
@@ -8904,6 +8923,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.replaceChildren();
       syncPeerListensForm(warning, allowLan);
       syncPrivateNote();
+      settleAdvancedFold();
       return;
     }
 
@@ -8944,10 +8964,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
-      el("node-advanced").open = true;
+      notPrivateWarnedNow = true;
     }
 
     syncPrivateNote();
+    settleAdvancedFold();
   }
 
   // The note explains the field's current contents, so it is shown whenever
@@ -8966,7 +8987,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         (peerListensSupported() ? ` ${t("nodeSettings.otherNeedsRange")}` : "")
       : "";
     note.classList.toggle("hidden", !showing);
-    if (showing || el("node-private").value.trim() !== "") el("node-advanced").open = true;
   }
 
   // suggestPrivateRange runs when the owner picks a different address, and only
@@ -9620,7 +9640,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeId,
-    photoWanted, copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    photoWanted, syncPrivateNote, copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,

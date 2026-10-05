@@ -535,7 +535,7 @@
   每列狀態比 `peerListeners` 與 `saved`／`settings.peerListens`：已開放／重啟後開放／重啟後關閉／沒開放＋原因
   （`address_gone`、`port_in_use`、其餘附節點的 message）。舊節點（沒有 `peerListens`）保留單選下拉
   `#node-peerlisten`，只送 `peerListen`。測試：`frontend/test/listen-addresses.mjs`。
-  「視為私有網段」收在 `#node-advanced`（`<details>`），欄位有值、建議值說明出現、或出現 `warnNotPrivate` 時自動展開，不自動收；自動喚醒下的 `wake.caveat` 只在勾選時顯示。
+  「視為私有網段」收在 `#node-advanced`（`<details>`），只在兩個時機自動展開：表單從節點讀回來填值（`applyNodeSettings()`，含儲存後重畫）且欄位有值時，以及 `warnNotPrivate` 警告從沒有變成有的那一刻（轉折，不是存在就展開；`settleAdvancedFold()`）；`syncNodeSettingsForm()`／`syncPrivateNote()` 不寫 `open`，所以擁有者手動收合後不會被打字或背景 tick 彈開，也不自動收；自動喚醒下的 `wake.caveat` 只在勾選時顯示。
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
 - **語言**：`settings-lang`（2026-10-05 自外觀獨立）。
 
