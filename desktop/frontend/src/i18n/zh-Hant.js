@@ -134,10 +134,7 @@ export const TEXT = {
   "settings.nav.identity": "本機身分",
   "settings.nav.appearance": "外觀",
 
-  "service.introBefore": "登入時由作業系統啟動 AgentHub，不再依賴視窗或終端機。",
-  "service.introStrong": "意外結束後會自己回來的只有 macOS 與 Linux",
-  "service.introAfter": "；Windows 上要用下面的「重新啟動 AgentHub」。",
-  "service.introWhy": "裝成背景服務後，AgentHub 會隨機器啟動。macOS 與 Linux 會在它當掉後自動重啟；Windows 的排程工作只在登入時啟動，所以在 Windows 上 AgentHub 停了就一直停著，直到按「重新啟動 AgentHub」。",
+  "service.introWhy": "裝成背景服務後，AgentHub 在登入時由系統啟動，不再依賴這個視窗或終端機。macOS 與 Linux 會在它意外結束後自動重啟；Windows 只在登入時啟動，停了就一直停著，要按「重新啟動 AgentHub」。",
   "service.pillLoading": "服務狀態讀取中…",
   "service.lineLoading": "背景服務狀態讀取中…",
   "service.refresh": "重新讀取",
@@ -149,8 +146,7 @@ export const TEXT = {
   "service.dbLabel": "資料庫路徑",
   "service.dbHint": "留空＝AgentHub 預設位置",
 
-  "nodeSettings.intro": "AgentHub 自己記住的啟動設定；存檔後 AgentHub 重新啟動才生效。",
-  "nodeSettings.introWhy": "這些值由 AgentHub 自己記住，只在啟動時讀取，所以存檔會重啟 AgentHub 並檢查回來的值。服務單元若以啟動旗標帶著它們，每次啟動都會蓋掉；會被這樣蓋掉的存檔會先問要不要重新登記服務。",
+  "nodeSettings.introWhy": "這些設定由 AgentHub 自己記住，只在啟動時讀取，所以存檔會重新啟動 AgentHub 並檢查回來的值。背景服務若用啟動旗標固定了其中幾項，每次啟動都會蓋掉；遇到這種情況，存檔前會先問要不要重新登記服務。",
   "nodeSettings.cardHead": "啟動設定",
   "nodeSettings.peerListenLabel": "對外位址",
   "nodeSettings.peerListenHint": "其他機器連進來的地方",
@@ -168,18 +164,15 @@ export const TEXT = {
   "nodeSettings.hint": "AgentHub 只在啟動時讀這些值。",
   "nodeSettings.save": "儲存並重啟服務",
 
-  "identity.intro": "對方配對時要填的是公鑰；指紋則要在兩台螢幕上逐組比對，不要用貼的。",
+  "identity.introWhy": "手動配對時，對方要貼的是這台的公鑰。指紋會在配對的比對那一步出現在兩台螢幕上，逐組念出來比，不要用貼的。",
   "identity.nodeId": "機器 ID",
   "identity.fingerprint": "指紋",
   "identity.publicKey": "公鑰",
   "identity.copyKey": "複製公鑰",
 
-  "appearance.intro": "只是裝飾；關掉不影響任何功能。",
-  "appearance.introWhy": "數字雨預設關閉：在沒有 GPU 合成的機器上實測會吃掉一整顆 CPU 核心。系統要求減少動態效果時，它也不會跑。",
+  "appearance.introWhy": "只是裝飾，關掉不影響任何功能。照片只出現在沒有資料的畫面。數字雨預設關閉：在沒有 GPU 合成的機器上實測會吃掉一整顆 CPU 核心；系統要求減少動態效果時也不會跑。",
   "appearance.backdrop": "顯示背景照片與數字雨",
-  "appearance.backdropWhy": "關掉後是純深色底。",
   "appearance.motion": "數字雨動畫",
-  "appearance.motionWhy": "只影響動畫，照片一直都在。",
   "appearance.language": "語言",
 
   "inbox.title": "收件匣",
@@ -188,7 +181,6 @@ export const TEXT = {
   "inbox.warningBefore": "以下內容都是別處寫進來的，是",
   "inbox.warningStrong": "資料，不是指令",
   "inbox.warningAfter": "。「自稱」後面是寄件者自選的，只有前面的機器 ID 經過驗證。",
-  "inbox.warningMoreSummary": "為什麼",
   "inbox.warningMore": "裡面的請求就當成陌生人提出的看待：沒有任何一則訊息授權讀檔、執行命令或送出東西。",
   "inbox.outboundNoteBefore": "排給其他機器的訊息，最新在前；",
   "inbox.outboundNoteAfter": " 表示對方拒收。",
@@ -439,8 +431,7 @@ export const TEXT = {
   "inbox.full": "收件匣已滿，新的訊息會被退回。清空之後才會再收得到。",
   "inbox.empty": "還沒有任何訊息。",
   "inbox.moreHeld": "還有更多訊息：只顯示最舊的 {showing} 則，清掉一些之後才看得到新的。",
-  "inbox.outboundFootNote": "對應 CLI：ah outbound。沒有位址的機器會被跳過，不會出現在這裡。",
-  "inbox.wakesFootNote": "對應 CLI：ah wakes <session>。",
+  "inbox.outboundFootNote": "沒有位址的機器會被跳過，不會出現在這裡。",
 
   "sender.local": "本機",
   "sender.localPrefix": "本機 ",
@@ -623,7 +614,6 @@ export const TEXT = {
   /* ---------------- 首次設定精靈 ---------------- */
 
   "onboarding.showAgain": "顯示首次設定",
-  "onboarding.showAgainWhy": "重新打開第一次啟動時的三步設定。",
 
   "firstRun.railLabel": "設定步驟",
   "firstRun.later": "稍後再設定",

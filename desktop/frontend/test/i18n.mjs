@@ -596,14 +596,14 @@ for (const [name, table] of [["en", EN], ["zh-Hant", ZH]]) {
     if (/docs\/[\w.-]+\.md/.test(value)) failures.push(`${name} ${key} sends the owner to a repository file: ${value}`);
   }
   for (const key of ["common.why", "why.compareFingerprints", "why.unreachable", "why.fingerprint", "why.heartbeat",
-    "service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+    "service.introWhy", "nodeSettings.introWhy", "appearance.introWhy", "identity.introWhy"]) {
     if (!table[key]) failures.push(`${name} has no ${key}`);
   }
 }
 {
   const markup = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
   if (/data-t-title="[\w.]+introMore"/.test(markup)) failures.push("index.html still carries an introMore tooltip");
-  for (const key of ["service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+  for (const key of ["service.introWhy", "nodeSettings.introWhy", "appearance.introWhy", "identity.introWhy"]) {
     if (!markup.includes(`<details class="why"><summary data-t="common.why"></summary><p data-t="${key}"></p></details>`)) {
       failures.push(`index.html does not fold ${key} under a focusable summary`);
     }

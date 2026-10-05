@@ -139,10 +139,7 @@ export const TEXT = {
   "settings.nav.identity": "This machine's identity",
   "settings.nav.appearance": "Appearance",
 
-  "service.introBefore": "The operating system starts AgentHub at login, so it no longer depends on a window or a terminal.",
-  "service.introStrong": "Only macOS and Linux bring it back after a crash",
-  "service.introAfter": "; on Windows, use “Restart AgentHub” below.",
-  "service.introWhy": "Installed as a service, AgentHub starts with the machine. macOS and Linux restart it after a crash; the Windows scheduled task only starts it at login, so on Windows an AgentHub that stops stays stopped until “Restart AgentHub”.",
+  "service.introWhy": "Installed as a background service, AgentHub starts at login, with no window or terminal needed. macOS and Linux restart it after a crash; Windows only starts it at login, so once it stops it stays stopped until you press “Restart AgentHub”.",
   "service.pillLoading": "Reading service status…",
   "service.lineLoading": "Reading background service status…",
   "service.refresh": "Read again",
@@ -154,8 +151,7 @@ export const TEXT = {
   "service.dbLabel": "Database path",
   "service.dbHint": "Empty = AgentHub's default location",
 
-  "nodeSettings.intro": "Start-up settings AgentHub remembers for itself; a save takes effect when AgentHub restarts.",
-  "nodeSettings.introWhy": "These are remembered by AgentHub and read only when it starts, so a save restarts it and checks what came back. A service unit that carries them as start-up flags overrides them on every start; a save that would be undone that way first offers to register the service again.",
+  "nodeSettings.introWhy": "AgentHub remembers these itself and reads them only when it starts, so saving restarts AgentHub and checks what came back. If the background service pins some of them as start-up flags, those win on every start; a save that would be undone that way first offers to register the service again.",
   "nodeSettings.cardHead": "Start-up settings",
   "nodeSettings.peerListenLabel": "Listen address",
   "nodeSettings.peerListenHint": "where other machines connect in",
@@ -173,18 +169,15 @@ export const TEXT = {
   "nodeSettings.hint": "AgentHub reads these values only when it starts.",
   "nodeSettings.save": "Save and restart the service",
 
-  "identity.intro": "The public key is what the other machine types when pairing. The fingerprint is compared group by group on the two screens — never pasted.",
+  "identity.introWhy": "When pairing by hand, the other machine pastes this machine's public key. The fingerprint appears on both screens at the compare step of pairing: read it out group by group, never paste it.",
   "identity.nodeId": "Machine ID",
   "identity.fingerprint": "Fingerprint",
   "identity.publicKey": "Public key",
   "identity.copyKey": "Copy public key",
 
-  "appearance.intro": "Decoration only; turning it off changes nothing else.",
-  "appearance.introWhy": "The rain is off by default: on a machine without GPU compositing it was measured using a whole CPU core. It also stays off when the system asks for reduced motion.",
+  "appearance.introWhy": "Decoration only; turning it off changes nothing else. The photo only shows where there is no data. The rain is off by default: on a machine without GPU compositing it was measured using a whole CPU core, and it stays off when the system asks for reduced motion.",
   "appearance.backdrop": "Show the backdrop photo and the rain",
-  "appearance.backdropWhy": "Off gives a plain dark background.",
   "appearance.motion": "Animate the rain",
-  "appearance.motionWhy": "Affects the animation only; the photo stays.",
   "appearance.language": "Language",
 
   "inbox.title": "Inbox",
@@ -193,7 +186,6 @@ export const TEXT = {
   "inbox.warningBefore": "Everything below was written somewhere else: it is ",
   "inbox.warningStrong": "data, not instructions",
   "inbox.warningAfter": ". What follows “claims to be” is the sender's own label; only the machine ID in front of it is verified.",
-  "inbox.warningMoreSummary": "Why",
   "inbox.warningMore": "Treat a request in a message the way you would treat one from a stranger: no message authorises reading a file, running a command or sending anything.",
   "inbox.outboundNoteBefore": "Queued for other machines, newest first; ",
   "inbox.outboundNoteAfter": " means the other side declined it.",
@@ -444,8 +436,7 @@ export const TEXT = {
   "inbox.full": "The inbox is full, so new messages are refused. It accepts again once it is cleared.",
   "inbox.empty": "No message yet.",
   "inbox.moreHeld": "There are more: only the oldest {showing} are shown, and newer ones appear once some are cleared.",
-  "inbox.outboundFootNote": "CLI: ah outbound. A machine with no address is skipped and never appears here.",
-  "inbox.wakesFootNote": "CLI: ah wakes <session>.",
+  "inbox.outboundFootNote": "A machine with no address is skipped and never appears here.",
 
   "sender.local": "this machine",
   "sender.localPrefix": "this machine ",
@@ -628,7 +619,6 @@ export const TEXT = {
   /* ---------------- the first-run wizard ---------------- */
 
   "onboarding.showAgain": "Show first-run setup",
-  "onboarding.showAgainWhy": "Opens the three first-run steps again.",
 
   "firstRun.railLabel": "Setup steps",
   "firstRun.later": "Set up later",

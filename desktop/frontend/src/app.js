@@ -6857,7 +6857,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("inbox-clear").classList.toggle("hidden", state.inboxTab !== "inbox");
     el("inbox-foot-note").textContent = state.inboxTab === "inbox"
       ? t("inbox.footNote")
-      : state.inboxTab === "outbound" ? t("inbox.outboundFootNote") : t("inbox.wakesFootNote");
+      : state.inboxTab === "outbound" ? t("inbox.outboundFootNote") : "";
     if (state.inboxTab === "outbound" && state.outbound.session !== state.inboxSessionAsked) {
       loadOutbound({ reset: true }).catch(() => {});
     }
