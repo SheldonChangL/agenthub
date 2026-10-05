@@ -105,6 +105,8 @@ export const TEXT = {
   "app.previewHeartbeat": "預覽 heartbeat",
 
   "local.searchPlaceholder": "搜尋標題、ID、目錄、管理方式…",
+  "local.colSession": "Session",
+  "local.groupProvider": "工具",
   "local.groupStatus": "狀態",
   "local.groupAudience": "分享",
   "local.clearFilters": "清除篩選",

@@ -106,6 +106,8 @@ export const TEXT = {
   "app.previewHeartbeat": "Preview heartbeat",
 
   "local.searchPlaceholder": "Search titles, IDs, paths…",
+  "local.colSession": "SESSION",
+  "local.groupProvider": "PROVIDER",
   "local.groupStatus": "STATUS",
   "local.groupAudience": "SHARING",
   "local.clearFilters": "Clear filters",
