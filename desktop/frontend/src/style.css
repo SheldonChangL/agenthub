@@ -283,31 +283,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   --sev-error: var(--red);
 }
 
-/* What is waiting on the owner, right under the title bar on every view. One
-   row per thing, the button that deals with it on the row. */
+/* What is waiting on the owner, at the top of the bell's drawer. One row per
+   thing, the button that deals with it on the row. */
 .attention {
-  flex: none;
   display: flex; flex-direction: column;
   gap: 1px;
+  margin: 0 0 16px;
+  border-radius: var(--radius);
+  overflow: hidden;
   background: var(--line);
-  border-bottom: 1px solid var(--line);
 }
 .attnrow {
   display: flex; align-items: center; gap: 12px;
   min-height: 52px;
-  padding: 8px 16px;
+  padding: 10px 12px;
   background: var(--panel-solid);
 }
 .attnrow .sev { flex: none; align-self: stretch; width: 4px; border-radius: 2px; background: var(--sev-info); }
 .attnrow.warn .sev { background: var(--sev-warn); }
 .attnrow.alert .sev { background: var(--sev-error); }
 .attnmsg { flex: 1; min-width: 0; }
-.attntitle { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attntitle { font-weight: 600; font-size: 13px; white-space: normal; }
 .attnbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
 .attnrow button { flex: none; }
-/* The rest of the strip, folded behind one button past two rows. */
-.attnmore { display: flex; align-items: center; padding: 2px 16px 2px 32px; background: var(--panel-solid); }
-.attnmore button { flex: none; }
 
 /* Toasts: the answer to the button just pressed. Bottom right, above every
    drawer and dialog, newest at the bottom. */
@@ -405,6 +403,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* Something is waiting in the drawer: the bell takes the colour of the most
+   severe item. The number is still only what has not been read. */
+.bell.needs-alert { color: var(--sev-error); }
+.bell.needs-warn { color: var(--sev-warn); }
+.bell.needs-info { color: var(--sev-info); }
+.drawersection { margin: 0 0 8px; font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); }
 
 /* The log behind the bell. */
 .noticelist { display: flex; flex-direction: column; }

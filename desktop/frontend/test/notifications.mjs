@@ -602,8 +602,8 @@ if (byTitle(ZH["attention.service.noneTitle"])?.row !== kept) failures.push("a r
 serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
 await loadWith(reachable());
 
-// 3f. Past two rows, the rest fold behind one button, most severe first; the
-//     button unfolds them for this window only.
+// 3f. The drawer lists every row, most severe first, with no fold button; the
+//     bell takes the colour of the most severe one and says how many wait.
 serviceAnswer = { supported: true, installed: true, running: false, pid: 0, logHint: "~/agenthub.log" };
 countsAnswer = { ok: true, counts: { "codex:two": { held: 9, capacity: 9, full: true } } };
 pairRequestsAnswer = [incoming];
@@ -613,38 +613,28 @@ await loadWith(reachable());
 tick15.fn();
 await settle();
 {
-  const strip = () => el("attention").children;
-  const titles = () => attentionRows(document).filter((entry) => entry.title).map((entry) => entry.sev);
-  const more = () => strip().at(-1);
-  if (JSON.stringify(titles()) !== JSON.stringify(["alert", "warn"])) failures.push(`three things show ${JSON.stringify(titles())}, want the alert and the warning`);
-  const button = more()?.children?.[0];
-  if (strip().length !== 3 || button?.textContent !== fill(ZH["attention.more.one"], { n: 1 })) {
-    failures.push(`the third row is ${JSON.stringify(button?.textContent)}, want ${fill(ZH["attention.more.one"], { n: 1 })}`);
+  const needs = () => ["alert", "warn", "info"].filter((sev) => el("btn-bell").classList.contains(`needs-${sev}`));
+  const rows = attentionRows(document);
+  if (JSON.stringify(rows.map((entry) => entry.sev)) !== JSON.stringify(["alert", "warn", "info"])) {
+    failures.push(`three things show ${JSON.stringify(rows.map((entry) => entry.sev))}, want the alert, the warning and the info`);
   }
-  button?.onclick();
-  if (JSON.stringify(titles()) !== JSON.stringify(["alert", "warn", "info"])) failures.push(`unfolded the strip shows ${JSON.stringify(titles())}`);
-  if (more()?.children?.[0] !== button || button?.textContent !== ZH["attention.less"]) failures.push(`unfolded, the button reads ${button?.textContent}`);
-  // It stays unfolded across the tick's renders.
-  app.render();
-  if (titles().length !== 3) failures.push("a render folded the strip back up");
-  button?.onclick();
-  if (titles().length !== 2) failures.push("收起 did not fold the strip");
-  // Two or fewer: no button at all — and unfolded is forgotten, so a third
-  // thing arriving later starts folded again.
-  button?.onclick();
+  if (rows.some((entry) => entry.title === "")) failures.push("a row has no title: a fold button is still there");
+  if (el("attention-heading").classList.contains("hidden")) failures.push("the drawer's needs-you heading is hidden with three things waiting");
+  if (JSON.stringify(needs()) !== JSON.stringify(["alert"])) failures.push(`the bell is ${JSON.stringify(needs())}, want only needs-alert`);
+  if (!el("btn-bell").title.includes(fill(ZH["notify.bellNeeds.other"], { n: 3 }))) failures.push(`the bell says ${el("btn-bell").title}, want the three waiting`);
+  // The alert gone: the bell takes the next one down.
+  serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
+  countsAnswer = { ok: true, counts: {} };
+  await loadWith(reachable());
+  tick15.fn();
+  await settle();
+  if (JSON.stringify(needs()) !== JSON.stringify(["info"])) failures.push(`with only the pairing request left the bell is ${JSON.stringify(needs())}, want needs-info`);
+  // Nothing waiting: no colour, no heading.
   pairRequestsAnswer = [];
   tick15.fn();
   await settle();
-  if (attentionRows(document).some((entry) => !entry.title)) failures.push("two rows still carry the fold button");
-  pairRequestsAnswer = [incoming];
-  tick15.fn();
-  await settle();
-  if (titles().length !== 2 || more()?.children?.[0]?.textContent !== fill(ZH["attention.more.one"], { n: 1 })) {
-    failures.push(`a strip that went down to two and back to three came back unfolded: ${JSON.stringify(titles())}`);
-  }
-  pairRequestsAnswer = [];
-  tick15.fn();
-  await settle();
+  if (needs().length !== 0) failures.push(`nothing waits and the bell is still ${JSON.stringify(needs())}`);
+  if (!el("attention-heading").classList.contains("hidden")) failures.push("nothing waits and the needs-you heading is still showing");
 }
 serviceAnswer = { supported: true, installed: true, running: true, pid: 1 };
 countsAnswer = { ok: true, counts: {} };

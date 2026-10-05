@@ -3155,9 +3155,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // since the window opened, with the time. Its number is the errors and
   // warnings nobody has opened the drawer to look at.
   //
-  // The attention strip answers "what is waiting on me", on every view: a node
-  // that is not answering, a service that is not running, a full inbox, a
-  // machine asking to pair. Each row has the button that deals with it.
+  // The drawer's needs-you section answers "what is waiting on me", and the
+  // bell's colour says something is: a node that is not answering, a service
+  // that is not running, a full inbox, a machine asking to pair. Each row has
+  // the button that deals with it.
   const TOAST_LIMIT = 1;
   const TOAST_MS = 6000;
   // One that carries a button (復原, 去公開 session) stays longer: six seconds
@@ -3172,6 +3173,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // container, so dismissing one toast never has to rebuild the others: a
   // re-inserted element restarts its countdown bar.
   const toastsShown = [];
+  // What the drawer has waiting, for renderBell: how many, and the most severe.
+  // Written by renderAttention.
+  let attentionWaiting = { count: 0, sev: "" };
 
   function noticeTime(date) {
     return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -3319,7 +3323,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const badge = el("bell-n");
     badge.textContent = unread > 0 ? String(unread) : "";
     badge.classList.toggle("hidden", unread === 0);
-    el("btn-bell").title = unread > 0 ? plural(unread, "notify.bellUnread") : t("notify.bellTitle");
+    const bell = el("btn-bell");
+    for (const sev of ["alert", "warn", "info"]) bell.classList.toggle(`needs-${sev}`, attentionWaiting.sev === sev);
+    const parts = [];
+    if (attentionWaiting.count > 0) parts.push(plural(attentionWaiting.count, "notify.bellNeeds"));
+    if (unread > 0) parts.push(plural(unread, "notify.bellUnread"));
+    bell.title = parts.length > 0 ? parts.join(" · ") : t("notify.bellTitle");
   }
 
   function openNotices() {
@@ -3515,32 +3524,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   const ATTENTION_ORDER = { alert: 0, warn: 1, info: 2 };
-  // How many rows the strip shows before the rest fold behind a button: two
-  // rows and the button are what fits above the table at 900×760 with five
-  // session rows still in view.
-  const ATTENTION_VISIBLE = 2;
-  // Whether the owner unfolded the rest. This window only, never saved.
-  let attentionExpanded = false;
-  let attentionMore = null;
-
-  function attentionMoreRow(hidden) {
-    if (!attentionMore) {
-      const row = element("div", "attnmore");
-      const button = element("button", "ghost attnmorebtn");
-      button.onclick = () => {
-        attentionExpanded = !attentionExpanded;
-        renderAttention();
-        // The button is still there, relabelled, so the keyboard stays on it.
-        button.focus?.();
-      };
-      row.append(button);
-      attentionMore = { row, button };
-    }
-    attentionMore.button.textContent = attentionExpanded ? t("attention.less") : plural(hidden, "attention.more");
-    attentionMore.button.setAttribute("aria-expanded", String(attentionExpanded));
-    return attentionMore.row;
-  }
-
   function renderAttention() {
     const items = attentionItems();
     const keys = new Set(items.map((item) => item.key));
@@ -3555,22 +3538,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const kind of [...attentionRows.keys()]) {
       if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
     }
-    const folded = shown.length > ATTENTION_VISIBLE;
-    // Unfolded is about the rows that were folded then. Once there is nothing
-    // left to fold, the next time there is starts folded again, rather than
-    // unfolding rows the owner never asked to see.
-    if (!folded) attentionExpanded = false;
-    const rows = folded && !attentionExpanded ? shown.slice(0, ATTENTION_VISIBLE) : shown;
-    const children = rows.map(attentionRow);
-    if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
     const box = el("attention");
-    keepChildren(box, children);
+    keepChildren(box, shown.map(attentionRow));
     // Never beside the first-run wizard. Its first step is the node, the
     // service and the address, which are this strip's first two rows by
     // another name, and one thing with two buttons on screen is how the card
     // it replaced read (docs/ui-contract.md §3.2). Still logged above, so the
     // bell has it; back the moment the wizard is put away.
-    box.classList.toggle("hidden", shown.length === 0 || firstRunVisible());
+    const hidden = shown.length === 0 || firstRunVisible();
+    box.classList.toggle("hidden", hidden);
+    el("attention-heading").classList.toggle("hidden", hidden);
+    attentionWaiting = hidden ? { count: 0, sev: "" } : { count: shown.length, sev: shown[0].sev };
+    renderBell();
   }
 
   // The fifteen-second tick's one read of the exchange, for the attention row.

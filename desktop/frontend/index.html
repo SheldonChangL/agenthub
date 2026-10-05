@@ -69,13 +69,6 @@
         </div>
       </header>
 
-      <!-- Things waiting on the owner, one row each, on every view: a node
-           that is not answering, a service that is not running, a full
-           inbox, a machine asking to pair. Each row carries the button that
-           deals with it and a 「later」 that puts it away until it has gone
-           and come back. Rows are built by renderAttention() in app.js. -->
-      <div id="attention" class="attention hidden" aria-live="polite"></div>
-
       <!-- ============ the first-run wizard ============ -->
       <!-- The whole window on a fresh install: three steps down the left, the
            one being done on the right, one primary button at a time. While it
@@ -702,6 +695,9 @@
           <button id="notify-close" class="ghost" data-t="common.close"></button>
         </header>
         <div class="drawerbody">
+          <h3 id="attention-heading" class="drawersection hidden" data-t="notify.needsHeading"></h3>
+          <div id="attention" class="attention hidden" aria-live="polite"></div>
+          <h3 class="drawersection" data-t="notify.logHeading"></h3>
           <div id="notify-list" class="noticelist"></div>
         </div>
       </div>
