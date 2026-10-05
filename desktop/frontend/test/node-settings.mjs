@@ -1296,6 +1296,29 @@ if (!el("node-autowake").checked) {
 // fillPeerListenOptions, which nothing re-ran on a language switch, so the
 // options kept the words of the language before it — including the one the
 // placeholder is written in, which is the option a form with no match falls
+// The "Advanced" fold (holds the private ranges) opens when the form is filled
+// from the node and the field has a value, and never because of a sync: a fold
+// the owner closed must stay closed through keystrokes and background ticks.
+{
+  const advanced = el("node-advanced");
+  const withRange = {
+    settings: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+    sources: {},
+    saved: { peerListen: "127.0.0.1:7463", allowLan: false, discover: false, treatAsPrivate: ["192.168.50.0/24"], autoWake: false },
+    restartRequired: false,
+  };
+  advanced.open = false;
+  app.state.nodeSettings = withRange;
+  await app.applyNodeSettings(withRange);
+  if (advanced.open !== true) failures.push("the advanced fold did not open when the form was filled with a private range");
+  advanced.open = false;
+  app.syncNodeSettingsForm();
+  app.syncPrivateNote();
+  if (advanced.open !== false) failures.push("a sync reopened the advanced fold the owner had closed");
+  await app.applyNodeSettings(withRange);
+  if (advanced.open !== true) failures.push("the advanced fold stayed closed when the node's values were read back again");
+}
+
 // back to.
 inEnglish(app, failures, "node settings in English", [
   "node-peerlisten", "node-settings-hint", "node-settings-combination", "node-lan-note",

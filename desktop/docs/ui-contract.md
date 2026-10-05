@@ -160,7 +160,8 @@
     `#notify-modal`，列出本次開啟以來每一則 toast 與待處理列項目（嚴重度色條、標題、內文、HH:MM 與嚴重度文字），
     最新在上；開啟即全部標為已讀，開著時新來的也直接算已讀。只存在記憶體，上限 100 則。空時「目前沒有通知。」。
     它不在 `MODAL_IDS` 裡：唯讀清單，不擋 15 秒背景重讀。
-  - **待處理列**（`#attention`，標題列正下方，每個視圖都看得到）：一列一件需要使用者處理的事，左側嚴重度色條、
+    鈴鐺圖示在抽屜有待處理項目時套 `needs-alert`／`needs-warn`／`needs-info`（最嚴重的那件），title 前面加「N 件事等你處理」（`notify.bellNeeds`）；數字語意不變。
+  - **待處理列**（`#attention`，2026-10-05 起在通知紀錄抽屜頂端「需要你處理」標題下，原本在標題列正下方）：一列一件需要使用者處理的事，左側嚴重度色條、
     一句標題＋一行說明、一顆直接處理它的按鈕、一顆「稍後」。事情解決了該列自己消失；項目出現時記一筆進通知中心
     （alert 記為錯誤、warn 記為警告、info 記為資訊），同一件事持續期間不重複記。
 
@@ -195,11 +196,8 @@
     （稍後再設定、開始使用、或被一個 `goTo*()` 暫時讓開）就回來（`renderAttention()` 看 `firstRunVisible()`；
     測試 `first-run.mjs` §2、`notifications.mjs` 3b、`inline-publish.mjs` §6）。
 
-    **超過 2 件時收合**：依嚴重度（alert > warn > info，同級照上表順序）只顯示前 2 件，第三列是一顆
-    「還有 N 件」（`attention.more`），按了全部展開、按鈕變「收起」。展開狀態只在這個視窗的記憶體裡，不存；
-    項目降到 2 件以下（沒東西可收）就重置為收合，之後再超過時從收合開始（測試 `notifications.mjs` 3f）。
-    兩件（含）以下沒有這顆。收合是為了 900×760 下表格仍看得到至少 5 列。
-    測試 `notifications.mjs` §3b、§3f。
+    抽屜裡全部列出、不收合（測試 `notifications.mjs` 3f）。
+    除了「重試」，每一列的動作鈕按下時先關掉抽屜（`attentionRow()`）：它們要去的地方（收件匣、配對抽屜、設定頁）不該開在抽屜後面。
 - **首次設定精靈**（`#first-run`，見 §3.2）：開著時佔滿主內容區，三個視圖都藏在它下面；觸發條件橫跨三個視圖的狀態。
 - 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。**按下去的那一顆**另外轉圈並停用自己到呼叫回來為止
@@ -431,8 +429,11 @@
   由右往左截斷。空值顯示純文字「—」（`span.cwdempty`），沒有按鈕。兩者在 `sessionRow` 建一次、`updateSessionRow` 切換，
   tick 不換掉按鈕。
 - 空狀態：「沒有符合條件的 session。」
+- 沒有任何 session 時表格隱藏，`#empty` 改說 `local.emptyNone`，背景照片露出（§9）。
 
 ### 3.3 區網視圖
+
+版面：左欄清單 320px、右側 `#node-detail`（左右兩欄，2026-10-05 修正 `.view` 的 column 方向蓋過 `.networkwrap` 的問題）。沒選機器時右側 `.idle`：無卡片、露出照片、一句話放在小卡上。
 
 左欄（`nodelist`）：
 - 已配對節點列表：每列 presence 點 + 名稱 + presence 文字 + 平台 · 最後聯繫。空：「尚未配對任何節點。」
@@ -519,7 +520,7 @@
 
 ### 3.4 設定頁
 
-三個區塊，由 `settingsSection` 決定捲到哪一個：
+五個分頁（左側直排 `role="tablist"`，方向鍵上下／Home／End），只顯示 `settingsSection` 那一個：
 
 - **背景服務**：狀態行、重新讀取、安裝／重新安裝、移除；展開表單**只有一個欄位：資料庫路徑**
   （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
@@ -534,7 +535,9 @@
   每列狀態比 `peerListeners` 與 `saved`／`settings.peerListens`：已開放／重啟後開放／重啟後關閉／沒開放＋原因
   （`address_gone`、`port_in_use`、其餘附節點的 message）。舊節點（沒有 `peerListens`）保留單選下拉
   `#node-peerlisten`，只送 `peerListen`。測試：`frontend/test/listen-addresses.mjs`。
-- **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；語言；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
+  「視為私有網段」收在 `#node-advanced`（`<details>`），只在兩個時機自動展開：表單從節點讀回來填值（`applyNodeSettings()`，含儲存後重畫）且欄位有值時，以及 `warnNotPrivate` 警告從沒有變成有的那一刻（轉折，不是存在就展開；`settleAdvancedFold()`）；`syncNodeSettingsForm()`／`syncPrivateNote()` 不寫 `open`，所以擁有者手動收合後不會被打字或背景 tick 彈開，也不自動收；自動喚醒下的 `wake.caveat` 只在勾選時顯示。
+- **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
+- **語言**：`settings-lang`（2026-10-05 自外觀獨立）。
 
 ### 3.5 覆蓋層（8 個：3 個抽屜 + 5 個對話框）
 
@@ -1011,6 +1014,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 4. 設定頁那句話兩種狀態都要講出成本，字串含「CPU」；關閉時另含「預設關閉」。`frontend/test/backdrop-switches.mjs` 逐字斷言。
 5. `index.html` 的 `#toggle-motion` 不得帶 `checked`（`TestFrontendMotionToggleStartsUnchecked`）。
 6. `style.css` 不得有任何 `backdrop-filter:`（`TestFrontendDoesNotBlurOverMovingPixels`）。注意：毛玻璃**沒有**被單獨量過，這條靠推論成立，不要對外宣稱它有數字。
+7. 照片只畫在精靈、沒有 session 的本機視圖、區網頁沒選機器時（`photoWanted()`→`body.photo-away`）；兩個開關決定有沒有照片，這條決定照片在哪（測試 `backdrop-switches.mjs` §6）。
 
 
 ## 10. 列動作只剩兩顆：MCP 入口已移除（2026-09-15，owner 指定）

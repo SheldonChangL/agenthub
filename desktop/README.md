@@ -39,9 +39,11 @@ Three views behind the title-bar tabs:
 - **區網** — paired nodes with presence and a red mark when a node has no
   recorded address; the pairing window and the advertising machines open as a
   drawer from the list's foot.
-- **設定** — the background service panel, this node's identity (id,
-  fingerprint, copyable public key) and appearance switches for the backdrop
-  photo and the falling digits (which also stop under `prefers-reduced-motion`).
+- **設定** — five tabs: the background service, connection settings (advanced
+  fields folded), this machine's identity, appearance (backdrop photo and
+  falling digits, which also stop under `prefers-reduced-motion`) and language.
+  The photo only shows where there is no data: the first-run wizard, an empty
+  session list, and the network view before a machine is picked.
 
 The functional contract the redesign was built against, including the copy the
 tests assert verbatim, is `docs/ui-contract.md`; the design canvas sources are

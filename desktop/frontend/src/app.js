@@ -598,6 +598,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       if (!seen.has(key)) sessionRows.delete(key);
     }
     keepChildren(body, wanted);
+    el("empty").textContent = state.sessions.length === 0 ? t("local.emptyNone") : t("local.empty");
     el("empty").classList.toggle("hidden", rows.length > 0);
   }
 
@@ -2731,6 +2732,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
 
   const VIEWS = ["local", "network", "settings"];
+  const SETTINGS_SECTIONS = ["settings-service", "settings-node", "settings-identity", "settings-appearance", "settings-language"];
+
+  // Where the photo may show: places with no data on them. The owner's two
+  // switches decide whether there is a photo at all (applyBackdrop).
+  function photoWanted() {
+    if (firstRunVisible()) return true;
+    if (state.view === "local") return state.sessions.length === 0;
+    if (state.view === "network") return !state.nodes.some((node) => node.nodeId === state.selectedNode);
+    return false;
+  }
 
   function render() {
     renderFirstRun();
@@ -2820,6 +2831,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       none: state.counts.none ?? 0,
     });
 
+    el("local-view").classList.toggle("isempty", state.sessions.length === 0);
+    document.body?.classList?.toggle("photo-away", !photoWanted());
+
     // On every view, so last: every read above may have changed what is
     // waiting on the owner.
     renderAttention();
@@ -2842,8 +2856,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // override stored the window is following the OS, and a blank box over a
     // window that is plainly in one language reads as a bug.
     el("settings-lang").value = language();
-    for (const link of document.querySelectorAll("#settings-nav a")) {
-      link.className = link.dataset.target === state.settingsSection ? "on" : "";
+    for (const id of SETTINGS_SECTIONS) el(id).classList.toggle("hidden", state.settingsSection !== id);
+    for (const tab of document.querySelectorAll("#settings-nav [data-target]")) {
+      const on = tab.dataset.target === state.settingsSection;
+      tab.className = on ? "settab on" : "settab";
+      tab.setAttribute?.("aria-selected", String(on));
+      tab.setAttribute?.("tabindex", on ? "0" : "-1");
     }
   }
 
@@ -3155,9 +3173,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // since the window opened, with the time. Its number is the errors and
   // warnings nobody has opened the drawer to look at.
   //
-  // The attention strip answers "what is waiting on me", on every view: a node
-  // that is not answering, a service that is not running, a full inbox, a
-  // machine asking to pair. Each row has the button that deals with it.
+  // The drawer's needs-you section answers "what is waiting on me", and the
+  // bell's colour says something is: a node that is not answering, a service
+  // that is not running, a full inbox, a machine asking to pair. Each row has
+  // the button that deals with it.
   const TOAST_LIMIT = 1;
   const TOAST_MS = 6000;
   // One that carries a button (復原, 去公開 session) stays longer: six seconds
@@ -3172,6 +3191,9 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // container, so dismissing one toast never has to rebuild the others: a
   // re-inserted element restarts its countdown bar.
   const toastsShown = [];
+  // What the drawer has waiting, for renderBell: how many, and the most severe.
+  // Written by renderAttention.
+  let attentionWaiting = { count: 0, sev: "" };
 
   function noticeTime(date) {
     return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -3319,7 +3341,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const badge = el("bell-n");
     badge.textContent = unread > 0 ? String(unread) : "";
     badge.classList.toggle("hidden", unread === 0);
-    el("btn-bell").title = unread > 0 ? plural(unread, "notify.bellUnread") : t("notify.bellTitle");
+    const bell = el("btn-bell");
+    for (const sev of ["alert", "warn", "info"]) bell.classList.toggle(`needs-${sev}`, attentionWaiting.sev === sev);
+    const parts = [];
+    if (attentionWaiting.count > 0) parts.push(plural(attentionWaiting.count, "notify.bellNeeds"));
+    if (unread > 0) parts.push(plural(unread, "notify.bellUnread"));
+    bell.title = parts.length > 0 ? parts.join(" · ") : t("notify.bellTitle");
   }
 
   function openNotices() {
@@ -3508,39 +3535,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // (runServiceQuickAction's re-read, before withBusy), and stays unpressable
     // through a render that lands in the middle of it.
     entry.action.disabled = state.busy || entry.action.classList.contains("busy");
-    entry.action.onclick = () => item.run(entry.action);
+    // The drawer is out of the way for every row but the retry: those go
+    // somewhere (the inbox, the pairing drawer, the settings page) and would
+    // open behind it. The retry stays, to show the row clear.
+    entry.action.onclick = () => {
+      if (item.kind !== "node") closeNotices();
+      item.run(entry.action);
+    };
     entry.later.textContent = t("attention.later");
     entry.later.title = t("attention.laterTitle");
     return entry.row;
   }
 
   const ATTENTION_ORDER = { alert: 0, warn: 1, info: 2 };
-  // How many rows the strip shows before the rest fold behind a button: two
-  // rows and the button are what fits above the table at 900×760 with five
-  // session rows still in view.
-  const ATTENTION_VISIBLE = 2;
-  // Whether the owner unfolded the rest. This window only, never saved.
-  let attentionExpanded = false;
-  let attentionMore = null;
-
-  function attentionMoreRow(hidden) {
-    if (!attentionMore) {
-      const row = element("div", "attnmore");
-      const button = element("button", "ghost attnmorebtn");
-      button.onclick = () => {
-        attentionExpanded = !attentionExpanded;
-        renderAttention();
-        // The button is still there, relabelled, so the keyboard stays on it.
-        button.focus?.();
-      };
-      row.append(button);
-      attentionMore = { row, button };
-    }
-    attentionMore.button.textContent = attentionExpanded ? t("attention.less") : plural(hidden, "attention.more");
-    attentionMore.button.setAttribute("aria-expanded", String(attentionExpanded));
-    return attentionMore.row;
-  }
-
   function renderAttention() {
     const items = attentionItems();
     const keys = new Set(items.map((item) => item.key));
@@ -3555,22 +3562,18 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     for (const kind of [...attentionRows.keys()]) {
       if (!shown.some((item) => item.kind === kind)) attentionRows.delete(kind);
     }
-    const folded = shown.length > ATTENTION_VISIBLE;
-    // Unfolded is about the rows that were folded then. Once there is nothing
-    // left to fold, the next time there is starts folded again, rather than
-    // unfolding rows the owner never asked to see.
-    if (!folded) attentionExpanded = false;
-    const rows = folded && !attentionExpanded ? shown.slice(0, ATTENTION_VISIBLE) : shown;
-    const children = rows.map(attentionRow);
-    if (folded) children.push(attentionMoreRow(shown.length - ATTENTION_VISIBLE));
     const box = el("attention");
-    keepChildren(box, children);
+    keepChildren(box, shown.map(attentionRow));
     // Never beside the first-run wizard. Its first step is the node, the
     // service and the address, which are this strip's first two rows by
     // another name, and one thing with two buttons on screen is how the card
     // it replaced read (docs/ui-contract.md §3.2). Still logged above, so the
     // bell has it; back the moment the wizard is put away.
-    box.classList.toggle("hidden", shown.length === 0 || firstRunVisible());
+    const hidden = shown.length === 0 || firstRunVisible();
+    box.classList.toggle("hidden", hidden);
+    el("attention-heading").classList.toggle("hidden", hidden);
+    attentionWaiting = hidden ? { count: 0, sev: "" } : { count: shown.length, sev: shown[0].sev };
+    renderBell();
   }
 
   // The fifteen-second tick's one read of the exchange, for the attention row.
@@ -5828,6 +5831,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("node-detail-body").replaceChildren(
         element("div", "empty", t("network.noNodesYetDetail"))
       );
+      el("node-detail").classList.add("idle");
       return;
     }
 
@@ -5986,6 +5990,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // and then only has its text rewritten; what is below it (nodeDetailRest) is
   // still rebuilt, and the address field in it keeps its own draft.
   function renderNodeDetail(selected) {
+    el("node-detail").classList.toggle("idle", !selected);
     const body = el("node-detail-body");
     if (!selected) {
       body.nodeDetailParts = null;
@@ -8189,6 +8194,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("node-discover").checked = Boolean(saved.discover);
     el("node-autowake").checked = Boolean(saved.autoWake);
     el("node-private").value = (saved.treatAsPrivate ?? []).join(", ");
+    // The one place the fold opens for a value: the form has just been filled
+    // from the node. Never from a sync, or a fold the owner closed would spring
+    // open on the next keystroke. A warning that appears next is a new
+    // transition again, so forget the last one.
+    notPrivateWarned = false;
+    if (el("node-private").value.trim() !== "") el("node-advanced").open = true;
     // Whatever the node holds is the owner's, not a suggestion of ours.
     state.nodePrivateSuggested = "";
 
@@ -8822,6 +8833,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
+      notPrivateWarnedNow = true;
     }
   }
 
@@ -8886,17 +8898,32 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // node's answer is this function's job; making the owner's choice for them is
   // not — the one suggestion this form offers lives in suggestPrivateRange,
   // which runs only when the owner changes the address.
+  // Whether the "not a private range" warning was on screen after the last sync,
+  // and whether it is in the one being built. #node-advanced opens when the
+  // warning goes from absent to present (it names a field folded inside), not
+  // whenever it is present.
+  let notPrivateWarned = false;
+  let notPrivateWarnedNow = false;
+
+  function settleAdvancedFold() {
+    if (notPrivateWarnedNow && !notPrivateWarned) el("node-advanced").open = true;
+    notPrivateWarned = notPrivateWarnedNow;
+  }
+
   function syncNodeSettingsForm() {
+    notPrivateWarnedNow = false;
     const address = el("node-peerlisten").value || LOOPBACK_LISTEN;
     const lanAddress = !isLoopbackListen(address);
     const allowLan = el("node-allow-lan").checked;
 
     el("node-lan-note").classList.toggle("hidden", !allowLan);
+    el("node-autowake-caveat").classList.toggle("hidden", !el("node-autowake").checked);
     if (peerListensSupported()) {
       const warning = el("node-settings-combination");
       warning.replaceChildren();
       syncPeerListensForm(warning, allowLan);
       syncPrivateNote();
+      settleAdvancedFold();
       return;
     }
 
@@ -8937,9 +8964,11 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       warning.append(element("div", "stale",
         t("nodeSettings.warnNotPrivate", { address }) +
         (subnet ? t("nodeSettings.warnNotPrivateSubnet", { subnet }) : "")));
+      notPrivateWarnedNow = true;
     }
 
     syncPrivateNote();
+    settleAdvancedFold();
   }
 
   // The note explains the field's current contents, so it is shown whenever
@@ -9497,13 +9526,30 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   }
   el("outbound-more").onclick = () => loadOutbound().catch(() => {});
 
-  for (const link of document.querySelectorAll("#settings-nav a")) {
-    link.onclick = () => {
-      state.settingsSection = link.dataset.target;
+  for (const tab of document.querySelectorAll("#settings-nav [data-target]")) {
+    tab.onclick = () => {
+      state.settingsSection = tab.dataset.target;
       render();
-      el(link.dataset.target)?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      document.querySelector(".settingsbody")?.scrollTo?.(0, 0);
     };
   }
+  // A vertical tablist: the arrow keys move between the tabs and open the one
+  // they land on, like viewSwitchKey does for the view switch.
+  function settingsNavKey(event) {
+    const tabs = [...document.querySelectorAll("#settings-nav [data-target]")];
+    const at = tabs.findIndex((tab) => tab.dataset.target === state.settingsSection);
+    const key = event?.key;
+    let next = -1;
+    if (key === "ArrowDown") next = (at + 1) % tabs.length;
+    else if (key === "ArrowUp") next = (at - 1 + tabs.length) % tabs.length;
+    else if (key === "Home") next = 0;
+    else if (key === "End") next = tabs.length - 1;
+    if (next < 0 || tabs.length === 0) return;
+    event.preventDefault?.();
+    tabs[next].onclick?.();
+    tabs[next].focus?.();
+  }
+  el("settings-nav").onkeydown = settingsNavKey;
   el("node-settings-reload").onclick = () => (state.nodeSettingsTried = true, loadNodeSettings())
     .catch((error) => banner(t("busy.failed", { action: t("nodeSettings.busyRead"), error })));
   el("node-settings-save").onclick = () => saveNodeSettings()
@@ -9515,6 +9561,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     syncNodeSettingsForm();
   };
   el("node-allow-lan").onchange = syncNodeSettingsForm;
+  el("node-autowake").onchange = syncNodeSettingsForm;
   el("node-private").oninput = syncNodeSettingsForm;
 
   // One press: install or start when that is what it needs, the settings
@@ -9593,7 +9640,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     pairErrorMessage, renderPairHere, copyPairAddress, pairingDrawerOpen, PAIR_TEXT,
     pairAddressReachable, pairHereState, goToNodeSettings, renderPairingSubtitle, pairDecisionMessage,
     pairingRemaining, tickCountdown, visible, managementLabel, showInboxTab, loadOutbound, loadWakes, resumeId,
-    copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
+    photoWanted, syncPrivateNote, copyFromRow, copyFallbackOpen, closeCopyFallback, copyFallbackKey, openPairingDrawer, closePairingDrawer, dismissPairingDrawer, pairHereRepairs,
     didNotStick, sameSettingValue, paintAfterSave,
     serviceStatusOrUnknown, loadService, renderService, restartNode, waitForNode,
     openServiceForm, installService, renderServiceRepair, reinstallWithoutPinnedSettings,

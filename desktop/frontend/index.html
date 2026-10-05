@@ -69,13 +69,6 @@
         </div>
       </header>
 
-      <!-- Things waiting on the owner, one row each, on every view: a node
-           that is not answering, a service that is not running, a full
-           inbox, a machine asking to pair. Each row carries the button that
-           deals with it and a 「later」 that puts it away until it has gone
-           and come back. Rows are built by renderAttention() in app.js. -->
-      <div id="attention" class="attention hidden" aria-live="polite"></div>
-
       <!-- ============ the first-run wizard ============ -->
       <!-- The whole window on a fresh install: three steps down the left, the
            one being done on the right, one primary button at a time. While it
@@ -155,22 +148,23 @@
             <p id="pairing-summary-line" class="muted"></p>
           </div>
         </aside>
-        <div class="nodedetail">
-          <div id="node-detail-body" class="empty" data-t="network.pickANode"></div>
+        <div id="node-detail" class="nodedetail idle">
+          <div id="node-detail-body" data-t="network.pickANode"></div>
           <div id="node-sessions"></div>
         </div>
       </section>
 
       <!-- ============ settings ============ -->
       <section id="settings-view" class="view settingswrap hidden">
-        <nav class="settingsnav" id="settings-nav">
-          <a data-target="settings-service" class="on" data-t="settings.nav.service"></a>
-          <a data-target="settings-node" data-t="settings.nav.node"></a>
-          <a data-target="settings-identity" data-t="settings.nav.identity"></a>
-          <a data-target="settings-appearance" data-t="settings.nav.appearance"></a>
+        <nav class="settingsnav" id="settings-nav" role="tablist" aria-orientation="vertical">
+          <button type="button" role="tab" class="settab on" aria-selected="true" data-target="settings-service" data-t="settings.nav.service"></button>
+          <button type="button" role="tab" class="settab" aria-selected="false" tabindex="-1" data-target="settings-node" data-t="settings.nav.node"></button>
+          <button type="button" role="tab" class="settab" aria-selected="false" tabindex="-1" data-target="settings-identity" data-t="settings.nav.identity"></button>
+          <button type="button" role="tab" class="settab" aria-selected="false" tabindex="-1" data-target="settings-appearance" data-t="settings.nav.appearance"></button>
+          <button type="button" role="tab" class="settab" aria-selected="false" tabindex="-1" data-target="settings-language" data-t="appearance.language"></button>
         </nav>
         <div class="settingsbody">
-          <section id="settings-service">
+          <section id="settings-service" role="tabpanel">
             <h2 data-t="settings.nav.service"></h2>
             <p class="muted">
               <span data-t="service.introBefore"></span>
@@ -225,7 +219,7 @@
             </div>
           </section>
 
-          <section id="settings-node">
+          <section id="settings-node" role="tabpanel" class="hidden">
             <h2 data-t="settings.nav.node"></h2>
             <p class="muted" data-t="nodeSettings.intro"></p>
             <details class="why"><summary data-t="common.why"></summary><p data-t="nodeSettings.introWhy"></p></details>
@@ -255,12 +249,17 @@
                       <p id="node-peerlistens-none" class="muted hidden" data-t="nodeSettings.peerListensNone"></p>
                     </div>
                   </div>
-                  <label>
-                    <span class="fieldlabel"><span data-t="nodeSettings.privateLabel"></span><small><span data-t="nodeSettings.privateHint"></span><span id="node-private-source" class="sourcetag"></span></small></span>
-                    <input id="node-private" type="text" data-t-placeholder="nodeSettings.privatePlaceholder" autocomplete="off" />
-                  </label>
                 </div>
-                <p id="node-private-note" class="muted hidden" style="margin: 0"></p>
+                <details id="node-advanced" class="advanced">
+                  <summary data-t="nodeSettings.advancedSummary"></summary>
+                  <div class="fieldgrid">
+                    <label>
+                      <span class="fieldlabel"><span data-t="nodeSettings.privateLabel"></span><small><span data-t="nodeSettings.privateHint"></span><span id="node-private-source" class="sourcetag"></span></small></span>
+                      <input id="node-private" type="text" data-t-placeholder="nodeSettings.privatePlaceholder" autocomplete="off" />
+                    </label>
+                  </div>
+                  <p id="node-private-note" class="muted hidden" style="margin: 0"></p>
+                </details>
                 <div class="flagrows">
                   <label>
                     <input type="checkbox" id="node-allow-lan" />
@@ -274,7 +273,7 @@
                   </label>
                   <label>
                     <input type="checkbox" id="node-autowake" />
-                    <span><span data-t="nodeSettings.autoWake"></span><span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block" data-t="nodeSettings.autoWakeWhy"></span><span class="why warn" style="display: block" data-t="wake.caveat"></span></span>
+                    <span><span data-t="nodeSettings.autoWake"></span><span id="node-autowake-source" class="sourcetag"></span><span class="why" style="display: block" data-t="nodeSettings.autoWakeWhy"></span><span id="node-autowake-caveat" class="why warn hidden" style="display: block" data-t="wake.caveat"></span></span>
                   </label>
                 </div>
               </div>
@@ -289,7 +288,7 @@
             <pre id="node-settings-output" class="serviceoutput hidden"></pre>
           </section>
 
-          <section id="settings-identity">
+          <section id="settings-identity" role="tabpanel" class="hidden">
             <h2 data-t="settings.nav.identity"></h2>
             <p class="muted" data-t="identity.intro"></p>
             <div class="card">
@@ -312,7 +311,7 @@
             </div>
           </section>
 
-          <section id="settings-appearance">
+          <section id="settings-appearance" role="tabpanel" class="hidden">
             <h2 data-t="settings.nav.appearance"></h2>
             <p class="muted" data-t="appearance.intro"></p>
             <details class="why"><summary data-t="common.why"></summary><p data-t="appearance.introWhy"></p></details>
@@ -327,11 +326,17 @@
                 <!-- What is actually being drawn, and what the moving half
                      costs: the rain is off until it is asked for. -->
                 <p id="appearance-state" class="muted" style="margin: 0"></p>
-                <label class="toggle langrow"><span data-t="appearance.language"></span><select id="settings-lang"></select></label>
                 <!-- A dismissal has to be reversible, or the one screen that
                      explains the app is gone for good after one click. -->
                 <p class="muted" style="margin: 0"><button id="settings-show-onboarding" class="link" data-t="onboarding.showAgain"></button><span class="why" style="display: block" data-t="onboarding.showAgainWhy"></span></p>
               </div>
+            </div>
+          </section>
+
+          <section id="settings-language" role="tabpanel" class="hidden">
+            <h2 data-t="appearance.language"></h2>
+            <div class="card">
+              <div class="cardbody"><label class="toggle langrow"><span data-t="appearance.language"></span><select id="settings-lang"></select></label></div>
             </div>
           </section>
         </div>
@@ -702,6 +707,9 @@
           <button id="notify-close" class="ghost" data-t="common.close"></button>
         </header>
         <div class="drawerbody">
+          <h3 id="attention-heading" class="drawersection hidden" data-t="notify.needsHeading"></h3>
+          <div id="attention" class="attention hidden" aria-live="polite"></div>
+          <h3 class="drawersection" data-t="notify.logHeading"></h3>
           <div id="notify-list" class="noticelist"></div>
         </div>
       </div>

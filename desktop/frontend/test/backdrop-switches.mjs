@@ -116,6 +116,32 @@ if (!said.includes("CPU") || !said.includes("預設關閉")) {
   failures.push(`the settings page does not explain why the rain is off: ${said}`);
 }
 
+// 6. The photo is for places with no data on them: the wizard, an empty session
+//    list and a network view with nothing picked. Where there are rows, a form
+//    or a machine's detail, it is away, whatever the two switches say.
+document.body = document.createElement("body");
+app.state.ui.onboardingDismissed = true;
+app.state.ui.firstRunFinished = true;
+const photoAway = () => document.body.classList.contains("photo-away");
+app.state.view = "local";
+app.state.sessions = [];
+app.render();
+if (photoAway() || !app.photoWanted()) failures.push("the photo is away from a local view with no session in it");
+app.state.sessions = [{ id: "claude:a", provider: "claude", status: "idle", audience: { mode: "none" }, lastSeenAt: new Date().toISOString() }];
+app.render();
+if (!photoAway()) failures.push("the photo shows behind a session table that has rows");
+app.state.view = "settings";
+app.render();
+if (!photoAway()) failures.push("the photo shows behind the settings forms");
+app.state.view = "network";
+app.state.nodes = [{ nodeId: "node_a", displayName: "a", platform: "linux" }];
+app.state.selectedNode = null;
+app.render();
+if (photoAway()) failures.push("the photo is away from a network view with no machine picked");
+app.state.selectedNode = "node_a";
+app.render();
+if (!photoAway()) failures.push("the photo shows behind a machine's detail");
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

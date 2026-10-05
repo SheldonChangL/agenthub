@@ -115,6 +115,15 @@ body.bg-paused .rain { display: none; }
 }
 body.no-backdrop .backdrop img,
 body.no-backdrop .backdrop .rain { display: none; }
+/* The photo is the window's identity, not a texture behind data: only on the
+   wizard, an empty session list and a network view with nothing picked
+   (app.js photoWanted). */
+body.photo-away .backdrop img,
+body.photo-away .backdrop .shade,
+body.photo-away .backdrop .rain { display: none; }
+#local-view.isempty .tablewrap { background: transparent; border-color: transparent; box-shadow: none; }
+#local-view.isempty table { display: none; }
+#local-view.isempty #empty { display: table; margin: 120px auto 0; padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-solid); }
 
 #app > :not(.backdrop) { position: relative; z-index: 1; }
 
@@ -283,31 +292,29 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   --sev-error: var(--red);
 }
 
-/* What is waiting on the owner, right under the title bar on every view. One
-   row per thing, the button that deals with it on the row. */
+/* What is waiting on the owner, at the top of the bell's drawer. One row per
+   thing, the button that deals with it on the row. */
 .attention {
-  flex: none;
   display: flex; flex-direction: column;
   gap: 1px;
+  margin: 0 0 16px;
+  border-radius: var(--radius);
+  overflow: hidden;
   background: var(--line);
-  border-bottom: 1px solid var(--line);
 }
 .attnrow {
   display: flex; align-items: center; gap: 12px;
   min-height: 52px;
-  padding: 8px 16px;
+  padding: 10px 12px;
   background: var(--panel-solid);
 }
 .attnrow .sev { flex: none; align-self: stretch; width: 4px; border-radius: 2px; background: var(--sev-info); }
 .attnrow.warn .sev { background: var(--sev-warn); }
 .attnrow.alert .sev { background: var(--sev-error); }
 .attnmsg { flex: 1; min-width: 0; }
-.attntitle { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attntitle { font-weight: 600; font-size: 13px; white-space: normal; }
 .attnbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
 .attnrow button { flex: none; }
-/* The rest of the strip, folded behind one button past two rows. */
-.attnmore { display: flex; align-items: center; padding: 2px 16px 2px 32px; background: var(--panel-solid); }
-.attnmore button { flex: none; }
 
 /* Toasts: the answer to the button just pressed. Bottom right, above every
    drawer and dialog, newest at the bottom. */
@@ -405,6 +412,12 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   font-size: 11px; font-weight: 600; line-height: 18px; text-align: center;
   font-variant-numeric: tabular-nums;
 }
+/* Something is waiting in the drawer: the bell takes the colour of the most
+   severe item. The number is still only what has not been read. */
+.bell.needs-alert { color: var(--sev-error); }
+.bell.needs-warn { color: var(--sev-warn); }
+.bell.needs-info { color: var(--sev-info); }
+.drawersection { margin: 0 0 8px; font-size: 10px; letter-spacing: 0.08em; font-weight: 600; color: var(--muted); }
 
 /* The log behind the bell. */
 .noticelist { display: flex; flex-direction: column; }
@@ -1103,7 +1116,7 @@ body.selecting .toasts { bottom: 124px; }
 
 /* ---------- network view ---------- */
 
-.networkwrap { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.networkwrap { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
 
 /* required by frontend_test.go: the node list scrolls */
 .nodelist {
@@ -1167,7 +1180,9 @@ body.selecting .toasts { bottom: 124px; }
   background: var(--panel);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
-.nodedetail > .empty { padding-top: 120px; }
+/* Nothing picked: no card, the photo shows, and the one sentence sits on a chip. */
+.nodedetail.idle { display: flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; box-shadow: none; }
+.nodedetail.idle #node-detail-body > .empty { padding: 12px 16px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-solid); }
 .nodedetail h2 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
 .nodedetail h3 { font-size: 13px; margin: 18px 0 8px; font-weight: 600; }
 .nodedetail .fingerprint {
@@ -1442,7 +1457,7 @@ body.selecting .toasts { bottom: 124px; }
 
 /* ---------- settings view ---------- */
 
-.settingswrap { flex: 1; min-height: 0; display: flex; overflow: hidden; }
+.settingswrap { flex: 1; min-height: 0; display: flex; flex-direction: row; overflow: hidden; }
 .settingsnav {
   width: 220px; flex: none;
   padding: 14px 10px;
@@ -1450,12 +1465,13 @@ body.selecting .toasts { bottom: 124px; }
   background: var(--panel);
   display: flex; flex-direction: column; gap: 2px;
 }
-.settingsnav a {
-  padding: 7px 12px; border-radius: 6px;
-  color: var(--muted); text-decoration: none; cursor: pointer;
-}
-.settingsnav a:hover { color: var(--text); }
-.settingsnav a.on { background: var(--panel-2); color: var(--text); font-weight: 500; }
+@media (max-width: 1000px) { .settingsnav { width: 180px; } }
+button.settab { justify-content: flex-start; text-align: left; border: 0; background: transparent; color: var(--muted); padding: 0 12px; border-radius: 6px; font: inherit; }
+button.settab:hover:not(:disabled) { border: 0; background: rgba(255, 255, 255, 0.04); color: var(--text); }
+button.settab.on, button.settab.on:hover:not(:disabled) { background: var(--panel-2); color: var(--text); font-weight: 500; }
+details.advanced { margin: 0; }
+details.advanced > summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+details.advanced[open] > summary { color: var(--text); margin-bottom: 10px; }
 .settingsbody {
   flex: 1; min-width: 0;
   overflow: auto;
