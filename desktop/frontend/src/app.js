@@ -5820,6 +5820,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       el("node-detail-body").replaceChildren(
         element("div", "empty", t("network.noNodesYetDetail"))
       );
+      el("node-detail").classList.add("idle");
       return;
     }
 
@@ -5978,6 +5979,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // and then only has its text rewritten; what is below it (nodeDetailRest) is
   // still rebuilt, and the address field in it keeps its own draft.
   function renderNodeDetail(selected) {
+    el("node-detail").classList.toggle("idle", !selected);
     const body = el("node-detail-body");
     if (!selected) {
       body.nodeDetailParts = null;

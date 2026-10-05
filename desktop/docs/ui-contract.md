@@ -432,6 +432,8 @@
 
 ### 3.3 區網視圖
 
+版面：左欄清單 320px、右側 `#node-detail`（左右兩欄，2026-10-05 修正 `.view` 的 column 方向蓋過 `.networkwrap` 的問題）。沒選機器時右側 `.idle`：無卡片、露出照片、一句話放在小卡上。
+
 左欄（`nodelist`）：
 - 已配對節點列表：每列 presence 點 + 名稱 + presence 文字 + 平台 · 最後聯繫。空：「尚未配對任何節點。」
 - 配對模式面板：headline、倒數（獨立元素，每秒只改這一個）、detail、note（含 `broadcastWarning`，把本機名稱和它的來源說出來）。
