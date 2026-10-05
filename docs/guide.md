@@ -448,8 +448,10 @@ session. AgentHub never writes it into Claude Code's or Codex's files.
   The **Local sessions** tab shows the total for the whole computer next to an
   envelope.
 - The number counts the messages the inbox still holds. Nothing marks a
-  message read: reading it in the window does not hand it to the agent either. The count
-  goes down when an agent takes a message or someone deletes it.
+  message read: reading it in the window does not hand it to the agent either,
+  and an agent reading it with `agent_inbox` does not remove it. The count goes
+  down only when a message is deleted, by an agent (`ah inbox delete`) or by
+  you (**Clear the inbox…**).
 - Press **Inbox** to open a drawer with three tabs: **Inbox** (what arrived),
   **Sent** (what this session sent, and whether it was delivered or refused) and
   **Wakes** (who woke this agent, refusals included).
@@ -753,7 +755,7 @@ arrived, the other computer may not have finished its side of the pairing, or it
 node is not running.
 
 **An inbox is full.** Open it from **Open inbox** on the strip, read what you
-need, and press **Clear the inbox…**, or let the agent take its messages. A full
+need, and press **Clear the inbox…**, or let the agent delete what it has handled. A full
 inbox turns new messages away until it has room.
 
 **After an upgrade, the Dock still shows the old icon** (macOS). The Dock keeps
