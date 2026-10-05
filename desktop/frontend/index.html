@@ -286,13 +286,8 @@
             <details class="why"><summary data-t="common.why"></summary><p data-t="identity.introWhy"></p></details>
             <div class="card">
               <div class="cardbody identityrows">
-                <div class="row"><span class="k" data-t="identity.nodeId"></span><span class="v" id="identity-node-id">—</span></div>
-                <div class="row"><span class="k" data-t="identity.fingerprint"></span><span class="v fingerprint" id="identity-fingerprint">—</span></div>
-                <div class="row">
-                  <span class="k" data-t="identity.publicKey"></span>
-                  <span class="v keyvalue" id="identity-public-key">—</span>
-                  <span><button id="copy-identity-key" class="ghost" data-t="identity.copyKey"></button> <span id="identity-copy-status" class="muted"></span></span>
-                </div>
+                <div class="row"><span class="k" data-t="identity.nodeId"></span><span><button id="copy-identity-node-id" class="ghost" data-t="identity.copyNodeId"></button></span></div>
+                <div class="row"><span class="k" data-t="identity.publicKey"></span><span><button id="copy-identity-key" class="ghost" data-t="identity.copyKey"></button> <span id="identity-copy-status" class="muted"></span></span></div>
                 <!-- What this identity actually broadcasts. It used to be the
                      fourth button in the title bar, on every screen, for
                      something an owner looks at once. -->
@@ -336,7 +331,6 @@
 
       <footer class="statusbar">
         <span id="footer-left">—</span>
-        <span id="footer-right" class="muted mono"></span>
       </footer>
     </div>
 

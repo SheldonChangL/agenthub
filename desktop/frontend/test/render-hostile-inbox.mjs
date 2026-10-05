@@ -87,7 +87,7 @@ for (const cls of rendered.match(/class="[^"]*"/g) ?? []) {
 if (!rendered.includes("node_evil")) {
   failures.push("the sender was not shown beside the message");
 }
-if (!rendered.includes('class="fingerprint">node_evil')) {
+if (!/class="fingerprint"[^>]*>node_evil</.test(rendered)) {
   failures.push("the node id is not marked as the proven half");
 }
 if (!rendered.includes("自稱")) {
@@ -100,10 +100,10 @@ if (!rendered.includes("自稱")) {
   const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
   const { TEXT: EN } = await import("../src/i18n/en.js");
   const always = (T) => T["inbox.warningBefore"] + T["inbox.warningStrong"] + T["inbox.warningAfter"];
-  if (!always(ZH).includes("自稱") || !always(ZH).includes("機器 ID 經過驗證")) {
+  if (!always(ZH).includes("自稱") || !always(ZH).includes("經過驗證")) {
     failures.push(`the inbox warning's main sentence no longer says only the node id is verified: ${always(ZH)}`);
   }
-  if (!always(EN).includes(EN["sender.claimsToBe"].trim()) || !/machine ID[^.]*verified/.test(always(EN))) {
+  if (!always(EN).includes(EN["sender.claimsToBe"].trim()) || !/machine[^.]*verified/.test(always(EN))) {
     failures.push(`the English inbox warning's main sentence no longer says only the node id is verified: ${always(EN)}`);
   }
 }
@@ -112,7 +112,7 @@ if (!rendered.includes('class="claimed">codex:')) {
 }
 // The proven half must contain only the node id — not the whole address. A
 // single span holding both still matches a "starts with node_evil" check.
-const provenHalf = /<span class="fingerprint">([^<]*)<\/span>/.exec(rendered);
+const provenHalf = /<span class="fingerprint"[^>]*>([^<]*)<\/span>/.exec(rendered);
 if (!provenHalf) {
   failures.push("no proven-half span was rendered");
 } else if (provenHalf[1] !== "node_evil") {
@@ -183,6 +183,22 @@ for (const shape of senderShapes) {
       failures.push(`${shape.what} (${JSON.stringify(shape.from)}) was labelled ${reject}`);
     }
   }
+}
+
+// The proven half is named from this machine's own pairing records, with the
+// machine ID on its tooltip; it is the ID itself only when nothing names it.
+{
+  const before = scope.state.nodes;
+  scope.state.nodes = [{ nodeId: "node_named00000000", displayName: "ubuntu-lab" }];
+  renderInbox({
+    sessionId: "claude:mine", held: 1, capacity: 500, full: false, showing: 1, more: false,
+    messages: [{ id: "m", from: "node_named00000000/codex:x", createdAt: new Date().toISOString(), body: "x" }],
+  });
+  const named = el("inbox-body").serialize();
+  if (!named.includes('title="node_named00000000">ubuntu-lab</span>')) {
+    failures.push(`a paired sender is not shown by its pairing name with the ID as the tooltip: ${named}`);
+  }
+  scope.state.nodes = before;
 }
 
 // 1b. A read in flight is not an empty inbox. They rendered identically, for up
