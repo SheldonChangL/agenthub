@@ -337,7 +337,7 @@ await app.openServiceForm();
 if (el("service-db").value !== "/Users/me/agenthub/data/agenthub.db") {
   failures.push(`the form offered "${el("service-db").value}" instead of the path in use`);
 }
-if (!text("service-db-note").includes("換一個節點身分")) {
+if (!text("service-db-note").includes("換一個機器身分")) {
   failures.push(`the form does not say what changing the path costs: ${text("service-db-note")}`);
 }
 

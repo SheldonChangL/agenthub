@@ -100,10 +100,10 @@ if (!rendered.includes("自稱")) {
   const { TEXT: ZH } = await import("../src/i18n/zh-Hant.js");
   const { TEXT: EN } = await import("../src/i18n/en.js");
   const always = (T) => T["inbox.warningBefore"] + T["inbox.warningStrong"] + T["inbox.warningAfter"];
-  if (!always(ZH).includes("自稱") || !always(ZH).includes("節點 ID 經過驗證")) {
+  if (!always(ZH).includes("自稱") || !always(ZH).includes("機器 ID 經過驗證")) {
     failures.push(`the inbox warning's main sentence no longer says only the node id is verified: ${always(ZH)}`);
   }
-  if (!always(EN).includes(EN["sender.claimsToBe"].trim()) || !/node ID[^.]*verified/.test(always(EN))) {
+  if (!always(EN).includes(EN["sender.claimsToBe"].trim()) || !/machine ID[^.]*verified/.test(always(EN))) {
     failures.push(`the English inbox warning's main sentence no longer says only the node id is verified: ${always(EN)}`);
   }
 }

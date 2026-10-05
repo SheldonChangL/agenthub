@@ -613,7 +613,7 @@ if (!el("pair-here").classList.contains("unreachable")) {
   failures.push("an address nobody can reach did not float the block to the top of its screen (unreachable)");
 }
 const noAddress = el("pair-here").serialize() + el("pair-here-note").serialize();
-for (const required of ["允許區網連線", "節點設定"]) {
+for (const required of ["允許區網連線", "連線設定"]) {
   if (!noAddress.includes(required)) {
     failures.push(`the no-address explanation omits ${required}, so it names no remedy`);
   }
@@ -738,7 +738,7 @@ if (el("pair-local-address").textContent.includes("127.0.0.1")) {
   failures.push("a loopback address was handed to the owner as the one the other machine types");
 }
 const stuck = el("pair-here").serialize() + el("pair-here-note").serialize();
-for (const required of ["允許區網連線", "節點設定"]) {
+for (const required of ["允許區網連線", "連線設定"]) {
   if (!stuck.includes(required)) {
     failures.push(`the unreachable-address explanation omits ${required}, so it names no remedy`);
   }

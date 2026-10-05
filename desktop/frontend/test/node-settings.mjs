@@ -222,7 +222,7 @@ restartCalls = 0;
 await app.saveNodeSettings();
 await tick();
 if (restartCalls !== 1) failures.push(`a node that is not a service was restarted ${restartCalls} times, want 1`);
-if (!toast().textContent.includes("節點已重新啟動並回應中")) {
+if (!toast().textContent.includes("AgentHub 已重新啟動並回應中")) {
   failures.push(`a node that came back was not confirmed: ${toast().textContent}`);
 }
 
@@ -869,13 +869,13 @@ saveAnswer = async () => ({ ...unitPinned, saved: { ...unitPinned.saved, discove
 await app.saveNodeSettings();
 await tick();
 const restartFailed = toast().textContent;
-if (restartFailed.includes("儲存節點設定失敗")) {
+if (restartFailed.includes("儲存連線設定失敗")) {
   failures.push(`a failed restart was reported as a failed save: ${restartFailed}`);
 }
 if (!restartFailed.includes("設定已儲存")) {
   failures.push(`the owner was not told the save itself landed: ${restartFailed}`);
 }
-if (!restartFailed.includes("重新啟動節點失敗") || !restartFailed.includes("背景服務區")) {
+if (!restartFailed.includes("重新啟動 AgentHub 失敗") || !restartFailed.includes("背景服務區")) {
   failures.push(`the owner was not told what to do about the node still running old settings: ${restartFailed}`);
 }
 if (saveCalls.length !== 1) failures.push(`the write was sent ${saveCalls.length} times`);
@@ -1005,7 +1005,7 @@ afterRestart(autoWakeSaved);
 await app.saveNodeSettings();
 await tick();
 const statusFailed = toast().textContent;
-if (statusFailed.includes("儲存節點設定失敗")) {
+if (statusFailed.includes("儲存連線設定失敗")) {
   failures.push(`a status read that threw was reported as a failed save: ${statusFailed}`);
 }
 if (!statusFailed.includes("設定已儲存")) failures.push("the owner was not told the save landed");
