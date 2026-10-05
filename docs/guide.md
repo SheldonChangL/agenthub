@@ -749,8 +749,8 @@ the other machine?** and type the address: that works with searching off.
 the request again until you know which computer you reached. Something between
 the two may be answering for one of them.
 
-**Paired, but I see none of their sessions.** Pairing shares nothing. The other
-person has to publish a session to you. If the Network tab says no heartbeat has
+**Paired, but I see none of their sessions.** Pairing shares no session on its
+own. The other person has to publish a session to you. If the Network tab says no heartbeat has
 arrived, the other computer may not have finished its side of the pairing, or its
 node is not running.
 
