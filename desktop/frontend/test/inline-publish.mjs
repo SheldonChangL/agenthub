@@ -355,6 +355,11 @@ await reload();
   if (setCalls.length !== 3 || setCalls.some((call) => call.ids.length !== 1)) {
     failures.push(`a batch of three different outcomes made ${JSON.stringify(setCalls)}, want one call each`);
   }
+  // Taken now: the next batch's own toast takes the one toast slot (§3.1).
+  const undoToast = latestToast(document).node;
+  if (!undoToast?.textContent.includes(fill(ZH["popover.applied.messages.other"], { n: 3 }))) {
+    failures.push(`the three-session batch's toast reads ${undoToast?.textContent}`);
+  }
   // And one call when the outcome is the same.
   for (const id of ["codex:silent", "claude:only"]) app.state.selected.add(id);
   sessions.find((s) => s.id === "claude:only").audience = { mode: "all_paired", nodes: [], ...flags() };
@@ -368,8 +373,6 @@ await reload();
   sessions.find((s) => s.id === "claude:only").audience = { mode: "none", nodes: [], ...flags() };
   sessions.find((s) => s.id === "codex:silent").audience = { mode: "all_paired", nodes: [], ...flags() };
   await reload();
-  const undoToast = toastNodes(document).find((node) => toastButtons(node).length > 1
-    && node.textContent.includes(fill(ZH["popover.applied.messages.other"], { n: 3 })));
   if (app.state.selected.size !== 0) failures.push("a batch that went through left the selection");
   const undo = toastButtons(undoToast).find((button) => button.textContent === ZH["popover.undo"]);
   setCalls.length = 0;

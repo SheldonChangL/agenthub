@@ -520,6 +520,12 @@ func TestFrontendAsksInItsOwnDialog(t *testing.T) {
 	runNodeCheck(t, "confirm-dialog.mjs")
 }
 
+// TestFrontendEscapeClosesEveryOverlay covers Esc on the three drawers and
+// the four dialogs: one press closes the topmost one (docs/ui-contract.md §3.5).
+func TestFrontendEscapeClosesEveryOverlay(t *testing.T) {
+	runNodeCheck(t, "escape-closes.mjs")
+}
+
 // TestFrontendKeepsAnOpenedWhyOpen covers the 「說明」 folds #194 added in two
 // places redrawn on a timer — the pairing drawer's step 1 and the node detail
 // pane: after a background redraw an opened one is the same element, still
@@ -824,27 +830,36 @@ func TestFrontendKeepsTheRowActionsReachable(t *testing.T) {
 	// MinWidth 900; the card's margins and border leave 866px of scroller
 	// (measured in dev/mock.html). At min-width 1080px the table scrolled there
 	// and the sticky actions column covered the working directory (#193
-	// review). The fixed columns must also leave SESSION and WORKING DIRECTORY,
-	// which carry no width, something to split.
+	// review). The fixed columns, the working directory at its narrowest
+	// included, must leave SESSION at least 100px.
 	const scrollerAtMinWidth = 866
-	const flexibleFloor = 2 * 100
+	const sessionFloor = 100
 	if m := regexp.MustCompile(`min-width: (\d+)px`).FindStringSubmatch(table); m != nil {
 		if px, _ := strconv.Atoi(m[1]); px > scrollerAtMinWidth {
 			t.Errorf("the table's min-width is %dpx, wider than the %dpx the 900px window leaves it: "+
 				"the smallest window scrolls and the sticky actions cover other columns", px, scrollerAtMinWidth)
 		}
 	}
-	fixed := 0
+	fixed, narrowestCwd := 0, 0
 	for _, m := range regexp.MustCompile(`col\.c-(\w+) \{ width: (\d+)px; \}`).FindAllStringSubmatch(css, -1) {
-		if m[1] == "session" || m[1] == "cwd" {
-			t.Errorf("col.c-%s has a fixed width; it is one of the two columns that take what the others leave", m[1])
-		}
 		px, _ := strconv.Atoi(m[2])
-		fixed += px
+		switch m[1] {
+		case "session":
+			t.Error("col.c-session has a fixed width; the title is the one column that takes what the others leave")
+		case "cwd":
+			if narrowestCwd == 0 || px < narrowestCwd {
+				narrowestCwd = px
+			}
+		default:
+			fixed += px
+		}
 	}
-	if fixed > scrollerAtMinWidth-flexibleFloor {
-		t.Errorf("the fixed columns add up to %dpx, leaving SESSION and WORKING DIRECTORY less than %dpx "+
-			"between them in the 900px window", fixed, flexibleFloor)
+	if narrowestCwd == 0 {
+		t.Error("col.c-cwd has no width, so it splits the leftover with SESSION and the 900px window cuts every title to two characters")
+	}
+	if fixed+narrowestCwd > scrollerAtMinWidth-sessionFloor {
+		t.Errorf("the fixed columns and the narrowest working directory add up to %dpx, leaving SESSION less than %dpx in the 900px window",
+			fixed+narrowestCwd, sessionFloor)
 	}
 
 	// And the actions stay put while the rest scrolls under them.

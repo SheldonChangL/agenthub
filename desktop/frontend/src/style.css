@@ -337,7 +337,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
   transform: translateX(-50%);
   width: min(560px, calc(100vw - 32px));
 }
-.modal:not(.hidden) ~ .toasts .toast:not(:last-child),
+.modal:not(.hidden) ~ .toasts .toastmore,
 .modal:not(.hidden) ~ .toasts .toastbody,
 .modal:not(.hidden) ~ .toasts .toastacts { display: none; }
 .modal:not(.hidden) ~ .toasts .toast { padding-top: 8px; padding-bottom: 8px; max-height: calc(10vh - 8px); }
@@ -368,6 +368,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .toastbody { font-size: 12px; color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; margin-top: 2px; }
 .toastacts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .toast .toastclose { flex: none; margin-top: -4px; }
+.toast .toastmore { display: block; margin-top: 6px; font-size: 12px; color: var(--sev-info); }
 /* The six seconds a success or a piece of information stays, draining;
    fifteen when it carries a button. */
 .toast .timer {
@@ -737,9 +738,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
    (#193 review). The fixed columns below are sized to their content at the
    widest language (measured in dev/mock.html, English and zh-Hant, with the
    6px cell padding below): all four flag chips, both row buttons and every
-   audience pill the table uses fit. They add up to 660px, and SESSION and
-   WORKING DIRECTORY carry no width, so they split what is left and clip with
-   an ellipsis — the full title and path stay in the cells' titles. */
+   audience pill the table uses fit. They add up to 660px. SESSION is the only
+   column without a width, so it takes what is left and clips with an ellipsis
+   — the full title stays in the cell's title. WORKING DIRECTORY is 136px, 96px
+   at a window of 1000px or less. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
 /* 40px: the whole cell toggles its checkbox (app.js), so this is the target. */
 col.c-check { width: 40px; }
@@ -759,6 +761,7 @@ col.c-status { width: 76px; }
 col.c-audience { width: 108px; }
 col.c-flags { width: 160px; }
 col.c-last { width: 104px; }
+col.c-cwd { width: 136px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when
    there were three (63 + 83 + 67, two 4px gaps, 10px padding each side), with
    slack for a font that renders the labels wider. At 214px the third button was
@@ -781,6 +784,10 @@ col.c-last { width: 104px; }
    to 8px and the cell's to 6px: the widest row (a three-digit badge) is 172px
    including padding, which is what the column is. */
 col.c-actions { width: 172px; }
+/* The working directory gives way before the title does (spec 2026-10-05). */
+@media (max-width: 1000px) {
+  col.c-cwd { width: 96px; }
+}
 
 thead th {
   position: sticky; top: 0; z-index: 1;
@@ -901,12 +908,14 @@ td.cwd button.cwdcopy.copied::after { content: none; }
 .popover.copyfallback button { justify-self: end; }
 .sid .providertag {
   display: inline-flex; align-items: center;
-  height: 16px; padding: 0 6px; margin-right: 8px;
+  height: 14px; padding: 0 6px; margin-right: 0;
   border-radius: 999px; border: 1px solid var(--line);
-  font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+  font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--muted);
 }
 .sid b { color: var(--text); font-weight: 500; font-family: var(--mono); font-size: 11.5px; }
+.sid b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 18px; }
+.sid .sidsub { display: block; line-height: 14px; margin-top: 1px; }
 /* A title is prose, not an identifier, so it reads in the UI font. It is left
    as plain inline text on purpose: the cell already clips with an ellipsis,
    and an inline-block with its own width here was wider than the space left

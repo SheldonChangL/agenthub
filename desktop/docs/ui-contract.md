@@ -149,14 +149,12 @@
     textContent 不得出現任何漢字 → 再切回 zh。
 - **通知三層（2026-09-29，取代 `#banner`）**。原本的 banner 只有一則：成功 4 秒就消失、錯誤被下一則蓋掉，
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
-  - **Toast**（`#toasts`，`aria-live="polite"`，在 index.html 所有抽屜與對話框**之後**）：右下角堆疊，最多 3 則，
-    新的在下；超過時先擠掉最舊的**會自動消失**的（`ok`／`info`），沒有才擠掉最舊的警告或錯誤（都仍在通知紀錄裡）。
-    **剛跳出的那一則永遠不是被擠掉的**：三則警告／錯誤之後來的 `ok` 是唯一會自動消失的一則，擠掉它等於連同「復原」一起丟掉
-    （通知紀錄只存句子、不存按鈕），所以此時擠掉的是最舊的警告或錯誤（測試 `notifications.mjs`）。`notify(kind, title, {body, actions})`，kind 是
+  - **Toast**（`#toasts`，`aria-live="polite"`，在 index.html 所有抽屜與對話框**之後**）：右下角**一次一則**（2026-10-05）：新的一律取代舊的，被取代的都已在通知紀錄；新的那則多一顆連結鈕「另有 N 則較早的通知」（`notify.more`，N＝這個位置上次空出來之後被取代的累計數），按了收起並打開通知紀錄。錯誤與警告被取代時仍算未讀，鈴鐺數字照算（測試 `notifications.mjs` §1）。
+    `notify(kind, title, {body, actions})`，kind 是
     `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起，帶動作按鈕（復原、去公開 session 等）的延長為 15 秒並加 `long`（擁有者 2026-09-29 指定）（底部倒數條；滑鼠停在上面或鍵盤焦點在它裡面時暫停——倒數條停住、加 `held`——兩者都離開後重新給足原本的秒數，在它自己的按鈕之間移動焦點不算離開），`warn` 與 `error`
     **不自動消失**，要按 ✕；後兩種 `role="alert"`，前兩種 `role="status"`。`actions` 是 toast 上的按鈕，
     按了先收起再執行。舊的 `banner(message, ok)` 保留為 wrapper：`ok=true` → 成功，其餘 → 錯誤。
-    配對抽屜等右側抽屜開著時整疊移到抽屜左邊；對話框（`.modal`）開著時只留最新一則、夾在卡片上方那條背景裡，
+    配對抽屜等右側抽屜開著時整疊移到抽屜左邊；對話框（`.modal`）開著時那一則只留標題、夾在卡片上方那條背景裡，
     不蓋住對話框底部的動作列。
   - **通知中心**：標題列的鈴鐺 `#btn-bell`，數字 `#bell-n` 是**未讀的錯誤＋警告**（0 時隱藏）。點開右側抽屜
     `#notify-modal`，列出本次開啟以來每一則 toast 與待處理列項目（嚴重度色條、標題、內文、HH:MM 與嚴重度文字），
@@ -419,7 +417,7 @@
     警告 toast 說這次沒有復原（`popover.undoBusy`）。開著時 `interactionInProgress()` 為真，15 秒 tick 不讀清單、不動列（它是畫在那一列旁邊的）。
   - 測試 `inline-publish.mjs` §1–§5。
 - **旗標欄的喚醒 ⚠**：已公開且 `autoWake` 的列，醒 chip 旁邊一個 amber `⚠`（`.wakecaveat`），`title`／`aria-label` 是喚醒備註全文。
-- **表格 8 欄**：勾選、SESSION（含 provider badge；`management` 進 badge 的 `title`）、狀態、公開對象（表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 與篩選 chip 用完整說法；欄寬 108px——2026-09-29 它成了按鈕，加上 ▾ 與按鈕內距，量過「Not published」要 89px 內容；旗標欄 156→160px 放 ⚠；900px 下每個標籤都放得下，#194）、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。
+- **表格 8 欄**：勾選、SESSION（兩行：標題、下一行 provider badge；**唯一沒有寬度的欄**，最後才裁；`management` 進 badge 的 `title`）、狀態、公開對象（表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 與篩選 chip 用完整說法；欄寬 108px——2026-09-29 它成了按鈕，加上 ▾ 與按鈕內距，量過「Not published」要 89px 內容；旗標欄 156→160px 放 ⚠；900px 下每個標籤都放得下，#194）、**旗標**（只在已公開的列顯示；mode `none` 與「指定：無」（`selected` 且 0 個節點）都算未公開，同 `describeAudience().published`，測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23）。工作目錄欄 136px，視窗 ≤1000px 時 96px（2026-10-05，原本與 SESSION 平分剩餘寬度，900 寬下標題只剩兩個字）。
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
@@ -539,6 +537,8 @@
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；語言；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
 
 ### 3.5 覆蓋層（8 個：3 個抽屜 + 5 個對話框）
+
+**Esc**（2026-10-05）：每按一次關掉最上層的一個，對話框先於抽屜（`overlayKey`：heartbeat → MCP → 手動配對 → 公開對象對話框 → 通知紀錄 → 配對抽屜〔走 ✕ 同一條 `dismissPairingDrawer`〕→ 收件匣）。確認對話框、公開對象選單、複製失敗框開著時由它們自己處理（測試 `escape-closes.mjs`）。
 
 抽屜（`.drawer`，從右側滑出）：
 - `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
@@ -930,7 +930,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 - **可捲動容器要有對應屬性**：`.nodelist {` 含 `overflow-y`；`#candidate-rows {`、`#inbox-body {`、
   `.inboxrow .inboxbody {` 含 `max-height`。
 - index.html 至少一個 `<p class="warning">`。
-- **版面（#153／#155，實機才看得到）**：清單卡片**不設 `max-width`**（填滿視窗；原本的 1120px 讓背景只露一條、
+- **版面（#153／#155，實機才看得到）**：`col.c-session` 不得有寬度；`col.c-cwd` 必須有，固定欄加上最窄的 cwd 不得超過 866−100px（`TestFrontendKeepsTheRowActionsReachable`）。清單卡片**不設 `max-width`**（填滿視窗；原本的 1120px 讓背景只露一條、
   又壓縮了最長的欄）；工作目錄欄 `td.cwd` 用 `direction: rtl` 從左邊裁，路徑本身包在 `<bdi>` 裡隔離方向，
   因為那欄的答案在路徑尾端（裁右邊的話每一列都只剩 `/Us…`）；`col.c-actions` 寬度至少 160px（見 §10；原本三顆列動作時是 250px／量到 241px，
   儲存格 `overflow: hidden` 會把裝不下的裁掉，**任何視窗寬度都一樣**）；`table` 要有 `min-width`

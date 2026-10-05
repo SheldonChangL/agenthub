@@ -795,6 +795,8 @@ export const TEXT = {
   "notify.bellUnread.other": "通知紀錄：{n} 則錯誤或警告還沒看",
   "notify.title": "通知紀錄",
   "notify.sub": "這次開啟視窗以來的每一則通知，最新的在上面；關掉視窗就清空。",
+  "notify.more.one": "另有 {n} 則較早的通知",
+  "notify.more.other": "另有 {n} 則較早的通知",
   "notify.close": "關閉這則通知",
   "notify.empty": "目前沒有通知。",
   "notify.kind.ok": "成功",
