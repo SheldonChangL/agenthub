@@ -6,9 +6,6 @@
 export const TEXT = {
   /* ---------------- pairing drawer and the pairing exchange ---------------- */
   "pair.wizardTitle": "Pair with another machine",
-  "pair.step1Heading": "Can this machine be reached",
-  "pair.step2Heading": "Where the other machine is",
-  "pair.step3Heading": "Compare the fingerprints",
   "pair.open": "Pair with another machine",
   "pair.close": "Close pairing",
   "pair.windowOpen": "Pairing open",
@@ -205,11 +202,7 @@ export const TEXT = {
   "inbox.footNote": "Reading here does not hand a message to an agent, and does not mark it read.",
   "inbox.clear": "Clear the inbox…",
 
-  "pair.announcingHeading": "Machines broadcasting",
-  "pair.announcingNote": "machines you have already paired with do not appear here",
-  "pair.manualAddressHeading": "Address shown on the other screen",
 
-  "pairManual.summary": "Advanced: two machines that cannot reach each other",
   "pairManual.footNote": "The fallback for two machines that cannot reach each other: fill in five fields by hand and carry the public key across yourself.",
   "pairManual.open": "Enter pairing details by hand…",
   "pairManual.introBefore": "Run ",
@@ -374,8 +367,6 @@ export const TEXT = {
   "pair.noName": "(no name given)",
   "pair.noPlatform": "platform not given",
   "pair.noAddress": "address not given",
-  "pair.waiting.one": "{n} pairing request is waiting for you under “{panel}” below.",
-  "pair.waiting.other": "{n} pairing requests are waiting for you under “{panel}” below.",
 
   "pair.unknownName": "(unknown)",
   "pair.nameChosen": "You chose that name. ",
@@ -407,6 +398,9 @@ export const TEXT = {
   "candidate.emptyNoPairs": "No machine is broadcasting. This machine has not paired with anything yet, so an empty list here really does mean nothing has arrived.",
   "candidate.contested": "identity contested",
   "candidate.duplicate": "name or fingerprint duplicated",
+  "candidate.noticeSummary": "Can this list be trusted?",
+  "candidate.contestedWhy": ": another announcement gave different details under the same node ID. It may have moved, or someone may be posing as it; compare the fingerprint with extra care.",
+  "candidate.duplicateWhy": ": another machine in this list uses the same name or fingerprint, so at least one of them is not what it claims.",
   "candidate.seen": "first seen {first} · last {last}",
   "candidate.flagJoin": " and ",
   "candidate.flagged": "This row is flagged as {flags}: another broadcast on this segment conflicts with it, and at least one of the two is fake. Do not trust it unless you can check on the other machine directly.",

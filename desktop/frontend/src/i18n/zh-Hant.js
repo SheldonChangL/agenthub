@@ -5,9 +5,6 @@
 export const TEXT = {
   /* ---------------- pairing drawer and the pairing exchange ---------------- */
   "pair.wizardTitle": "與另一台機器配對",
-  "pair.step1Heading": "這台機器能不能被連到",
-  "pair.step2Heading": "對方在哪裡",
-  "pair.step3Heading": "比對指紋",
   "pair.open": "與另一台機器配對",
   "pair.close": "關閉配對",
   "pair.windowOpen": "配對開放中",
@@ -200,11 +197,7 @@ export const TEXT = {
   "inbox.footNote": "在這裡讀不會把訊息交給 agent，也不會標示已讀。",
   "inbox.clear": "清空收件匣…",
 
-  "pair.announcingHeading": "正在廣播的機器",
-  "pair.announcingNote": "已配對的機器不會出現在這裡",
-  "pair.manualAddressHeading": "對方畫面顯示的位址",
 
-  "pairManual.summary": "進階：兩台互相連不到的機器",
   "pairManual.footNote": "兩台機器連不上彼此時的退路：手動填 5 個欄位，公鑰要自己帶過去。",
   "pairManual.open": "手動輸入配對資料…",
   "pairManual.introBefore": "請在對方機器上執行 ",
@@ -369,8 +362,6 @@ export const TEXT = {
   "pair.noName": "（未提供名稱）",
   "pair.noPlatform": "平台未提供",
   "pair.noAddress": "位址未提供",
-  "pair.waiting.one": "有 {n} 個配對請求在等你，在下方「{panel}」。",
-  "pair.waiting.other": "有 {n} 個配對請求在等你，在下方「{panel}」。",
 
   "pair.unknownName": "（未知）",
   "pair.nameChosen": "這個名稱是你指定的；",
@@ -402,6 +393,9 @@ export const TEXT = {
   "candidate.emptyNoPairs": "沒有看到任何機器在廣播。這台機器還沒有配對過任何節點，所以這份清單空白就是真的什麼都沒收到。",
   "candidate.contested": "身分有爭用",
   "candidate.duplicate": "名稱或指紋重複",
+  "candidate.noticeSummary": "這份清單可信嗎？",
+  "candidate.contestedWhy": "：有另一份廣播用同一個節點 ID 報了不同的資料，可能是它換了位址，也可能有人冒充。比對指紋時要特別仔細。",
+  "candidate.duplicateWhy": "：清單上另一台用了同樣的名稱或指紋，至少有一台不是它自稱的那台。",
   "candidate.seen": "首次看到 {first} · 最後 {last}",
   "candidate.flagJoin": "、",
   "candidate.flagged": "這一列被標記為{flags}：同網段有另一份廣播與它衝突，其中至少一份是假的。除非你能在對方機器上直接核對，否則不要信任它。",
