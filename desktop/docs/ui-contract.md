@@ -609,7 +609,7 @@
 | 收件匣分頁 | showing 與 held 數字 | |
 | 清空失敗 | 「沒有變動」+ 錯誤原文 | |
 | 清空成功 | 「移除 N 則」 | |
-| 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」、無名時「（未提供名稱）」 | 候選資料進 class |
+| 候選列 | 完整指紋、完整 nodeId、平台、位址、首次與最後看到、「身分有爭用」「名稱或指紋重複」（以旗標行呈現：標籤＋`candidate.*Why`，不是 pill）、無名時「（未提供名稱）」 | 候選資料進 class |
 | availability=off（節點連 `/v1/pairing` 都拒絕，`windowAvailable` 為 false） | 「-discover」「沒有在看」；開啟按鈕 disabled | 「機器在廣播。」 |
 | `windowAvailable` 為 true 但廣播不出去 | 「不會出現在對方的候選清單」、節點自己的 `lastError`；**開啟按鈕必須可按**；`#pair-here` 顯示位址 | 「開啟後，同網段的人都會知道」（沒東西送出去就不是取捨） |
 | availability=openNotAnnouncing | 視窗畫成**開著**（summary pill「配對開放中 · m:ss」）＋位址提示；候選區同 `off` 的說法 | 「未啟用」、「配對狀態讀不到」 |
