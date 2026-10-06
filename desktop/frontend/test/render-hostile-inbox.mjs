@@ -256,6 +256,16 @@ if (!empty.includes("還沒有任何訊息")) {
 if (empty.includes("讀不到")) {
   failures.push("an empty inbox was rendered as a failed read");
 }
+// The warning is about what other machines wrote: nothing written, nothing to
+// warn about; any message at all and it is on screen (the contract is unchanged).
+for (const id of ["inbox-warning", "inbox-warning-more"]) {
+  if (!el(id).classList.contains("hidden")) failures.push(`${id} shows over an empty inbox`);
+}
+renderInbox(hostile);
+for (const id of ["inbox-warning", "inbox-warning-more"]) {
+  if (el(id).classList.contains("hidden")) failures.push(`${id} is hidden above a list with messages in it`);
+}
+renderInbox({ sessionId: "claude:mine", messages: [], held: 0, capacity: 500, full: false });
 
 // 5. The row's button reaches the node, and asks about that row's session.
 //

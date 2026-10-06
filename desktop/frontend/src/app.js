@@ -6562,6 +6562,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // rebuild it and the meta line stayed in the language before the switch.
     state.inboxView = view;
     body.replaceChildren();
+    // The warning is about what other machines wrote, so it is only on screen
+    // while there is something written to be warned about.
+    el("inbox-warning").classList.add("hidden");
+    el("inbox-warning-more").classList.add("hidden");
 
     if (view.loading) {
       // Not an empty list: those render identically, and the read can take
@@ -6607,6 +6611,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // looking for what just came in has to empty some of this first.
       body.append(element("div", "stale", t("inbox.moreHeld", { showing: view.showing })));
     }
+    el("inbox-warning").classList.remove("hidden");
+    el("inbox-warning-more").classList.remove("hidden");
     for (const message of view.messages) {
       const row = element("div", "inboxrow");
       row.append(senderLine(message.from));
