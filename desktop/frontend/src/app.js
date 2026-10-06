@@ -6570,7 +6570,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (view.loading) {
       // Not an empty list: those render identically, and the read can take
       // fifteen seconds.
-      meta.textContent = view.sessionId;
+      meta.textContent = inboxHeading(view.sessionId).id;
       body.append(element("div", "muted", t("common.loading")));
       return;
     }
@@ -6589,14 +6589,16 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // A failed read is not an empty inbox, and only one of them means there is
       // nothing to come back for. Shown here rather than in a banner: the dialog
       // covers the banner, so an error there is an error nobody sees.
-      meta.textContent = view.sessionId ?? "";
+      meta.textContent = inboxHeading(view.sessionId ?? "").id;
       body.append(element("div", "stale", t("inbox.unreadable")));
       body.append(element("div", "muted", view.error));
       return;
     }
-    meta.textContent = `${view.sessionId} · ` + (view.more
+    const counts = view.more
       ? t("inbox.metaMore", { showing: view.showing, held: view.held, capacity: view.capacity })
-      : t("inbox.meta", { held: view.held, capacity: view.capacity }));
+      : t("inbox.meta", { held: view.held, capacity: view.capacity });
+    const heading = inboxHeading(view.sessionId);
+    meta.textContent = heading.id ? `${heading.id} · ${counts}` : counts;
     if (view.full) {
       // A full inbox refuses new messages, which is a thing happening now rather
       // than a list that happens to be long.
@@ -6716,6 +6718,13 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     return !/^(claude|codex):/.test(value);
   }
 
+  // The drawer is titled by the session's own title; the id goes on the meta
+  // line, and only when the title is not already the id.
+  function inboxHeading(sessionId) {
+    const title = state.sessions.find((session) => session.id === sessionId)?.title;
+    return title ? { title, id: sessionId } : { title: sessionId, id: "" };
+  }
+
   async function openInbox(sessionId, cleared) {
     const sequence = ++inboxRequest;
     // Cleared, not pointed at the new session. inboxSession is what the clear
@@ -6725,7 +6734,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // While it is null the button is a no-op.
     state.inboxSession = null;
     state.inboxSessionAsked = sessionId;
-    el("inbox-title").textContent = sessionId;
+    el("inbox-title").textContent = inboxHeading(sessionId).title;
     el("inbox-modal").classList.remove("hidden");
     showInboxTab("inbox");
     // Loading is its own state. Rendering an empty list here is byte-identical to
@@ -9382,7 +9391,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     if (state.service) renderService();
     if (state.nodeSettings) relabelNodeSettings();
     if (state.inboxSessionAsked) {
-      el("inbox-title").textContent = state.inboxSessionAsked;
+      el("inbox-title").textContent = inboxHeading(state.inboxSessionAsked).title;
       showInboxTab(state.inboxTab);
       // The list itself, from the view renderInbox was last handed. Every line
       // in it — the meta line's counts, "full", "empty", a failed read — is a
