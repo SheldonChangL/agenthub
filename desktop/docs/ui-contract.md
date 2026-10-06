@@ -411,7 +411,8 @@
   - **沒動的區塊照各 session 原值保留**（`whoTouched`／`whatTouched`／`cwdTouched`）。`audienceFromPanel(session, panel, form)`：誰看得到沒動就用該 session 的 mode 與 nodes；
     選了「不分享」才寫四旗標全關（沒動的未分享 session 原樣保留）；旗標沒動就用該 session 現值（未分享的 session 改成已分享時用「可留訊息」）；
     工作目錄沒動就用現值；**Claude Code 一律 `autoWake: false`**。
-  - **工作目錄是獨立勾選框，永遠看得到**（「不分享」時連同「可以做什麼」一起隱藏）；多選不一致用 `indeterminate`。它既然看得到，就不需要「含工作目錄」這類事前警告
+  - **工作目錄是獨立勾選框，永遠看得到**（「不分享」時連同「可以做什麼」一起停用：區塊加 `.off`、`opacity: .5`，三個 radio 與 `#audience-cwd` 都 `disabled`，
+    區塊本身一律顯示；選了其他對象就恢復。寫入語意不變，「不分享」仍寫四旗標全關）；多選不一致用 `indeterminate`。它既然看得到，就不需要「含工作目錄」這類事前警告
     （`popover.withCwd` 系列已刪）。
   - **喚醒**：全是 Claude Code 時「可留訊息並喚醒」disabled＋`popover.wakeClaudeOnly`；混合時可選，並說「其中 N 個 Claude Code session 叫不醒…」（`share.wakeSomeClaude`）；
     節點沒開自動喚醒時勾喚醒多一句 `share.wakeNodeOff`；選取裡有 `autoWake` 的 Claude Code session 時多一句 `audience.autoWakeWillTurnOff`。

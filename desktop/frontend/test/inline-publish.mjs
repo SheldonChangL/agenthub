@@ -541,8 +541,9 @@ if (checkedOf("share-who") !== "selected" || !nodeBox("node_a")?.checked || !nod
   failures.push("a session with two chosen machines does not tick them both");
 }
 openRow("codex:quiet");
-if (checkedOf("share-who") !== "none" || !el("share-what-block").classList.contains("hidden")) {
-  failures.push(`an unshared session's panel ticks ${checkedOf("share-who")} and shows its what block`);
+if (checkedOf("share-who") !== "none" || el("share-what-block").classList.contains("hidden")
+  || !el("share-what-block").classList.contains("off") || !el("audience-cwd").disabled || !el("share-what-view").disabled) {
+  failures.push(`an unshared session's panel ticks ${checkedOf("share-who")} and its what block is not shown disabled`);
 }
 // A shared session with every flag off is 「只看得到」: an option of its own now.
 openRow("codex:silent");
@@ -558,7 +559,7 @@ if (audienceButton("codex:emptychosen").textContent !== ZH["audience.cell.none"]
 openRow("claude:only");
 if (!el("share-what-wake").disabled) failures.push("a Claude-only panel lets waking be picked");
 if (!panelText().includes(ZH["popover.wakeClaudeOnly"])) failures.push(`a Claude-only panel does not say why: ${panelText()}`);
-openRow("codex:quiet");
+openRow("codex:chosen");
 if (el("share-what-wake").disabled) failures.push("a Codex session's panel disabled waking");
 app.closeSharePanel();
 

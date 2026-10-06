@@ -4403,7 +4403,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       ? t("share.titleOne", { title: only.title || shortId(only.id).rest })
       : plural(sessions.length, "share.titleMany");
     el("audience-nodes").classList.toggle("hidden", form.who !== "selected");
-    el("share-what-block").classList.toggle("hidden", form.who === "none");
+    // Always on screen, so 「不分享」 does not look like a panel with a missing
+    // half; it is greyed and cannot be changed while nobody can see the session.
+    const whatOff = form.who === "none";
+    el("share-what-block").classList.toggle("off", whatOff);
+    for (const radio of document.querySelectorAll('input[name="share-what"]')) radio.disabled = whatOff;
+    el("audience-cwd").disabled = whatOff;
     for (const label of shareFormerLabels) label.textContent = t("audience.unlistedNode");
 
     // Under "who".
@@ -4451,7 +4456,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // there but cannot be picked.
     const claudeCount = sessions.filter((session) => session.provider === "claude").length;
     const claudeOnly = claudeCount === sessions.length;
-    el("share-what-wake").disabled = claudeOnly;
+    el("share-what-wake").disabled = whatOff || claudeOnly;
     if (claudeOnly) line(t("popover.wakeClaudeOnly"));
     else if (form.what === "wake" && claudeCount > 0) line(plural(claudeCount, "share.wakeSomeClaude"));
     if (form.what === "wake" && !state.nodeAutoWake) line(t("share.wakeNodeOff"));
