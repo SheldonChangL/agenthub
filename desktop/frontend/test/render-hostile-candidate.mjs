@@ -246,13 +246,13 @@ if (!el("pairing-note").serialize().includes('class="claimed"')) {
 // differs and the sentence beside it names one. A chosen name described as
 // "read from this machine" is the same defect the display name had, one level
 // down: follow the instruction and the panel's own next sentence is false.
-if (!beforeOpening.includes("節點從這台機器讀來的")) {
+if (!beforeOpening.includes("AgentHub 從這台機器讀來的")) {
   failures.push(`the warning does not say the name was read from the machine: ${beforeOpening}`);
 }
 scope.state.localNameIsChosen = true;
 renderPairing();
 const chosen = el("pairing-note").serialize();
-if (chosen.includes("節點從這台機器讀來的")) {
+if (chosen.includes("AgentHub 從這台機器讀來的")) {
   failures.push("a chosen name is still described as one read off the machine");
 }
 if (!chosen.includes("這個名稱是你指定的")) {
@@ -531,7 +531,7 @@ if (note.includes(hostile.fingerprint)) {
 }
 // Trust is keyed on the node id, and the node only checks that the key matches
 // the fingerprint — never that either belongs to this id.
-if (!note.includes("節點 ID")) {
+if (!note.includes("機器 ID")) {
   failures.push("the dialog does not ask the owner to compare the node id");
 }
 // A flagged row is flagged in the dialog too: the row is where impersonation is

@@ -152,14 +152,14 @@ if (refresh) {
   // Said on the attention strip, the one place visible from every view, with
   // the button that asks again (it used to be a banner that every other
   // message replaced).
-  const nodeRow = attentionRows(document).find((row) => row.title === "節點沒有回應");
+  const nodeRow = attentionRows(document).find((row) => row.title === "AgentHub 沒有回應");
   const bannerText = attentionText(document);
   if (!nodeRow) {
     failures.push(`a failed read put no row on the attention strip: ${bannerText}`);
   } else if (nodeRow.sev !== "alert" || !nodeRow.action) {
     failures.push(`the unreachable row is ${nodeRow.sev} with ${nodeRow.action ? "a" : "no"} button, want alert with 重試`);
   }
-  if (!bannerText.includes("節點未連線")) {
+  if (!bannerText.includes("AgentHub 未連線")) {
     failures.push(`the attention strip does not say the node is unreachable: ${bannerText}`);
   }
   if (!bannerText.includes("上次")) {
@@ -182,7 +182,7 @@ if (refresh) {
   if (state.nodes.length !== 2) {
     failures.push(`a successful refresh did not adopt the new node list (${state.nodes.length})`);
   }
-  if (attentionText(document).includes("節點未連線")) {
+  if (attentionText(document).includes("AgentHub 未連線")) {
     failures.push("the unreachable row survived a successful refresh");
   }
 }
@@ -288,7 +288,7 @@ if (!state.selected.has("claude:three")) {
   if (el("conn-dot").className !== "dot ok") {
     failures.push(`a late failed read set the connection dot to ${el("conn-dot").className} over a newer read that reached the node`);
   }
-  if (attentionText(document).includes("節點未連線")) {
+  if (attentionText(document).includes("AgentHub 未連線")) {
     failures.push(`a late failed read raised the unreachable row over a newer successful read: ${attentionText(document)}`);
   }
   if (state.sessions.length !== 1 || state.sessions[0].id !== "claude:newest") {

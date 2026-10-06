@@ -485,7 +485,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   const approves = named("ApprovePairRequest");
   if (approves.length !== 1 || approves[0][1] !== "pair_in000000002") failures.push(`一樣，核准 called ${JSON.stringify(approves)}`);
   const said = latestToast(document);
-  if (!said.textContent.includes(ZH["pair.step.approved-incoming"]) || !said.textContent.includes("（節點回報：trusted; waiting for their confirm）")) {
+  if (!said.textContent.includes(ZH["pair.step.approved-incoming"]) || !said.textContent.includes("（AgentHub 回報：trusted; waiting for their confirm）")) {
     failures.push(`the approve toast is not the window's sentence with the node's in brackets: ${said.textContent}`);
   }
   if (toastButtons(said.node).some((node) => node.textContent === ZH["pair.goPublish"])) {
@@ -741,7 +741,7 @@ for (const ms of [5000, 2000, 1000, 15000]) if (!tick(ms)) failures.push(`no ${m
   const text = ended ? shownText(ended) : "";
   if (!text.includes(ZH["pair.step.rejected-fingerprint-mismatch"])) failures.push(`a fingerprint mismatch was not said as itself: ${text}`);
   if (text.includes(ZH["pair.step.rejected"])) failures.push("a fingerprint mismatch was said as an ordinary refusal");
-  if (!text.includes("（節點回報：they said the fingerprints differ）")) failures.push(`the finished row lost the node's next step: ${text}`);
+  if (!text.includes("（AgentHub 回報：they said the fingerprints differ）")) failures.push(`the finished row lost the node's next step: ${text}`);
   // An ending this window caused is not looked up again.
   machine.finished = [];
   machine.requests = [outgoing("pair_out00000009")];

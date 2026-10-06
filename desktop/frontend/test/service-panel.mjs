@@ -57,7 +57,7 @@ app.renderService();
 if (hidden("service-restart")) {
   failures.push("no way to restart the node on a platform with no background service");
 }
-if (el("service-restart").textContent !== "重新啟動節點") {
+if (el("service-restart").textContent !== "重新啟動 AgentHub") {
   failures.push(`the button on a running node reads "${el("service-restart").textContent}"`);
 }
 if (!hidden("service-open") || !hidden("service-uninstall")) {
@@ -67,7 +67,7 @@ if (!hidden("service-open") || !hidden("service-uninstall")) {
 // 2. Same platform, node not running: the same button, named for what it does.
 app.state.nodeReachable = false;
 app.renderService();
-if (hidden("service-restart") || el("service-restart").textContent !== "啟動節點") {
+if (hidden("service-restart") || el("service-restart").textContent !== "啟動 AgentHub") {
   failures.push(`a stopped node was not offered a start: hidden=${hidden("service-restart")} text=${el("service-restart").textContent}`);
 }
 
@@ -140,8 +140,8 @@ if (el("service-db-note").textContent !== ZH["service.dbNoteRunningNotService"])
   failures.push(`the note for a node running but not as a service reads ${el("service-db-note").textContent}`);
 }
 for (const [language, text, condition, consequence, breaks] of [
-  ["en", EN["service.dbNoteRunningNotService"], "If it was started with --db", "new node identity", /[.;] /],
-  ["zh", ZH["service.dbNoteRunningNotService"], "若是用 --db 啟動的", "新的節點身分", /[。；]/],
+  ["en", EN["service.dbNoteRunningNotService"], "If it was started with --db", "new machine identity", /[.;] /],
+  ["zh", ZH["service.dbNoteRunningNotService"], "若是用 --db 啟動的", "新的機器身分", /[。；]/],
 ]) {
   const from = text.indexOf(condition);
   const to = text.indexOf(consequence);

@@ -596,14 +596,14 @@ for (const [name, table] of [["en", EN], ["zh-Hant", ZH]]) {
     if (/docs\/[\w.-]+\.md/.test(value)) failures.push(`${name} ${key} sends the owner to a repository file: ${value}`);
   }
   for (const key of ["common.why", "why.compareFingerprints", "why.unreachable", "why.fingerprint", "why.heartbeat",
-    "service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+    "service.introWhy", "nodeSettings.introWhy", "appearance.introWhy", "identity.introWhy"]) {
     if (!table[key]) failures.push(`${name} has no ${key}`);
   }
 }
 {
   const markup = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
   if (/data-t-title="[\w.]+introMore"/.test(markup)) failures.push("index.html still carries an introMore tooltip");
-  for (const key of ["service.introWhy", "nodeSettings.introWhy", "appearance.introWhy"]) {
+  for (const key of ["service.introWhy", "nodeSettings.introWhy", "appearance.introWhy", "identity.introWhy"]) {
     if (!markup.includes(`<details class="why"><summary data-t="common.why"></summary><p data-t="${key}"></p></details>`)) {
       failures.push(`index.html does not fold ${key} under a focusable summary`);
     }
@@ -617,11 +617,11 @@ for (const [name, table] of [["en", EN], ["zh-Hant", ZH]]) {
 for (const [key, value] of Object.entries(EN)) {
   if (/[（）：，。「」]/.test(value)) failures.push(`en ${key} carries full-width punctuation: ${value}`);
 }
-if (setLanguage("en"), t("pair.nodeSaidWrap", { detail: "x" }) !== " (The node reported: x)") {
+if (setLanguage("en"), t("pair.nodeSaidWrap", { detail: "x" }) !== " (AgentHub reported: x)") {
   failures.push(`en pair.nodeSaidWrap reads ${JSON.stringify(t("pair.nodeSaidWrap", { detail: "x" }))}`);
 }
 setLanguage("zh-Hant");
-if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（節點回報：x）") failures.push(`zh pair.nodeSaidWrap reads ${t("pair.nodeSaidWrap", { detail: "x" })}`);
+if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（AgentHub 回報：x）") failures.push(`zh pair.nodeSaidWrap reads ${t("pair.nodeSaidWrap", { detail: "x" })}`);
 
 // The settings page's discover switch says what it does, both halves (owner,
 // 2026-10-01): it searches the network for other computers, and while pairing
@@ -633,15 +633,15 @@ if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（節點回報：x）") failur
   if (!discoverRow.includes('data-t="nodeSettings.discover"') || !discoverRow.includes('data-t="nodeSettings.discoverWhy"')) {
     failures.push("the settings page's discover switch lost its label or the line that says what it sends");
   }
-  if (!ZH["nodeSettings.discover"].includes("搜尋其他電腦") || !ZH["nodeSettings.discover"].includes("找到這台")) {
+  if (!ZH["nodeSettings.discover"].includes("搜尋其他機器") || !ZH["nodeSettings.discover"].includes("找到這台")) {
     failures.push(`zh nodeSettings.discover does not say both halves: ${ZH["nodeSettings.discover"]}`);
   }
-  if (!/other computers/.test(EN["nodeSettings.discover"]) || !/find this one/.test(EN["nodeSettings.discover"])) {
+  if (!/other machines/.test(EN["nodeSettings.discover"]) || !/find this one/.test(EN["nodeSettings.discover"])) {
     failures.push(`en nodeSettings.discover does not say both halves: ${EN["nodeSettings.discover"]}`);
   }
   for (const [name, table, needles] of [
-    ["zh-Hant", ZH, ["只收不送", "配對視窗開著", "名稱", "位址", "平台", "指紋", "節點 ID"]],
-    ["en", EN, ["only receives", "pairing window is open", "name", "address", "platform", "fingerprint", "node ID"]],
+    ["zh-Hant", ZH, ["只收不送", "配對開放中", "名稱", "位址", "平台", "指紋", "機器 ID"]],
+    ["en", EN, ["only receives", "pairing is open", "name", "address", "platform", "fingerprint", "machine ID"]],
   ]) {
     for (const needle of needles) {
       if (!table["nodeSettings.discoverWhy"].includes(needle)) failures.push(`${name} nodeSettings.discoverWhy does not say ${needle}`);
@@ -649,6 +649,20 @@ if (t("pair.nodeSaidWrap", { detail: "x" }) !== "（節點回報：x）") failur
     for (const needle of needles.slice(0, 1)) {
       if (!table["firstRun.step1.why"].includes(needle)) failures.push(`${name} firstRun.step1.why does not say the search listens without sending (${needle})`);
     }
+  }
+}
+
+// The glossary (docs/ui-contract.md §12): none of the retired words reach the
+// screen, outside commands and file names.
+{
+  const scrub = (value) => value.replace(/agenthub-node|ah nodes?\b|node\.key|node_\w*|\{node\}/g, "");
+  for (const [key, value] of Object.entries(ZH)) {
+    const hit = /節點|電腦|公開|配對視窗|通告/.exec(scrub(value));
+    if (hit) failures.push(`zh ${key} still says ${hit[0]}: ${value}`);
+  }
+  for (const [key, value] of Object.entries(EN)) {
+    const hit = /\bnodes?\b|\bpublish\w*|\bcomputers?\b|\baudience\b|\bannounc\w*|pairing window/i.exec(scrub(value));
+    if (hit) failures.push(`en ${key} still says ${hit[0]}: ${value}`);
   }
 }
 

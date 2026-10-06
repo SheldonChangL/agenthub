@@ -2,7 +2,7 @@
 
 AgentHub Desktop is the owner-facing privacy console for a local
 `agenthub-node`. It lists every owner-local Claude and Codex session, supports
-search and status/provider/audience filters, applies one audience and export
+search and status/provider/shared-with filters, applies one sharing and export
 policy to multiple selected sessions, manages manually trusted nodes, opens and
 closes pairing mode and shows who is advertising, reads what other nodes have
 queued for a session, triggers a provider rescan, and shows the current signed
@@ -24,7 +24,7 @@ that reason.
 Three views behind the title-bar tabs:
 
 - **本機 session** — the table. Filters are three titled groups (provider,
-  status, audience): chips within a group OR, groups AND, and each chip's count
+  status, shared with): chips within a group OR, groups AND, and each chip's count
   is what it would match with the other groups still applied. Column headers
   sort; the default is last activity, newest first. Filters, sort and search
   persist in `localStorage`. Selecting rows floats an action bar over the
@@ -40,7 +40,7 @@ Three views behind the title-bar tabs:
   recorded address; the pairing window and the advertising machines open as a
   drawer from the list's foot.
 - **設定** — five tabs: the background service, connection settings (advanced
-  fields folded), this machine's identity, appearance (backdrop photo and
+  fields folded), this machine's identity (copy buttons for its machine ID and public key), appearance (backdrop photo and
   falling digits, which also stop under `prefers-reduced-motion`) and language.
   The photo only shows where there is no data: the first-run wizard, an empty
   session list, and the network view before a machine is picked.
@@ -110,7 +110,7 @@ the app executable.
 
 ## Current boundaries
 
-- Audience choices are implemented and persist across discovery. They decide the
+- Sharing choices are implemented and persist across discovery. They decide the
   per-peer export view, and the publisher delivers that view to each paired node
   that has a recorded, policy-permitted address. This app cannot record an
   address: that is `PUT /v1/nodes/{id}/address` on the node, outside the app, and

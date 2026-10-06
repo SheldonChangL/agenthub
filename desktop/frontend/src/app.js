@@ -2835,9 +2835,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   /* ---------------- settings view ---------------- */
 
   function renderSettings() {
-    el("identity-node-id").textContent = state.localNodeId || "—";
-    el("identity-fingerprint").textContent = state.localFingerprint || "—";
-    el("identity-public-key").textContent = state.localPublicKey || "—";
+    el("copy-identity-node-id").title = state.localNodeId || "";
+    el("copy-identity-node-id").disabled = !state.localNodeId;
     el("service-panel").classList.remove("hidden");
     el("toggle-backdrop").checked = state.ui.backdrop;
     el("toggle-motion").checked = state.ui.motion;
@@ -3751,7 +3750,6 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       nodeUrl: overview.nodeUrl ?? "",
     };
     renderNodeLine();
-    el("footer-right").textContent = reachable ? overview.node.id : "";
 
     // Said by the attention strip rather than a toast: this is a state, not an
     // answer to a button, and a toast every fifteen seconds that stays until
@@ -6236,9 +6234,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     const parts = {
       key,
       heading: element("h2"),
+      fingerprintWhy: element("details", "why"),
       fingerprint: element("div", "fingerprint"),
-      note: element("p", "muted"),
-      noteWhy: whyDetails("why.fingerprint"),
       // Trust is recorded per machine, and this page shows only this machine's
       // half. Pairing on the mac left the Ubuntu box answering "No paired
       // nodes" on 2026-09-10, and nothing here said that was half-done — the
@@ -6248,7 +6245,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       mutualWhy: whyDetails("why.heartbeat"),
       rest: element("div"),
     };
-    parts.list = [parts.heading, parts.fingerprint, parts.note, parts.noteWhy,
+    // The fingerprint is for comparing, not for reading at a glance: it sits
+    // folded, and the compare step of pairing is where it is shown in full.
+    parts.fingerprintWhy.append(element("summary", "", t("identity.fingerprint")), parts.fingerprint, element("p", "", t("why.fingerprint")));
+    parts.list = [parts.heading, parts.fingerprintWhy,
       parts.mutualNote, parts.mutualWhy, parts.rest];
     return parts;
   }
@@ -6256,14 +6256,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   function fillNodeDetail(parts, node) {
     parts.heading.textContent = node.displayName;
     parts.fingerprint.textContent = node.fingerprint;
-    parts.note.textContent = t("network.fingerprintNote");
     parts.mutualNote.textContent = t("network.mutualNote");
     parts.rest.replaceChildren(...nodeDetailRest(node));
   }
 
   function nodeDetailRest(node) {
     const rows = [
-      [t("identity.nodeId"), node.nodeId],
       [t("pairManual.platform"), node.platform],
       [t("network.detailPairedAt"), node.pairedAt ? relative(node.pairedAt) : "—"],
       [t("network.detailLastContact"),
@@ -6284,8 +6282,22 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     revoke.onclick = () => revokeSelected(node, { button: revoke });
     const revokeNote = element("p", "muted", t("network.revokeNote"));
 
+    // The machine ID is a copy button, with the ID itself in its tooltip.
+    const idButton = element("button", "ghost", t("identity.copyNodeId"));
+    idButton.title = node.nodeId;
+    idButton.onclick = async () => {
+      try {
+        await api.CopyText(node.nodeId);
+        idButton.textContent = t("row.copied");
+      } catch (error) {
+        openCopyFallback(idButton, t("identity.idCopyFailed", { error }), node.nodeId);
+      }
+    };
+    const idRow = element("div", "detailrow");
+    idRow.append(element("span", "muted", t("identity.nodeId")), idButton);
+
     const grid = element("div", "detailgrid");
-    grid.append(...rows);
+    grid.append(idRow, ...rows);
     return [
       grid,
       ...addressSection(node),
@@ -6472,7 +6484,19 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // A clipboard that refuses says so rather than leaving the owner believing a
   // copy happened: the key is on screen either way, and the failure mode this
   // replaces is a hand-retyped key missing its last character.
-  async function copyLocalPublicKey(statusId = "copy-public-key-status") {
+  async function copyLocalNodeId() {
+    const status = el("identity-copy-status");
+    if (!state.localNodeId) return;
+    try {
+      await api.CopyText(state.localNodeId);
+      status.textContent = t("identity.nodeIdCopied");
+    } catch (error) {
+      status.textContent = "";
+      openCopyFallback(el("copy-identity-node-id"), t("identity.idCopyFailed", { error }), state.localNodeId);
+    }
+  }
+
+  async function copyLocalPublicKey(statusId = "copy-public-key-status", anchor = null) {
     const status = el(statusId);
     if (!state.localPublicKey) {
       status.textContent = t("identity.noKeyYet");
@@ -6482,7 +6506,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       await api.CopyText(state.localPublicKey);
       status.textContent = t("identity.keyCopied");
     } catch (error) {
-      status.textContent = t("identity.keyCopyFailed", { error });
+      if (anchor) {
+        status.textContent = "";
+        openCopyFallback(anchor, t("identity.keyCopyFailedBox", { error }), state.localPublicKey);
+      } else {
+        status.textContent = t("identity.keyCopyFailed", { error });
+      }
     }
   }
 
@@ -6533,6 +6562,10 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     // rebuild it and the meta line stayed in the language before the switch.
     state.inboxView = view;
     body.replaceChildren();
+    // The warning is about what other machines wrote, so it is only on screen
+    // while there is something written to be warned about.
+    el("inbox-warning").classList.add("hidden");
+    el("inbox-warning-more").classList.add("hidden");
 
     if (view.loading) {
       // Not an empty list: those render identically, and the read can take
@@ -6578,6 +6611,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
       // looking for what just came in has to empty some of this first.
       body.append(element("div", "stale", t("inbox.moreHeld", { showing: view.showing })));
     }
+    el("inbox-warning").classList.remove("hidden");
+    el("inbox-warning-more").classList.remove("hidden");
     for (const message of view.messages) {
       const row = element("div", "inboxrow");
       row.append(senderLine(message.from));
@@ -6594,6 +6629,15 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // empties another's, irreversibly.
   let inboxRequest = 0;
   let inboxApplied = 0;
+
+  // The proven half, named from this machine's own pairing records; a node
+  // that is not paired (or was paired without a name) shows its ID.
+  function provenSender(nodeId) {
+    const node = state.nodes.find((candidate) => candidate.nodeId === nodeId);
+    const span = element("span", "fingerprint", String(node?.displayName ?? "").trim() || nodeId);
+    span.title = nodeId;
+    return span;
+  }
 
   // senderLine splits who sent it from what they called themselves.
   //
@@ -6619,7 +6663,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
         line.append(element("span", "claimed", session));
         return line;
       }
-      line.append(element("span", "fingerprint", nodeId));
+      line.append(provenSender(nodeId));
       line.append(element("span", "muted", t("sender.claimsToBe")));
       // The half they chose, marked as such.
       line.append(element("span", "claimed", session));
@@ -6643,12 +6687,12 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     }
     if (state.nodes.some((node) => node.nodeId === value)) {
       // A paired node's own id settles a bare value whatever shape it has.
-      line.append(element("span", "fingerprint", value));
+      line.append(provenSender(value));
       line.append(element("span", "muted", t("sender.noSession")));
       return line;
     }
     if (looksLikeNodeId(value)) {
-      line.append(element("span", "fingerprint", value));
+      line.append(provenSender(value));
       line.append(element("span", "muted", t("sender.noSession")));
       return line;
     }
@@ -6857,7 +6901,7 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
     el("inbox-clear").classList.toggle("hidden", state.inboxTab !== "inbox");
     el("inbox-foot-note").textContent = state.inboxTab === "inbox"
       ? t("inbox.footNote")
-      : state.inboxTab === "outbound" ? t("inbox.outboundFootNote") : t("inbox.wakesFootNote");
+      : state.inboxTab === "outbound" ? t("inbox.outboundFootNote") : "";
     if (state.inboxTab === "outbound" && state.outbound.session !== state.inboxSessionAsked) {
       loadOutbound({ reset: true }).catch(() => {});
     }
@@ -9450,7 +9494,8 @@ export function boot({ start = true, backdropUrl = "" } = {}) {
   // One press: install or start when that is what it needs, the settings
   // page otherwise (runServiceQuickAction).
   el("service-pill").onclick = () => runServiceQuickAction({ button: el("service-pill") }).catch(() => {});
-  el("copy-identity-key").onclick = () => copyLocalPublicKey("identity-copy-status");
+  el("copy-identity-key").onclick = () => copyLocalPublicKey("identity-copy-status", el("copy-identity-key"));
+  el("copy-identity-node-id").onclick = () => copyLocalNodeId();
   el("toggle-backdrop").onchange = (event) => {
     state.ui.backdrop = Boolean(event.target.checked);
     savePrefs();
