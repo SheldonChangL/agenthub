@@ -742,7 +742,7 @@ export const TEXT = {
   "firstRun.done.shared.one": "Shared {n} session. {targets}.",
   "firstRun.done.shared.other": "Shared {n} sessions. {targets}.",
   "firstRun.done.localOnly": "AgentHub is running on this machine, for this machine only. To pair with another one, open the Network tab and press Pair another machine.",
-  "firstRun.done.nothingShared": "No session is shared yet. Share one any time from the Shared with column in the main window.",
+  "firstRun.done.nothingShared": "No session is shared yet. Share one any time from the SHARING column in the main window.",
   "firstRun.done.start": "Start using AgentHub",
 
   /* ---------------- notices: toasts, the bell, the attention strip ---------------- */
@@ -810,7 +810,7 @@ export const TEXT = {
   "popover.appliedNoneBody": "Other machines no longer see it.",
   "popover.undo": "Undo",
   "popover.undone": "Undone: the sharing settings are back to what they were.",
-  "popover.undoBusy": "Something else was still being changed, so this was not undone; once it finishes, set it back from that row’s sharing settings button.",
+  "popover.undoBusy": "Something else was still being changed, so this was not undone; once it finishes, set it back from that row’s sharing button.",
   "attention.service.startAction": "Start the background service",
   "attention.service.installAction": "Install as a background service",
   "attention.service.formAction": "Install from settings",

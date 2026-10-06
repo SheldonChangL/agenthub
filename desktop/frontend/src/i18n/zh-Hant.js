@@ -737,7 +737,7 @@ export const TEXT = {
   "firstRun.done.shared.one": "已分享 {n} 個 session：{targets}。",
   "firstRun.done.shared.other": "已分享 {n} 個 session：{targets}。",
   "firstRun.done.localOnly": "AgentHub 在這台執行，只在這台用。要和其他機器配對時，到「區網」分頁按「配對另一台機器」。",
-  "firstRun.done.nothingShared": "還沒有分享任何 session。之後在主視窗的「分享對象」欄隨時可以分享。",
+  "firstRun.done.nothingShared": "還沒有分享任何 session。之後在主視窗的「分享」欄隨時可以分享。",
   "firstRun.done.start": "開始使用",
 
   /* ---------------- notices: toasts, the bell, the attention strip ---------------- */
@@ -805,7 +805,7 @@ export const TEXT = {
   "popover.appliedNoneBody": "其他機器看不到了。",
   "popover.undo": "復原",
   "popover.undone": "已復原：分享對象回到原本的設定。",
-  "popover.undoBusy": "另一個動作還在進行，這次沒有復原；等它結束後，用那一列的分享對象按鈕改回去。",
+  "popover.undoBusy": "另一個動作還在進行，這次沒有復原；等它結束後，用那一列的「分享」按鈕改回去。",
   "attention.service.startAction": "啟動背景服務",
   "attention.service.installAction": "安裝為背景服務",
   "attention.service.formAction": "到設定頁安裝",

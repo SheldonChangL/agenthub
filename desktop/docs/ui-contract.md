@@ -1100,7 +1100,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 | 把 session 給其他機器看 | 分享 | share | 公開、publish、Publish | `local.publishMenu`、`audience.verb.*`、`audience.applied.*`、`popover.*`、`pair.goPublish`、`network.*` |
 | 沒給任何機器 | 不分享 | Not shared | 不公開、Not published、未公開、指定：無 | `audience.modeNone`、`audience.cell.none`、`popover.none`、`footer.counts` |
 | 收回 | 停止分享 | Stop sharing | 收回公開、Unpublish | `audience.verb.none`、`audience.applied.none.*` |
-| 分享給誰（欄名、篩選組名） | 分享對象 | Shared with（欄名大寫 SHARED WITH） | 公開對象、Audience、AUDIENCE | `local.colAudience`、`local.groupAudience`、`popover.title`、`audience.title`、`firstRun.done.nothingShared` |
+| 分享給誰（欄名、篩選組名；E 之後欄名就叫分享） | 分享（概念上的「分享對象」只用在句子裡） | SHARING（欄名與篩選組名） | 公開對象、Audience、AUDIENCE | `local.colAudience`、`local.groupAudience`、`popover.title`、`audience.title`、`firstRun.done.nothingShared` |
 | 所有配對過的機器 | 所有已配對機器（表格儲存格短形：所有已配對） | all paired machines（cell: All paired） | 所有已配對、Every paired machine | `audience.*`、`popover.targetAll` |
 | 兩台互相信任的動作 | 配對 | pair / pairing | 保留 | `pair.*` |
 | 可配對的狀態 | 配對開放中 · m:ss | Pairing open · m:ss | 配對視窗（當名詞）、pairing window | `nodeSettings.discoverWhy`、`network.summary*` |
