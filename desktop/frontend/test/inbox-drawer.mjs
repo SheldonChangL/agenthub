@@ -108,6 +108,23 @@ const body = el("inbox-body").serialize();
 if (!body.includes("移除 7 則")) failures.push(`the clear result vanished behind the read error: ${body}`);
 if (!body.includes("connection refused")) failures.push("the read error was not shown beside the clear result");
 
+// 7. The drawer is titled by the session's title, with the id on the meta line;
+//    a session without a title is titled by its id, and the id is not repeated.
+app.state.sessions = [
+  { id: "codex:titled", provider: "codex", title: "Release notes", audience: { mode: "none", nodes: [] } },
+  { id: "codex:untitled", provider: "codex", audience: { mode: "none", nodes: [] } },
+];
+inboxAnswer = async (sessionId) => ({ sessionId, messages: [], held: 4, capacity: 500 });
+await app.openInbox("codex:titled");
+if (el("inbox-title").textContent !== "Release notes") failures.push(`a titled session opened the drawer as ${el("inbox-title").textContent}`);
+if (!el("inbox-meta").textContent.includes("codex:titled")) failures.push(`the meta line lost the id: ${el("inbox-meta").textContent}`);
+if (!el("inbox-meta").textContent.includes("4 / 500")) failures.push(`the meta line lost the count: ${el("inbox-meta").textContent}`);
+await app.openInbox("codex:untitled");
+if (el("inbox-title").textContent !== "codex:untitled") failures.push(`an untitled session opened the drawer as ${el("inbox-title").textContent}`);
+if (el("inbox-meta").textContent.includes("codex:untitled")) failures.push(`the id is repeated under its own title: ${el("inbox-meta").textContent}`);
+if (!el("inbox-meta").textContent.includes("4 / 500")) failures.push(`the untitled meta line lost the count: ${el("inbox-meta").textContent}`);
+app.state.sessions = [];
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

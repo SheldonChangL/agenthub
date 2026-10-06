@@ -350,8 +350,13 @@ if (han.test(enMeta)) {
 if (!enMeta.includes(EN["inbox.meta"].replace("{held}", "3").replace("{capacity}", "32"))) {
   failures.push(`the inbox meta line was not re-derived in English: ${enMeta}`);
 }
-if (!enMeta.includes("claude:i18n-drawer")) {
-  failures.push(`the inbox meta line lost the session it belongs to: ${enMeta}`);
+// This session has no title, so its id is the drawer's title and the meta line
+// does not repeat it.
+if (el("inbox-title").textContent !== "claude:i18n-drawer") {
+  failures.push(`the inbox title lost the session it belongs to: ${el("inbox-title").textContent}`);
+}
+if (enMeta.includes("claude:i18n-drawer")) {
+  failures.push(`the inbox meta line repeats the id its title already shows: ${enMeta}`);
 }
 const enBody = el("inbox-body").textContent;
 if (han.test(enBody)) {

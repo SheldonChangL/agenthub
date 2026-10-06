@@ -199,7 +199,7 @@
     抽屜裡全部列出、不收合（測試 `notifications.mjs` 3f）。
     除了「重試」，每一列的動作鈕按下時先關掉抽屜（`attentionRow()`）：它們要去的地方（收件匣、配對抽屜、設定頁）不該開在抽屜後面。
 - **首次設定精靈**（`#first-run`，見 §3.2）：開著時佔滿主內容區，三個視圖都藏在它下面；觸發條件橫跨三個視圖的狀態。
-- 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定機器 N · 不分享 N」，右側沒有東西（本機機器 ID 在設定頁的本機身分，是複製鈕）。
+- 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定機器 N · 未分享 N」，右側沒有東西（本機機器 ID 在設定頁的本機身分，是複製鈕）。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。**按下去的那一顆**另外轉圈並停用自己到呼叫回來為止
   （`withBusy(label, fn, { button })`，`button.busy` + `aria-busy`）：安裝／移除／重新啟動服務、送出配對請求、
   核准／確認／拒絕、套用公開對象與收回、撤銷信任、清空收件匣、重新掃描、儲存連線設定、記錄位址、開／關配對、
@@ -411,7 +411,8 @@
   - **沒動的區塊照各 session 原值保留**（`whoTouched`／`whatTouched`／`cwdTouched`）。`audienceFromPanel(session, panel, form)`：誰看得到沒動就用該 session 的 mode 與 nodes；
     選了「不分享」才寫四旗標全關（沒動的未分享 session 原樣保留）；旗標沒動就用該 session 現值（未分享的 session 改成已分享時用「可留訊息」）；
     工作目錄沒動就用現值；**Claude Code 一律 `autoWake: false`**。
-  - **工作目錄是獨立勾選框，永遠看得到**（「不分享」時連同「可以做什麼」一起隱藏）；多選不一致用 `indeterminate`。它既然看得到，就不需要「含工作目錄」這類事前警告
+  - **工作目錄是獨立勾選框，永遠看得到**（「不分享」時連同「可以做什麼」一起停用：區塊加 `.off`、`opacity: .5`，三個 radio 與 `#audience-cwd` 都 `disabled`，
+    區塊本身一律顯示；選了其他對象就恢復。寫入語意不變，「不分享」仍寫四旗標全關）；多選不一致用 `indeterminate`。它既然看得到，就不需要「含工作目錄」這類事前警告
     （`popover.withCwd` 系列已刪）。
   - **喚醒**：全是 Claude Code 時「可留訊息並喚醒」disabled＋`popover.wakeClaudeOnly`；混合時可選，並說「其中 N 個 Claude Code session 叫不醒…」（`share.wakeSomeClaude`）；
     節點沒開自動喚醒時勾喚醒多一句 `share.wakeNodeOff`；選取裡有 `autoWake` 的 Claude Code session 時多一句 `audience.autoWakeWillTurnOff`。
@@ -576,7 +577,9 @@
 **Esc**（2026-10-05）：每按一次關掉最上層的一個，對話框先於抽屜（`overlayKey`：heartbeat → MCP → 手動配對 → 分享面板 → 通知紀錄 → 配對抽屜〔走 ✕ 同一條 `dismissPairingDrawer`〕→ 收件匣）。確認對話框、複製失敗框開著時由它們自己處理（測試 `escape-closes.mjs`）。
 
 抽屜（`.drawer`，從右側滑出）：
-- `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選；只在列表有訊息時顯示）、meta、
+- `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。標題（`#inbox-title`）是該 session 的標題，沒有標題才用 session ID；
+  meta 行（`#inbox-meta`）有標題時寫「ID · N / 500 則」，沒標題時只寫「N / 500 則」（標題已經是 ID，不重複）。
+  警語（資料不是指令；「自稱」後是寄件者自選；只在列表有訊息時顯示）、meta、
   訊息列（寄件者分兩半：驗證過的那台機器用 `fingerprint` 樣式——已配對的顯示配對紀錄裡的名稱、`title` 是機器 ID，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
 - `pairing-modal` 配對：一步一屏（§3.3）。
 - `notify-modal` 通知紀錄（2026-09-29）：鈴鐺打開，唯讀，見 §3.1「通知三層」。不在 `MODAL_IDS` 裡。

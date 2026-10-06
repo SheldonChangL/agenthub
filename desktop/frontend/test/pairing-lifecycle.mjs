@@ -282,10 +282,10 @@ inboxDelays.clear();
 if (scope.state.inboxSession !== "claude:fast") {
   failures.push(`a stale read left the dialog aimed at ${scope.state.inboxSession}`);
 }
-if (!el("inbox-meta").serialize().includes("claude:fast")) {
-  failures.push(`the dialog shows ${el("inbox-meta").serialize()} while clear targets claude:fast`);
+if (!(el("inbox-title").serialize() + el("inbox-meta").serialize()).includes("claude:fast")) {
+  failures.push(`the dialog shows ${(el("inbox-title").serialize() + el("inbox-meta").serialize())} while clear targets claude:fast`);
 }
-if (el("inbox-meta").serialize().includes("claude:slow")) {
+if ((el("inbox-title").serialize() + el("inbox-meta").serialize()).includes("claude:slow")) {
   failures.push("the slow read repainted the dialog after the fast one landed");
 }
 // And the button follows the dialog, not the last read to finish. This is the

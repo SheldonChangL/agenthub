@@ -70,6 +70,10 @@ const choose = (name, value) => {
   picked.onchange?.();
 };
 const hidden = (id) => el(id).classList.contains("hidden");
+// The what block is always on screen; over 「不分享」 its three radios and the
+// working-directory box are disabled together.
+const whatDisabled = () => ["share-what-view", "share-what-messages", "share-what-wake", "audience-cwd"].filter((id) => el(id).disabled);
+const whatState = () => (whatDisabled().length === 4 ? "disabled" : whatDisabled().length === 0 ? "enabled" : `partly disabled (${whatDisabled().join(",")})`);
 const whoNote = () => el("share-who-note").textContent;
 const whatNote = () => el("share-what-note").textContent;
 const boxes = () => {
@@ -162,10 +166,11 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const quiet = session("codex:quiet", aud("none", [], { cwd: true }));
   open([quiet]);
   if (checkedOf("share-who") !== "none") failures.push(`an unshared session opened with who ${checkedOf("share-who")}`);
-  if (!hidden("share-what-block")) failures.push("the what block is shown over an unshared session");
+  if (hidden("share-what-block") || !el("share-what-block").classList.contains("off")) failures.push("the what block is not shown greyed over an unshared session");
+  if (whatState() !== "disabled") failures.push(`the what block is ${whatState()} over an unshared session, want disabled`);
   if (!el("audience-cwd").checked || el("audience-cwd").indeterminate) failures.push("the working-directory box does not show the session's own value");
   choose("share-who", "all_paired");
-  if (hidden("share-what-block")) failures.push("choosing who can see it did not bring the what block back");
+  if (whatState() !== "enabled" || el("share-what-block").classList.contains("off")) failures.push(`choosing who can see it left the what block ${whatState()}, want enabled`);
   if (checkedOf("share-what") !== "messages") failures.push(`an unshared session opened with what ${checkedOf("share-what")}, want 「可留訊息」`);
   await apply();
   const want = aud("all_paired", [], { cwd: true, msg: true, out: true });
@@ -338,7 +343,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const shared = session("codex:stop", aud("selected", ["node_a"], { cwd: true, msg: true, out: true, wake: true }));
   open([shared]);
   choose("share-who", "none");
-  if (!hidden("share-what-block")) failures.push("the what block stays over 「不分享」");
+  if (whatState() !== "disabled") failures.push(`the what block is ${whatState()} over 「不分享」, want disabled`);
   await apply();
   if (!same(calls[0]?.audience, aud("none", []))) failures.push(`「不分享」 wrote ${JSON.stringify(calls[0]?.audience)}`);
   if (!latestToast(document).textContent.includes(fill(ZH["audience.applied.none.one"], { n: 1 }))) failures.push(`the toast after 「不分享」 reads ${latestToast(document).textContent}`);
