@@ -18,8 +18,8 @@ Claude Code session finds it the next time it checks its inbox. If each
 machine shares its session, you can see both, and whether each is active or
 idle, from either machine.
 
-![The Local sessions table: nine Claude Code and Codex sessions with their status, who can see each one, and inbox counts](docs/screenshots/local-sessions.png)
-*The Local sessions tab. The pictures use made-up data; the window is in English and 繁體中文.*
+![A 26-second demo: the Local sessions table; one session shared with the paired machine ubuntu-lab, allowed to receive messages; the Network tab listing the sessions ubuntu-lab shares back; and an inbox holding three notes that ubuntu-lab's agents left](docs/screenshots/demo.gif)
+*Share a session with a paired machine, see what it shares back, and read the notes its agents left. The pictures use made-up data; the window is in English and 繁體中文.*
 
 ## What AgentHub does
 

@@ -15,8 +15,8 @@
 「schema 改了，API 測試重跑一下」。Claude Code 下次檢查收件匣時就會看到。
 只要兩台都把自己的 session 分享出去，從任何一台都看得到兩邊的 session，以及它們是 active 還是 idle。
 
-![本機 session 表格：九個 Claude Code 與 Codex session，各自的狀態、誰看得到、收件匣數量（截圖為英文介面）](docs/screenshots/local-sessions.png)
-*「本機 session」分頁。截圖裡的資料都是虛構的；介面有英文與繁體中文。*
+![26 秒示範：本機 session 表格；把一個 session 分享給配對過的機器 ubuntu-lab、允許它留訊息；區網分頁列出 ubuntu-lab 分享回來的 session；收件匣裡有 ubuntu-lab 的 agent 留下的三則訊息](docs/screenshots/demo.zh-Hant.gif)
+*把 session 分享給配對過的機器、看它分享回來的 session、讀它的 agent 留下的訊息。畫面裡的資料都是虛構的；介面有英文與繁體中文。*
 
 ## AgentHub 做什麼
 
