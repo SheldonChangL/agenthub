@@ -284,7 +284,7 @@ finished only when both screens have said yes.
    pairing**.
 6. Step 2 now says **Paired with 1 machine.** Press **Next**.
 
-![Step 2 on the receiving machine: two fingerprints to compare, with "Same — approve" and "Different — reject"](screenshots/network-pairing.png)
+![The pairing drawer on the receiving machine: a request from ubuntu-lab with two fingerprints to compare, and the "Fingerprints match, approve" and "Reject" buttons](screenshots/network-pairing.png)
 
 **If any group differs**, press **Different — reject** on either computer.
 Nothing is trusted on either side. A mismatch means the two computers may not be
