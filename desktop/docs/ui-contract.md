@@ -48,7 +48,7 @@
 
 | 綁定 | 現在的入口 | 觸發後必須發生的事 |
 |---|---|---|
-| `Overview()` | 啟動、`btn-reload`、每次寫入後、待處理列「節點沒有回應」的「重試」、首次設定精靈第 1 步結束時（§3.2） | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取；讀不到節點時在**待處理列**（§3.1）說明（保留上次清單或從未載入過），不再用 toast |
+| `Overview()` | 啟動、`btn-reload`、每次寫入後、待處理列「AgentHub 沒有回應」的「重試」、首次設定精靈第 1 步結束時（§3.2） | 更新 session/nodes/peers/counts、連線指示、footer；清掉已不存在的選取；讀不到節點時在**待處理列**（§3.1）說明（保留上次清單或從未載入過），不再用 toast |
 | `Discover()` | `btn-discover`；首次設定精靈第 3 步沒有 session 時的「重新掃描」（同一個 `discoverSessions()`）；視窗第一次**連得到節點**而且 0 筆 session 時自動呼叫一次（`state.busy` 時不算，留給下一次不忙的讀取） | 掃描後 reload；toast 報 claude/codex/total/skipped 數 |
 | `Heartbeat()` | `btn-heartbeat`（在設定頁的身分區 `settings-identity`） | 對話框顯示已簽章 envelope 純文字 |
 | `SetAudience(ids, audience)` | 分享面板「套用」（列上的分享按鈕、批次列「分享…」，§3.2；`applySharePanel()`）、toast 的「復原」、首次設定精靈第 3 步「分享 N 個 session」（`applyAudienceChoice()`→`applyAudiencePairs()`，帶 `withoutCwd`：一律 `exportCwd: false`，`peerAction: false`：toast 沒有「在區網頁看」，復原仍寫回原值） | 成功：關面板、批次時清空選取（列上的面板不動選取）、toast＝標題＋`peerOutcome()` 的一句對方視角（「alice 現在看得到 N 個 session。」／「N 台機器看得到這些 session。」／已停止分享時「其他機器不再看得到。」／還沒配對任何機器時「…日後配對的機器才看得到」）＋〔在區網頁看 X〕＋〔復原〕；部分失敗：面板不關、留著選取、錯誤 toast 顯示第一個錯誤（面板開著時浮在面板上方，§3.1），至少一個成功時才帶「復原」（寫回每個 session 的原值，對失敗的那些是同值重寫、冪等），全部失敗時不帶。寫入**依結果分組**：每個不同的 audience 呼叫一次，帶所有得到它的 session（`writeAudiences()`）；整次呼叫丟錯時該組全部算失敗，走同一條部分失敗規則 |
@@ -104,7 +104,7 @@
   右側三個控制項：**服務狀態 pill**（`service-pill`，**一鍵處理**：支援但未安裝且沒有節點在跑 → 安裝（節點在跑但不是服務 → 服務表單）、已安裝沒在跑 → `RestartService()`、
   其餘〔找不到 ah、平台不支援、狀態還沒讀到、已在跑〕→ 跳設定頁的服務區；`runServiceQuickAction()`，與待處理列同一份。
   綠色「背景服務執行中」只在服務已裝、在跑**而且節點有回答**時；服務在跑但節點沒回應（`state.nodeChecked` 且 `!state.nodeReachable`）
-  是 amber 的 `service.pillRunningNoAnswer`「背景服務在跑，但節點沒回應」，按下同一個一鍵處理——它重讀狀態，已在跑就到設定頁的服務區，
+  是 amber 的 `service.pillRunningNoAnswer`「背景服務在跑，但 AgentHub 沒回應」，按下同一個一鍵處理——它重讀狀態，已在跑就到設定頁的服務區，
   那裡有「重新啟動」；測試 `first-run-pairing.mjs` §14）、
   重新掃描（`btn-discover`）、「繼續設定」（`btn-resume-setup`，ghost 不是主按鈕；首次設定精靈收著而設定沒完成時才出現，§3.2）、通知紀錄的鈴鐺（`btn-bell`，見下面「通知三層」）。
   **首次設定精靈開著時**（`#app.firstrun-on`）標題列只留 app 名稱、連線點、鈴鐺與 toast：三個分頁、服務 pill、重新掃描、`node-line` 與底部狀態列都隱藏。`btn-reload` 保留在 DOM 但 `hidden`（15 秒背景輪詢取代它）；預覽 heartbeat
@@ -151,7 +151,7 @@
   而且大多數寫入後面跟著的 `load()` 會把它藏起來，錯過就找不回來。現在：
   - **Toast**（`#toasts`，`aria-live="polite"`，在 index.html 所有抽屜與對話框**之後**）：右下角**一次一則**（2026-10-05）：新的一律取代舊的，被取代的都已在通知紀錄；新的那則多一顆連結鈕「另有 N 則較早的通知」（`notify.more`，N＝這個位置上次空出來之後被取代的累計數），按了收起並打開通知紀錄。錯誤與警告被取代時仍算未讀，鈴鐺數字照算（測試 `notifications.mjs` §1）。
     `notify(kind, title, {body, actions})`，kind 是
-    `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起，帶動作按鈕（復原、去公開 session 等）的延長為 15 秒並加 `long`（擁有者 2026-09-29 指定）（底部倒數條；滑鼠停在上面或鍵盤焦點在它裡面時暫停——倒數條停住、加 `held`——兩者都離開後重新給足原本的秒數，在它自己的按鈕之間移動焦點不算離開），`warn` 與 `error`
+    `ok`／`info`／`warn`／`error`：`ok` 與 `info` 6 秒後自動收起，帶動作按鈕（復原、去分享 session 等）的延長為 15 秒並加 `long`（擁有者 2026-09-29 指定）（底部倒數條；滑鼠停在上面或鍵盤焦點在它裡面時暫停——倒數條停住、加 `held`——兩者都離開後重新給足原本的秒數，在它自己的按鈕之間移動焦點不算離開），`warn` 與 `error`
     **不自動消失**，要按 ✕；後兩種 `role="alert"`，前兩種 `role="status"`。`actions` 是 toast 上的按鈕，
     按了先收起再執行。舊的 `banner(message, ok)` 保留為 wrapper：`ok=true` → 成功，其餘 → 錯誤。
     配對抽屜等右側抽屜開著時整疊移到抽屜左邊；對話框（`.modal`）開著時那一則只留標題、夾在卡片上方那條背景裡，
@@ -167,7 +167,7 @@
 
     | 項目 | 條件 | 嚴重度 | 按鈕 |
     |---|---|---|---|
-    | 節點沒有回應 | 至少一次 `Overview()` 已回答（`state.nodeChecked`）且最後一次 `reachable` 為 false；說明沿用 `app.notConnected`（含錯誤原文與「上次成功載入」／「還沒有載入過」） | alert | 「重試」＝前景 `load()`（走 `withBusy`） |
+    | AgentHub 沒有回應 | 至少一次 `Overview()` 已回答（`state.nodeChecked`）且最後一次 `reachable` 為 false；說明沿用 `app.notConnected`（含錯誤原文與「上次成功載入」／「還沒有載入過」） | alert | 「重試」＝前景 `load()`（走 `withBusy`） |
     | 背景服務 | `ServiceStatus().supported === true`、沒有 `toolError`、且不是「已安裝且執行中」 | alert | 未安裝「安裝為背景服務」（節點在跑但不是服務時「到設定頁安裝」，`attention.service.formAction`）、已安裝「啟動背景服務」，按了就做（`runServiceQuickAction()`，見下） |
     | 收件匣已滿 | `inboxCounts.ok` 且有 `full`（讀不到數字時不顯示，不拿舊數字說滿） | warn | 「開啟收件匣」開第一個滿的（依表格順序）；兩個以上時標題寫數量 |
     | 有機器想配對 | 節點回報配對開放中，且最近一次讀到的交換裡有 `incoming`＋`pending`（讀取規則見 §2 `PairRequests`） | info | 「比對並核准」＝`goToPairing()`。一件時標題是「自稱 {name} 的機器想和這台機器配對」：name 是對方自選的 `displayName`，放在 `class="claimed"` 的 span（同收件匣寄件者的自選那半），沒有名字（空白或只有空格）時另一句（`attention.pair.titleOneNoName`），**不拿 nodeId 當自稱名稱**（同候選列的「（未提供名稱）」，`candidateName()`；測試 `notifications.mjs` 3d） |
@@ -199,10 +199,10 @@
     抽屜裡全部列出、不收合（測試 `notifications.mjs` 3f）。
     除了「重試」，每一列的動作鈕按下時先關掉抽屜（`attentionRow()`）：它們要去的地方（收件匣、配對抽屜、設定頁）不該開在抽屜後面。
 - **首次設定精靈**（`#first-run`，見 §3.2）：開著時佔滿主內容區，三個視圖都藏在它下面；觸發條件橫跨三個視圖的狀態。
-- 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定節點 N · 不公開 N」，右本機節點 ID。
+- 狀態列：左「顯示 N / total 個 session · 所有已配對 N · 指定機器 N · 不分享 N」，右側沒有東西（本機機器 ID 在設定頁的本機身分，是複製鈕）。
 - `busy` 狀態：任何寫入進行中，所有寫入按鈕 disabled。**按下去的那一顆**另外轉圈並停用自己到呼叫回來為止
   （`withBusy(label, fn, { button })`，`button.busy` + `aria-busy`）：安裝／移除／重新啟動服務、送出配對請求、
-  核准／確認／拒絕、套用公開對象與收回、撤銷信任、清空收件匣、重新掃描、儲存節點設定、記錄位址、開／關配對、
+  核准／確認／拒絕、套用公開對象與收回、撤銷信任、清空收件匣、重新掃描、儲存連線設定、記錄位址、開／關配對、
   手動信任、heartbeat、待處理列的重試。
 - **尺寸（2026-09-29）**：`--control-h` 36px（原 28px）、主要按鈕 `--primary-h` 40px、表格列 48px；可點面積
   不小於 36×36——圖示按鈕（`.iconbtn`、列上的收件匣）是 36px 正方形，勾選框的整格（40px 寬）都是可點區
@@ -239,18 +239,18 @@
     測試 `first-run.mjs` §1b、`first-run-pairing.mjs` §1）。
   - **每步的完成狀態每次 render 從 state 重算，不存**（`firstRunChecks()`、`firstRunStepComplete()`）：
     ①「AgentHub 在背景執行」＝`state.nodeReachable`；「登入後自動啟動」＝`ServiceStatus` 已安裝且在跑（狀態還沒讀到＝確認中；
-    `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他電腦找得到、也連得到」＝`pairHereState(state.pairing.state).reachable`
+    `toolError` 或 `supported !== true`＝不適用，說明但不算失敗、不擋下一步）；「區網裡的其他機器找得到、也連得到」＝`pairHereState(state.pairing.state).reachable`
     （節點說了就聽節點的，§3.3）**而且** `state.pairing.availability === "on"`（節點在區網上搜尋，2026-10-01）。在終端機移除服務，那一行自己變回未完成。②＝`state.nodes` 非空。③＝`counts.all_paired + selected > 0`。
     - **為什麼要搜尋（2026-10-01，產品 BLOCKER）**：節點的 `-discover` 預設關（`cmd/agenthub-node/main.go` 的旗標、`nodeconfig.DefaultSettings()`），
-      沒開時節點回答配對視窗、拒絕候選清單（`App.Pairing()` 回 `off`，視窗開著時 `openNotAnnouncing`），第 2 步「同一個網路上找到的電腦」在兩台上都永遠是空的。
+      沒開時節點回答配對視窗、拒絕候選清單（`App.Pairing()` 回 `off`，視窗開著時 `openNotAnnouncing`），第 2 步「同一個網路上找到的機器」在兩台上都永遠是空的。
       只看可達性的舊判定讓全新安裝在第 1 步打勾、到第 2 步才發現找不到對方；dev mock 與測試的假節點把 `availability: "on"`、`discover: true` 寫死，所以沒有人看到。
     - **選擇合在同一行而不是第 4 行**：一顆按鈕、一次存檔、一次重啟同時做兩件事，使用者也只關心「另一台能不能找到、連到這台」；分成兩行只會讓兩行在同一次按下一起翻面。
-      這一行把缺的那一半說出來：只差搜尋時副標是 `firstRun.lan.notSearching`（「其他電腦連得到 {address}，但這台還沒在區網上搜尋…」），
+      這一行把缺的那一半說出來：只差搜尋時副標是 `firstRun.lan.notSearching`（「其他機器連得到 {address}，但這台還沒在區網上搜尋…」），
       按鈕是 `firstRun.turnOnSearch`「開始在區網上搜尋並繼續」，只寫 `discover`、不動位址與 `allowLan`。更早版本開過區網、沒開搜尋的機器因此開在第 1 步。
       這時旁邊有 ghost「下一步，先不搜尋」（`firstRun.skipSearch`）：什麼都不寫、到第 2 步（輸入位址仍可配對，清單位置再提供一次開關）——
       同意說明不能沒有「不要」；在設定頁刻意關掉搜尋的人不必為了配對而同意廣播（fresh-context 審查 2026-10-01）。
-      同一句說明也會出現在**服務還沒在跑**的時候（節點在跑、位址已可達、沒在搜尋、服務沒在跑——已註冊但停著、節點在任何服務之外、或服務狀態還在讀：主要按鈕是「準備好這台電腦」，
-      它會連同 `discover` 一起寫）。這時那顆 ghost 是「準備好這台電腦，先不搜尋」（`firstRun.prepareNoSearch`，#216 審查 NIT 3）：
+      同一句說明也會出現在**服務還沒在跑**的時候（節點在跑、位址已可達、沒在搜尋、服務沒在跑——已註冊但停著、節點在任何服務之外、或服務狀態還在讀：主要按鈕是「準備好這台機器」，
+      它會連同 `discover` 一起寫）。這時那顆 ghost 是「準備好這台機器，先不搜尋」（`firstRun.prepareNoSearch`，#216 審查 NIT 3）：
       `runFirstRunPrepare({ noSearch: true })`，只做節點與服務那段、**不帶 `lan`**（`lan: null` 本來就是「不寫任何網路設定」的那次按壓，
       不管畫面上的說明句當時寫了什麼；用 `{ ...shown, discover: false }` 也會是空操作，但它的正確性要靠 `shown` 剛好沒有位址），
       成功且位址可達時直接到第 2 步，跟「下一步，先不搜尋」一樣——使用者說一次「不要」就夠。服務那段失敗時「重試」重做同一個「不要」
@@ -290,25 +290,25 @@
       位址晚到、清單在按下後改變、節點存的位址改變選擇、埠在按下後改變）。
       **延伸到搜尋**：`firstRunShownLan()` 回 `{ address, port, discover }`，`discover` 是按下那一刻搜尋那句（`firstRun.lan.consentSearch`）在不在畫面上；
       不在（例如節點當時已在搜尋）就不寫 `discover`，即使重啟後節點變成沒在搜尋——那時這一行回到未完成，說明句提到搜尋，再按一次（測試 `first-run.mjs` §6c）。
-    - 按鈕文字：節點或服務沒好 →「準備好這台電腦」；只差區網位址（含搜尋）→「開放區網並繼續」；位址已可達、只差搜尋 →「開始在區網上搜尋並繼續」；
+    - 按鈕文字：節點或服務沒好 →「準備好這台機器」；只差區網位址（含搜尋）→「開放區網並繼續」；位址已可達、只差搜尋 →「開始在區網上搜尋並繼續」；
       搜尋開不起來而位址可達 →「下一步」；全部完成 → 完成狀態＋「下一步」。
     - 進行中那幾行顯示「進行中…」轉圈（`phase`），主要按鈕 `busy`；`state.busy` 或進行中時每顆寫入按鈕 disabled。
   - **開放區網是隱私決定**：主要按鈕上方一行藍底說明，寫出實際會用的位址（`LocalAddresses()` 裡 `private` 的那些，
     埠照節點存的 `peerListen`）與影響（`firstRun.lan.consent`：在那個位址接受配對請求，沒配對的電腦看不到任何 session——
     原本寫「什麼都看不到」，搜尋打開後配對期間別人看得到名稱與位址，那句就不成立了）。節點沒在搜尋時同一行再加一句
-    （`firstRun.lan.consentSearch`）：「在區網上搜尋：配對期間，同一個網路上的其他電腦看得到這台的名稱與位址（以及平台、指紋與節點 ID）；沒在配對時不廣播。」
+    （`firstRun.lan.consentSearch`）：「在區網上搜尋：配對期間，同一個網路上的其他機器看得到這台的名稱與位址（以及平台、指紋與機器 ID）；沒在配對時不廣播。」
     ——照上面查證的事實，不誇大（沒在配對時不送任何東西）也不縮小（平台、指紋與節點 ID 也在通告裡）。位址已可達、只差搜尋時只有這一句。
     **兩個以上私有位址時列出單選**（`first-run-address`，
     預設節點已存的那個、否則第一個），說明句跟著選到的那個改；不替使用者決定。沒有私有位址時說明（`firstRun.lan.noPrivate`）
     並只提供「只在這台用」（此時它是主要按鈕）。
   - **「只在這台用，不開放區網」**：只在區網位址還不可達時出現（位址已開、只差搜尋時「不開放區網」已經不是一個選擇；
-    那時對搜尋說「不要」的是第 1 步的 ghost「下一步，先不搜尋」，服務還沒在跑時——已註冊但停著、節點在任何服務之外、或服務狀態還在讀——是「準備好這台電腦，先不搜尋」，見上；它對服務做的事與主要按鈕相同，只是不寫網路那一行。規則是：搜尋同意句在畫面上的每一種狀態，旁邊都有一個不搜尋的按壓。`first-run.mjs` 的逐狀態迴圈檢查服務停著、在服務之外、狀態讀取中、服務啟動失敗四種；全新節點與只差位址時的「只在這台用」、只差搜尋時的「下一步，先不搜尋」、搜尋失敗後的「下一步」由各自的段落檢查）。
+    那時對搜尋說「不要」的是第 1 步的 ghost「下一步，先不搜尋」，服務還沒在跑時——已註冊但停著、節點在任何服務之外、或服務狀態還在讀——是「準備好這台機器，先不搜尋」，見上；它對服務做的事與主要按鈕相同，只是不寫網路那一行。規則是：搜尋同意句在畫面上的每一種狀態，旁邊都有一個不搜尋的按壓。`first-run.mjs` 的逐狀態迴圈檢查服務停著、在服務之外、狀態讀取中、服務啟動失敗四種；全新節點與只差位址時的「只在這台用」、只差搜尋時的「下一步，先不搜尋」、搜尋失敗後的「下一步」由各自的段落檢查）。
     不寫任何節點設定，`discover` 也不寫（節點或服務沒好時仍會先做那一段，那不是節點設定）；第 2 步在步驟欄標
     「已選擇只在這台用」，直接到第 3 步，第 3 步只說之後再分享並只給「先跳過」。**節點與服務那段成功後才算數**（`localOnly`）；
     失敗時選擇只記成待定（`localOnlyPending`），區網那一行、說明句與兩個選擇都留著，「重試」重做同一個選擇、不開放區網
     （測試 `first-run.mjs` §6b 後段）。
   - 節點連不到時「AgentHub 在背景執行」那一行的主文是 `firstRun.node.down`，`dial tcp…` 原文只在它的 `<details>` 裡。
-  - **第 2 步「連到另一台電腦」**（2026-09-30 第二段）：配對抽屜換了外觀與順序，**安全邏輯一條都是抽屜的**——
+  - **第 2 步「連到另一台機器」**（2026-09-30 第二段）：配對抽屜換了外觀與順序，**安全邏輯一條都是抽屜的**——
     送出走 `sendPairRequest()`（只帶位址）、決定走 `decidePairRequest()`（id 來自畫出那張卡的請求）、指紋區塊走 `writeFingerprintBlock()`
     （節點 `fingerprints` 陣列原樣，標籤走固定對照表，沒有陣列時照 §3.3 說去用 `ah pair pending`）、候選與請求都走 `reconcileRows()`
     （抽屜的候選列與請求列也改走它：空 key 與重複 key 一律新建，請求的指紋簽章變了就丟掉重建〔`fingerprintsChanged()`；抽屜這條由
@@ -316,7 +316,7 @@
     notice 走 `candidateNoticeText()`、錯誤翻譯走 `pairErrorMessage()`。由上而下：
     - 標題；已配對時一句「已經和 N 台電腦配對。」，**「下一步」（主要按鈕）移到這句下面**，候選列的「送出配對請求」降為 ghost（一次一顆主要按鈕），仍可再配對一台。
     - 怎麼結束的（`frended`，見下）。
-    - 虛線提示框：「**在另一台電腦也打開 AgentHub**，做到這一步。兩台都在這個畫面時，會互相出現在下面。」
+    - 虛線提示框：「**在另一台機器也打開 AgentHub**，做到這一步。兩台都在這個畫面時，會互相出現在下面。」
     - **有未決請求（pending／awaiting-confirm）時**，每個請求一張卡（`frrequest`，以 request id 為 key），提示框與下面的尋找區隱藏：
       outgoing pending ＝等待畫面（轉圈、「等 X 按『核准』」、對方畫面會看到什麼、「對方核准之後，這裡會換成兩組指紋，你也要在這台比對一次」、
       「取消這次請求」→ `RejectPairRequest`，沒有指紋）；incoming pending 或 awaiting-confirm ＝比對畫面（標題「X（自稱）想和這台配對」／
@@ -326,8 +326,8 @@
       en「if any group differs, reject it — something is intercepting the connection」——因為同一句同時在抽屜的「拒絕」和這張卡的
       「不一樣，拒絕」上面，指名哪一顆都會在另一個畫面上說錯〕、放大的指紋區塊、
       **按鈕在指紋下面**：「一樣，核准」→ Approve／「一樣，完成配對」→ Confirm，「不一樣，拒絕」→ Reject）。等待→比對是**同一張卡、同一顆拒絕鈕**。
-      成功 toast 同抽屜（`pairStepText()` 的句子＋「（節點回報：…）」），但**不帶「去公開 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
-    - 沒有未決請求時：「同一個網路上找到的電腦」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
+      成功 toast 同抽屜（`pairStepText()` 的句子＋「（AgentHub 回報：…）」），但**不帶「去分享 session」**（`fromWizard`：精靈的下一步就是分享，那顆會把人帶出精靈）。
+    - 沒有未決請求時：「同一個網路上找到的機器」（`frmachine`，以 nodeId 為 key）：平台圖示（固定對照表，不取自字串）、名稱（無名「（未提供名稱）」）＋ amber「自稱」、
       旗標行（`candidateFlagLines()`，與抽屜共用：標籤＋原因）、平台 · 最後看到；完整 nodeId、宣告的指紋、位址、首次／最後看到收進該列的 `<details>`
       （§4 的候選列斷言是對抽屜的 `candidate-rows`，在 DOM 裡就算數；精靈這份在 details 裡，也在 DOM 裡）；「送出配對請求」。
       清單狀態同抽屜：讀取中、沒在看、狀態讀不到、清單讀不到＋原文、清單已滿、空（「還沒找到…」）。
@@ -344,7 +344,7 @@
       不可達時不印位址、複製 disabled、說明並給「回到第 1 步」（不重複修復按鈕）、何時需要手動的一句、「手動輸入配對資料…」（`openPairModal()`）。
     - 底部：「先跳過，之後再配對」（`pairSkipped`，步驟欄標「已略過」；取代開發用的佔位鈕）、「上一步」（到第 1 步）；已配對時只有「下一步」與「上一步」。
     - **怎麼結束的**：第 2 步畫過的未決請求從清單消失、而不是這個視窗自己決定的（`pairDecided`，決定前記下、失敗時移除），讀一次 `PairRequests(true)`，
-      用 `pairStepText()` 說（`fingerprint_mismatch` 是專屬句），節點的 `nextStep` 以「（節點回報：…）」跟在後面（已結束的列才顯示它，§3.3），「知道了」收起。
+      用 `pairStepText()` 說（`fingerprint_mismatch` 是專屬句），節點的 `nextStep` 以「（AgentHub 回報：…）」跟在後面（已結束的列才顯示它，§3.3），「知道了」收起。
     - **生命週期**：第 2 步在畫面上（`firstRunPairingActive()`：精靈可見、`step === 2`、不是只在這台用）＝配對抽屜開著。`renderFirstRun()` 每次比對前後狀態
       （`syncFirstRunPairing()`），進入時 `enterFirstRunPairing()`（讀請求、`loadPairing()`、`openPairingWindowIfNeeded()`＝`OpenPairing(0)`），
       離開時（任何方式，含 `stepOutOfFirstRun()`）`releasePairingWindow()`。5 秒與 2 秒兩個既有 interval 的條件延伸到它（§4），1 秒倒數在它上面也跑，
@@ -378,12 +378,12 @@
   - **元素識別**：每一步的面板、每一行、每顆按鈕、每個位址與 session 列都只建一次、之後就地改寫（`firstRunParts`、以位址／session id
     為 key 的 Map），15 秒的 `load()` tick 不換掉游標下的按鈕、不收起打開的 `<details>`（測試 `first-run.mjs` §9）。
   - 測試 `first-run.mjs`（§1 出現條件與 `nodeChecked`、§1b 開在第一個未完成的步驟、§2 待處理列與標題列、§3 三項推導、§4 順序與失敗停下、§5 身分保護、
-    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§6c 搜尋：只開搜尋、說明句沒提就不寫、只在這台用不寫、沒保留要說、第 2 步補救與它的拒絕、補救失敗也重開視窗、位址未開時沒有「先不搜尋」、服務停著時的「準備好這台電腦，先不搜尋」與它的重試、
+    §6 位址與只在這台用、§6b 快照規則與失敗的只在這台用、§6c 搜尋：只開搜尋、說明句沒提就不寫、只在這台用不寫、沒保留要說、第 2 步補救與它的拒絕、補救失敗也重開視窗、位址未開時沒有「先不搜尋」、服務停著時的「準備好這台機器，先不搜尋」與它的重試、
     §7 分享、§8 稍後／繼續／設定頁、§9 busy 與 tick、§10 英文）；測試的假節點與 dev mock 都從節點真正的預設開始（loopback、沒有 `-allow-lan`、
     `discover: false`，`availability` 照 `App.Pairing()` 的規則推導：有搜尋 `on`、沒有時視窗開著 `openNotAnnouncing`、否則 `off`；候選只在 `on` 時才有）。
     dev mock `?onboarding=fresh|slow|unreachable|mixed`、`&addresses=two`、`mixed&service=none`、`mixed&lan=open`（已設定：開放且在搜尋）、
     `mixed&lan=open&discover=off`（更早版本開的區網、沒搜尋：第 1 步只差搜尋）、`mixed&lan=open&discover=off&service=stopped`
-    （同上但服務已註冊、停著：「準備好這台電腦」旁邊是「準備好這台電腦，先不搜尋」）、`&service=none`（同上但節點在任何服務之外：同樣兩顆，按下都會到服務表單）、`&discover=stuck`（第一次要求的 `discover` 不被保留：第 1 步說搜尋開不起來並給下一步，第 2 步出現補救）。
+    （同上但服務已註冊、停著：「準備好這台機器」旁邊是「準備好這台機器，先不搜尋」）、`&service=none`（同上但節點在任何服務之外：同樣兩顆，按下都會到服務表單）、`&discover=stuck`（第一次要求的 `discover` 不被保留：第 1 步說搜尋開不起來並給下一步，第 2 步出現補救）。
     英文介面不得出現全形標點：`test/fixtures/in-english.mjs` 的 `inEnglish()` 對 render 後的 DOM 文字檢查（`FULL_WIDTH`），
     `first-run-pairing.mjs` §6b 用英文畫比對卡與複製失敗；app.js 組字串時的括號與空白走表格（`pair.roleLead`、`pair.whoseWrap`、`pair.hereCopyFailedWrap`）。
 - 搜尋框：比對 `id`、`cwd` 與管理方式，大小寫不敏感。
@@ -479,7 +479,7 @@
    不改變下面 1–6 的順序與 id。由請求列推導（`pairStepperPhase()`，只看 `pending`／`awaiting-confirm` 的列）：
    沒有未決列＝第 1 步進行中；有 `outgoing`＋`pending`＝前兩步完成、第 3 步「等對方核准」；有 `awaiting-confirm` 或
    `incoming`＋`pending`＝前兩步完成、第 3 步進行中。每次 `renderPairRequests()` 就地改寫三個 `<li>`，元素不重建
-   （測試 `inline-publish.mjs` §7）。核准或確認成功的 toast 帶「去公開 session」（`goToPublish()`：照關閉鈕的規則收抽屜、切到本機視圖）。
+   （測試 `inline-publish.mjs` §7）。核准或確認成功的 toast 帶「去分享 session」（`goToPublish()`：照關閉鈕的規則收抽屜、切到本機視圖）。
 
 1. **`btn-pairing-on`「與另一台機器配對」**（`#pair-here` 在找對方畫面，DOM 順序在候選列與免責摺疊之後、「找不到另一台？」之前；不可達時 `#pair-here.unreachable` 以 CSS `order:-1` 浮到該畫面最上方，因為那時它是唯一該先做的事；`renderPairHere()` 寫這個 class）：開視窗，**永遠可按**（`windowAvailable`；
    availability 為 `off` 或 `openNotAnnouncing` 都不影響）。只要節點給了 `state.peerAddress`，
@@ -494,7 +494,7 @@
    於是全新安裝的使用者只看到「配對視窗開著，但還沒有人連得進來。」，沒有原因也沒有按鈕。
    **現在只有 `windowAvailable` 為 false 才隱藏**；位址不可達（含完全沒有位址）一律顯示
    一句「還沒有人連得進這台機器」＋原因與補救（「允許區網連線」＋挑一個真的區網位址＋重啟節點）
-   ＋一顆跳到「設定 → 節點設定」的按鈕（`goToNodeSettings()`，順手關掉抽屜），
+   ＋一顆跳到「設定 → 連線設定」的按鈕（`goToNodeSettings()`，順手關掉抽屜），
    且 `copy-pair-address` 要 disabled。沒有位址時用 `PAIR_TEXT.hereNoAddressWhy`，
    有一個不可達的位址時用 `PAIR_TEXT.hereUnreachable`。
 
@@ -538,14 +538,14 @@
      不是在講某個人的決定的結束方式。
    - 按下核准／確認／拒絕之後的 toast 用**這個視窗自己的中文句子**
      （`pairStepText()`，退回 `PAIR_TEXT.decided`），節點的英文 `nextStep` 以
-     「（節點回報：…）」跟在後面——既不能只丟英文，也不能把它吞掉。
+     「（AgentHub 回報：…）」跟在後面——既不能只丟英文，也不能把它吞掉。
    - 已結束（approved/rejected/expired，含 `reason: displaced`）不進預設清單，
      `pair-requests-all` 勾選（現在在抽屜底部 footer，永遠可見）→ `all=true`。已結束的列才顯示節點的 `nextStep`。
    - **任何地方都不得有自動核准或略過比對的入口。**
 6. 底部 footer：「顯示已結束」勾選框（`#pair-requests-all`）。手動 5 欄位配對（兩台連不上彼此時的退路）在「找不到另一台？」摺疊裡（4）。
 
 右欄（`nodedetail`）：
-- 節點詳情：名稱、完整指紋、核對說明、節點 ID／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
+- 機器詳情：名稱、摺在「指紋」details 裡的完整指紋（連同核對說明）、機器 ID（複製鈕，`title` 是 ID）／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
 - 位址區：記錄中的位址與備援的說明句、位址清單（每列 `addresslabel`「首選」／「備援 n」＋ `addressinput` ＋ `removeaddress`，只剩一列時不給移除）、`addaddress`（滿 4 列隱藏）、`setaddress`「記錄位址」、格式說明。整組經 `SetNodeAddresses` 寫回。
 - 「這個節點公開給我的 session」：四種 presence 狀態 + `sessionsWithheld` + 空 + 表格（SESSION／節點／PROVIDER／狀態／最後活動）。
 
@@ -554,10 +554,10 @@
 五個分頁（左側直排 `role="tablist"`，方向鍵上下／Home／End），只顯示 `settingsSection` 那一個：
 
 - **背景服務**：狀態行、重新讀取、安裝／重新安裝、移除；展開表單**只有一個欄位：資料庫路徑**
-  （`service-db`，留空＝節點預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
+  （`service-db`，留空＝AgentHub 預設位置）。其餘五個值不在這裡，是 #116 的決定——燒進 unit 檔會變成節點之外的
   第二份設定來源。安裝說明；輸出區 `<pre>`。節點沒在跑且未安裝時表單自動展開一次。
-- **節點設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。`-discover` 的標籤說它做的兩件事（擁有者 2026-10-01）：
-  `nodeSettings.discover`「在區網上搜尋其他電腦（配對時也讓其他電腦找到這台）」，下面一行 `nodeSettings.discoverWhy`
+- **連線設定**：對外位址、允許區網、`-discover`、視為私有網段、自動喚醒。`-discover` 的標籤說它做的兩件事（擁有者 2026-10-01）：
+  `nodeSettings.discover`「在區網上搜尋其他機器（配對時也讓其他機器找到這台）」，下面一行 `nodeSettings.discoverWhy`
   照節點原始碼寫：開著時一直收聽區網通告（只收不送，`discovery.Listen`），只有配對視窗開著時才廣播名稱、位址、平台、指紋與節點 ID
   （`announceIfOpen()`、`buildAnnouncement()`）（測試 `i18n.mjs`）。存的是節點**下次啟動**才讀的值，
   規則見 §7.8。節點回 `saved.peerListens`（ADR-005）時，對外位址是勾選清單（`#node-peerlistens`，每列一個
@@ -567,6 +567,7 @@
   （`address_gone`、`port_in_use`、其餘附節點的 message）。舊節點（沒有 `peerListens`）保留單選下拉
   `#node-peerlisten`，只送 `peerListen`。測試：`frontend/test/listen-addresses.mjs`。
   「視為私有網段」收在 `#node-advanced`（`<details>`），只在兩個時機自動展開：表單從節點讀回來填值（`applyNodeSettings()`，含儲存後重畫）且欄位有值時，以及 `warnNotPrivate` 警告從沒有變成有的那一刻（轉折，不是存在就展開；`settleAdvancedFold()`）；`syncNodeSettingsForm()`／`syncPrivateNote()` 不寫 `open`，所以擁有者手動收合後不會被打字或背景 tick 彈開，也不自動收；自動喚醒下的 `wake.caveat` 只在勾選時顯示。
+- **本機身分**：機器 ID 與公鑰各一顆複製鈕（失敗時開 `#copy-fallback`），heartbeat 預覽；指紋不在這裡，只在配對比對時出現。
 - **外觀**：背景照片與數字雨兩個開關，數字雨預設關閉，見 §9；「顯示首次設定」（`settings-show-onboarding`，§3.2）。
 - **語言**：`settings-lang`（2026-10-05 自外觀獨立）。
 
@@ -575,8 +576,8 @@
 **Esc**（2026-10-05）：每按一次關掉最上層的一個，對話框先於抽屜（`overlayKey`：heartbeat → MCP → 手動配對 → 分享面板 → 通知紀錄 → 配對抽屜〔走 ✕ 同一條 `dismissPairingDrawer`〕→ 收件匣）。確認對話框、複製失敗框開著時由它們自己處理（測試 `escape-closes.mjs`）。
 
 抽屜（`.drawer`，從右側滑出）：
-- `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選）、meta、
-  訊息列（寄件者分兩半：驗證過的 node id 用 `fingerprint` 樣式，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
+- `inbox-modal` 收件匣：**三個分頁**（收件匣／送出紀錄／喚醒紀錄）。警語（資料不是指令；「自稱」後是寄件者自選；只在列表有訊息時顯示）、meta、
+  訊息列（寄件者分兩半：驗證過的那台機器用 `fingerprint` 樣式——已配對的顯示配對紀錄裡的名稱、`title` 是機器 ID，自選的 session 用 `claimed` 樣式，中間「自稱」）、清空。
 - `pairing-modal` 配對：一步一屏（§3.3）。
 - `notify-modal` 通知紀錄（2026-09-29）：鈴鐺打開，唯讀，見 §3.1「通知三層」。不在 `MODAL_IDS` 裡。
 
@@ -601,7 +602,7 @@
 
 | 位置 | 必須出現 | 不得出現 |
 |---|---|---|
-| 收件匣訊息列 | 寄件者 node id 在 `class="fingerprint"`；session 在 `class="claimed"`；「自稱」 | 任何 `on*=`、`href=`、`src=`、`style=` 屬性；寄件者資料進 class |
+| 收件匣訊息列 | 寄件者已驗證的那一半在 `class="fingerprint"`：已配對的顯示這台配對紀錄裡的名稱、`title` 是機器 ID；未配對（或配對時沒名字）顯示機器 ID；session 在 `class="claimed"`；「自稱」 | 任何 `on*=`、`href=`、`src=`、`style=` 屬性；寄件者資料進 class |
 | 收件匣 loading | 「讀取」 | 「還沒有任何訊息」 |
 | 收件匣失敗 | 錯誤原文 | 「還沒有任何訊息」 |
 | 收件匣分頁 | showing 與 held 數字 | |
@@ -907,7 +908,7 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 沒拿到基準時才放開，下次開抽屜再問）。
 
 清單版節點多三件事：可連線時 `peerListeners` 裡每個 bound 的網路位址一列（介面＋各自的「複製」），附「哪一個都能用；
-對方輸入跟這台機器在同一個網路上的那一個」；saved 裡有但沒開放的位址一行 muted 點名＋「前往節點設定」；
+對方輸入跟這台機器在同一個網路上的那一個」；saved 裡有但沒開放的位址一行 muted 點名＋「前往連線設定」；
 不可連線且這台機器有 ≥2 個私有位址時，`pairHereRepairs()` 在單一位址按鈕（最多 3 個）前面放
 「全部開放：{清單}[，並允許區網連線]」（最多 4 個位址，子句照規則 4 只在允許區網還關著時出現），
 `applyPeerListenRepair()` 收 `option.peerListens` 整份清單，並照它的順序送（下一個 port 的修復保留原本的首選）。
@@ -1078,27 +1079,72 @@ render 不寫任何表單欄位（`frontend/test/listen-addresses.mjs` 逐條反
 
 不進表格的還有一種：**節點說的話**。`nextStep`、`notice` 與節點的拒絕原文是資料，原樣顯示；拿節點的散文當 key，節點改一次措辭就靜靜對不上了。要翻譯節點的一句話，就讓節點另給一個穩定代碼（如候選清單的 `noticeCode`），以代碼當 key、散文當退路。`desktop/nodeprocess.go` 那四句原本是中文的輸出已經直接改寫成英文——它們跟 `ah` 自己的輸出並排進同一個 `<pre>`，而那邊本來就是英文；四句話不值得一層 Go 的 i18n。
 
-## 12. 詞表（2026-09-23，分支 `feat/desktop-ux-simplify`）
+## 12. 詞表（2026-10-05 起；取代 2026-09-23 版）
 
-視窗面向使用者的用詞，en 與 zh-Hant 各一組，兩張表一起守：
+適用：`desktop/frontend/src/i18n/{zh-Hant,en}.js` 的每一個值、`index.html` 裡還沒進字表的英文字面（`SESSION`、`PROVIDER`）、`dev/mock.js` 不受影響（它只放節點送來的英文資料）。
+節點送來的字串（`nextStep`、`notice`、錯誤原文）是資料，不改。i18n 的 **key 名一律不改**（key 是程式與測試的介面）。
+三條總則：
+1. **使用者只看到三種東西**：機器（一台裝了 AgentHub 的電腦）、AgentHub（在機器上跑的那支程式）、背景服務（讓 AgentHub 登入就啟動的系統登記）。「節點」一詞不再出現在畫面上。
+2. **分享**取代公開／publish／audience；精靈與主畫面同一套字。
+3. 程式碼與指令原樣保留，不算違規：`agenthub-node`、`ah node`、`ah nodes`、`node.key`、`node_…` 開頭的 ID、`-discover` 等旗標、`--db`、`.mcp.json`。
 
-| 概念 | en | zh-Hant | 不再用 |
-|---|---|---|---|
-| 另一台已配對或要配對的電腦 | machine（the other machine, paired machines） | 機器（另一台機器、已配對機器） | node、節點（指對方時） |
-| 這台電腦 | this machine | 這台機器 | this node、本節點（指這台電腦時） |
-| 在網段上通告自己 | broadcast | 廣播 | announce、宣告 |
-| 可配對的狀態 | Pairing open · mm:ss | 配對開放中 · mm:ss | pairing window、配對視窗（當名詞） |
+| 概念 | zh-Hant | en | 目前出現的各種寫法 | 出處檔案（key 前綴） |
+|---|---|---|---|---|
+| 另一台裝了 AgentHub 的電腦 | 機器（另一台機器、已配對的機器） | machine (the other machine, paired machines) | 電腦、另一台電腦、節點、對方的節點、node、computer、peer | zh-Hant.js / en.js：`firstRun.*`、`nodeSettings.discover*`、`pair.*`、`network.*`、`why.*` |
+| 這台電腦 | 這台機器（句中已有主詞時可簡寫「這台」） | this machine | 這台電腦、本機節點、這個節點、這台節點、本機、this node、this computer、the local node | `firstRun.*`、`pair.*`、`audience.autoWakeNodeOff`、`network.presenceUnreadable` |
+| 在機器上跑的程式（agenthub-node 行程） | AgentHub | AgentHub | 節點、the node、a node、本機節點 | `service.*`、`nodeSettings.*`、`app.notConnected`、`attention.nodeDown.*`、`pair.nodeSaid*`、`wake.caveat` |
+| 登入時自動啟動的系統登記 | 背景服務 | background service | 服務、service（保留，不改） | `service.*`、`attention.service.*` |
+| `node_…` 識別碼 | 機器 ID | machine ID（標籤句首 Machine ID） | 節點 ID、Node ID、node ID、node id | `identity.nodeId`、`pairManual.nodeId`、`firstRun.pair.nodeIdLabel`、`inbox.warningAfter`、`nodeSettings.discoverWhy` |
+| 換資料庫就會換掉的那組金鑰 | 機器身分 | machine identity | 節點身分、node identity | `service.db*`、`service.*Confirm`、`service.uninstallConfirm` |
+| 設定頁的第二個分頁（位址、區網、搜尋、喚醒） | 連線設定 | Connection settings | 節點設定、Node settings、node settings | `settings.nav.node`、`service.formNote`、`pair.here*`、`nodeSettings.busy*`、`firstRun.step1.why`、`pair.formDirty` |
+| 把 session 給其他機器看 | 分享 | share | 公開、publish、Publish | `local.publishMenu`、`audience.verb.*`、`audience.applied.*`、`popover.*`、`pair.goPublish`、`network.*` |
+| 沒給任何機器 | 不分享 | Not shared | 不公開、Not published、未公開、指定：無 | `audience.modeNone`、`audience.cell.none`、`popover.none`、`footer.counts` |
+| 收回 | 停止分享 | Stop sharing | 收回公開、Unpublish | `audience.verb.none`、`audience.applied.none.*` |
+| 分享給誰（欄名、篩選組名） | 分享對象 | Shared with（欄名大寫 SHARED WITH） | 公開對象、Audience、AUDIENCE | `local.colAudience`、`local.groupAudience`、`popover.title`、`audience.title`、`firstRun.done.nothingShared` |
+| 所有配對過的機器 | 所有已配對機器（表格儲存格短形：所有已配對） | all paired machines（cell: All paired） | 所有已配對、Every paired machine | `audience.*`、`popover.targetAll` |
+| 兩台互相信任的動作 | 配對 | pair / pairing | 保留 | `pair.*` |
+| 可配對的狀態 | 配對開放中 · m:ss | Pairing open · m:ss | 配對視窗（當名詞）、pairing window | `nodeSettings.discoverWhy`、`network.summary*` |
+| 公鑰雜湊、逐組比對的那串 | 指紋 | fingerprint | 保留 | `pair.*`、`why.*` |
+| 給對方貼的那串金鑰 | 公鑰 | public key | 保留 | `identity.*`、`pairManual.*` |
+| 在區網上報名字給別人看 | 廣播 | broadcast | 通告、宣告、announce | `nodeSettings.discoverWhy`、`network.*`、`pair.drawerSub*` |
+| 在區網上找別台（-discover） | 區網搜尋（動詞：在區網上搜尋） | search the LAN | 搜尋其他電腦、discover、look for | `nodeSettings.discover*`、`firstRun.lan.*` |
+| 別人留給 session 的訊息匣 | 收件匣 | inbox | 保留 | `inbox.*` |
+| 讓 agent 收到訊息就開工 | 喚醒 | wake | 保留 | `wake.*`、`audience.*Wake*` |
+| 允許對方留訊息 | 留訊息 | leave messages | 保留 | `audience.preset*`、`popover.*` |
+| 一段對話 | session（兩語都用英文原字） | session | 保留；不用「工作階段」 | 全部 |
+| 折起來的補充說明 | 說明（`common.why`） | Details | 為什麼、Why（`inbox.warningMoreSummary`） | `common.why`、`inbox.warningMoreSummary` |
+| 鈴鐺背後的抽屜 | 通知 | Notifications | 通知紀錄（抽屜標題保留「通知紀錄」）、Notification log | `notify.*` |
+| 鈴鐺裡等使用者處理的事 | 需要你處理 | Needs you | 待處理列、attention strip（只在程式註解與契約裡） | `notify.needsHeading` |
+| 表格第一欄 | Session | SESSION | index.html 寫死的 `SESSION` | `index.html` 的 `<th>` → `local.colSession` |
+| 篩選組「Claude／Codex」 | 工具 | PROVIDER | index.html 寫死的 `PROVIDER` | `index.html` 的篩選組標籤 → `local.groupProvider` |
 
-**node 還留在哪裡。** node 是 `agenthub-node` 這個行程的名字，所以講那個行程本身的句子保留它：設定頁的
-背景服務、節點設定（Node settings）與本機身分三區，「啟動／重新啟動節點」與它的狀態行，以及引用旗標的句子
-（`-discover`、`-auto-wake`、`-display-name`）。技術欄位的值與標籤也保留：Node ID／節點 ID、`ah nodes`。i18n 的 key 名（`network.pairedNodes`、`audience.cell.nodeCount.*`）
-不改：key 是程式與測試的介面，改名只會讓 diff 變大而使用者看不到。
+## 替換規則（照順序套用；前面的規則先吃掉較長的片語）
 
-**首次設定精靈的例外。** 精靈（§3.2）的中文沿用擁有者核可的 mock，用「這台電腦」「另一台電腦」而不是「這台機器」「另一台機器」；
-英文照本表用 machine。這是刻意的，要統一的話改 `firstRun.*` 那幾句即可。
+zh-Hant（每條是「找」→「換成」，在一個值裡全部出現處都換）：
+Z1 `節點 ID`→`機器 ID`；Z2 `節點身分`→`機器身分`；Z3 `節點設定`→`連線設定`；Z4 `重新啟動節點`→`重新啟動 AgentHub`；Z5 `啟動節點`→`啟動 AgentHub`；
+Z6 `本機節點`→`AgentHub`；Z7 `對方的節點`→`對方的 AgentHub`；Z8 `這個節點`、`這台節點`→`這台機器的 AgentHub`；Z9 `一個節點`→`一個 AgentHub`；Z10 其餘 `節點`→`AgentHub`；
+Z11 `另一台電腦`→`另一台機器`、`這台電腦`→`這台機器`、其餘 `電腦`→`機器`；
+Z12 `不公開`→`不分享`；Z13 `收回公開`→`停止分享`；Z14 `公開對象`→`分享對象`；Z15 `已公開給`→`已分享給`；Z16 其餘 `公開`→`分享`；
+Z17 `配對視窗開著`→`配對開放中`；Z18 `通告`→`廣播`。
+替換後若「AgentHub」緊貼中文字，前後各留一個半形空白（例：`AgentHub 已重新啟動。`），句首與標點旁不加。
+
+en（大小寫各自對應；句首大寫保留）：
+E1 `node ID`→`machine ID`、`Node ID`→`Machine ID`；E2 `node identity`→`machine identity`；E3 `Node settings`／`node settings`→`Connection settings`／`connection settings`；
+E4 `Restart the node`→`Restart AgentHub`、`restart the node`→`restart AgentHub`、`restarting the node`→`restarting AgentHub`；E5 `Start the node`→`Start AgentHub`；
+E6 `paired node(s)`→`paired machine(s)`、`other node`→`other machine`、`the node on the other side`→`AgentHub on the other machine`；
+E7 `the local node`、`this node`、`This node`→`AgentHub on this machine`（句首 `AgentHub on this machine`）；E8 `the node's`→`AgentHub's`；E9 `the node`／`The node`→`AgentHub`；
+E10 `a node`／`A node`→`an AgentHub`／`An AgentHub`；E11 其餘 `nodes`→`machines`；E12 其餘 `node`→`AgentHub`；
+E13 `computer(s)`→`machine(s)`；E14 `Not published`→`Not shared`、`not published`→`not shared`、`unpublished`→`not shared`；E15 `Unpublish`→`Stop sharing`；
+E16 `published to`→`shared with`、`Publish to`→`Share with`、`publish to`→`share with`；E17 `published`→`shared`、`Published`→`Shared`、`publishes`→`shares`、`Publishing`→`Sharing`、`publishing`→`sharing`、`Publish`→`Share`、`publish`→`share`；E18 `Audience`→`Shared with`、`AUDIENCE`→`SHARED WITH`、其餘 `audience`→`sharing settings`；
+E19 `pairing window is open`→`pairing is open`；E20 `announcements`→`broadcasts`、`announcement`→`broadcast`、`announced`→`broadcast`、`announces`→`broadcasts`、`announce`→`broadcast`。
+替換後動詞一致性照英文文法修（`AgentHub` 是單數）；這是唯一允許的手改，不得改句意。
+
+## 完成判準（`test/i18n.mjs` 的 gate）
+
+去掉保留字（`/agenthub-node|ah nodes?\b|node\.key|node_\w*/g`）之後：zh 值不得含 `節點`、`電腦`、`公開`、`配對視窗`、`通告`；en 值不得含 `/\bnodes?\b|\bpublish\w*|\bcomputers?\b|\baudience\b|\bannounc\w*|pairing window/i`。gate 在 `test/i18n.mjs` 檔尾；`{node}` 這個佔位符是程式的介面，也一併略過。
 
 **文案規則。** 每個狀態一句主文；「為什麼」與操作細節收進可聚焦的 `<details class="why">`（摘要「說明」／Details，
-app.js 的 `whyDetails(key)`，靜態頁面的三段在 index.html），內文是那一兩句本身。視窗裡**不指名 repo 檔案**
+app.js 的 `whyDetails(key)`，靜態頁面的各段在 index.html），內文是那一兩句本身。視窗裡**不指名 repo 檔案**
 （安裝版沒有 `docs/`，#194；`test/i18n.mjs` 檢查兩張字表沒有 `docs/*.md`），也不把說明放在段落的 `title`
 （鍵盤與螢幕報讀碰不到）。完整版仍留在 `docs/desktop-window.md` 給 repo 讀者。§4 的語意（資料不是指令、
-四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。
+四種 peer 狀態四句不同、四種 availability、inbox 的 loading 與空清單、contested/duplicate 旗標）只縮短、不刪。設定頁各分頁標題下只有「說明」，不再放一行說明段落。
