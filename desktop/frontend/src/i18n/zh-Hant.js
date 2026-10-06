@@ -246,7 +246,7 @@ export const TEXT = {
   "table.matchCount": "符合 {shown} / {total}",
   "table.selectedCount.one": "已選取 {n} 個 session",
   "table.selectedCount.other": "已選取 {n} 個 session",
-  "footer.counts": "顯示 {shown} / {total} 個 session · 所有已配對 {allPaired} · 指定機器 {selected} · 不分享 {none}",
+  "footer.counts": "顯示 {shown} / {total} 個 session · 所有已配對 {allPaired} · 指定機器 {selected} · 未分享 {none}",
 
   /* ---------------- the local view: rows, chips, times, banners ---------------- */
   "time.secondsAgo.one": "{n} 秒前",
