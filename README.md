@@ -59,7 +59,7 @@ idle, from either machine.
 ## Privacy and trust
 
 - **Peer-to-peer.** Paired machines connect to each other directly. Each
-  machine runs a small background program (the node); there is no central
+  machine runs AgentHub as a small background service; there is no central
   AgentHub server and no AgentHub cloud service in between, and no relay.
 - **No account, no telemetry.**
 - **Pairing is checked by people.** Both screens show the same two
@@ -67,21 +67,21 @@ idle, from either machine.
   them with the other screen and approves on their own machine. After that,
   the connection is pinned to the keys you compared.
 - **Sharing is opt-in, per session.** Every session starts as **Not
-  published**. Pairing shares no session by itself, although a paired machine
-  does see that yours is online. You choose each session's
-  audience: every paired machine, or only the machines you tick.
+  shared**. Pairing shares no session by itself, although a paired machine
+  does see that yours is online. For each session you choose who can see it,
+  every paired machine or only the machines you tick, and what they can do.
 - **A paired machine receives a short summary** of each session you share,
   such as its ID, whether it is Claude Code or Codex, its status and when it
   was last active. The working directory is included only if you allow it;
   prompts and transcript bodies are not included. More on what is sent: the
   [developer guide](docs/developer.md#privacy-model).
 - **While a pairing window is open**, other computers on the same network can
-  see this machine's name, address, platform, fingerprint and node ID.
+  see this machine's name, address, platform, fingerprint and machine ID.
   Outside pairing, it does not announce itself.
 
 How each of these is enforced: [developer guide](docs/developer.md#how-it-stays-private).
 
-![Pairing: two fingerprints to compare against the other machine's screen, with "Same — approve" and "Different — reject"](docs/screenshots/network-pairing.png)
+![Pairing: a request from ubuntu-lab with two fingerprints to compare against the other machine's screen, and the "Fingerprints match, approve" and "Reject" buttons](docs/screenshots/network-pairing.png)
 *Two machines pair only after both people compare the same codes on both screens.*
 
 ## Quick start
@@ -98,8 +98,8 @@ curl -fsSL https://raw.githubusercontent.com/SheldonChangL/agenthub/main/install
 ```
 
 The script checks the download against the release's checksum, installs the app
-and the `ah` command, and starts the node in the background. It never asks for
-your password. It also adds a Claude Code skill in
+and the `ah` command, and starts AgentHub's background service. It never asks
+for your password. It also adds a Claude Code skill in
 `~/.claude/skills/agenthub-watch` that teaches agents to use `ah`; to leave it
 out, put `sh -s -- --no-skill` in place of the last `sh`.
 
@@ -119,10 +119,10 @@ install starts on a three-step setup. Do it on both computers.
 
 ![First-run setup, step 1: three checks, a box saying what opening the network and searching it will show, and the "Get this machine ready" and "Use it on this machine only" buttons](docs/screenshots/first-run.png)
 
-1. **Get this machine ready.** One button starts the node and makes it start at
-   log-in, lets other computers on your network reach it, and starts searching
-   the network. The box above the button says what that shows. To keep
-   AgentHub on one computer, press **Use it on this machine only**.
+1. **Get this machine ready.** One button starts the background service and
+   makes it start at log-in, lets other computers on your network reach it, and
+   starts searching the network. The box above the button says what that shows.
+   To keep AgentHub on one computer, press **Use it on this machine only**.
 2. **Connect another.** The other computer appears in the list once both have
    finished step 1. Send a request from one; each person compares the two
    fingerprints with the other screen and confirms. If the other machine never
@@ -130,7 +130,7 @@ install starts on a three-step setup. Do it on both computers.
    Trust you approve does not expire: if you approved and the other side never
    finished, remove it with **Revoke trust** on the Network tab.
 3. **Share sessions.** Tick the sessions the other computer may see, and choose
-   whether it can only leave messages or may also wake the agent.
+   **Can leave messages** or **Messages and waking**.
 
 Every screen is covered in the [user guide](docs/guide.md).
 
@@ -155,29 +155,30 @@ prompt, and Codex keeps that turn in its own history.
   on macOS and Linux, a Claude Code session started after the install learns
   it from the `agenthub-watch` skill (on Windows, if you tick it in the
   installer). [Set it up](docs/guide.md#let-an-agent-use-the-four-tools).
-- **Each session's audience has to allow it.** Installing AgentHub does not
-  let any agent message by itself: every session starts closed.
-  The receiving session must accept messages (**Can leave messages**). A
-  session that sends or replies needs **Let this session send messages out**:
-  **Messages and waking** includes it for Codex. For Claude Code, tick it under
-  **Chosen machines, individual flags…**, because **Can leave messages** turns
-  sending off.
+- **Each session's sharing has to allow it.** Installing AgentHub does not
+  let any agent message by itself: every session starts as **Not shared**.
+  Press the session's button in the **Sharing** column to open its share
+  panel, pick who can see it, and choose **Can leave messages**: the other
+  machine can leave this session messages, and this session can send and
+  reply. **Messages and waking** also wakes the agent, for Codex only. **See it
+  only** shares the session without messages.
 - **Claude Code is not woken by a message.** It reads its inbox when it checks:
   by calling `agent_inbox`, or on a schedule once you start the
   `agenthub-watch` skill in it.
 
-![The audience menu on one row: Not published, Can leave messages, and Messages and waking (unavailable for a Claude Code session)](docs/screenshots/inline-publish.png)
-*Each session's audience menu. Messages and waking is not offered for Claude Code.*
+![The share panel for one Claude Code session: who can see it (Not shared, Every paired machine, Chosen machines), what they can do (See it only, Can leave messages, and Messages and waking, which cannot be picked for Claude Code), and Include the working directory path](docs/screenshots/share-panel.png)
+*Each session's share panel. Messages and waking cannot be picked for Claude Code.*
 
 ### Waking a Codex session
 
-With two switches on, one for the machine and one for the session, a message
-can start a turn in a Codex session with nobody at the keyboard. This has been
-seen working on one machine. A woken turn approves nothing: every permission
-question it asks is answered no. Rate limits and a stop after four automatic
-wakes in a row keep two machines from answering each other forever. Turning
-waking on lets that paired machine start turns on your computer, within those
-limits. [Waking an agent](docs/guide.md#waking-an-agent).
+With two switches on, one for the machine (**Allow messages to wake agents
+automatically**, in Settings) and one for the session (**Messages and
+waking**), a message can start a turn in a Codex session with nobody at the
+keyboard. This has been seen working on one machine. A woken turn approves
+nothing: every permission question it asks is answered no. Rate limits and a
+stop after four automatic wakes in a row keep two machines from answering each
+other forever. Turning waking on lets that paired machine start turns on your
+computer, within those limits. [Waking an agent](docs/guide.md#waking-an-agent).
 
 ## Current status
 
@@ -192,8 +193,8 @@ machine. Test records: [docs/verification.md](docs/verification.md).
 | MCP tools, agent to agent across machines | Verified between two real machines |
 | First-run setup | Tested, and network search checked on two real machines with test nodes. Not yet run end to end in the app on two real machines |
 | Waking a **Codex** session | Verified on one machine: a turn was observed |
-| Waking a **Claude Code** session | **Not seen working.** The node records the message as woken, but no turn has been observed, so the window does not offer it. [Details](docs/channel-push-not-observed.md) |
-| Windows | **Never run on a real Windows computer**; built and tested in CI only. The node starts at log-in and is not restarted if it exits |
+| Waking a **Claude Code** session | **Not seen working.** AgentHub records the message as woken, but no turn has been observed, so the window does not offer it. [Details](docs/channel-push-not-observed.md) |
+| Windows | **Never run on a real Windows computer**; built and tested in CI only. The background service starts at log-in and is not restarted if it exits |
 | Acceptance on real Windows, macOS and Ubuntu machines | Open: [#21](https://github.com/SheldonChangL/agenthub/issues/21) |
 
 ## FAQ

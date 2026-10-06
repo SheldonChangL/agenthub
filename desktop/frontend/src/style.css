@@ -753,7 +753,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
    6px cell padding below): the SHARING pill with its icons, both row buttons
    and every wording the table uses fit. SESSION is the only
    column without a width, so it takes what is left and clips with an ellipsis
-   — the full title stays in the cell's title. WORKING DIRECTORY is 136px, 96px
+   — the full title stays in the cell's title. WORKING DIRECTORY is 160px, 96px
    at a window of 1000px or less. */
 table { width: 100%; min-width: 800px; border-collapse: collapse; table-layout: fixed; }
 /* 40px: the whole cell toggles its checkbox (app.js), so this is the target. */
@@ -765,8 +765,12 @@ col.c-status { width: 76px; }
    column replaced SHARING (108px) and FLAGS (160px): 112px that all went to
    SESSION, the one column a person reads. */
 col.c-audience { width: 156px; }
-col.c-last { width: 104px; }
-col.c-cwd { width: 136px; }
+/* 120px: 「12 seconds ago」 is 96px of text plus 12px of padding, and at 104px
+   the English row read 「12 seconds a…」. */
+col.c-last { width: 120px; }
+/* 160px: the English header 「WORKING DIRECTORY ▾」 is 151px with the cell's
+   padding, and at 136px it was cut at every window width. */
+col.c-cwd { width: 160px; }
 /* Wide enough for both buttons plus the cell's padding: measured at 241px when
    there were three (63 + 83 + 67, two 4px gaps, 10px padding each side), with
    slack for a font that renders the labels wider. At 214px the third button was
@@ -928,6 +932,9 @@ td.cwd button.cwdcopy.copied::after { content: none; }
    row rendered as a bare 「…」. */
 .sid b.title { font-family: inherit; font-size: 12px; font-weight: 500; }
 
+/* One line, always: the pill is 18px tall, so a label that wrapped (the
+   pairing card's 「Waiting for you」 beside a long title did) spilled out of
+   its own outline. */
 .pill {
   display: inline-flex; align-items: center;
   height: 18px; padding: 0 8px;
@@ -935,6 +942,7 @@ td.cwd button.cwdcopy.copied::after { content: none; }
   font-size: 11px;
   border: 1px solid var(--line);
   color: var(--muted);
+  white-space: nowrap; flex: none;
 }
 .pill.active { color: var(--green); border-color: rgba(53, 192, 122, 0.4); }
 .pill.idle { color: var(--amber); border-color: rgba(224, 163, 62, 0.4); }
@@ -1119,7 +1127,11 @@ body.selecting .toasts { bottom: 124px; }
 .noderow:hover { background: rgba(255, 255, 255, 0.03); }
 .noderow.on { background: var(--accent-dim); border-left-color: var(--accent); }
 .noderow .line { display: flex; align-items: center; gap: 8px; }
-.noderow .name { font-weight: 500; }
+/* The name keeps its line; the presence note beside it wraps instead. Before,
+   「no heartbeat yet · they may not have paired…」 squeezed 「win-bench」 into
+   「win-」 over 「bench」. A name too long for the row ends in an ellipsis and
+   is whole in the detail pane. */
+.noderow .name { font-weight: 500; flex: 0 0 auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .noderow .meta { margin-top: 3px; font-size: 11.5px; color: var(--muted); }
 /* Presence dots, wherever a node is listed: the node list and the audience
    dialog's node picker draw the same four states. */
@@ -1179,7 +1191,13 @@ body.selecting .toasts { bottom: 124px; }
 .detailrow > .mono { word-break: break-all; white-space: normal; user-select: text; }
 .detailrow > button { align-self: flex-start; }
 
-.peer-sessions { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+/* Not the session table's layout: `table` above gives every table 800px of
+   min-width and fixed columns, which pushed STATUS and LAST SEEN past the
+   detail pane's edge at any window up to 1100px, where `overflow: hidden` cut
+   them off. Here the short columns take their own width and the session id,
+   the one long value, wraps instead of being cut. */
+.peer-sessions { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; min-width: 0; table-layout: auto; }
+.peer-sessions td.mono { white-space: normal; overflow-wrap: anywhere; }
 .peer-sessions th { background: var(--panel-solid); }
 
 /* ---------- pairing panel (drawer) and candidates ---------- */
@@ -1309,9 +1327,12 @@ body.selecting .toasts { bottom: 124px; }
 /* The rows scroll, like the candidate list: an attacker on the segment can
    hold this list at its bound too, and what a clipped list hides is the
    buttons under the fingerprints. */
+/* No height of its own: the exchange screen has the drawer to itself (#224),
+   and the drawer body scrolls. A 46vh box with its own scrollbar, left from
+   when three sections shared the drawer, cut the card's 「Fingerprints match,
+   approve」 button in half at the default 840px window with empty drawer
+   below it. */
 #pair-requests {
-  max-height: 46vh;
-  overflow-y: auto;
   padding: 0 14px;
   display: flex; flex-direction: column; gap: 8px;
 }

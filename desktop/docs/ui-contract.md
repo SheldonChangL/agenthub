@@ -435,7 +435,7 @@
   pill＋後面最多三個 14px 遮罩圖示——訊息、鈴鐺、資料夾，只畫開著的、未分享的列不畫；hover 一句話，`title`／`aria-label` 每次更新都寫；Claude Code 的鈴鐺加 `.off` 變灰並說叫不醒。
   表格內 all_paired 用短標籤 `audience.cell.allPairedShort`：en「All paired」、zh「所有已配對」，tooltip 用 `share.who.*Title`，篩選 chip 用完整說法；
   `selected` 且 0 個節點顯示「未分享」，與 `describeAudience().published`、`audienceMode()` 同一條規則；欄寬 156px＝pill 約 84px＋6px＋三個圖示與間距＋12px 內距，
-  比原本「公開對象」108px＋「旗標」160px 少 112px，全給 SESSION；測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23），旗標欄隨分享面板合併進分享欄（2026-10）。工作目錄欄 136px，視窗 ≤1000px 時 96px（2026-10-05，原本與 SESSION 平分剩餘寬度，900 寬下標題只剩兩個字）。
+  比原本「公開對象」108px＋「旗標」160px 少 112px，全給 SESSION；測試 `row-audience.mjs`）、工作目錄、最後活動、**動作**。MANAGED 欄已移除（2026-09-23），旗標欄隨分享面板合併進分享欄（2026-10）。工作目錄欄 160px（英文表頭「WORKING DIRECTORY」連 padding 要 151px，136px 時任何寬度都被截），視窗 ≤1000px 時 96px（2026-10-05，原本與 SESSION 平分剩餘寬度，900 寬下標題只剩兩個字）。最後活動欄 120px（英文「12 seconds ago」在 104px 時變成「12 seconds a…」，2026-10-06）。`.pill` 一律單行（`white-space: nowrap`，18px 高的標籤換行就溢出外框）。
 - **有排序**：5 個表頭可排序（`id`、`status`、`audience`、`cwd`、`lastSeenAt`；`SORT_KEYS` 仍接受舊偏好裡的 `management`／`provider`，但沒有表頭），
   預設 `lastSeenAt` 由新到舊。`status` 與 `audience` 用語意順序不是字母序（active→idle→inactive；
   all_paired→selected→none）。排序與篩選都寫進 localStorage。
@@ -519,7 +519,7 @@
    它存在只因為請求區在摺線下，現在請求區就是整個畫面。畫面由資料決定，沒有「下一步」按鈕。
 3. **候選列的「送出配對請求」**：一鍵送出，只帶該列的 `address`。「改用手動填入…」是次要路徑，在列內「詳細資料」裡。
 4. **`#pair-address` + `btn-pair-send`**（在 `#pair-manual`「找不到另一台？」摺疊裡，連同 `pair.addressNote` 與手動五欄位入口）：手打對方畫面顯示的位址；Enter 等同按鈕；送出前 trim，空字串不送。打開抽屜時，若 `state.pairing.availability !== "on"`（這台沒在看，清單不可能有人）預設展開，否則收合；之後 render 不碰它的 `open`（`openPairingDrawer()` 寫一次）。
-5. **`#pair-requests` 請求面板**（交換畫面；兩種卡）：
+5. **`#pair-requests` 請求面板**（交換畫面；兩種卡；本身不設高度、不捲動，由抽屜本體捲——原本的 `max-height: 46vh` 在預設 840px 視窗把「指紋一致，核准」切掉一半，2026-10-06）：
    - 比對卡（`pairrow comparing`：`incoming`＋`pending`，或 `awaiting-confirm`）：標題「{name}（自稱）想和這台配對」／「和 {name}（自稱）比對指紋」、
      警語、兩組指紋各一行 17px、按鈕。等待卡（`pairrow waiting`：`outgoing`＋`pending`）：轉圈（`.spin`）、「等 {name} 按「核准」」、
      **不顯示指紋與警語**（要比對的時刻是對方核准之後，值來自連線）、拒絕鈕寫「取消這次請求」。指紋區塊元素永不替換，只切 `hidden`。
@@ -548,7 +548,7 @@
 右欄（`nodedetail`）：
 - 機器詳情：名稱、摺在「指紋」details 裡的完整指紋（連同核對說明）、機器 ID（複製鈕，`title` 是 ID）／平台／配對時間／最後聯繫／可見的 session 數、「撤銷信任」+ 說明。
 - 位址區：記錄中的位址與備援的說明句、位址清單（每列 `addresslabel`「首選」／「備援 n」＋ `addressinput` ＋ `removeaddress`，只剩一列時不給移除）、`addaddress`（滿 4 列隱藏）、`setaddress`「記錄位址」、格式說明。整組經 `SetNodeAddresses` 寫回。
-- 「這個節點公開給我的 session」：四種 presence 狀態 + `sessionsWithheld` + 空 + 表格（SESSION／節點／PROVIDER／狀態／最後活動）。
+- 「它分享給我的 session」：四種 presence 狀態 + `sessionsWithheld` + 空 + 表格（SESSION／機器／PROVIDER／狀態／最後活動）。表格 `table.peer-sessions` 不吃本機表格的 `min-width: 800px` 與固定欄寬：短欄照內容寬，session ID 換行而不截斷（原本 ≤1100px 視窗右邊兩欄被切掉，2026-10-06）。
 
 ### 3.4 設定頁
 

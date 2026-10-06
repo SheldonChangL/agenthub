@@ -1,17 +1,22 @@
-// Dev-only: records the README's demo GIF from dev/mock.html?demo=readme.
-// Not part of the build or the tests.
+// Dev-only: makes the README's pictures from dev/mock.html?demo=readme. Not
+// part of the build or the tests.
 //
-// It shows the one thing the README opens with, in about twenty seconds: share
-// a session with a paired machine, see what that machine sees, and read the
-// notes its agents left here. The data is the mock's made-up set, never a real
-// machine's (no real session ids, paths, node ids or host names).
+// For one language it writes four files into a directory:
+//   demo.gif             share a session with a paired machine, see what that
+//                        machine shares back, read the notes its agents left
+//   first-run.png        the setup's first step
+//   network-pairing.png  the pairing drawer with two fingerprints to compare
+//   share-panel.png      one session's share panel
+// with `.zh-Hant` before the extension for 繁體中文. The data is the mock's
+// made-up set, never a real machine's (no real session ids, paths, node ids or
+// host names).
 //
 // Needs a running preview, Playwright and ffmpeg:
 //
 //   cd desktop/frontend && npx vite --port 5173 --strictPort &
 //   PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
-//     node dev/record-demo.mjs en        ../../docs/screenshots/demo.gif
-//   node dev/record-demo.mjs zh-Hant   ../../docs/screenshots/demo.zh-Hant.gif
+//     node dev/record-demo.mjs en ../../docs/screenshots
+//   node dev/record-demo.mjs zh-Hant ../../docs/screenshots
 //
 // PLAYWRIGHT_MODULE defaults to "playwright" resolved from here; Playwright is
 // deliberately not a dependency of this package.
@@ -26,12 +31,16 @@ const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE ?? "playwright");
 
 const lang = process.argv[2] ?? "en";
-const out = resolve(process.argv[3] ?? `demo.${lang}.gif`);
+const outDir = resolve(process.argv[3] ?? ".");
+const named = (name) => join(outDir, lang === "en" ? name : name.replace(/\.(\w+)$/, `.${lang}.$1`));
 const base = process.env.DEMO_URL ?? "http://localhost:5173";
-// The window's own minimum width, recorded 1:1: scaling a wider recording down
-// blurs the table's small type and saves less than it costs.
-const W = 900;
-const H = 620;
+const url = (extra = "") => `${base}/dev/mock.html?demo=readme&lang=${lang}${extra}`;
+// Recorded 1:1, never scaled: scaling blurs the table's small type. 1100px is
+// the narrowest window in which nothing the demo shows is cut off or ends in an
+// ellipsis (900px, the minimum, shortens the longer titles), and narrower than
+// the app's own 1280px default, so the README does not shrink it much.
+const W = 1100;
+const H = 700;
 // A subtitle strip under the window rather than over it, so no caption ever
 // covers a toast or a button the pointer is about to press.
 const STRIP = 46;
@@ -62,11 +71,42 @@ const text = {
 }[lang];
 if (!text) throw new Error(`no script for ${lang}`);
 
-const frameDir = mkdtempSync(join(tmpdir(), "agenthub-demo-"));
 const browser = await chromium.launch();
+
+// The three stills: the window alone, at twice the pixels so they stay sharp
+// on a high-density screen, with nothing added to the page. 840px is the app's
+// default height, and the one at which the pairing card fits whole: at 700px
+// either its title or its buttons were cut off.
+const STILL_H = 840;
+async function still(name, extra, arrange) {
+  const context = await browser.newContext({ viewport: { width: W, height: STILL_H }, deviceScaleFactor: 2, colorScheme: "dark" });
+  const page = await context.newPage();
+  await page.goto(url(extra));
+  await arrange(page);
+  await page.waitForTimeout(700);
+  await page.screenshot({ path: named(name) });
+  await context.close();
+  console.log(`wrote ${named(name)}`);
+}
+await still("first-run.png", "&onboarding=fresh", (page) => page.waitForSelector("#first-run:not(.hidden) button.primary"));
+await still("network-pairing.png", "", async (page) => {
+  await page.waitForSelector("tbody tr .audbtn");
+  await page.locator('#view-switch [data-view="network"]').click();
+  await page.locator("#btn-pair").click();
+  await page.waitForSelector("#pairing-modal:not(.hidden) .pairrow.comparing");
+  // The whole card, title to buttons: the picture is about deciding.
+  await page.locator("#pairing-modal .pairrow.comparing").first().scrollIntoViewIfNeeded();
+});
+await still("share-panel.png", "", async (page) => {
+  await page.waitForSelector("tbody tr .audbtn");
+  await page.locator("tbody tr").first().locator("button.audbtn").click();
+  await page.waitForSelector("#audience-modal:not(.hidden)");
+});
+
+const frameDir = mkdtempSync(join(tmpdir(), "agenthub-demo-"));
 const context = await browser.newContext({ viewport: { width: W, height: H + STRIP }, colorScheme: "dark" });
 const page = await context.newPage();
-await page.goto(`${base}/dev/mock.html?demo=readme&lang=${lang}`);
+await page.goto(url());
 await page.waitForSelector("tbody tr .audbtn");
 await page.waitForTimeout(600);
 
@@ -194,7 +234,6 @@ writeFileSync(listFile, list.join("\n") + "\n");
 const filters = `fps=${FPS},scale=${GIF_WIDTH}:-1:flags=lanczos,split[a][b];` +
   "[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle";
 execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listFile,
-  "-vf", filters, "-loop", "0", out], { stdio: "inherit" });
+  "-vf", filters, "-loop", "0", named("demo.gif")], { stdio: "inherit" });
 rmSync(frameDir, { recursive: true, force: true });
-console.log(`${frames.length} frames`);
-console.log(`wrote ${out}`);
+console.log(`wrote ${named("demo.gif")} from ${frames.length} frames`);
