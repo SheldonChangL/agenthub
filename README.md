@@ -52,8 +52,12 @@ screens, and tick the sessions to share. The
   agent to read; nothing assigns or tracks work.
   [Set it up](docs/guide.md#let-an-agent-use-the-four-tools).
 - **Can wake a Codex session** when a note arrives, if you turn that on.
-  Claude Code is not woken; it reads its inbox when it checks.
+  AgentHub cannot wake Claude Code; it reads its inbox when it checks.
   [Waking an agent](docs/guide.md#waking-an-agent).
+  If both machines run only Claude Code under the same claude.ai account, you
+  may not need AgentHub: Claude Code's own cross-session messaging, with Remote
+  Control on in both sessions, reaches and wakes a session on the other machine
+  through claude.ai.
 
 ## Privacy
 

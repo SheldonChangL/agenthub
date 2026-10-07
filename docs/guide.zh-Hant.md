@@ -174,7 +174,7 @@ Windows 上把印出來的值和 `SHA256SUMS` 裡對應的那一行比對。
 2. 選對方可以做什麼：
    - **可留訊息**：對方看得到這個 session，也能寄訊息到它的收件匣，這個 session 也能回覆。
    - **可留訊息並喚醒**：訊息到了還會試著叫醒 agent。勾的全是 Claude Code session 時不能選，
-     因為 Claude Code session 目前叫不醒。
+     因為 AgentHub 叫不醒 Claude Code session。
 3. 按**分享 2 個 session**。數字跟著你勾的數量變；沒勾任何一個時按鈕會寫
    **先勾選要分享的 session**，而且按不下去。
 
@@ -436,6 +436,8 @@ Claude Code 本來就有一條路：macOS 與 Linux 的安裝腳本會加上 `ag
 - **Claude Code session**：未驗證。視窗不提供喚醒 Claude Code。就算所有設定都到位，
   AgentHub 也記錄成「已喚醒」，卻從沒看到那一輪真的開始。詳見
   [channel-push-not-observed.md](channel-push-not-observed.md)（英文）。
+  Claude Code 內建的跨 session 訊息是另一條路：兩台登入同一個 claude.ai 帳號、兩邊 session 都開
+  Remote Control 時，經由 claude.ai 送出的訊息實測叫醒了另一台閒置的 session。
 - **被喚醒的那一輪什麼都不會核准**。沒人在場時跳出的每個權限詢問，一律回答不行。
   它只能用這個 session 原本就有的權限。
 - **有上限，避免兩台機器無止盡地互相回覆**：同一台機器對同一個 session 每 10 分鐘 3 次、
