@@ -424,7 +424,7 @@ export const TEXT = {
 
   "audience.unlistedNode": "Not in the pairing list this read returned",
   "audience.nodesReadFailed": "The pairing list could not be read ({error}), so the paired machines are not listed here. Any grant this session already has is still listed, and kept.",
-  "audience.autoWakeWillTurnOff": "Applying this turns waking off: a Claude Code session is never woken.",
+  "audience.autoWakeWillTurnOff": "Applying this turns waking off: AgentHub never wakes a Claude Code session.",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "Reading…",
@@ -801,7 +801,7 @@ export const TEXT = {
   "popover.messagesHint": "They can leave messages, and this session can reply",
   "popover.wake": "Messages and waking",
   "popover.wakeHint": "A message tries to wake the agent, and it can reply",
-  "popover.wakeClaudeOnly": "A Claude Code session cannot be woken today, so this cannot be picked.",
+  "popover.wakeClaudeOnly": "AgentHub cannot wake a Claude Code session, so this cannot be picked.",
   "popover.verb": "Setting “{preset}”",
   "popover.applied.messages.one": "{n} session can now take messages.",
   "popover.applied.messages.other": "{n} sessions can now take messages.",
@@ -838,8 +838,8 @@ export const TEXT = {
   "share.on": "on",
   "share.off": "off",
   "share.pickAMachine": "Tick at least one machine, or pick “Not shared”.",
-  "share.wakeSomeClaude.one": "{n} of them is a Claude Code session, which cannot be woken; it will only take messages.",
-  "share.wakeSomeClaude.other": "{n} of them are Claude Code sessions, which cannot be woken; they will only take messages.",
+  "share.wakeSomeClaude.one": "{n} of them is a Claude Code session, which AgentHub cannot wake; it will only take messages.",
+  "share.wakeSomeClaude.other": "{n} of them are Claude Code sessions, which AgentHub cannot wake; they will only take messages.",
   "share.wakeNodeOff": "Waking is off on this machine: the setting is kept, and works once “Allow messages to wake agents automatically” is on in Settings.",
   "share.verb": "Updating sharing",
   "share.applied.one": "Sharing updated for {n} session.",
@@ -858,6 +858,6 @@ export const TEXT = {
   "share.icon.messagesNoReply": "They can leave messages; this session cannot reply",
   "share.icon.replyOnly": "This session can send to them; they cannot leave messages",
   "share.icon.wake": "A message tries to wake the agent; one that cannot wake it stays in the inbox",
-  "share.icon.wakeClaude": "Waking is on, but Claude Code cannot be woken; messages stay in the inbox",
+  "share.icon.wakeClaude": "Waking is on, but AgentHub cannot wake Claude Code; messages stay in the inbox",
   "share.icon.cwd": "They can see the working directory path",
 };

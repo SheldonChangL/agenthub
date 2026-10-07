@@ -419,7 +419,7 @@ export const TEXT = {
 
   "audience.unlistedNode": "這次沒讀到配對清單中的這台機器",
   "audience.nodesReadFailed": "配對清單讀取失敗（{error}），所以這裡列不出已配對的機器；這個 session 原有的授權仍會列出並保留。",
-  "audience.autoWakeWillTurnOff": "套用後會關閉喚醒：Claude Code session 不會被叫醒。",
+  "audience.autoWakeWillTurnOff": "套用後會關閉喚醒：AgentHub 不會叫醒 Claude Code session。",
 
   /* ---------------- the inbox drawer: inbox, sent, wakes ---------------- */
   "common.loading": "正在讀取…",
@@ -796,7 +796,7 @@ export const TEXT = {
   "popover.messagesHint": "對方能留訊息，這個 session 也能回覆",
   "popover.wake": "可留訊息並喚醒",
   "popover.wakeHint": "訊息到了試著叫醒 agent，並讓它能回覆",
-  "popover.wakeClaudeOnly": "Claude Code session 目前叫不醒，所以不能選。",
+  "popover.wakeClaudeOnly": "AgentHub 叫不醒 Claude Code session，所以不能選。",
   "popover.verb": "設定為「{preset}」",
   "popover.applied.messages.one": "已設定為「可留訊息」：{n} 個 session。",
   "popover.applied.messages.other": "已設定為「可留訊息」：{n} 個 session。",
@@ -833,8 +833,8 @@ export const TEXT = {
   "share.on": "開",
   "share.off": "關",
   "share.pickAMachine": "至少勾一台機器，或改選「不分享」。",
-  "share.wakeSomeClaude.one": "其中 {n} 個 Claude Code session 叫不醒，套用後它只會收訊息。",
-  "share.wakeSomeClaude.other": "其中 {n} 個 Claude Code session 叫不醒，套用後它們只會收訊息。",
+  "share.wakeSomeClaude.one": "其中 {n} 個是 Claude Code session，AgentHub 叫不醒，套用後它只會收訊息。",
+  "share.wakeSomeClaude.other": "其中 {n} 個是 Claude Code session，AgentHub 叫不醒，套用後它們只會收訊息。",
   "share.wakeNodeOff": "這台沒開自動喚醒：設定會先存著，到設定頁打開「允許訊息自動喚醒 agent」才會叫醒。",
   "share.verb": "更新分享設定",
   "share.applied.one": "已更新 {n} 個 session 的分享設定。",
@@ -853,6 +853,6 @@ export const TEXT = {
   "share.icon.messagesNoReply": "對方能留訊息；這個 session 不能主動回覆",
   "share.icon.replyOnly": "這個 session 能送訊息給對方；對方不能留訊息",
   "share.icon.wake": "訊息到了會試著叫醒 agent；叫不醒的留在收件匣",
-  "share.icon.wakeClaude": "設了喚醒，但 Claude Code 叫不醒；訊息只會留在收件匣",
+  "share.icon.wakeClaude": "設了喚醒，但 AgentHub 叫不醒 Claude Code；訊息只會留在收件匣",
   "share.icon.cwd": "對方看得到工作目錄路徑",
 };

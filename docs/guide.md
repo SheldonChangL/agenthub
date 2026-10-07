@@ -238,7 +238,7 @@ with.
      its inbox, and the session can reply.
    - **Messages and waking**: a message also tries to wake the agent. This one
      cannot be picked when every ticked session is a Claude Code session,
-     because Claude Code sessions cannot be woken today.
+     because AgentHub cannot wake a Claude Code session.
 3. Press **Share 2 sessions**. The number follows what you ticked; with nothing
    ticked the button reads **Tick the sessions to share first** and cannot be
    pressed.
@@ -606,7 +606,11 @@ What to expect:
 - **Claude Code sessions:** not verified. The window does not offer waking for
   them. Even with every setting in place, AgentHub records the message as woken
   and no turn has been seen arriving. See
-  [channel-push-not-observed.md](channel-push-not-observed.md).
+  [channel-push-not-observed.md](channel-push-not-observed.md). Claude Code's
+  own cross-session messaging is a different route: with Remote Control on in
+  both sessions and the same claude.ai account on both machines, a message sent
+  that way through claude.ai was seen waking an idle session on the other
+  machine.
 - **A woken turn approves nothing.** Every permission question asked with nobody
   present is answered no. The turn runs with the permissions the session already
   had.
