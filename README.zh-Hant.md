@@ -41,10 +41,12 @@ Windows 版從沒在真的 Windows 電腦上跑過（[#21](https://github.com/Sh
   對方拿到的是一段簡短摘要，例如 session 的 ID、狀態和最後活動時間，不含提示詞和對話紀錄。
 - **讓 agent 互相留訊息**，透過四個 MCP 工具或 `ah` 指令，前提是那個 session 設成「可留訊息」。
   訊息留在收件匣等 agent 來讀；沒有任務指派或追蹤。[設定方式](docs/guide.zh-Hant.md#讓-agent-使用四個工具)。
-- **可以用訊息喚醒 Codex session**，要你自己打開。AgentHub 叫不醒 Claude Code，它自己檢查收件匣時才會讀到。
+- **可以用訊息喚醒 Codex session**，要你自己打開。那個 session 不必開著：AgentHub 會在背景把它的 thread 接回來。
   [喚醒 agent](docs/guide.zh-Hant.md#喚醒-agent)。
-  如果兩台都只用 Claude Code、登入同一個 claude.ai 帳號，可能根本用不到 AgentHub：
-  兩邊的 session 都開 Remote Control 時，Claude Code 內建的跨 session 訊息就能經由 claude.ai 送到另一台並叫醒它。
+- **Claude Code 要自己檢查收件匣才會讀到訊息。** AgentHub 叫不醒它，所以 session 要一直開著，
+  用一起裝好的 agenthub-watch skill 定時檢查。Claude Code 內建的跨 session 訊息也有同樣的前提：
+  收訊息的 session 要開著，兩邊都要開 Remote Control、登入同一個 claude.ai 帳號，訊息會經過 claude.ai。
+  如果兩台都只用 Claude Code、登入同一個帳號，用內建的可能就夠了。
 
 ## 隱私
 
